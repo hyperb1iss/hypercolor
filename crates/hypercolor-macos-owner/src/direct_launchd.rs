@@ -92,6 +92,7 @@ pub struct MacosDirectLaunchdExecutableExpectation {
     path: PathBuf,
     designated_requirement: String,
     designated_requirement_hash: String,
+    cdhash: String,
     sha256: String,
     mode: u32,
     size: u64,
@@ -105,6 +106,7 @@ impl MacosDirectLaunchdExecutableExpectation {
         path: impl Into<PathBuf>,
         designated_requirement: impl Into<String>,
         designated_requirement_hash: impl Into<String>,
+        cdhash: impl Into<String>,
         sha256: impl Into<String>,
         mode: u32,
         size: u64,
@@ -147,6 +149,17 @@ impl MacosDirectLaunchdExecutableExpectation {
                 detail: "must be the SHA-256 of the exact designated requirement",
             });
         }
+        let cdhash = cdhash.into();
+        if cdhash.len() != 40
+            || !cdhash
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(MacosOwnerStoreError::InvalidOwnerIdentity {
+                field: "executable_cdhash",
+                detail: "must be exactly 40 lowercase hexadecimal bytes",
+            });
+        }
         let sha256 = sha256.into();
         if !is_sha256(&sha256) {
             return Err(MacosOwnerStoreError::InvalidOwnerIdentity {
@@ -159,7 +172,7 @@ impl MacosDirectLaunchdExecutableExpectation {
             || mode & 0o400 == 0
             || mode & 0o100 == 0
             || size == 0
-            || size == u64::MAX
+            || size > 4 * 1_024 * 1_024 * 1_024
             || device == 0
             || inode == 0
         {
@@ -172,6 +185,7 @@ impl MacosDirectLaunchdExecutableExpectation {
             path,
             designated_requirement,
             designated_requirement_hash,
+            cdhash,
             sha256,
             mode,
             size,
@@ -196,6 +210,12 @@ impl MacosDirectLaunchdExecutableExpectation {
     #[must_use]
     pub fn designated_requirement_hash(&self) -> &str {
         &self.designated_requirement_hash
+    }
+
+    /// Architecture-selected dynamic code-directory hash from signed provenance.
+    #[must_use]
+    pub fn cdhash(&self) -> &str {
+        &self.cdhash
     }
 
     /// SHA-256 of the exact retained executable bytes.
@@ -521,10 +541,15 @@ mod mutation;
 #[cfg(target_os = "macos")]
 mod native;
 #[cfg(target_os = "macos")]
+mod retained_code;
+#[cfg(target_os = "macos")]
 pub use mutation::NativeMacosDirectLaunchdMutator;
 pub use mutation::{
-    MacosDirectLaunchdBootstrapExpectation, MacosDirectLaunchdMutationOutcome,
-    MacosDirectLaunchdMutator, parse_direct_launchd_autostart_state,
+    MacosDirectLaunchdBootstrapExpectation, MacosDirectLaunchdBootstrapSource,
+    MacosDirectLaunchdMutationOutcome, MacosDirectLaunchdMutator,
+    parse_direct_launchd_autostart_state,
 };
 #[cfg(target_os = "macos")]
 pub use native::NativeMacosDirectLaunchdInspector;
+#[cfg(target_os = "macos")]
+pub use retained_code::validate_retained_macos_executable;

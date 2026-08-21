@@ -12,6 +12,7 @@ use sha2::{Digest as _, Sha256};
 
 const UID: u32 = 501;
 const CANDIDATE_SHA256: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const CANDIDATE_CDHASH: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const CANDIDATE_REQUIREMENT: &str = "candidate-requirement";
 
 #[derive(Debug)]
@@ -97,6 +98,7 @@ fn expectation(epoch: u64) -> MacosDirectLaunchdPublicationExpectation {
         "/opt/hypercolor/units/candidate/bin/hypercolor-daemon",
         CANDIDATE_REQUIREMENT,
         hex_digest(CANDIDATE_REQUIREMENT.as_bytes()),
+        CANDIDATE_CDHASH,
         CANDIDATE_SHA256,
         0o555,
         1024,
@@ -461,6 +463,7 @@ fn expectation_rejects_unbounded_or_nonabsolute_identity_fields() {
             PathBuf::from("relative"),
             "hash",
             hex_digest(b"hash"),
+            CANDIDATE_CDHASH,
             CANDIDATE_SHA256,
             0o555,
             1,
@@ -474,6 +477,7 @@ fn expectation_rejects_unbounded_or_nonabsolute_identity_fields() {
             PathBuf::from("/absolute"),
             "",
             hex_digest(b""),
+            CANDIDATE_CDHASH,
             CANDIDATE_SHA256,
             0o555,
             1,
@@ -487,6 +491,21 @@ fn expectation_rejects_unbounded_or_nonabsolute_identity_fields() {
             PathBuf::from("/absolute"),
             "requirement",
             hex_digest(b"requirement"),
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            CANDIDATE_SHA256,
+            0o555,
+            1,
+            1,
+            1,
+        )
+        .is_err()
+    );
+    assert!(
+        MacosDirectLaunchdExecutableExpectation::new(
+            PathBuf::from("/absolute"),
+            "requirement",
+            hex_digest(b"requirement"),
+            CANDIDATE_CDHASH,
             "not-a-sha256",
             0o555,
             1,

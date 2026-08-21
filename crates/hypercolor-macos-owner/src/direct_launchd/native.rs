@@ -66,6 +66,44 @@ impl MacosDirectLaunchdInspector for NativeMacosDirectLaunchdInspector {
         &mut self,
         identity: &crate::MacosOwnerIdentity,
     ) -> Result<bool, MacosOwnerExecutionError> {
+        let deadline = Instant::now()
+            .checked_add(COMMAND_TIMEOUT)
+            .ok_or_else(|| MacosOwnerExecutionError::new("inspection deadline overflowed"))?;
+        let identity = identity.clone();
+        run_identity_inspection(deadline, move || {
+            Self::new().live_identity_matches_until(&identity, deadline)
+        })
+    }
+
+    fn publication_identity_matches(
+        &mut self,
+        identity: &crate::MacosOwnerIdentity,
+        executable: &MacosDirectLaunchdExecutableExpectation,
+    ) -> Result<bool, MacosOwnerExecutionError> {
+        let deadline = Instant::now()
+            .checked_add(COMMAND_TIMEOUT)
+            .ok_or_else(|| MacosOwnerExecutionError::new("inspection deadline overflowed"))?;
+        let identity = identity.clone();
+        let executable = executable.clone();
+        run_identity_inspection(deadline, move || {
+            Self::new().publication_identity_matches_until(&identity, &executable, deadline)
+        })
+    }
+}
+
+fn run_identity_inspection(
+    deadline: Instant,
+    operation: impl FnOnce() -> Result<bool, MacosOwnerExecutionError> + Send + 'static,
+) -> Result<bool, MacosOwnerExecutionError> {
+    super::mutation::run_deadline_read(deadline, operation)
+}
+
+impl NativeMacosDirectLaunchdInspector {
+    pub(in crate::direct_launchd) fn live_identity_matches_until(
+        &mut self,
+        identity: &crate::MacosOwnerIdentity,
+        deadline: Instant,
+    ) -> Result<bool, MacosOwnerExecutionError> {
         let Some(audit_token) = parse_audit_token(identity)? else {
             return Ok(false);
         };
@@ -75,7 +113,7 @@ impl MacosDirectLaunchdInspector for NativeMacosDirectLaunchdInspector {
         if !code_path_matches(&code, &identity.executable_path)? {
             return Ok(false);
         }
-        let requirement_text = designated_requirement(&identity.executable_path)?;
+        let requirement_text = designated_requirement(&identity.executable_path, deadline)?;
         if requirement_hash(&requirement_text) != identity.designated_requirement_hash {
             return Ok(false);
         }
@@ -93,11 +131,11 @@ impl MacosDirectLaunchdInspector for NativeMacosDirectLaunchdInspector {
             .transpose()
             .map(Option::unwrap_or_default)
     }
-
-    fn publication_identity_matches(
+    pub(in crate::direct_launchd) fn publication_identity_matches_until(
         &mut self,
         identity: &crate::MacosOwnerIdentity,
         executable: &MacosDirectLaunchdExecutableExpectation,
+        deadline: Instant,
     ) -> Result<bool, MacosOwnerExecutionError> {
         let Some(audit_token) = parse_audit_token(identity)? else {
             return Ok(false);
@@ -105,7 +143,8 @@ impl MacosDirectLaunchdInspector for NativeMacosDirectLaunchdInspector {
         let Some(code) = code_for_audit_token(&audit_token)? else {
             return Ok(false);
         };
-        if !publication_code_matches(&code, executable)? {
+        let requirement_before = publication_code_matches(&code, executable)?;
+        if !requirement_before {
             return Ok(false);
         }
         let mut opened = hypercolor_platform_fs::open_no_follow(executable.path())
@@ -147,11 +186,27 @@ impl MacosDirectLaunchdInspector for NativeMacosDirectLaunchdInspector {
         {
             return Ok(false);
         }
+        let observed_cdhash = super::retained_code::dynamic_cdhash_for_pid(identity.pid, deadline)?;
         let Some(code_after) = code_for_audit_token(&audit_token)? else {
             return Ok(false);
         };
-        publication_code_matches(&code_after, executable)
+        let requirement_after = publication_code_matches(&code_after, executable)?;
+        Ok(publication_tuple_matches(
+            requirement_before,
+            observed_cdhash.as_deref(),
+            requirement_after,
+            executable.cdhash(),
+        ))
     }
+}
+
+fn publication_tuple_matches(
+    requirement_before: bool,
+    observed_cdhash: Option<&str>,
+    requirement_after: bool,
+    expected_cdhash: &str,
+) -> bool {
+    requirement_before && observed_cdhash == Some(expected_cdhash) && requirement_after
 }
 
 fn parse_audit_token(
@@ -200,16 +255,24 @@ fn code_path_matches(code: &SecCode, expected: &Path) -> Result<bool, MacosOwner
     Ok(observed == expected)
 }
 
-fn designated_requirement(path: &Path) -> Result<String, MacosOwnerExecutionError> {
+fn designated_requirement(
+    path: &Path,
+    deadline: Instant,
+) -> Result<String, MacosOwnerExecutionError> {
     let path = path.to_str().ok_or_else(|| {
         MacosOwnerExecutionError::new("codesign executable path is not valid UTF-8")
     })?;
+    let timeout = deadline
+        .checked_duration_since(Instant::now())
+        .ok_or_else(|| {
+            MacosOwnerExecutionError::new("live identity inspection exceeded its absolute deadline")
+        })?;
     let output = run_bounded_command(
         "/usr/bin/codesign",
         &["-d", "-r-", path],
         MAX_CODESIGN_OUTPUT_BYTES,
         MAX_CODESIGN_OUTPUT_BYTES,
-        COMMAND_TIMEOUT,
+        timeout,
     )?;
     if output.status != Some(0) {
         return Err(MacosOwnerExecutionError::new(format!(
@@ -377,7 +440,67 @@ fn join_bounded_reader(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use super::*;
+
+    #[test]
+    fn restored_path_with_same_requirement_but_different_cdhash_is_rejected() {
+        assert!(!publication_tuple_matches(
+            true,
+            Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            true,
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        ));
+    }
+
+    #[test]
+    fn blocked_identity_proof_times_out_without_queueing_and_releases_worker() {
+        let _test_gate = super::super::mutation::INSPECTION_WORKER_TEST_GATE
+            .lock()
+            .expect("worker test gate should lock");
+        let live = Arc::new(AtomicUsize::new(0));
+        let maximum = Arc::new(AtomicUsize::new(0));
+        let (started_tx, started_rx) = std::sync::mpsc::sync_channel(0);
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
+        let worker_live = Arc::clone(&live);
+        let worker_maximum = Arc::clone(&maximum);
+        let caller = std::thread::spawn(move || {
+            run_identity_inspection(Instant::now() + Duration::from_millis(25), move || {
+                let current = worker_live.fetch_add(1, Ordering::SeqCst) + 1;
+                worker_maximum.fetch_max(current, Ordering::SeqCst);
+                started_tx.send(()).expect("blocked proof should start");
+                release_rx.recv().expect("blocked proof should release");
+                worker_live.fetch_sub(1, Ordering::SeqCst);
+                Ok(true)
+            })
+        });
+        started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("blocked proof should enter its worker");
+        let error = caller
+            .join()
+            .expect("publication caller should not panic")
+            .expect_err("blocked proof should exceed its caller deadline");
+        assert!(error.to_string().contains("absolute deadline"));
+        assert_eq!(live.load(Ordering::SeqCst), 1);
+
+        let second = run_identity_inspection(Instant::now() + Duration::from_secs(1), || Ok(true))
+            .expect_err("occupied worker must not queue another proof");
+        assert!(second.to_string().contains("slot is busy"));
+        assert_eq!(maximum.load(Ordering::SeqCst), 1);
+
+        release_tx.send(()).expect("blocked proof should finish");
+        assert!(super::super::mutation::wait_for_inspection_worker_idle(
+            Duration::from_secs(1)
+        ));
+        assert_eq!(live.load(Ordering::SeqCst), 0);
+        assert!(
+            run_identity_inspection(Instant::now() + Duration::from_secs(1), || Ok(true),)
+                .expect("released worker should accept the next proof")
+        );
+    }
 
     #[test]
     fn command_boundary_caps_output_and_wall_clock() {

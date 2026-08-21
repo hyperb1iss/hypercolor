@@ -1,3 +1,4 @@
+use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -15,10 +16,6 @@ const MAX_LAUNCHCTL_OUTPUT_BYTES: usize = 64 * 1024;
 const DEFAULT_INSPECTION_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Exact immutable property-list identity submitted to launchd bootstrap.
-///
-/// The path must remain inside a private namespace protected by the install
-/// transaction's cooperative lock. launchd opens the path independently, so
-/// this expectation does not exclude a noncooperating same-user path swap.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MacosDirectLaunchdBootstrapExpectation {
     path: PathBuf,
@@ -87,7 +84,7 @@ impl MacosDirectLaunchdBootstrapExpectation {
         })
     }
 
-    /// Absolute retained private property-list path passed to launchd.
+    /// Absolute diagnostic path where the retained property list was opened.
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
@@ -124,6 +121,33 @@ impl MacosDirectLaunchdBootstrapExpectation {
     }
 }
 
+/// Retained exact property-list object submitted to launchctl without reopening its path.
+#[derive(Debug)]
+pub struct MacosDirectLaunchdBootstrapSource {
+    file: File,
+    expectation: MacosDirectLaunchdBootstrapExpectation,
+}
+
+impl MacosDirectLaunchdBootstrapSource {
+    /// Bind an already-open property-list object to its exact expected identity.
+    #[must_use]
+    pub const fn new(file: File, expectation: MacosDirectLaunchdBootstrapExpectation) -> Self {
+        Self { file, expectation }
+    }
+
+    /// Exact byte and inode identity required from the retained object.
+    #[must_use]
+    pub const fn expectation(&self) -> &MacosDirectLaunchdBootstrapExpectation {
+        &self.expectation
+    }
+
+    fn try_clone_file(&self) -> Result<File, MacosOwnerExecutionError> {
+        self.file
+            .try_clone()
+            .map_err(|error| MacosOwnerExecutionError::new(error.to_string()))
+    }
+}
+
 /// Reconciled result of one launchd mutation submission.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MacosDirectLaunchdMutationOutcome<T> {
@@ -155,7 +179,7 @@ pub trait MacosDirectLaunchdMutator {
     /// Bootstrap and start one exact retained immutable unit.
     fn bootstrap_and_kickstart_exact(
         &mut self,
-        source: &MacosDirectLaunchdBootstrapExpectation,
+        source: &mut MacosDirectLaunchdBootstrapSource,
         expected: &MacosDirectLaunchdPublicationExpectation,
         timeout: Duration,
     ) -> Result<
@@ -250,7 +274,7 @@ enum LaunchctlAction {
     PrintDisabled,
     Enable,
     Disable,
-    Bootstrap(PathBuf),
+    Bootstrap,
     Kickstart,
     Bootout,
 }
@@ -272,9 +296,15 @@ trait LaunchctlCommandBoundary {
         deadline: Instant,
     ) -> Result<SubmittedCommand, MacosOwnerExecutionError>;
 
+    fn run_bootstrap(
+        &mut self,
+        source: &mut MacosDirectLaunchdBootstrapSource,
+        deadline: Instant,
+    ) -> Result<SubmittedCommand, MacosOwnerExecutionError>;
+
     fn bootstrap_source_matches(
         &mut self,
-        source: &MacosDirectLaunchdBootstrapExpectation,
+        source: &MacosDirectLaunchdBootstrapSource,
         deadline: Instant,
     ) -> Result<bool, MacosOwnerExecutionError>;
 }
@@ -457,7 +487,7 @@ where
 
     fn bootstrap_and_kickstart_exact(
         &mut self,
-        source: &MacosDirectLaunchdBootstrapExpectation,
+        source: &mut MacosDirectLaunchdBootstrapSource,
         expected: &MacosDirectLaunchdPublicationExpectation,
         timeout: Duration,
     ) -> Result<
@@ -480,10 +510,7 @@ where
                 "bootstrap property list does not match its retained expectation",
             ));
         }
-        let bootstrap = self.commands.run(
-            &LaunchctlAction::Bootstrap(source.path().to_path_buf()),
-            deadline,
-        )?;
+        let bootstrap = self.commands.run_bootstrap(source, deadline)?;
         if !matches!(
             bootstrap,
             SubmittedCommand::Completed {
@@ -513,7 +540,7 @@ where
 
     fn reconcile_publication(
         &mut self,
-        source: &MacosDirectLaunchdBootstrapExpectation,
+        source: &MacosDirectLaunchdBootstrapSource,
         expected: &MacosDirectLaunchdPublicationExpectation,
         deadline: Instant,
     ) -> MacosDirectLaunchdMutationOutcome<MacosDirectLaunchdOwnerProof> {
@@ -531,7 +558,7 @@ where
 
     fn finish_publication(
         &mut self,
-        source: &MacosDirectLaunchdBootstrapExpectation,
+        source: &MacosDirectLaunchdBootstrapSource,
         proof: MacosDirectLaunchdOwnerProof,
         deadline: Instant,
     ) -> MacosDirectLaunchdMutationOutcome<MacosDirectLaunchdOwnerProof> {
@@ -580,6 +607,10 @@ where
 mod native;
 #[cfg(target_os = "macos")]
 pub use native::NativeMacosDirectLaunchdMutator;
+#[cfg(target_os = "macos")]
+pub(super) use native::run_deadline_read;
+#[cfg(all(test, target_os = "macos"))]
+pub(super) use native::{INSPECTION_WORKER_TEST_GATE, wait_for_inspection_worker_idle};
 
 #[cfg(test)]
 mod tests;

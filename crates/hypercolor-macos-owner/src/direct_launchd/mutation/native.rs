@@ -1,7 +1,8 @@
 use std::ffi::OsString;
 use std::fmt::Write as _;
-use std::io::Read;
-use std::os::unix::fs::MetadataExt as _;
+use std::fs::File;
+use std::io::{Read, Write as _};
+use std::os::unix::fs::{FileExt as _, MetadataExt as _};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Condvar, Mutex, TryLockError};
 use std::time::{Duration, Instant};
@@ -10,8 +11,9 @@ use sha2::{Digest as _, Sha256};
 
 use super::{
     DeadlineDirectLaunchdInspector, LaunchctlAction, LaunchctlCommandBoundary,
-    MacosDirectLaunchdBootstrapExpectation, MacosDirectLaunchdMutationOutcome,
-    MacosDirectLaunchdMutator, MutationController, SubmittedCommand,
+    MacosDirectLaunchdBootstrapExpectation, MacosDirectLaunchdBootstrapSource,
+    MacosDirectLaunchdMutationOutcome, MacosDirectLaunchdMutator, MutationController,
+    SubmittedCommand,
 };
 use crate::{
     MACOS_DIRECT_LAUNCHD_LABEL, MacosDirectLaunchdExecutableExpectation,
@@ -25,6 +27,9 @@ const COMMAND_POLL_INTERVAL: Duration = Duration::from_millis(5);
 // Timed-out Security.framework and read-only launchctl probes cannot be cancelled.
 // The install lock serializes callers, while this slot bounds any late worker.
 static INSPECTION_WORKER_SLOT: (Mutex<bool>, Condvar) = (Mutex::new(false), Condvar::new());
+
+#[cfg(test)]
+pub(in crate::direct_launchd) static INSPECTION_WORKER_TEST_GATE: Mutex<()> = Mutex::new(());
 
 /// Native fixed-label launchd mutation authority for the effective user's GUI domain.
 #[derive(Debug)]
@@ -78,7 +83,8 @@ impl DeadlineDirectLaunchdInspector for DeadlineNativeMacosDirectLaunchdInspecto
     ) -> Result<bool, MacosOwnerExecutionError> {
         let identity = identity.clone();
         run_deadline_read(deadline, move || {
-            NativeMacosDirectLaunchdInspector::new().live_identity_matches(&identity)
+            NativeMacosDirectLaunchdInspector::new()
+                .live_identity_matches_until(&identity, deadline)
         })
     }
 
@@ -91,13 +97,16 @@ impl DeadlineDirectLaunchdInspector for DeadlineNativeMacosDirectLaunchdInspecto
         let identity = identity.clone();
         let executable = executable.clone();
         run_deadline_read(deadline, move || {
-            NativeMacosDirectLaunchdInspector::new()
-                .publication_identity_matches(&identity, &executable)
+            NativeMacosDirectLaunchdInspector::new().publication_identity_matches_until(
+                &identity,
+                &executable,
+                deadline,
+            )
         })
     }
 }
 
-fn run_deadline_read<T: Send + 'static>(
+pub(in crate::direct_launchd) fn run_deadline_read<T: Send + 'static>(
     deadline: Instant,
     operation: impl FnOnce() -> Result<T, MacosOwnerExecutionError> + Send + 'static,
 ) -> Result<T, MacosOwnerExecutionError> {
@@ -173,6 +182,19 @@ impl Drop for InspectionWorkerSlot {
     }
 }
 
+#[cfg(test)]
+pub(in crate::direct_launchd) fn wait_for_inspection_worker_idle(timeout: Duration) -> bool {
+    let active = INSPECTION_WORKER_SLOT
+        .0
+        .lock()
+        .expect("worker slot should lock");
+    let (active, wait) = INSPECTION_WORKER_SLOT
+        .1
+        .wait_timeout_while(active, timeout, |active| *active)
+        .expect("worker slot wait should succeed");
+    !wait.timed_out() && !*active
+}
+
 impl MacosDirectLaunchdMutator for NativeMacosDirectLaunchdMutator {
     fn autostart_enabled(&mut self) -> Result<bool, MacosOwnerExecutionError> {
         self.controller().autostart_enabled()
@@ -196,7 +218,7 @@ impl MacosDirectLaunchdMutator for NativeMacosDirectLaunchdMutator {
 
     fn bootstrap_and_kickstart_exact(
         &mut self,
-        source: &MacosDirectLaunchdBootstrapExpectation,
+        source: &mut MacosDirectLaunchdBootstrapSource,
         expected: &MacosDirectLaunchdPublicationExpectation,
         timeout: Duration,
     ) -> Result<
@@ -229,8 +251,8 @@ impl NativeLaunchctlBoundary {
             LaunchctlAction::PrintDisabled => vec!["print-disabled".into(), domain.into()],
             LaunchctlAction::Enable => vec!["enable".into(), target.into()],
             LaunchctlAction::Disable => vec!["disable".into(), target.into()],
-            LaunchctlAction::Bootstrap(path) => {
-                vec!["bootstrap".into(), domain.into(), path.as_os_str().into()]
+            LaunchctlAction::Bootstrap => {
+                vec!["bootstrap".into(), domain.into(), "/dev/fd/0".into()]
             }
             LaunchctlAction::Kickstart => vec!["kickstart".into(), "-p".into(), target.into()],
             LaunchctlAction::Bootout => vec!["bootout".into(), "--wait".into(), target.into()],
@@ -260,6 +282,68 @@ impl NativeLaunchctlBoundary {
             .map_err(|error| MacosOwnerExecutionError::new(error.to_string()))?;
         Ok(reap_submitted_command(child, deadline))
     }
+
+    fn run_bootstrap_launchctl(
+        &self,
+        source: &MacosDirectLaunchdBootstrapSource,
+        deadline: Instant,
+    ) -> Result<SubmittedCommand, MacosOwnerExecutionError> {
+        let file = source.try_clone_file()?;
+        let expectation = source.expectation().clone();
+        let Some(snapshot) = run_deadline_read(deadline, move || {
+            exact_bootstrap_snapshot(&file, &expectation)
+        })?
+        else {
+            return Err(MacosOwnerExecutionError::new(
+                "bootstrap property list changed before command submission",
+            ));
+        };
+        run_snapshot_stdin_command(
+            "/bin/launchctl",
+            &self.arguments(&LaunchctlAction::Bootstrap),
+            snapshot,
+            deadline,
+        )
+    }
+}
+
+fn run_snapshot_stdin_command(
+    program: &str,
+    arguments: &[OsString],
+    snapshot: Vec<u8>,
+    deadline: Instant,
+) -> Result<SubmittedCommand, MacosOwnerExecutionError> {
+    if Instant::now() >= deadline {
+        return Err(MacosOwnerExecutionError::new(
+            "launchd mutation deadline expired before command submission",
+        ));
+    }
+    let mut child = Command::new(program)
+        .args(arguments)
+        .env_clear()
+        .env("LANG", "C")
+        .env("LC_ALL", "C")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| MacosOwnerExecutionError::new(error.to_string()))?;
+    let Some(mut stdin) = child.stdin.take() else {
+        kill_and_reap(&mut child);
+        return Ok(SubmittedCommand::Unknown);
+    };
+    let Ok(writer) = std::thread::Builder::new()
+        .name("launchctl-stdin".to_owned())
+        .spawn(move || stdin.write_all(&snapshot))
+    else {
+        kill_and_reap(&mut child);
+        return Ok(SubmittedCommand::Unknown);
+    };
+    Ok(reap_submitted_command_with_writer(
+        child,
+        Some(writer),
+        deadline,
+    ))
 }
 
 impl LaunchctlCommandBoundary for NativeLaunchctlBoundary {
@@ -271,23 +355,44 @@ impl LaunchctlCommandBoundary for NativeLaunchctlBoundary {
         self.run_launchctl(action, deadline)
     }
 
+    fn run_bootstrap(
+        &mut self,
+        source: &mut MacosDirectLaunchdBootstrapSource,
+        deadline: Instant,
+    ) -> Result<SubmittedCommand, MacosOwnerExecutionError> {
+        self.run_bootstrap_launchctl(source, deadline)
+    }
+
     fn bootstrap_source_matches(
         &mut self,
-        source: &MacosDirectLaunchdBootstrapExpectation,
+        source: &MacosDirectLaunchdBootstrapSource,
         deadline: Instant,
     ) -> Result<bool, MacosOwnerExecutionError> {
-        let source = source.clone();
-        run_deadline_read(deadline, move || exact_bootstrap_source_matches(&source))
+        let file = source.try_clone_file()?;
+        let expectation = source.expectation().clone();
+        run_deadline_read(deadline, move || {
+            exact_bootstrap_source_matches(&file, &expectation)
+        })
     }
 }
 
-fn reap_submitted_command(mut child: Child, deadline: Instant) -> SubmittedCommand {
+fn reap_submitted_command(child: Child, deadline: Instant) -> SubmittedCommand {
+    reap_submitted_command_with_writer(child, None, deadline)
+}
+
+fn reap_submitted_command_with_writer(
+    mut child: Child,
+    mut writer: Option<std::thread::JoinHandle<std::io::Result<()>>>,
+    deadline: Instant,
+) -> SubmittedCommand {
     let Some(stdout) = child.stdout.take() else {
         kill_and_reap(&mut child);
+        let _ = join_writer(writer.take());
         return SubmittedCommand::Unknown;
     };
     let Some(stderr) = child.stderr.take() else {
         kill_and_reap(&mut child);
+        let _ = join_writer(writer.take());
         return SubmittedCommand::Unknown;
     };
     let Ok(stdout_reader) = std::thread::Builder::new()
@@ -295,6 +400,7 @@ fn reap_submitted_command(mut child: Child, deadline: Instant) -> SubmittedComma
         .spawn(move || read_bounded(stdout))
     else {
         kill_and_reap(&mut child);
+        let _ = join_writer(writer.take());
         return SubmittedCommand::Unknown;
     };
     let Ok(stderr_reader) = std::thread::Builder::new()
@@ -303,6 +409,7 @@ fn reap_submitted_command(mut child: Child, deadline: Instant) -> SubmittedComma
     else {
         kill_and_reap(&mut child);
         let _ = stdout_reader.join();
+        let _ = join_writer(writer.take());
         return SubmittedCommand::Unknown;
     };
 
@@ -325,14 +432,19 @@ fn reap_submitted_command(mut child: Child, deadline: Instant) -> SubmittedComma
 
     let stdout = join_reader(stdout_reader);
     let stderr = join_reader(stderr_reader);
-    match (status, stdout, stderr) {
-        (Some(status), Some(stdout), Some(stderr)) => SubmittedCommand::Completed {
+    let input = join_writer(writer);
+    match (status, stdout, stderr, input) {
+        (Some(status), Some(stdout), Some(stderr), Some(())) => SubmittedCommand::Completed {
             status,
             stdout,
             stderr,
         },
         _ => SubmittedCommand::Unknown,
     }
+}
+
+fn join_writer(writer: Option<std::thread::JoinHandle<std::io::Result<()>>>) -> Option<()> {
+    writer.map_or(Some(()), |writer| writer.join().ok()?.ok())
 }
 
 fn kill_and_reap(child: &mut Child) {
@@ -358,43 +470,55 @@ fn join_reader(reader: std::thread::JoinHandle<std::io::Result<Vec<u8>>>) -> Opt
 }
 
 fn exact_bootstrap_source_matches(
+    file: &File,
     source: &MacosDirectLaunchdBootstrapExpectation,
 ) -> Result<bool, MacosOwnerExecutionError> {
-    let mut opened = hypercolor_platform_fs::open_no_follow(source.path())
-        .map_err(|error| MacosOwnerExecutionError::new(error.to_string()))?;
-    let before = opened
+    Ok(exact_bootstrap_snapshot(file, source)?.is_some())
+}
+
+fn exact_bootstrap_snapshot(
+    file: &File,
+    source: &MacosDirectLaunchdBootstrapExpectation,
+) -> Result<Option<Vec<u8>>, MacosOwnerExecutionError> {
+    let before = file
         .metadata()
         .map_err(|error| MacosOwnerExecutionError::new(error.to_string()))?;
     if !bootstrap_metadata_matches(&before, source) {
-        return Ok(false);
+        return Ok(None);
     }
     let mut hasher = Sha256::new();
-    let mut remaining = source.size() + 1;
+    let mut snapshot = Vec::with_capacity(
+        usize::try_from(source.size()).expect("bounded property-list size fits usize"),
+    );
     let mut buffer = [0_u8; 8 * 1024];
-    while remaining > 0 {
+    let mut offset = 0_u64;
+    while offset <= source.size() {
+        let remaining = source.size() + 1 - offset;
         let limit = usize::try_from(remaining.min(buffer.len() as u64))
             .expect("bounded read limit fits usize");
-        let read = opened
-            .read(&mut buffer[..limit])
+        let read = file
+            .read_at(&mut buffer[..limit], offset)
             .map_err(|error| MacosOwnerExecutionError::new(error.to_string()))?;
         if read == 0 {
             break;
         }
         hasher.update(&buffer[..read]);
-        remaining -= u64::try_from(read).expect("read length fits u64");
+        snapshot.extend_from_slice(&buffer[..read]);
+        offset += u64::try_from(read).expect("read length fits u64");
     }
-    if remaining != 1 || hex_digest(&hasher.finalize()) != source.sha256() {
-        return Ok(false);
+    if offset != source.size() || hex_digest(&hasher.finalize()) != source.sha256() {
+        return Ok(None);
     }
-    let after = opened
+    let after = file
         .metadata()
         .map_err(|error| MacosOwnerExecutionError::new(error.to_string()))?;
-    Ok(bootstrap_metadata_matches(&after, source)
+    Ok((bootstrap_metadata_matches(&after, source)
         && before.dev() == after.dev()
         && before.ino() == after.ino()
         && before.mode() == after.mode()
         && before.len() == after.len()
         && before.nlink() == after.nlink())
+    .then_some(snapshot))
 }
 
 fn bootstrap_metadata_matches(
@@ -429,8 +553,10 @@ mod tests {
     use sha2::{Digest as _, Sha256};
 
     use super::{
-        INSPECTION_WORKER_SLOT, LaunchctlAction, NativeLaunchctlBoundary, SubmittedCommand,
+        INSPECTION_WORKER_SLOT, INSPECTION_WORKER_TEST_GATE, LaunchctlAction,
+        NativeLaunchctlBoundary, SubmittedCommand, exact_bootstrap_snapshot,
         exact_bootstrap_source_matches, hex_digest, reap_submitted_command, run_deadline_read,
+        run_snapshot_stdin_command,
     };
     use crate::MacosDirectLaunchdBootstrapExpectation;
 
@@ -453,6 +579,9 @@ mod tests {
 
     #[test]
     fn timed_out_inspections_have_one_live_worker_and_recover_the_slot() {
+        let _test_gate = INSPECTION_WORKER_TEST_GATE
+            .lock()
+            .expect("worker test gate should lock");
         let live = Arc::new(AtomicUsize::new(0));
         let maximum = Arc::new(AtomicUsize::new(0));
         let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
@@ -529,10 +658,8 @@ mod tests {
             ["bootout", "--wait", target]
         );
         assert_eq!(
-            boundary.arguments(&LaunchctlAction::Bootstrap(
-                "/private/unit/launchd.plist".into()
-            )),
-            ["bootstrap", "gui/501", "/private/unit/launchd.plist"]
+            boundary.arguments(&LaunchctlAction::Bootstrap),
+            ["bootstrap", "gui/501", "/dev/fd/0"]
         );
     }
 
@@ -553,15 +680,72 @@ mod tests {
             metadata.ino(),
         )
         .expect("expectation should build");
-        assert!(exact_bootstrap_source_matches(&expectation).expect("exact proof should run"));
+        let retained = fs::File::open(&path).expect("property list should retain");
+        assert!(
+            exact_bootstrap_source_matches(&retained, &expectation)
+                .expect("exact proof should run")
+        );
 
-        fs::write(&path, b"wrong plist").expect("property list should drift");
-        assert!(!exact_bootstrap_source_matches(&expectation).expect("digest drift should run"));
+        let retained_path = directory.path().join("retained.plist");
+        fs::rename(&path, &retained_path).expect("retained path should move");
+        fs::write(&path, b"wrong plist").expect("replacement should write");
+        assert!(
+            exact_bootstrap_source_matches(&retained, &expectation)
+                .expect("retained inode should remain exact")
+        );
 
-        fs::remove_file(&path).expect("drifted property list should remove");
-        fs::write(&path, b"exact plist").expect("replacement should write");
+        fs::write(&retained_path, b"wrong plist").expect("retained inode should drift");
+        assert!(
+            !exact_bootstrap_source_matches(&retained, &expectation)
+                .expect("digest drift should run")
+        );
+
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
             .expect("replacement mode should set");
-        assert!(!exact_bootstrap_source_matches(&expectation).expect("inode drift should run"));
+        let replacement = fs::File::open(&path).expect("replacement should open");
+        assert!(
+            !exact_bootstrap_source_matches(&replacement, &expectation)
+                .expect("replacement inode drift should run")
+        );
+    }
+
+    #[test]
+    fn bootstrap_command_reads_only_the_retained_descriptor() {
+        let directory = tempfile::tempdir().expect("temporary directory should build");
+        let path = directory.path().join("launchd.plist");
+        fs::write(&path, b"retained plist").expect("property list should write");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+            .expect("property-list mode should set");
+        let metadata = fs::metadata(&path).expect("property-list metadata should read");
+        let expectation = MacosDirectLaunchdBootstrapExpectation::new(
+            &path,
+            hex_digest(&Sha256::digest(b"retained plist")),
+            0o600,
+            metadata.len(),
+            metadata.dev(),
+            metadata.ino(),
+        )
+        .expect("expectation should build");
+        let retained = fs::File::open(&path).expect("property list should retain");
+        fs::rename(&path, directory.path().join("retained.plist"))
+            .expect("retained path should move");
+        fs::write(&path, b"attacker plist").expect("attacker replacement should write");
+        let snapshot = exact_bootstrap_snapshot(&retained, &expectation)
+            .expect("snapshot should read")
+            .expect("retained source should match");
+        fs::write(directory.path().join("retained.plist"), b"attacker plist")
+            .expect("retained inode should drift after snapshot");
+        let result = run_snapshot_stdin_command(
+            "/bin/cat",
+            &["/dev/fd/0".into()],
+            snapshot,
+            Instant::now() + Duration::from_secs(1),
+        )
+        .expect("fake launchctl should read inherited descriptor");
+        let SubmittedCommand::Completed { status, stdout, .. } = result else {
+            panic!("fake launchctl should complete");
+        };
+        assert_eq!(status, Some(0));
+        assert_eq!(stdout, b"retained plist");
     }
 }

@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::fs::File;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -8,8 +9,8 @@ use sha2::{Digest as _, Sha256};
 
 use super::{
     DeadlineDirectLaunchdInspector, LaunchctlAction, LaunchctlCommandBoundary,
-    MacosDirectLaunchdBootstrapExpectation, MacosDirectLaunchdMutationOutcome, MutationController,
-    SubmittedCommand,
+    MacosDirectLaunchdBootstrapExpectation, MacosDirectLaunchdBootstrapSource,
+    MacosDirectLaunchdMutationOutcome, MutationController, SubmittedCommand,
 };
 use crate::{
     MACOS_DIRECT_LAUNCHD_LABEL, MACOS_OWNER_RECORD_SCHEMA_VERSION, MacosDaemonOwner,
@@ -21,6 +22,7 @@ use crate::{
 const DAEMON_PATH: &str = "/private/unit/bin/hypercolor-daemon";
 const REQUIREMENT: &str = "designated-requirement";
 const SHA256: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const CDHASH: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
 #[derive(Debug)]
 struct SharedInspector {
@@ -182,9 +184,17 @@ impl LaunchctlCommandBoundary for FakeCommands {
         step.result
     }
 
+    fn run_bootstrap(
+        &mut self,
+        _source: &mut MacosDirectLaunchdBootstrapSource,
+        deadline: Instant,
+    ) -> Result<SubmittedCommand, MacosOwnerExecutionError> {
+        self.run(&LaunchctlAction::Bootstrap, deadline)
+    }
+
     fn bootstrap_source_matches(
         &mut self,
-        _source: &MacosDirectLaunchdBootstrapExpectation,
+        _source: &MacosDirectLaunchdBootstrapSource,
         deadline: Instant,
     ) -> Result<bool, MacosOwnerExecutionError> {
         require_time(deadline)?;
@@ -223,6 +233,7 @@ fn publication(after_epoch: u64) -> MacosDirectLaunchdPublicationExpectation {
         DAEMON_PATH,
         REQUIREMENT,
         digest(REQUIREMENT.as_bytes()),
+        CDHASH,
         SHA256,
         0o555,
         1_024,
@@ -244,6 +255,13 @@ fn bootstrap() -> MacosDirectLaunchdBootstrapExpectation {
         3,
     )
     .expect("bootstrap expectation should build")
+}
+
+fn bootstrap_source() -> MacosDirectLaunchdBootstrapSource {
+    MacosDirectLaunchdBootstrapSource::new(
+        File::open("/dev/null").expect("retained fixture file should open"),
+        bootstrap(),
+    )
 }
 
 fn digest(bytes: &[u8]) -> String {
@@ -287,10 +305,7 @@ fn bootstrap_kickstart_uses_one_deadline_and_returns_exact_publication() {
             identity("prior", "/Applications/Hypercolor", REQUIREMENT, 41),
         )
         .expect("prior should publish");
-    commands.push(
-        LaunchctlAction::Bootstrap(bootstrap().path().to_path_buf()),
-        completed(0, b""),
-    );
+    commands.push(LaunchctlAction::Bootstrap, completed(0, b""));
     commands.push_effect(
         LaunchctlAction::Kickstart,
         completed(0, b"82\n"),
@@ -305,7 +320,7 @@ fn bootstrap_kickstart_uses_one_deadline_and_returns_exact_publication() {
 
     let outcome = controller
         .bootstrap_and_kickstart_exact(
-            &bootstrap(),
+            &mut bootstrap_source(),
             &publication(prior.owner_epoch),
             Duration::from_secs(1),
         )
@@ -323,10 +338,7 @@ fn bootstrap_kickstart_uses_one_deadline_and_returns_exact_publication() {
 fn ambiguous_bootstrap_never_submits_kickstart() {
     let (_directory, store, mut inspector, mut commands) =
         fixture(MacosDirectLaunchdState::NotLoaded);
-    commands.push(
-        LaunchctlAction::Bootstrap(bootstrap().path().to_path_buf()),
-        SubmittedCommand::Unknown,
-    );
+    commands.push(LaunchctlAction::Bootstrap, SubmittedCommand::Unknown);
     let mut controller = MutationController {
         store: &store,
         inspector: &mut inspector,
@@ -335,12 +347,16 @@ fn ambiguous_bootstrap_never_submits_kickstart() {
 
     assert_eq!(
         controller
-            .bootstrap_and_kickstart_exact(&bootstrap(), &publication(0), Duration::from_secs(1))
+            .bootstrap_and_kickstart_exact(
+                &mut bootstrap_source(),
+                &publication(0),
+                Duration::from_secs(1),
+            )
             .expect("submitted ambiguity is a typed outcome"),
         MacosDirectLaunchdMutationOutcome::SubmittedUnknown
     );
     assert_eq!(commands.actions.len(), 1);
-    assert!(matches!(commands.actions[0], LaunchctlAction::Bootstrap(_)));
+    assert!(matches!(commands.actions[0], LaunchctlAction::Bootstrap));
 }
 
 #[test]
@@ -348,7 +364,7 @@ fn nonzero_bootstrap_reconciles_a_late_exact_publication() {
     let (_directory, store, mut inspector, mut commands) =
         fixture(MacosDirectLaunchdState::NotLoaded);
     commands.push_effect(
-        LaunchctlAction::Bootstrap(bootstrap().path().to_path_buf()),
+        LaunchctlAction::Bootstrap,
         completed(78, b""),
         Some(MacosDirectLaunchdState::Loaded { pid: 82 }),
         true,
@@ -361,7 +377,11 @@ fn nonzero_bootstrap_reconciles_a_late_exact_publication() {
 
     assert!(matches!(
         controller
-            .bootstrap_and_kickstart_exact(&bootstrap(), &publication(0), Duration::from_secs(1))
+            .bootstrap_and_kickstart_exact(
+                &mut bootstrap_source(),
+                &publication(0),
+                Duration::from_secs(1),
+            )
             .expect("late publication should reconcile"),
         MacosDirectLaunchdMutationOutcome::Complete(_)
     ));
@@ -374,7 +394,7 @@ fn source_drift_after_publication_returns_submitted_unknown() {
         fixture(MacosDirectLaunchdState::NotLoaded);
     commands.source_matches = VecDeque::from([Ok(true), Ok(false)]);
     commands.push_effect(
-        LaunchctlAction::Bootstrap(bootstrap().path().to_path_buf()),
+        LaunchctlAction::Bootstrap,
         completed(78, b""),
         Some(MacosDirectLaunchdState::Loaded { pid: 82 }),
         true,
@@ -387,7 +407,11 @@ fn source_drift_after_publication_returns_submitted_unknown() {
 
     assert_eq!(
         controller
-            .bootstrap_and_kickstart_exact(&bootstrap(), &publication(0), Duration::from_secs(1))
+            .bootstrap_and_kickstart_exact(
+                &mut bootstrap_source(),
+                &publication(0),
+                Duration::from_secs(1),
+            )
             .expect("post-submission drift is a typed outcome"),
         MacosDirectLaunchdMutationOutcome::SubmittedUnknown
     );
@@ -397,10 +421,7 @@ fn source_drift_after_publication_returns_submitted_unknown() {
 fn kickstart_spawn_failure_after_bootstrap_is_submitted_unknown() {
     let (_directory, store, mut inspector, mut commands) =
         fixture(MacosDirectLaunchdState::NotLoaded);
-    commands.push(
-        LaunchctlAction::Bootstrap(bootstrap().path().to_path_buf()),
-        completed(0, b""),
-    );
+    commands.push(LaunchctlAction::Bootstrap, completed(0, b""));
     commands.push_error(LaunchctlAction::Kickstart, "kickstart did not spawn");
     let mut controller = MutationController {
         store: &store,
@@ -410,7 +431,11 @@ fn kickstart_spawn_failure_after_bootstrap_is_submitted_unknown() {
 
     assert_eq!(
         controller
-            .bootstrap_and_kickstart_exact(&bootstrap(), &publication(0), Duration::from_secs(1),)
+            .bootstrap_and_kickstart_exact(
+                &mut bootstrap_source(),
+                &publication(0),
+                Duration::from_secs(1),
+            )
             .expect("a prior bootstrap submission prevents ordinary failure"),
         MacosDirectLaunchdMutationOutcome::SubmittedUnknown
     );
@@ -434,7 +459,11 @@ fn exact_publication_replay_submits_no_command() {
 
     assert!(matches!(
         controller
-            .bootstrap_and_kickstart_exact(&bootstrap(), &publication(0), Duration::from_secs(1))
+            .bootstrap_and_kickstart_exact(
+                &mut bootstrap_source(),
+                &publication(0),
+                Duration::from_secs(1),
+            )
             .expect("replay should reconcile"),
         MacosDirectLaunchdMutationOutcome::Complete(_)
     ));
@@ -533,9 +562,17 @@ fn bootout_terminal_fence_keeps_publication_outside_the_stop_lock() {
             Ok(SubmittedCommand::Unknown)
         }
 
+        fn run_bootstrap(
+            &mut self,
+            _source: &mut MacosDirectLaunchdBootstrapSource,
+            _deadline: Instant,
+        ) -> Result<SubmittedCommand, MacosOwnerExecutionError> {
+            unreachable!("stop does not submit bootstrap")
+        }
+
         fn bootstrap_source_matches(
             &mut self,
-            _source: &MacosDirectLaunchdBootstrapExpectation,
+            _source: &MacosDirectLaunchdBootstrapSource,
             _deadline: Instant,
         ) -> Result<bool, MacosOwnerExecutionError> {
             unreachable!("stop does not inspect a bootstrap source")
