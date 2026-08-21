@@ -1,9 +1,10 @@
 use std::collections::HashMap;
 
 use hypercolor_driver_api::control_surface;
+use hypercolor_types::control::{ControlValue, IpText};
 use hypercolor_types::controls::{
     ApplyImpact, ControlAccess, ControlGroupKind, ControlPersistence, ControlSurfaceScope,
-    ControlValue, ControlValueType, ControlVisibility,
+    ControlValueType, ControlVisibility,
 };
 use hypercolor_types::device::DeviceId;
 
@@ -63,7 +64,7 @@ fn push_metadata_value_skips_empty_metadata() {
         "IP Address",
         "connection",
         ControlValueType::IpAddress,
-        ControlValue::IpAddress,
+        |raw| ControlValue::Ip(IpText::new(raw).expect("fixture IP should be valid")),
         0,
     );
     control_surface::push_metadata_value(
@@ -74,14 +75,16 @@ fn push_metadata_value_skips_empty_metadata() {
         "Empty",
         "connection",
         control_surface::string_value_type(None),
-        ControlValue::String,
+        ControlValue::Text,
         10,
     );
 
     assert_eq!(document.fields.len(), 1);
     assert_eq!(
         document.values.get("ip"),
-        Some(&ControlValue::IpAddress("192.168.1.24".to_owned()))
+        Some(&ControlValue::Ip(
+            IpText::new("192.168.1.24").expect("fixture IP should be valid")
+        ))
     );
     assert!(!document.values.contains_key("empty"));
 }
@@ -110,13 +113,17 @@ fn availability_markers_cover_fields_and_actions() {
 }
 
 #[test]
-fn validate_control_ip_list_rejects_invalid_ips() {
-    let valid = ControlValue::List(vec![ControlValue::IpAddress("192.168.1.24".to_owned())]);
+fn validate_control_ip_list_rejects_non_routable_ips() {
+    let valid = ControlValue::List(vec![ControlValue::Ip(
+        IpText::new("192.168.1.24").expect("fixture IP should be valid"),
+    )]);
     control_surface::validate_control_ip_list("known IP", &valid).expect("valid IP list");
 
-    let invalid = ControlValue::List(vec![ControlValue::IpAddress("999.1.1.1".to_owned())]);
+    let invalid = ControlValue::List(vec![ControlValue::Ip(
+        IpText::new("127.0.0.1").expect("fixture IP should be syntactically valid"),
+    )]);
     let error = control_surface::validate_control_ip_list("known IP", &invalid)
-        .expect_err("invalid IP list should fail");
+        .expect_err("non-routable IP list should fail");
     assert!(error.to_string().contains("invalid known IP"));
 }
 

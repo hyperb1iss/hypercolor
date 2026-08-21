@@ -6,7 +6,8 @@ use hypercolor_core::effect::{EffectPool, EffectRegistry, builtin::register_buil
 use hypercolor_core::input::InteractionData;
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{Canvas, Rgba};
-use hypercolor_types::effect::{ControlBinding, ControlValue, EffectId};
+use hypercolor_types::control::ControlValue;
+use hypercolor_types::effect::{ControlBinding, EffectId};
 use hypercolor_types::layer::{LayerSource, SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{Zone, ZoneId, ZoneRole};
 use hypercolor_types::sensor::SystemSnapshot;
@@ -95,7 +96,7 @@ fn effect_layer(effect_id: EffectId, color: [f32; 4]) -> SceneLayer {
     SceneLayer::from_effect(
         SceneLayerId::new(),
         effect_id,
-        HashMap::from([("color".into(), ControlValue::Color(color))]),
+        HashMap::from([("color".into(), ControlValue::linear_color(color))]),
         HashMap::new(),
         None,
     )
@@ -142,7 +143,7 @@ fn effect_pool_reconciles_and_renders_group_controls() {
     set_effect_control(
         &mut group,
         "color",
-        ControlValue::Color([1.0, 0.0, 0.0, 1.0]),
+        ControlValue::linear_color([1.0, 0.0, 0.0, 1.0]),
     );
 
     let mut pool = EffectPool::new();
@@ -243,13 +244,13 @@ fn changed_controls_update_slot_only_when_prepared_pool_commits() {
     set_effect_control(
         &mut live_group,
         "color",
-        ControlValue::Color([1.0, 0.0, 0.0, 1.0]),
+        ControlValue::linear_color([1.0, 0.0, 0.0, 1.0]),
     );
     let mut candidate_group = live_group.clone();
     set_effect_control(
         &mut candidate_group,
         "color",
-        ControlValue::Color([0.0, 0.0, 1.0, 1.0]),
+        ControlValue::linear_color([0.0, 0.0, 1.0, 1.0]),
     );
     candidate_group.controls_version += 1;
     let mut pool = EffectPool::new();
@@ -306,7 +307,7 @@ fn effect_pool_hot_swaps_effects_for_same_group() {
     set_effect_control(
         &mut solid_group,
         "color",
-        ControlValue::Color([1.0, 0.0, 0.0, 1.0]),
+        ControlValue::linear_color([1.0, 0.0, 0.0, 1.0]),
     );
 
     let mut pool = EffectPool::new();
@@ -368,7 +369,7 @@ fn effect_pool_rebuilds_slot_when_registry_entry_changes_for_same_effect_id() {
     set_effect_control(
         &mut group,
         "color",
-        ControlValue::Color([1.0, 0.0, 0.0, 1.0]),
+        ControlValue::linear_color([1.0, 0.0, 0.0, 1.0]),
     );
 
     let mut pool = EffectPool::new();

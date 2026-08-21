@@ -10,9 +10,8 @@ use hypercolor_core::scene::priority::PriorityStack;
 use hypercolor_core::scene::transition::TransitionState;
 use hypercolor_core::scene::{LayerMutationError, SceneManager, make_scene};
 use hypercolor_types::canvas::LinearRgba;
-use hypercolor_types::effect::{
-    ControlValue, EffectCategory, EffectId, EffectMetadata, EffectSource,
-};
+use hypercolor_types::control::ControlValue;
+use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
 use hypercolor_types::layer::{
     LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
 };
@@ -141,7 +140,7 @@ fn effect_layer(effect_id: EffectId, speed: f32) -> SceneLayer {
     SceneLayer::from_effect(
         SceneLayerId::new(),
         effect_id,
-        HashMap::from([("speed".into(), ControlValue::Float(speed))]),
+        HashMap::from([("speed".into(), ControlValue::Float(f64::from(speed)))]),
         HashMap::new(),
         None,
     )

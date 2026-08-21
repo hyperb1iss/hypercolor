@@ -385,11 +385,9 @@ pub enum ControlValue {
     Null,
     /// Boolean.
     Bool(bool),
-    /// Integer at canonical width. The effect wire narrows to `i32`
-    /// via a range-checked projection.
+    /// Integer at canonical width.
     Int(i64),
-    /// Float at canonical width, finite by contract. The effect wire
-    /// narrows to `f32` with an overflow check.
+    /// Float at canonical width, finite by contract.
     Float(f64),
     /// Free-form text.
     Text(String),
@@ -666,6 +664,18 @@ fn finite_stop(stop: &GradientStop) -> Result<(), ControlValueInvalid> {
 }
 
 impl ControlValue {
+    /// Build a canonical linear-light color from RGBA channels.
+    #[must_use]
+    pub const fn linear_color([r, g, b, a]: [f32; 4]) -> Self {
+        Self::ColorLinear(LinearRgba::new(r, g, b, a))
+    }
+
+    /// Build a canonical rectangle from an established viewport rectangle.
+    #[must_use]
+    pub fn rect(value: impl Into<NormalizedRect>) -> Self {
+        Self::Rect(value.into())
+    }
+
     /// The variant's name, for error messages and dispatch.
     #[must_use]
     pub const fn kind_name(&self) -> &'static str {

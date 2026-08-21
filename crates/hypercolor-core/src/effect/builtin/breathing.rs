@@ -7,9 +7,10 @@
 use std::path::PathBuf;
 
 use hypercolor_types::canvas::{Canvas, LinearRgba};
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::control::{ControlDeltaBatch, ControlValue as CanonicalControlValue};
 use hypercolor_types::effect::{
-    ControlDefinition, ControlValue, EffectCategory, EffectMetadata, EffectSource, PresetTemplate,
+    ControlDefinition, EffectCategory, EffectMetadata, EffectSource, PresetTemplate,
 };
 
 use super::common::{builtin_effect_id, color_control, preset, preset_with_desc, slider_control};
@@ -154,7 +155,7 @@ fn presets() -> Vec<PresetTemplate> {
             "Warm Ember",
             "Slow amber glow like dying embers",
             &[
-                ("color", ControlValue::Color([1.0, 0.4, 0.1, 1.0])),
+                ("color", ControlValue::linear_color([1.0, 0.4, 0.1, 1.0])),
                 ("speed", ControlValue::Float(8.0)),
                 ("min_brightness", ControlValue::Float(0.05)),
                 ("max_brightness", ControlValue::Float(0.8)),
@@ -164,7 +165,7 @@ fn presets() -> Vec<PresetTemplate> {
             "Ocean Calm",
             "Deep blue with slow tidal rhythm",
             &[
-                ("color", ControlValue::Color([0.1, 0.3, 1.0, 1.0])),
+                ("color", ControlValue::linear_color([0.1, 0.3, 1.0, 1.0])),
                 ("speed", ControlValue::Float(6.0)),
                 ("min_brightness", ControlValue::Float(0.08)),
                 ("max_brightness", ControlValue::Float(0.7)),
@@ -173,7 +174,7 @@ fn presets() -> Vec<PresetTemplate> {
         preset(
             "Alert Pulse",
             &[
-                ("color", ControlValue::Color([1.0, 0.1, 0.1, 1.0])),
+                ("color", ControlValue::linear_color([1.0, 0.1, 0.1, 1.0])),
                 ("speed", ControlValue::Float(40.0)),
                 ("min_brightness", ControlValue::Float(0.2)),
                 ("max_brightness", ControlValue::Float(1.0)),

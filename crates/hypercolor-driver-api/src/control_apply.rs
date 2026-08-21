@@ -3,9 +3,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Context, Result, anyhow, bail};
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::controls::{
     AppliedControlChange, ApplyControlChangesResponse, ApplyImpact, ControlChange,
-    ControlFieldDescriptor, ControlValue, ControlValueMap,
+    ControlFieldDescriptor, ControlValueMap,
 };
 
 use crate::{DriverHost, ValidatedControlChanges, control_surface};

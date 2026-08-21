@@ -306,15 +306,15 @@ fn register_html_effects_decodes_color_defaults_to_linear_rgba() {
         .find(|control| control.control_id() == "accent")
         .expect("accent control should exist");
 
-    let hypercolor_types::effect::ControlValue::Color([r, g, b, a]) = control.default_value else {
+    let hypercolor_types::control::ControlValue::ColorLinear(color) = control.default_value else {
         panic!("accent control should decode to a color default");
     };
 
     let expected = srgb_to_linear(128.0 / 255.0);
-    assert!((r - expected).abs() < 0.0001);
-    assert!((g - expected).abs() < 0.0001);
-    assert!((b - expected).abs() < 0.0001);
-    assert!((a - 1.0).abs() < f32::EPSILON);
+    assert!((color.r - expected).abs() < 0.0001);
+    assert!((color.g - expected).abs() < 0.0001);
+    assert!((color.b - expected).abs() < 0.0001);
+    assert!((color.a - 1.0).abs() < f32::EPSILON);
 }
 
 #[test]

@@ -16,9 +16,10 @@
 use std::path::PathBuf;
 
 use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, LinearRgba};
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::control::{ControlDeltaBatch, ControlValue as CanonicalControlValue};
 use hypercolor_types::effect::{
-    ControlDefinition, ControlValue, EffectCategory, EffectMetadata, EffectSource, PresetTemplate,
+    ControlDefinition, EffectCategory, EffectMetadata, EffectSource, PresetTemplate,
 };
 
 use super::common::{builtin_effect_id, color_control, preset_with_desc, slider_control};
@@ -336,8 +337,14 @@ fn presets() -> Vec<PresetTemplate> {
             "Cyberpunk",
             "Hot pink rings on electric midnight",
             &[
-                ("base_color", ControlValue::Color([0.0, 0.02, 0.12, 1.0])),
-                ("peak_color", ControlValue::Color([1.0, 0.1, 0.6, 1.0])),
+                (
+                    "base_color",
+                    ControlValue::linear_color([0.0, 0.02, 0.12, 1.0]),
+                ),
+                (
+                    "peak_color",
+                    ControlValue::linear_color([1.0, 0.1, 0.6, 1.0]),
+                ),
                 ("sensitivity", ControlValue::Float(2.5)),
                 ("beat_decay", ControlValue::Float(0.35)),
                 ("wave_speed", ControlValue::Float(1.4)),
@@ -348,8 +355,14 @@ fn presets() -> Vec<PresetTemplate> {
             "Fire Response",
             "Ember rings rolling across dark maroon",
             &[
-                ("base_color", ControlValue::Color([0.08, 0.02, 0.0, 1.0])),
-                ("peak_color", ControlValue::Color([1.0, 0.4, 0.0, 1.0])),
+                (
+                    "base_color",
+                    ControlValue::linear_color([0.08, 0.02, 0.0, 1.0]),
+                ),
+                (
+                    "peak_color",
+                    ControlValue::linear_color([1.0, 0.4, 0.0, 1.0]),
+                ),
                 ("sensitivity", ControlValue::Float(3.0)),
                 ("beat_decay", ControlValue::Float(0.25)),
                 ("wave_speed", ControlValue::Float(1.8)),
@@ -360,8 +373,14 @@ fn presets() -> Vec<PresetTemplate> {
             "Arctic Beat",
             "Cold cyan rings on deep indigo ice",
             &[
-                ("base_color", ControlValue::Color([0.01, 0.02, 0.1, 1.0])),
-                ("peak_color", ControlValue::Color([0.35, 0.9, 1.0, 1.0])),
+                (
+                    "base_color",
+                    ControlValue::linear_color([0.01, 0.02, 0.1, 1.0]),
+                ),
+                (
+                    "peak_color",
+                    ControlValue::linear_color([0.35, 0.9, 1.0, 1.0]),
+                ),
                 ("sensitivity", ControlValue::Float(1.8)),
                 ("beat_decay", ControlValue::Float(0.5)),
                 ("wave_speed", ControlValue::Float(1.0)),
@@ -372,8 +391,14 @@ fn presets() -> Vec<PresetTemplate> {
             "Bass Thunder",
             "Slow, thick crimson rings for heavy drops",
             &[
-                ("base_color", ControlValue::Color([0.02, 0.0, 0.0, 1.0])),
-                ("peak_color", ControlValue::Color([0.95, 0.08, 0.12, 1.0])),
+                (
+                    "base_color",
+                    ControlValue::linear_color([0.02, 0.0, 0.0, 1.0]),
+                ),
+                (
+                    "peak_color",
+                    ControlValue::linear_color([0.95, 0.08, 0.12, 1.0]),
+                ),
                 ("sensitivity", ControlValue::Float(2.8)),
                 ("beat_decay", ControlValue::Float(0.7)),
                 ("wave_speed", ControlValue::Float(0.7)),

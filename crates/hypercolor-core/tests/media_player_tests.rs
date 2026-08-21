@@ -12,7 +12,7 @@ use hypercolor_core::effect::builtin::create_builtin_renderer;
 use hypercolor_core::input::InteractionData;
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas};
-use hypercolor_types::effect::ControlValue;
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::sensor::SystemSnapshot;
 use image::{ImageBuffer, ImageFormat, Rgba};
 use tempfile::TempDir;
@@ -149,7 +149,10 @@ fn media_player_hue_shift_rotates_rendered_colors() {
     let rotated = render_media_player_with_controls(
         &asset_id,
         library,
-        &[("hue_shift", ControlValue::Float(std::f32::consts::PI))],
+        &[(
+            "hue_shift",
+            ControlValue::Float(f64::from(std::f32::consts::PI)),
+        )],
     );
 
     let base_pixel = baseline.get_pixel(W / 2, H / 2);

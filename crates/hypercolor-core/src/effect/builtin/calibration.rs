@@ -9,9 +9,10 @@ use std::f32::consts::TAU;
 use std::path::PathBuf;
 
 use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, linear_to_srgb_u8};
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::control::{ControlDeltaBatch, ControlValue as CanonicalControlValue};
 use hypercolor_types::effect::{
-    ControlDefinition, ControlValue, EffectCategory, EffectMetadata, EffectSource, PresetTemplate,
+    ControlDefinition, EffectCategory, EffectMetadata, EffectSource, PresetTemplate,
 };
 
 use super::common::{
@@ -770,7 +771,7 @@ fn presets() -> Vec<PresetTemplate> {
                 ("speed", ControlValue::Float(18.0)),
                 ("size", ControlValue::Float(20.0)),
                 ("softness", ControlValue::Float(12.0)),
-                ("show_grid", ControlValue::Boolean(false)),
+                ("show_grid", ControlValue::Bool(false)),
             ],
         ),
         preset_with_desc(
@@ -782,7 +783,7 @@ fn presets() -> Vec<PresetTemplate> {
                 ("speed", ControlValue::Float(18.0)),
                 ("size", ControlValue::Float(20.0)),
                 ("softness", ControlValue::Float(12.0)),
-                ("show_grid", ControlValue::Boolean(false)),
+                ("show_grid", ControlValue::Bool(false)),
             ],
         ),
         preset_with_desc(
@@ -794,7 +795,7 @@ fn presets() -> Vec<PresetTemplate> {
                 ("speed", ControlValue::Float(16.0)),
                 ("size", ControlValue::Float(16.0)),
                 ("softness", ControlValue::Float(10.0)),
-                ("show_grid", ControlValue::Boolean(true)),
+                ("show_grid", ControlValue::Bool(true)),
                 ("grid_scale", ControlValue::Float(8.0)),
             ],
         ),
@@ -810,7 +811,7 @@ fn presets() -> Vec<PresetTemplate> {
                 ("speed", ControlValue::Float(22.0)),
                 ("size", ControlValue::Float(14.0)),
                 ("softness", ControlValue::Float(16.0)),
-                ("show_grid", ControlValue::Boolean(true)),
+                ("show_grid", ControlValue::Bool(true)),
                 ("grid_scale", ControlValue::Float(10.0)),
             ],
         ),
@@ -845,7 +846,7 @@ fn presets() -> Vec<PresetTemplate> {
                 ("speed", ControlValue::Float(16.0)),
                 ("size", ControlValue::Float(44.0)),
                 ("softness", ControlValue::Float(20.0)),
-                ("show_grid", ControlValue::Boolean(true)),
+                ("show_grid", ControlValue::Bool(true)),
                 ("grid_scale", ControlValue::Float(8.0)),
             ],
         ),
@@ -858,7 +859,7 @@ fn presets() -> Vec<PresetTemplate> {
                 ("speed", ControlValue::Float(16.0)),
                 ("size", ControlValue::Float(44.0)),
                 ("softness", ControlValue::Float(20.0)),
-                ("show_grid", ControlValue::Boolean(true)),
+                ("show_grid", ControlValue::Bool(true)),
                 ("grid_scale", ControlValue::Float(8.0)),
             ],
         ),

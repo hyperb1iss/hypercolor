@@ -24,10 +24,9 @@ use hypercolor_core::input::audio::fft::FftPipeline;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::audio::{AudioData, AudioPipelineConfig, AudioSourceType};
 use hypercolor_types::canvas::{Canvas, Rgba};
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::device::DeviceId;
-use hypercolor_types::effect::{
-    ControlValue, EffectCategory, EffectId, EffectMetadata, EffectSource,
-};
+use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::layer::{SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{Zone, ZoneId, ZoneRole};
@@ -212,7 +211,7 @@ fn render_group(
     color: [f32; 4],
     effect_id: EffectId,
 ) -> Zone {
-    let controls = HashMap::from([("color".to_owned(), ControlValue::Color(color))]);
+    let controls = HashMap::from([("color".to_owned(), ControlValue::linear_color(color))]);
     Zone {
         id: ZoneId::new(),
         name: zone_id.to_owned(),

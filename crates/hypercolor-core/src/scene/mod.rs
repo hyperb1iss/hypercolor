@@ -24,8 +24,9 @@ use std::sync::Arc;
 
 use anyhow::{Result, bail};
 
+use crate::types::control::ControlValue;
 use crate::types::device::DeviceId;
-use crate::types::effect::{ControlBinding, ControlValue, EffectId, EffectMetadata};
+use crate::types::effect::{ControlBinding, EffectId, EffectMetadata};
 use crate::types::layer::{LayerSource, SceneLayer, SceneLayerId};
 use crate::types::library::PresetId;
 use crate::types::scene::{

@@ -8,11 +8,11 @@ use anyhow::{Result, anyhow};
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::Canvas;
 use hypercolor_types::control::{
-    ControlDeltaBatch, ControlId, ControlSet, ControlValue as CanonicalControlValue, SetRevision,
+    ControlDeltaBatch, ControlId, ControlSet, ControlValue, SetRevision,
 };
 use hypercolor_types::display::DisplayDescriptor;
 use hypercolor_types::effect::{
-    ControlBinding, ControlDefinition, ControlKind, ControlValue, EffectId, EffectMetadata,
+    ControlBinding, ControlDefinition, ControlKind, EffectId, EffectMetadata,
 };
 use hypercolor_types::layer::{LayerSource, SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{Zone, ZoneId};
@@ -807,34 +807,20 @@ fn canonical_control_set(
             .controls
             .get(control_id)
             .unwrap_or(&definition.default_value);
-        controls.insert(
-            ControlId::from(control_id),
-            canonical_control_value(control_id, value)?,
-        )?;
+        controls.insert(ControlId::from(control_id), value.clone())?;
     }
     for (control_id, value) in &source.controls {
         if controls.get(control_id).is_none() {
-            controls.insert(
-                ControlId::from(control_id.as_str()),
-                canonical_control_value(control_id, value)?,
-            )?;
+            controls.insert(ControlId::from(control_id.as_str()), value.clone())?;
         }
     }
     Ok(controls)
 }
 
-fn canonical_control_value(
-    control_id: &str,
-    value: &ControlValue,
-) -> Result<CanonicalControlValue> {
-    CanonicalControlValue::try_from(value.clone())
-        .map_err(|error| anyhow!("control '{control_id}' is invalid: {error}"))
-}
-
 #[derive(Debug, Clone, PartialEq)]
 struct ActiveBindingState {
     sensor_value: Option<f32>,
-    control_value: CanonicalControlValue,
+    control_value: ControlValue,
 }
 
 fn apply_sensor_bindings(
@@ -931,7 +917,7 @@ fn evaluate_sensor_binding(
     deadband: f32,
     smoothing: f32,
     previous: Option<&ActiveBindingState>,
-) -> Option<CanonicalControlValue> {
+) -> Option<ControlValue> {
     let source_span = sensor_max - sensor_min;
     if !source_span.is_finite()
         || source_span.abs() < f32::EPSILON
@@ -959,15 +945,13 @@ fn evaluate_sensor_binding(
 
     match control.kind {
         ControlKind::Number | ControlKind::Hue | ControlKind::Area => control
-            .validate_value(&ControlValue::Float(smoothed))
-            .ok()
-            .and_then(|value| CanonicalControlValue::try_from(value).ok()),
+            .validate_value(&ControlValue::Float(f64::from(smoothed)))
+            .ok(),
         ControlKind::Boolean => {
             let midpoint = target_min + (target_max - target_min) * 0.5;
             control
-                .validate_value(&ControlValue::Boolean(smoothed >= midpoint))
+                .validate_value(&ControlValue::Bool(smoothed >= midpoint))
                 .ok()
-                .and_then(|value| CanonicalControlValue::try_from(value).ok())
         }
         _ => None,
     }
@@ -993,12 +977,11 @@ mod tests {
     use hypercolor_types::audio::AudioData;
     use hypercolor_types::canvas::Canvas;
     use hypercolor_types::control::{
-        ControlDeltaBatch, ControlId, ControlSet, ControlValue as CanonicalControlValue,
-        SetRevision,
+        ControlDeltaBatch, ControlId, ControlSet, ControlValue, SetRevision,
     };
     use hypercolor_types::effect::{
-        ControlBinding, ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory,
-        EffectId, EffectMetadata, EffectSource,
+        ControlBinding, ControlDefinition, ControlKind, ControlType, EffectCategory, EffectId,
+        EffectMetadata, EffectSource,
     };
     #[cfg(feature = "servo")]
     use hypercolor_types::layer::{LayerAdjust, LayerBlendMode, LayerTransform};
@@ -1023,12 +1006,12 @@ mod tests {
         applied: SharedControlBatchLog,
     }
 
-    type RecordedControlBatch = Vec<(String, CanonicalControlValue)>;
+    type RecordedControlBatch = Vec<(String, ControlValue)>;
     type SharedControlBatchLog = Arc<Mutex<Vec<RecordedControlBatch>>>;
 
     #[derive(Default)]
     struct ControlSpyRenderer {
-        applied: Vec<(String, CanonicalControlValue)>,
+        applied: Vec<(String, ControlValue)>,
     }
 
     impl DestroySpyRenderer {
@@ -1346,7 +1329,7 @@ mod tests {
             }),
             controls: ControlSet::try_from_entries(
                 SetRevision::default(),
-                [(ControlId::from("speed"), CanonicalControlValue::Float(1.0))],
+                [(ControlId::from("speed"), ControlValue::Float(1.0))],
             )
             .expect("valid initial controls"),
             control_bindings: HashMap::new(),
@@ -1373,10 +1356,7 @@ mod tests {
             1
         );
         assert_eq!(slot.controls.set_revision(), SetRevision::new(1));
-        assert_eq!(
-            slot.controls.get("speed"),
-            Some(&CanonicalControlValue::Float(2.0))
-        );
+        assert_eq!(slot.controls.get("speed"), Some(&ControlValue::Float(2.0)));
     }
 
     #[test]
@@ -1445,11 +1425,8 @@ mod tests {
             controls: ControlSet::try_from_entries(
                 SetRevision::default(),
                 [
-                    (ControlId::from("speed"), CanonicalControlValue::Float(5.0)),
-                    (
-                        ControlId::from("brightness"),
-                        CanonicalControlValue::Float(1.0),
-                    ),
+                    (ControlId::from("speed"), ControlValue::Float(5.0)),
+                    (ControlId::from("brightness"), ControlValue::Float(1.0)),
                 ],
             )
             .expect("valid initial controls"),
@@ -1459,7 +1436,7 @@ mod tests {
                 "speed".into(),
                 super::ActiveBindingState {
                     sensor_value: Some(58.0),
-                    control_value: CanonicalControlValue::Float(4.0),
+                    control_value: ControlValue::Float(4.0),
                 },
             )]),
             resolution_seq: 1,
@@ -1485,7 +1462,7 @@ mod tests {
                 .lock()
                 .expect("control initialization log should be available")[0]
                 .get("speed"),
-            Some(&CanonicalControlValue::Float(5.0))
+            Some(&ControlValue::Float(5.0))
         );
 
         let sensors = hypercolor_types::sensor::SystemSnapshot {
@@ -1509,7 +1486,7 @@ mod tests {
                 .lock()
                 .expect("control delta log should be available")
                 .last(),
-            Some(&vec![("speed".into(), CanonicalControlValue::Float(4.0))])
+            Some(&vec![("speed".into(), ControlValue::Float(4.0))])
         );
     }
 
@@ -1542,7 +1519,7 @@ mod tests {
         });
         let controls = ControlSet::try_from_entries(
             SetRevision::default(),
-            [(ControlId::from("speed"), CanonicalControlValue::Float(5.0))],
+            [(ControlId::from("speed"), ControlValue::Float(5.0))],
         )
         .expect("valid controls");
         let bindings = HashMap::from([(
@@ -1573,7 +1550,7 @@ mod tests {
         assert_eq!(resolution_seq, 1);
         assert_eq!(
             renderer.applied.last(),
-            Some(&("speed".into(), CanonicalControlValue::Float(4.0)))
+            Some(&("speed".into(), ControlValue::Float(4.0)))
         );
 
         super::apply_sensor_bindings(
@@ -1602,7 +1579,7 @@ mod tests {
         assert_eq!(resolution_seq, 2);
         assert_eq!(
             renderer.applied.last(),
-            Some(&("speed".into(), CanonicalControlValue::Float(5.0)))
+            Some(&("speed".into(), ControlValue::Float(5.0)))
         );
     }
 
@@ -1760,7 +1737,7 @@ mod tests {
         assert_eq!(slot.controls.set_revision(), SetRevision::new(1));
         assert_eq!(
             slot.controls.get("brightness"),
-            Some(&CanonicalControlValue::Float(0.25))
+            Some(&ControlValue::Float(0.25))
         );
     }
 

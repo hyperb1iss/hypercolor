@@ -13,9 +13,8 @@ use hypercolor_core::effect::{EffectRenderer, FrameInput};
 use hypercolor_core::input::InteractionData;
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{Canvas, Rgba};
-use hypercolor_types::effect::{
-    ControlValue, EffectCategory, EffectId, EffectMetadata, EffectSource,
-};
+use hypercolor_types::control::ControlValue;
+use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
 use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::viewport::ViewportRect;
 use reqwest::Url;

@@ -7,9 +7,10 @@ use std::array;
 use std::path::PathBuf;
 
 use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, LinearRgba, Oklch, Rgba};
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::control::{ControlDeltaBatch, ControlValue as CanonicalControlValue};
 use hypercolor_types::effect::{
-    ControlDefinition, ControlValue, EffectCategory, EffectMetadata, EffectSource, PresetTemplate,
+    ControlDefinition, EffectCategory, EffectMetadata, EffectSource, PresetTemplate,
 };
 
 use super::common::{
@@ -672,10 +673,13 @@ fn presets() -> Vec<PresetTemplate> {
             "Neon Scanner",
             "Fast cyan scan lines bouncing across the rig",
             &[
-                ("wave_color", ControlValue::Color([0.0, 1.0, 0.85, 1.0])),
+                (
+                    "wave_color",
+                    ControlValue::linear_color([0.0, 1.0, 0.85, 1.0]),
+                ),
                 (
                     "background_color",
-                    ControlValue::Color([0.0, 0.01, 0.04, 1.0]),
+                    ControlValue::linear_color([0.0, 0.01, 0.04, 1.0]),
                 ),
                 ("color_mode", ControlValue::Enum("Custom".to_owned())),
                 ("speed", ControlValue::Float(95.0)),
@@ -692,10 +696,13 @@ fn presets() -> Vec<PresetTemplate> {
             "SilkCircuit Pulse",
             "Electric purple waves on deep void",
             &[
-                ("wave_color", ControlValue::Color([0.88, 0.21, 1.0, 1.0])),
+                (
+                    "wave_color",
+                    ControlValue::linear_color([0.88, 0.21, 1.0, 1.0]),
+                ),
                 (
                     "background_color",
-                    ControlValue::Color([0.02, 0.0, 0.06, 1.0]),
+                    ControlValue::linear_color([0.02, 0.0, 0.06, 1.0]),
                 ),
                 ("color_mode", ControlValue::Enum("Custom".to_owned())),
                 ("speed", ControlValue::Float(70.0)),
@@ -710,10 +717,13 @@ fn presets() -> Vec<PresetTemplate> {
             "Lava Flow",
             "Slow molten waves with long ember trails",
             &[
-                ("wave_color", ControlValue::Color([1.0, 0.3, 0.0, 1.0])),
+                (
+                    "wave_color",
+                    ControlValue::linear_color([1.0, 0.3, 0.0, 1.0]),
+                ),
                 (
                     "background_color",
-                    ControlValue::Color([0.15, 0.02, 0.0, 1.0]),
+                    ControlValue::linear_color([0.15, 0.02, 0.0, 1.0]),
                 ),
                 ("color_mode", ControlValue::Enum("Custom".to_owned())),
                 ("speed", ControlValue::Float(25.0)),
@@ -727,10 +737,13 @@ fn presets() -> Vec<PresetTemplate> {
             "Ocean Drift",
             "Gentle blue-green waves rolling downward",
             &[
-                ("wave_color", ControlValue::Color([0.1, 0.5, 0.9, 1.0])),
+                (
+                    "wave_color",
+                    ControlValue::linear_color([0.1, 0.5, 0.9, 1.0]),
+                ),
                 (
                     "background_color",
-                    ControlValue::Color([0.0, 0.03, 0.1, 1.0]),
+                    ControlValue::linear_color([0.0, 0.03, 0.1, 1.0]),
                 ),
                 ("color_mode", ControlValue::Enum("Custom".to_owned())),
                 ("speed", ControlValue::Float(35.0)),
@@ -744,10 +757,13 @@ fn presets() -> Vec<PresetTemplate> {
             "Arctic Cascade",
             "Cool white-blue bands falling like snow",
             &[
-                ("wave_color", ControlValue::Color([0.7, 0.85, 1.0, 1.0])),
+                (
+                    "wave_color",
+                    ControlValue::linear_color([0.7, 0.85, 1.0, 1.0]),
+                ),
                 (
                     "background_color",
-                    ControlValue::Color([0.02, 0.04, 0.1, 1.0]),
+                    ControlValue::linear_color([0.02, 0.04, 0.1, 1.0]),
                 ),
                 ("color_mode", ControlValue::Enum("Custom".to_owned())),
                 ("speed", ControlValue::Float(45.0)),
@@ -762,10 +778,13 @@ fn presets() -> Vec<PresetTemplate> {
             "Blade Runner",
             "Fast pink slices on noir darkness",
             &[
-                ("wave_color", ControlValue::Color([1.0, 0.1, 0.6, 1.0])),
+                (
+                    "wave_color",
+                    ControlValue::linear_color([1.0, 0.1, 0.6, 1.0]),
+                ),
                 (
                     "background_color",
-                    ControlValue::Color([0.01, 0.0, 0.03, 1.0]),
+                    ControlValue::linear_color([0.01, 0.0, 0.03, 1.0]),
                 ),
                 ("color_mode", ControlValue::Enum("Custom".to_owned())),
                 ("speed", ControlValue::Float(90.0)),
@@ -782,10 +801,13 @@ fn presets() -> Vec<PresetTemplate> {
             "Laser Grid",
             "Rapid thin beams crisscrossing vertically",
             &[
-                ("wave_color", ControlValue::Color([0.0, 1.0, 0.4, 1.0])),
+                (
+                    "wave_color",
+                    ControlValue::linear_color([0.0, 1.0, 0.4, 1.0]),
+                ),
                 (
                     "background_color",
-                    ControlValue::Color([0.0, 0.02, 0.0, 1.0]),
+                    ControlValue::linear_color([0.0, 0.02, 0.0, 1.0]),
                 ),
                 ("color_mode", ControlValue::Enum("Custom".to_owned())),
                 ("speed", ControlValue::Float(85.0)),
@@ -799,10 +821,13 @@ fn presets() -> Vec<PresetTemplate> {
             "Warning Strobe",
             "Amber hazard bands sweeping left",
             &[
-                ("wave_color", ControlValue::Color([1.0, 0.7, 0.0, 1.0])),
+                (
+                    "wave_color",
+                    ControlValue::linear_color([1.0, 0.7, 0.0, 1.0]),
+                ),
                 (
                     "background_color",
-                    ControlValue::Color([0.08, 0.03, 0.0, 1.0]),
+                    ControlValue::linear_color([0.08, 0.03, 0.0, 1.0]),
                 ),
                 ("color_mode", ControlValue::Enum("Custom".to_owned())),
                 ("speed", ControlValue::Float(80.0)),
@@ -817,10 +842,13 @@ fn presets() -> Vec<PresetTemplate> {
             "Prism Parade",
             "Rainbow waves cycling through the full spectrum",
             &[
-                ("wave_color", ControlValue::Color([1.0, 0.2, 0.3, 1.0])),
+                (
+                    "wave_color",
+                    ControlValue::linear_color([1.0, 0.2, 0.3, 1.0]),
+                ),
                 (
                     "background_color",
-                    ControlValue::Color([0.01, 0.01, 0.02, 1.0]),
+                    ControlValue::linear_color([0.01, 0.01, 0.02, 1.0]),
                 ),
                 ("color_mode", ControlValue::Enum("Color Cycle".to_owned())),
                 ("cycle_speed", ControlValue::Float(60.0)),
@@ -835,10 +863,13 @@ fn presets() -> Vec<PresetTemplate> {
             "Confetti Storm",
             "Random-colored bands flying in all directions",
             &[
-                ("wave_color", ControlValue::Color([1.0, 0.4, 0.8, 1.0])),
+                (
+                    "wave_color",
+                    ControlValue::linear_color([1.0, 0.4, 0.8, 1.0]),
+                ),
                 (
                     "background_color",
-                    ControlValue::Color([0.02, 0.01, 0.04, 1.0]),
+                    ControlValue::linear_color([0.02, 0.01, 0.04, 1.0]),
                 ),
                 ("color_mode", ControlValue::Enum("Random".to_owned())),
                 ("speed", ControlValue::Float(75.0)),
@@ -856,10 +887,13 @@ fn presets() -> Vec<PresetTemplate> {
             "Meditation",
             "Ultra-slow deep indigo wash",
             &[
-                ("wave_color", ControlValue::Color([0.25, 0.1, 0.7, 1.0])),
+                (
+                    "wave_color",
+                    ControlValue::linear_color([0.25, 0.1, 0.7, 1.0]),
+                ),
                 (
                     "background_color",
-                    ControlValue::Color([0.01, 0.0, 0.04, 1.0]),
+                    ControlValue::linear_color([0.01, 0.0, 0.04, 1.0]),
                 ),
                 ("color_mode", ControlValue::Enum("Custom".to_owned())),
                 ("speed", ControlValue::Float(12.0)),
@@ -874,10 +908,13 @@ fn presets() -> Vec<PresetTemplate> {
             "Candlelight",
             "Warm flickering gold on soft amber",
             &[
-                ("wave_color", ControlValue::Color([1.0, 0.65, 0.15, 1.0])),
+                (
+                    "wave_color",
+                    ControlValue::linear_color([1.0, 0.65, 0.15, 1.0]),
+                ),
                 (
                     "background_color",
-                    ControlValue::Color([0.12, 0.04, 0.0, 1.0]),
+                    ControlValue::linear_color([0.12, 0.04, 0.0, 1.0]),
                 ),
                 ("color_mode", ControlValue::Enum("Random".to_owned())),
                 ("speed", ControlValue::Float(20.0)),

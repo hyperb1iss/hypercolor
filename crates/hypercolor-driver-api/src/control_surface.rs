@@ -4,11 +4,12 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 
 use anyhow::{Context, Result};
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::controls::{
     ApplyImpact, ControlAccess, ControlAvailability, ControlAvailabilityExpr,
     ControlAvailabilityState, ControlFieldDescriptor, ControlGroupDescriptor, ControlGroupKind,
-    ControlOwner, ControlPersistence, ControlSurfaceDocument, ControlSurfaceScope, ControlValue,
-    ControlValueMap, ControlValueType, ControlVisibility,
+    ControlOwner, ControlPersistence, ControlSurfaceDocument, ControlSurfaceScope, ControlValueMap,
+    ControlValueType, ControlVisibility,
 };
 use hypercolor_types::device::DeviceId;
 
@@ -243,10 +244,11 @@ pub fn validate_control_ip_list(label: &str, value: &ControlValue) -> Result<()>
         return Ok(());
     };
     for value in values {
-        if let ControlValue::IpAddress(raw) = value {
+        if let ControlValue::Ip(raw) = value {
             let ip = raw
+                .as_str()
                 .parse::<IpAddr>()
-                .with_context(|| format!("invalid {label}: {raw}"))?;
+                .with_context(|| format!("invalid {label}: {}", raw.as_str()))?;
             validate_ip(ip).with_context(|| format!("invalid {label}: {ip}"))?;
         }
     }
