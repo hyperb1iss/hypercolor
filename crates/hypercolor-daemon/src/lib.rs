@@ -2,6 +2,7 @@
 //! MCP server, and system integration.
 
 pub mod api;
+pub mod app_state;
 pub mod attachment_profiles;
 pub mod daemon;
 pub(crate) mod deadline;
