@@ -4,10 +4,11 @@ use std::time::Instant;
 use anyhow::{Context, Result};
 use hypercolor_core::input::screen::{ScreenBranchPayload, ScreenBranchPublication};
 use hypercolor_macos_capture::MacosCaptureFrame;
-use hypercolor_macos_gpu_interop::ImportedMacosScreenFrame;
+use hypercolor_macos_gpu_interop::{ImportedMacosScreenFrame, MacosGpuInteropError};
 
 use super::MacosScreenBridge;
-use super::preparation::PreparedMacosScreenTarget;
+use super::model::PreparedMacosScreenTarget;
+use super::recovery::MacosScreenCopyOutcome;
 use super::reduction;
 use crate::render_thread::producer_queue::{
     GpuTextureFrame, GpuTextureFrameOrigin, MacosScreenTextureLease,
@@ -32,9 +33,35 @@ impl GpuSparkleFlinger {
     pub(crate) fn copy_screen_publication(
         &mut self,
         publication: &Arc<ScreenBranchPublication>,
+    ) -> MacosScreenCopyOutcome {
+        self.retry_macos_screen_execution();
+        let result = self.try_copy_screen_publication(publication);
+        self.finish_macos_screen_copy(result)
+    }
+
+    pub(in crate::render_thread::sparkleflinger::gpu) fn finish_macos_screen_copy(
+        &mut self,
+        result: Result<Option<GpuTextureFrame>>,
+    ) -> MacosScreenCopyOutcome {
+        match result {
+            Ok(Some(frame)) => MacosScreenCopyOutcome::Copied(frame),
+            Ok(None) => MacosScreenCopyOutcome::Ignored,
+            Err(error) if is_transient_copy_failure(&error) => {
+                MacosScreenCopyOutcome::Deferred(error)
+            }
+            Err(error) if error.downcast_ref::<FencedMacosScreenTarget>().is_some() => {
+                MacosScreenCopyOutcome::Invalidated(error)
+            }
+            Err(error) => self.recover_macos_screen_execution(error),
+        }
+    }
+
+    fn try_copy_screen_publication(
+        &mut self,
+        publication: &Arc<ScreenBranchPublication>,
     ) -> Result<Option<GpuTextureFrame>> {
         let Some(bridge) = self.screen_bridge.clone() else {
-            return Ok(None);
+            anyhow::bail!("native macOS screen execution is unavailable");
         };
         let (surface, requires_work) = match publication.payload() {
             ScreenBranchPayload::GpuSurface(payload) => (payload.surface(), false),
@@ -47,6 +74,11 @@ impl GpuSparkleFlinger {
         let target_owner = surface
             .retained_owner::<PreparedMacosScreenTarget>()
             .context("native macOS screen publication has no prepared renderer target")?;
+        let current_target_id = self
+            .macos_screen_recovery
+            .ready_target_id()
+            .context("native macOS screen execution is not ready")?;
+        validate_target_id(target_owner.target_id, current_target_id)?;
         let target_lifetime = surface
             .resource_lifetime()
             .cloned()
@@ -60,18 +92,16 @@ impl GpuSparkleFlinger {
             .downgrade()
             .upgrade()
             .context("native macOS capture owner retired before import")?;
+        #[cfg(test)]
+        if std::mem::take(&mut self.fail_next_macos_screen_import) {
+            anyhow::bail!("injected native macOS screen importer failure");
+        }
         let import_started = Instant::now();
         let imported = bridge.import_frame(&self.device, target_owner.resource_generation, capture);
         if let Some(timing_sink) = surface.timing_sink() {
             timing_sink.record_import(import_started.elapsed());
         }
-        let (imported, storage_id) = match imported {
-            Ok(imported) => imported,
-            Err(error) => {
-                self.release_native_screen_caches();
-                return Err(error);
-            }
-        };
+        let (imported, storage_id) = imported?;
         anyhow::ensure!(
             imported.capture().storage_extent.width == surface.extent().width()
                 && imported.capture().storage_extent.height == surface.extent().height(),
@@ -131,4 +161,29 @@ impl GpuSparkleFlinger {
             )),
         }))
     }
+}
+
+pub(super) fn is_transient_copy_failure(error: &anyhow::Error) -> bool {
+    error.chain().any(|source| {
+        source
+            .downcast_ref::<MacosGpuInteropError>()
+            .is_some_and(|error| matches!(error, MacosGpuInteropError::IosurfaceFenceTimeout))
+    })
+}
+
+pub(super) fn validate_target_id(
+    published: hypercolor_core::input::screen::ScreenNativeExecutionTargetId,
+    current: hypercolor_core::input::screen::ScreenNativeExecutionTargetId,
+) -> Result<()> {
+    if published == current {
+        return Ok(());
+    }
+    Err(FencedMacosScreenTarget { published, current }.into())
+}
+
+#[derive(Clone, Copy, Debug, thiserror::Error, PartialEq, Eq)]
+#[error("native macOS screen publication target {published:?} is fenced by {current:?}")]
+struct FencedMacosScreenTarget {
+    published: hypercolor_core::input::screen::ScreenNativeExecutionTargetId,
+    current: hypercolor_core::input::screen::ScreenNativeExecutionTargetId,
 }

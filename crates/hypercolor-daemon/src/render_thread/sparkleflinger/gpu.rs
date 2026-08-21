@@ -95,12 +95,11 @@ pub(crate) use display_finalize::{
 };
 use display_finalize::{GpuDisplayFinalizeSurfaceSet, GpuDisplaySourceTexture};
 #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+use macos_screen::MacosScreenGpuRecoveryState;
+#[cfg(all(target_os = "macos", feature = "screen-capture"))]
 use macos_screen::{MacosScreenBridge, create_screen_bridge};
 #[cfg(all(target_os = "macos", feature = "screen-capture"))]
-pub(crate) use macos_screen::{
-    PreparedMacosScreenTarget, is_retryable_native_screen_copy_error,
-    native_screen_copy_error_invalidates_frame,
-};
+pub(crate) use macos_screen::{MacosScreenCopyOutcome, PreparedMacosScreenTarget};
 #[cfg(all(test, target_os = "macos", feature = "screen-capture"))]
 use macos_screen::{
     prepared_macos_screen_target_exclusive_bytes, prepared_macos_screen_target_retention,
@@ -723,6 +722,8 @@ pub(crate) struct GpuSparkleFlinger {
     #[cfg(all(target_os = "macos", feature = "screen-capture"))]
     screen_target: Option<ScreenNativeExecutionTarget>,
     #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+    macos_screen_recovery: MacosScreenGpuRecoveryState,
+    #[cfg(all(target_os = "macos", feature = "screen-capture"))]
     metal4_capable: bool,
     #[cfg(all(target_os = "macos", feature = "screen-capture"))]
     native_screen_lease_retirements:
@@ -741,6 +742,10 @@ pub(crate) struct GpuSparkleFlinger {
     fail_next_preview_scale_output_preparation: bool,
     #[cfg(test)]
     fail_next_screen_upload_pool_saturation: bool,
+    #[cfg(all(test, target_os = "macos", feature = "screen-capture"))]
+    fail_next_macos_screen_rebuild: bool,
+    #[cfg(all(test, target_os = "macos", feature = "screen-capture"))]
+    fail_next_macos_screen_import: bool,
     #[cfg(test)]
     snapshot_texture_allocation_count: Cell<usize>,
     #[cfg(test)]
@@ -1114,8 +1119,19 @@ impl GpuSparkleFlinger {
         let (screen_bridge, screen_target) =
             create_screen_bridge(&device, &queue, probe.max_texture_dimension_2d);
         #[cfg(all(target_os = "macos", feature = "screen-capture"))]
-        let (screen_bridge, screen_target) =
-            create_screen_bridge(&device, probe.max_texture_dimension_2d);
+        let (screen_bridge, screen_target, macos_screen_recovery) = match create_screen_bridge(
+            &device,
+            probe.max_texture_dimension_2d,
+        ) {
+            Ok((bridge, target)) => {
+                let recovery = MacosScreenGpuRecoveryState::ready(target.id());
+                (Some(bridge), Some(target), recovery)
+            }
+            Err(error) => {
+                tracing::debug!(%error, "renderer does not expose native Metal screen execution");
+                (None, None, MacosScreenGpuRecoveryState::unavailable(&error))
+            }
+        };
         #[cfg(all(target_os = "macos", feature = "screen-capture"))]
         let metal4_capable = probe_macos_metal4_capabilities(&device)?.all_required_facilities();
 
@@ -1161,6 +1177,8 @@ impl GpuSparkleFlinger {
             #[cfg(all(target_os = "macos", feature = "screen-capture"))]
             screen_target,
             #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+            macos_screen_recovery,
+            #[cfg(all(target_os = "macos", feature = "screen-capture"))]
             metal4_capable,
             #[cfg(all(target_os = "macos", feature = "screen-capture"))]
             native_screen_lease_retirements: SubmissionRetirementQueue::default(),
@@ -1178,6 +1196,10 @@ impl GpuSparkleFlinger {
             fail_next_preview_scale_output_preparation: false,
             #[cfg(test)]
             fail_next_screen_upload_pool_saturation: false,
+            #[cfg(all(test, target_os = "macos", feature = "screen-capture"))]
+            fail_next_macos_screen_rebuild: false,
+            #[cfg(all(test, target_os = "macos", feature = "screen-capture"))]
+            fail_next_macos_screen_import: false,
             #[cfg(test)]
             snapshot_texture_allocation_count: Cell::new(0),
             #[cfg(test)]
@@ -1293,10 +1315,14 @@ impl GpuSparkleFlinger {
         target_os = "windows",
         all(target_os = "macos", feature = "screen-capture")
     ))]
-    pub(crate) fn screen_native_execution_target(&self) -> Option<&ScreenNativeExecutionTarget> {
+    pub(crate) fn screen_native_execution_target(
+        &mut self,
+    ) -> Option<&ScreenNativeExecutionTarget> {
         if !self.canvas_gpu_admitted {
             return None;
         }
+        #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+        self.retry_macos_screen_execution();
         self.screen_target.as_ref()
     }
 

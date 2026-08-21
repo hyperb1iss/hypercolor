@@ -13,54 +13,32 @@ use hypercolor_core::input::screen::{
     ScreenResourceApi,
 };
 use hypercolor_macos_gpu_interop::{
-    MacosNativeReducer, MacosNativeReductionTarget, MacosScreenBridge as MacosInteropScreenBridge,
+    MacosNativeReducer, MacosScreenBridge as MacosInteropScreenBridge,
 };
 
 use super::MacosScreenBridge;
 use super::cache::{MacosScreenCache, next_texture_storage_id};
 use super::color::{native_color_transform, native_letterbox_fill};
-use super::reduction::{macos_native_target_format, requires_native_work};
+use super::contract::{macos_native_target_format, requires_native_work};
+use super::model::{PreparedMacosPhysicalTarget, PreparedMacosScreenTarget};
 use crate::render_thread::sparkleflinger::gpu::NEXT_SCREEN_TARGET_ID;
 
 pub(super) struct MacosScreenTargetPreparer {
     bridge: Weak<MacosScreenBridge>,
+    target_id: ScreenNativeExecutionTargetId,
 }
 
-#[derive(Debug)]
-pub(in crate::render_thread::sparkleflinger::gpu) struct PreparedMacosPhysicalTarget {
-    pub(in crate::render_thread::sparkleflinger::gpu) target: MacosNativeReductionTarget,
-    pub(in crate::render_thread::sparkleflinger::gpu) storage_id: u64,
-    pub(in crate::render_thread::sparkleflinger::gpu) content_sequence: Mutex<Option<u64>>,
-}
-
-#[derive(Debug)]
-pub(crate) struct PreparedMacosScreenTarget {
-    pub(in crate::render_thread::sparkleflinger::gpu) resource_generation: u64,
-    pub(in crate::render_thread::sparkleflinger::gpu) descriptor:
-        Arc<ResolvedScreenPublicationDescriptor>,
-    pub(in crate::render_thread::sparkleflinger::gpu) physical:
-        Option<Arc<PreparedMacosPhysicalTarget>>,
-    pub(in crate::render_thread::sparkleflinger::gpu) logical_target:
-        Option<MacosNativeReductionTarget>,
-    pub(in crate::render_thread::sparkleflinger::gpu) logical_storage_id: Option<u64>,
-    pub(in crate::render_thread::sparkleflinger::gpu) logical_content_sequence: Mutex<Option<u64>>,
-}
-
-impl Clone for PreparedMacosScreenTarget {
-    fn clone(&self) -> Self {
-        Self {
-            resource_generation: self.resource_generation,
-            descriptor: Arc::clone(&self.descriptor),
-            physical: self.physical.clone(),
-            logical_target: self.logical_target.clone(),
-            logical_storage_id: self.logical_storage_id,
-            logical_content_sequence: Mutex::new(
-                *self
-                    .logical_content_sequence
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner),
-            ),
-        }
+impl MacosScreenTargetPreparer {
+    fn bridge(&self) -> Result<Arc<MacosScreenBridge>> {
+        let bridge = self
+            .bridge
+            .upgrade()
+            .context("macOS screen renderer was retired during target preparation")?;
+        anyhow::ensure!(
+            bridge.target_id() == self.target_id,
+            "macOS screen renderer target identity changed during preparation"
+        );
+        Ok(bridge)
     }
 }
 
@@ -114,6 +92,7 @@ pub(super) fn prepare_target(
         .map(|_| next_texture_storage_id())
         .transpose()?;
     Ok(PreparedMacosScreenTarget {
+        target_id: bridge.target_id(),
         resource_generation: descriptor.source().resources().resource_generation(),
         descriptor: Arc::new(descriptor.clone()),
         physical,
@@ -193,9 +172,7 @@ impl ScreenNativeTargetPreparer for MacosScreenTargetPreparer {
             .downcast_ref::<MacosNativeTargetManifest>()
             .context("macOS screen target received an unknown preparation manifest")?;
         validate_target_manifest(descriptor, manifest)?;
-        self.bridge
-            .upgrade()
-            .context("macOS screen renderer was retired during target admission")?;
+        self.bridge()?;
         prepared_macos_screen_target_exclusive_bytes(descriptor)
     }
 
@@ -217,10 +194,7 @@ impl ScreenNativeTargetPreparer for MacosScreenTargetPreparer {
             .downcast_ref::<MacosNativeTargetManifest>()
             .context("macOS screen target received an unknown preparation manifest")?;
         validate_target_manifest(descriptor, manifest)?;
-        let bridge = self
-            .bridge
-            .upgrade()
-            .context("macOS screen renderer was retired during target preparation")?;
+        let bridge = self.bridge()?;
         let prepared = bridge.prepare_target(descriptor, platform.plan_generation())?;
         Ok(ScreenNativeTargetPreparation::with_retention(
             ScreenNativePreparationPayload::new(
@@ -271,64 +245,53 @@ fn validate_target_manifest(
 pub(in crate::render_thread::sparkleflinger::gpu) fn create_screen_bridge(
     device: &wgpu::Device,
     max_texture_dimension: u32,
-) -> (
-    Option<Arc<MacosScreenBridge>>,
-    Option<ScreenNativeExecutionTarget>,
-) {
-    let interop = match MacosInteropScreenBridge::new(device) {
-        Ok(bridge) => bridge,
-        Err(error) => {
-            tracing::debug!(%error, "renderer does not expose a Metal screen-import target");
-            return (None, None);
-        }
-    };
-    let reducer = match MacosNativeReducer::new(device) {
-        Ok(reducer) => reducer,
-        Err(error) => {
-            tracing::debug!(%error, "renderer does not expose a native Metal screen reducer");
-            return (None, None);
-        }
-    };
+) -> Result<(Arc<MacosScreenBridge>, ScreenNativeExecutionTarget)> {
+    let interop = MacosInteropScreenBridge::new(device)
+        .context("renderer does not expose a Metal screen-import target")?;
+    let reducer = MacosNativeReducer::new(device)
+        .context("renderer does not expose a native Metal screen reducer")?;
+    let target_id = next_screen_target_id()?;
     let bridge = Arc::new(MacosScreenBridge {
         device: device.clone(),
         interop,
         reducer,
         cache: MacosScreenCache::new(),
+        target_id,
     });
     let target = bridge.execution_target(max_texture_dimension);
-    (Some(bridge), target)
+    Ok((bridge, target))
 }
 
 pub(super) fn create_screen_target(
     bridge: &Arc<MacosScreenBridge>,
     max_texture_dimension: u32,
-) -> Option<ScreenNativeExecutionTarget> {
-    let Ok(target_id) =
-        NEXT_SCREEN_TARGET_ID.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+) -> ScreenNativeExecutionTarget {
+    ScreenNativeExecutionTarget::new(
+        bridge.target_id(),
+        PlatformGpuApi::Metal,
+        ScreenPhysicalGpuDeviceIdentity::MetalRegistryId(bridge.interop.metal_registry_id()),
+        NonZeroU32::new(max_texture_dimension)
+            .expect("wgpu devices expose a non-zero texture dimension limit"),
+        Arc::new(MacosScreenTargetPreparer {
+            bridge: Arc::downgrade(bridge),
+            target_id: bridge.target_id(),
+        }),
+    )
+    .with_color_capabilities(ScreenColorTransformCapabilities::new(
+        true,
+        true,
+        true,
+        LED_TONE_MAP_ALGORITHM_REVISION,
+    ))
+}
+
+fn next_screen_target_id() -> Result<ScreenNativeExecutionTargetId> {
+    let target_id = NEXT_SCREEN_TARGET_ID
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
             current.checked_add(1)
         })
-    else {
-        tracing::warn!("screen target identity space is exhausted");
-        return None;
-    };
-    Some(
-        ScreenNativeExecutionTarget::new(
-            ScreenNativeExecutionTargetId::new(
-                NonZeroU64::new(target_id).expect("screen target identities start at one"),
-            ),
-            PlatformGpuApi::Metal,
-            ScreenPhysicalGpuDeviceIdentity::MetalRegistryId(bridge.interop.metal_registry_id()),
-            NonZeroU32::new(max_texture_dimension)
-                .expect("wgpu devices expose a non-zero texture dimension limit"),
-            Arc::new(MacosScreenTargetPreparer {
-                bridge: Arc::downgrade(bridge),
-            }),
-        )
-        .with_color_capabilities(ScreenColorTransformCapabilities::new(
-            true,
-            true,
-            true,
-            LED_TONE_MAP_ALGORITHM_REVISION,
-        )),
-    )
+        .map_err(|_| anyhow::anyhow!("screen target identity space is exhausted"))?;
+    Ok(ScreenNativeExecutionTargetId::new(
+        NonZeroU64::new(target_id).expect("screen target identities start at one"),
+    ))
 }

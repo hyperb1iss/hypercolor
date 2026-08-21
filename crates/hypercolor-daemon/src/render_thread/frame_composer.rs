@@ -485,13 +485,7 @@ impl ComposeContext<'_> {
 
     fn latch_screen_frame(&mut self) -> Option<ProducedFrame> {
         let native_submitted = {
-            #[cfg(all(
-                feature = "wgpu",
-                any(
-                    target_os = "windows",
-                    all(target_os = "macos", feature = "screen-capture")
-                )
-            ))]
+            #[cfg(all(feature = "wgpu", target_os = "windows"))]
             {
                 self.inputs.screen_publication.as_ref().is_some_and(
                     |publication| match self
@@ -529,6 +523,19 @@ impl ComposeContext<'_> {
                         }
                     },
                 )
+            }
+            #[cfg(all(feature = "wgpu", target_os = "macos", feature = "screen-capture"))]
+            {
+                self.inputs
+                    .screen_publication
+                    .as_ref()
+                    .is_some_and(|publication| {
+                        let outcome = self
+                            .compose
+                            .sparkleflinger
+                            .copy_screen_publication_outcome(publication);
+                        apply_macos_screen_copy_outcome(self.compose.screen_queue, outcome)
+                    })
             }
             #[cfg(not(all(
                 feature = "wgpu",
@@ -725,6 +732,82 @@ impl ComposeContext<'_> {
     }
 }
 
+#[cfg(all(feature = "wgpu", target_os = "macos", feature = "screen-capture"))]
+fn apply_macos_screen_copy_outcome(
+    screen_queue: &mut ProducerQueue,
+    outcome: super::sparkleflinger::gpu::MacosScreenCopyOutcome,
+) -> bool {
+    match outcome {
+        super::sparkleflinger::gpu::MacosScreenCopyOutcome::Copied(frame) => {
+            let _ = screen_queue.submit_latest(ProducerFrame::GpuTexture(frame));
+            true
+        }
+        super::sparkleflinger::gpu::MacosScreenCopyOutcome::Ignored => false,
+        super::sparkleflinger::gpu::MacosScreenCopyOutcome::Deferred(error) => {
+            let retained = screen_queue.has_latest();
+            tracing::debug!(%error, retained, "Native screen copy deferred");
+            retained
+        }
+        super::sparkleflinger::gpu::MacosScreenCopyOutcome::Invalidated(error) => {
+            let _ = screen_queue.clear_latest();
+            warn!(%error, "Native screen copy invalidated");
+            false
+        }
+        super::sparkleflinger::gpu::MacosScreenCopyOutcome::Unavailable(error) => {
+            let _ = screen_queue.clear_latest();
+            warn!(%error, "Native screen execution unavailable");
+            false
+        }
+    }
+}
+
+#[cfg(all(
+    test,
+    feature = "wgpu",
+    target_os = "macos",
+    feature = "screen-capture"
+))]
+mod macos_screen_recovery_tests {
+    use hypercolor_core::types::canvas::Canvas;
+
+    use super::{ProducerFrame, ProducerQueue, apply_macos_screen_copy_outcome};
+    use crate::render_thread::sparkleflinger::gpu::MacosScreenCopyOutcome;
+
+    fn queue_with_frame() -> ProducerQueue {
+        let mut queue = ProducerQueue::new();
+        let _ = queue.submit_latest(ProducerFrame::Canvas(Canvas::new(2, 2)));
+        queue
+    }
+
+    #[test]
+    fn transient_native_copy_failure_retains_last_good_frame() {
+        let mut queue = queue_with_frame();
+
+        assert!(apply_macos_screen_copy_outcome(
+            &mut queue,
+            MacosScreenCopyOutcome::Deferred(anyhow::anyhow!("transient GPU fence pressure")),
+        ));
+        assert!(queue.has_latest());
+    }
+
+    #[test]
+    fn structural_native_copy_failure_clears_stale_frame() {
+        let mut invalidated = queue_with_frame();
+        assert!(!apply_macos_screen_copy_outcome(
+            &mut invalidated,
+            MacosScreenCopyOutcome::Invalidated(anyhow::anyhow!("structural import failure")),
+        ));
+        assert!(!invalidated.has_latest());
+
+        let mut unavailable = queue_with_frame();
+        assert!(!apply_macos_screen_copy_outcome(
+            &mut unavailable,
+            MacosScreenCopyOutcome::Unavailable(anyhow::anyhow!("native reconstruction failed")),
+        ));
+        assert!(!unavailable.has_latest());
+    }
+}
+
 pub(super) fn synchronize_screen_plan_generation(
     sparkleflinger: &mut SparkleFlinger,
     screen_queue: &mut ProducerQueue,
@@ -750,30 +833,12 @@ fn synchronize_screen_invalidation_epoch(
     true
 }
 
-#[cfg(any(
-    test,
-    all(
-        feature = "wgpu",
-        any(
-            target_os = "windows",
-            all(target_os = "macos", feature = "screen-capture")
-        )
-    )
-))]
+#[cfg(any(test, all(feature = "wgpu", target_os = "windows")))]
 fn native_copy_failure_retains_last_frame(screen_queue: &ProducerQueue) -> bool {
     screen_queue.has_latest()
 }
 
-#[cfg(any(
-    test,
-    all(
-        feature = "wgpu",
-        any(
-            target_os = "windows",
-            all(target_os = "macos", feature = "screen-capture")
-        )
-    )
-))]
+#[cfg(any(test, all(feature = "wgpu", target_os = "windows")))]
 fn apply_native_copy_failure_policy(
     screen_queue: &mut ProducerQueue,
     invalidates_frame: bool,

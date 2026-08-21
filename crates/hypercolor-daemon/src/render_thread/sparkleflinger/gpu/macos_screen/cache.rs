@@ -6,7 +6,7 @@ use anyhow::Result;
 use hypercolor_core::input::screen::{ScreenPhysicalReductionDescriptor, ScreenPlanGeneration};
 use hypercolor_macos_gpu_interop::MacosScreenStorageIdentity;
 
-use super::preparation::PreparedMacosPhysicalTarget;
+use super::model::PreparedMacosPhysicalTarget;
 use crate::render_thread::sparkleflinger::gpu::NEXT_GPU_TEXTURE_STORAGE_ID;
 
 pub(super) struct MacosScreenCache {
@@ -66,11 +66,28 @@ impl MacosScreenCache {
         Ok(target)
     }
 
-    pub(super) fn clear_imports(&self) {
+    pub(super) fn clear_all(&self) {
         self.storage_ids
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clear();
+        self.physical_targets
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+    }
+
+    #[cfg(test)]
+    pub(super) fn is_empty(&self) -> bool {
+        self.storage_ids
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_empty()
+            && self
+                .physical_targets
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty()
     }
 }
 
