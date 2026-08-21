@@ -384,7 +384,7 @@ mod tests {
         let executor = Arc::new(
             InteractivePreviewExecutor::start_cpu(InteractivePreviewContext {
                 scene_manager: state.scene_manager.clone(),
-                effect_registry: Arc::clone(&state.effect_registry),
+                effect_registry: state.domains.effects.registry_handle(),
                 asset_library: Some(Arc::clone(&state.asset_library)),
                 event_bus: Arc::clone(&state.event_bus),
                 input_graph: InputGraphHandle::default(),

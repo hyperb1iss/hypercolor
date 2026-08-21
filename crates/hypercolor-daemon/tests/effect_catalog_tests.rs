@@ -120,13 +120,16 @@ async fn register(state: &Arc<AppState>, shape: &EffectShape) {
         license: None,
     };
 
-    let mut registry = state.effect_registry.write().await;
-    let _ = registry.register(EffectEntry {
-        metadata,
-        source_path: format!("/tmp/{}.html", shape.name).into(),
-        modified: std::time::SystemTime::now(),
-        state: EffectState::Loading,
-    });
+    let _ = state
+        .domains
+        .effects
+        .register(EffectEntry {
+            metadata,
+            source_path: format!("/tmp/{}.html", shape.name).into(),
+            modified: std::time::SystemTime::now(),
+            state: EffectState::Loading,
+        })
+        .await;
 }
 
 /// Four effects that differ on every filterable axis.

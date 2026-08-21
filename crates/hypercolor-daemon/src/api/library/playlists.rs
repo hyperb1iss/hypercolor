@@ -15,7 +15,6 @@ use hypercolor_types::library::{
     EffectPlaylist, PlaylistId, PlaylistItem, PlaylistItemId, PlaylistItemTarget,
 };
 
-use crate::api::effects::resolve_effect_metadata;
 use crate::api::envelope;
 use crate::app_state::AppState;
 use crate::domain::{DomainError, ResourceKind};
@@ -481,10 +480,7 @@ async fn build_playlist_items(
     for item in items_payload {
         let target = match &item.target {
             PlaylistTargetRequest::Effect { effect } => {
-                let resolved = {
-                    let registry = state.effect_registry.read().await;
-                    resolve_effect_metadata(&registry, effect)
-                };
+                let resolved = state.domains.effects.resolve_metadata(effect).await;
                 let Some(resolved) = resolved else {
                     return Err(format!("Playlist references unknown effect: {effect}"));
                 };

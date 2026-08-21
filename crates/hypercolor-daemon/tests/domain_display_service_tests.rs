@@ -86,7 +86,7 @@ async fn insert_effect(state: &AppState, metadata: &EffectMetadata) {
         modified: SystemTime::now(),
         state: EffectState::Loading,
     };
-    let _ = state.effect_registry.write().await.register(entry);
+    let _ = state.domains.effects.register(entry).await;
 }
 
 fn named_scene(name: &str) -> Scene {

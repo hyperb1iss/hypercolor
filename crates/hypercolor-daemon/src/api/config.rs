@@ -970,16 +970,11 @@ async fn current_live_audio_capture_demand(state: &Arc<AppState>) -> bool {
         return false;
     }
 
-    let registry = state.effect_registry.read().await;
-    if active_effect_ids.into_iter().any(|effect_id| {
-        registry
-            .get(&effect_id)
-            .is_some_and(|entry| entry.metadata.audio_reactive)
-    }) {
-        return true;
-    }
-
-    false
+    state
+        .domains
+        .effects
+        .any_audio_reactive(active_effect_ids)
+        .await
 }
 
 fn audio_pipeline_config(config: &HypercolorConfig) -> AudioPipelineConfig {

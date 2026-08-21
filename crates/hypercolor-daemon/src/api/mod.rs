@@ -163,11 +163,10 @@ async fn clear_active_scene_effect_groups(
 
 async fn resolve_effect_ref_for_fallback(state: &AppState, effect_id: &str) -> EffectRef {
     let parsed_id = Uuid::parse_str(effect_id).ok().map(EffectId::new);
-    if let Some(parsed_id) = parsed_id {
-        let registry = state.effect_registry.read().await;
-        if let Some(entry) = registry.get(&parsed_id) {
-            return crate::domain::effect::effect_ref(&entry.metadata);
-        }
+    if let Some(parsed_id) = parsed_id
+        && let Some(metadata) = state.domains.effects.metadata(parsed_id).await
+    {
+        return crate::domain::effect::effect_ref(&metadata);
     }
 
     EffectRef {

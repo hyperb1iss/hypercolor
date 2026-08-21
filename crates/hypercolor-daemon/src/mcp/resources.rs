@@ -102,21 +102,22 @@ pub fn is_valid_resource_uri(uri: &str) -> bool {
 // ── Resource Readers ──────────────────────────────────────────────────────
 
 async fn read_effects_with_state(state: &AppState) -> Value {
-    let effects = {
-        let registry = state.effect_registry.read().await;
-        registry
-            .iter()
-            .map(|(_, entry)| {
-                json!({
-                    "id": entry.metadata.id.to_string(),
-                    "name": entry.metadata.name,
-                    "description": entry.metadata.description,
-                    "category": format!("{}", entry.metadata.category),
-                    "tags": entry.metadata.tags
-                })
+    let effects = state
+        .domains
+        .effects
+        .all_metadata()
+        .await
+        .into_iter()
+        .map(|metadata| {
+            json!({
+                "id": metadata.id.to_string(),
+                "name": metadata.name,
+                "description": metadata.description,
+                "category": format!("{}", metadata.category),
+                "tags": metadata.tags
             })
-            .collect::<Vec<_>>()
-    };
+        })
+        .collect::<Vec<_>>();
 
     json!({
         "effects": effects,

@@ -47,7 +47,7 @@ pub(crate) async fn build_status_payload(state: &AppState) -> StatusResult {
 
     let brightness = brightness_percent(current_global_brightness(&state.power_state));
     let active_effect = active_effect_metadata(state).await;
-    let effect_count = state.effect_registry.read().await.len();
+    let effect_count = state.domains.effects.len().await;
     let scene_count = state.scene_manager.snapshot().await.scene_count();
     let devices = state.device_registry.list().await;
     let connected_devices = devices

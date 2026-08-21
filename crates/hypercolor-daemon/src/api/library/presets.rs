@@ -12,7 +12,6 @@ use hypercolor_types::event::{HypercolorEvent, LibraryChangeKind, LibraryCollect
 use hypercolor_types::library::{EffectPreset, PresetId};
 
 use crate::api::control_values::json_to_control_value;
-use crate::api::effects::resolve_effect_metadata;
 use crate::api::envelope;
 use crate::app_state::AppState;
 use crate::domain::{DomainError, ResourceKind};
@@ -61,12 +60,8 @@ pub async fn create_preset(
         return DomainError::validation("Preset name must not be empty").into_response();
     }
 
-    let effect = {
-        let registry = state.effect_registry.read().await;
-        let Some(effect) = resolve_effect_metadata(&registry, &body.effect) else {
-            return DomainError::not_found(ResourceKind::Effect, &body.effect).into_response();
-        };
-        effect
+    let Some(effect) = state.domains.effects.resolve_metadata(&body.effect).await else {
+        return DomainError::not_found(ResourceKind::Effect, &body.effect).into_response();
     };
 
     let controls = match parse_preset_controls(&effect, body.controls.as_ref()) {
@@ -123,12 +118,8 @@ pub async fn update_preset(
         return DomainError::not_found(ResourceKind::Preset, &id).into_response();
     };
 
-    let effect = {
-        let registry = state.effect_registry.read().await;
-        let Some(effect) = resolve_effect_metadata(&registry, &body.effect) else {
-            return DomainError::not_found(ResourceKind::Effect, &body.effect).into_response();
-        };
-        effect
+    let Some(effect) = state.domains.effects.resolve_metadata(&body.effect).await else {
+        return DomainError::not_found(ResourceKind::Effect, &body.effect).into_response();
     };
 
     let controls = match parse_preset_controls(&effect, body.controls.as_ref()) {

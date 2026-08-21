@@ -15,16 +15,13 @@ use tokio::fs;
 use tracing::{info, warn};
 
 use hypercolor_core::effect::{
-    EffectRegistry, HtmlControlKind, ParsedHtmlEffectMetadata, load_html_effect_file,
-    parse_html_effect_metadata,
+    HtmlControlKind, ParsedHtmlEffectMetadata, load_html_effect_file, parse_html_effect_metadata,
 };
 use hypercolor_types::api::scene::{
     ApplyEffectRequest as SceneApplyEffectRequest, ApplyEffectResponse as SceneApplyEffectResponse,
     TransitionType,
 };
-use hypercolor_types::effect::{
-    ControlValue, EffectCategory, EffectId, EffectMetadata, EffectSource,
-};
+use hypercolor_types::effect::{ControlValue, EffectCategory, EffectMetadata, EffectSource};
 use hypercolor_types::event::HypercolorEvent;
 use hypercolor_types::library::PresetId;
 use hypercolor_types::scene::Zone;
@@ -204,12 +201,9 @@ pub(crate) fn effect_summary_with_details(meta: &EffectMetadata) -> EffectSummar
 
 /// `GET /api/v1/effects/{id}` — Get a single effect's metadata.
 pub async fn get_effect(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
-    let registry = state.effect_registry.read().await;
-
-    let Some(meta) = resolve_effect_metadata(&registry, &id) else {
+    let Some(meta) = state.domains.effects.resolve_metadata(&id).await else {
         return DomainError::not_found(ResourceKind::Effect, &id).into_response();
     };
-    drop(registry);
 
     let cover_image_url = effect_cover_image_url(&meta);
 
@@ -235,12 +229,8 @@ pub async fn list_effect_presets(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Response {
-    let metadata = {
-        let registry = state.effect_registry.read().await;
-        let Some(metadata) = resolve_effect_metadata(&registry, &id) else {
-            return DomainError::not_found(ResourceKind::Effect, &id).into_response();
-        };
-        metadata
+    let Some(metadata) = state.domains.effects.resolve_metadata(&id).await else {
+        return DomainError::not_found(ResourceKind::Effect, &id).into_response();
     };
     let items = effect_preset_stack(state.as_ref(), &metadata).await;
     let total = items.len();
@@ -286,12 +276,8 @@ pub async fn apply_effect(
 
     // Validate before the scene commit or output wake so a refusal leaves
     // the rig unchanged.
-    let metadata = {
-        let registry = state.effect_registry.read().await;
-        let Some(meta) = resolve_effect_metadata(&registry, &id) else {
-            return DomainError::not_found(ResourceKind::Effect, &id).into_response();
-        };
-        meta
+    let Some(metadata) = state.domains.effects.resolve_metadata(&id).await else {
+        return DomainError::not_found(ResourceKind::Effect, &id).into_response();
     };
 
     info!(
@@ -424,12 +410,8 @@ pub async fn get_effect_cover(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Response {
-    let metadata = {
-        let registry = state.effect_registry.read().await;
-        let Some(meta) = resolve_effect_metadata(&registry, &id) else {
-            return DomainError::not_found(ResourceKind::Effect, &id).into_response();
-        };
-        meta
+    let Some(metadata) = state.domains.effects.resolve_metadata(&id).await else {
+        return DomainError::not_found(ResourceKind::Effect, &id).into_response();
     };
 
     effect_cover_image_response(&metadata, EffectCoverCache::Catalog).await
@@ -437,10 +419,7 @@ pub async fn get_effect_cover(
 
 /// `POST /api/v1/effects/rescan` — Manually trigger an effect registry rescan.
 pub async fn rescan_effects(State(state): State<Arc<AppState>>) -> Response {
-    let report = {
-        let mut registry = state.effect_registry.write().await;
-        registry.rescan()
-    };
+    let report = state.domains.effects.rescan().await;
 
     if report.added > 0 || report.removed > 0 || report.updated > 0 {
         invalidate_active_render_groups_after_effect_registry_update(state.as_ref()).await;
@@ -550,10 +529,10 @@ pub async fn install_effect(
         }
     };
 
-    let (added, updated) = {
-        let mut registry = state.effect_registry.write().await;
-        let replaced = registry.register(entry.clone()).is_some();
-        if replaced { (0, 1) } else { (1, 0) }
+    let (added, updated) = if state.domains.effects.register(entry.clone()).await {
+        (0, 1)
+    } else {
+        (1, 0)
     };
 
     invalidate_active_render_groups_after_effect_registry_update(state.as_ref()).await;
@@ -580,21 +559,6 @@ pub async fn install_effect(
         controls: entry.metadata.controls.len(),
         presets: entry.metadata.presets.len(),
     })
-}
-
-pub(crate) fn resolve_effect_metadata(
-    registry: &EffectRegistry,
-    id_or_name: &str,
-) -> Option<EffectMetadata> {
-    if let Ok(uuid) = id_or_name.parse::<uuid::Uuid>() {
-        let effect_id = EffectId::new(uuid);
-        return registry.get(&effect_id).map(|entry| entry.metadata.clone());
-    }
-
-    registry
-        .iter()
-        .find(|(_, entry)| entry.metadata.matches_lookup(id_or_name))
-        .map(|(_, entry)| entry.metadata.clone())
 }
 
 async fn effect_preset_stack(
@@ -691,8 +655,7 @@ pub(crate) async fn active_primary_group(state: &AppState) -> Option<Zone> {
 pub(crate) async fn active_primary_effect(state: &AppState) -> Option<(Zone, EffectMetadata)> {
     let group = active_primary_group(state).await?;
     let effect_id = group.effect_ids().next()?;
-    let registry = state.effect_registry.read().await;
-    let metadata = registry.get(&effect_id)?.metadata.clone();
+    let metadata = state.domains.effects.metadata(effect_id).await?;
     Some((group, metadata))
 }
 

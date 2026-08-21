@@ -246,13 +246,16 @@ fn sample_effect(name: &str) -> EffectMetadata {
 
 async fn register_effect(state: &Arc<AppState>, name: &str) -> EffectMetadata {
     let metadata = sample_effect(name);
-    let mut registry = state.effect_registry.write().await;
-    let _ = registry.register(EffectEntry {
-        metadata: metadata.clone(),
-        source_path: format!("/tmp/{name}.html").into(),
-        modified: SystemTime::now(),
-        state: EffectState::Loading,
-    });
+    let _ = state
+        .domains
+        .effects
+        .register(EffectEntry {
+            metadata: metadata.clone(),
+            source_path: format!("/tmp/{name}.html").into(),
+            modified: SystemTime::now(),
+            state: EffectState::Loading,
+        })
+        .await;
     metadata
 }
 

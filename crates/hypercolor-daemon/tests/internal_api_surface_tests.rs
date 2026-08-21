@@ -79,6 +79,7 @@ fn application_state_reuses_one_domain_graph() {
     let app_state = source("app_state.rs");
     assert!(app_state.contains("pub domains: DomainContexts"));
     assert!(app_state.contains("let domains = daemon.domains.clone();"));
+    assert!(!app_state.contains("pub effect_registry:"));
     for retired_field in [
         "pub scene: SceneContext",
         "pub runtime_session: RuntimeSessionService",
@@ -94,4 +95,23 @@ fn application_state_reuses_one_domain_graph() {
 
     let startup = source("startup/mod.rs");
     assert!(startup.contains("pub domains: DomainContexts"));
+}
+
+#[test]
+fn transports_use_the_effect_domain_authority() {
+    let offenders = daemon_sources()
+        .into_iter()
+        .filter(|(path, _)| {
+            path.components()
+                .any(|component| component.as_os_str() == "api" || component.as_os_str() == "mcp")
+        })
+        .filter(|(_, source)| source.contains("state.effect_registry"))
+        .map(|(path, _)| path.display().to_string())
+        .collect::<Vec<_>>();
+
+    assert!(
+        offenders.is_empty(),
+        "transport adapters bypassed EffectContext:\n{}",
+        offenders.join("\n")
+    );
 }

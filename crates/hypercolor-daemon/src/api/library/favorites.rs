@@ -8,7 +8,6 @@ use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Response};
 use hypercolor_types::event::{HypercolorEvent, LibraryChangeKind, LibraryCollection};
 
-use crate::api::effects::resolve_effect_metadata;
 use crate::api::envelope;
 use crate::app_state::AppState;
 use crate::domain::{DomainError, ResourceKind};
@@ -28,12 +27,14 @@ pub use hypercolor_types::api::library::{
 pub async fn list_favorites(State(state): State<Arc<AppState>>) -> Response {
     let favorites = state.library_store.list_favorites().await;
 
-    let registry = state.effect_registry.read().await;
-    let effect_names: HashMap<_, _> = registry
-        .iter()
-        .map(|(_, entry)| (entry.metadata.id, entry.metadata.name.clone()))
+    let effect_names: HashMap<_, _> = state
+        .domains
+        .effects
+        .all_metadata()
+        .await
+        .into_iter()
+        .map(|metadata| (metadata.id, metadata.name))
         .collect();
-    drop(registry);
 
     let items: Vec<FavoriteSummary> = favorites
         .iter()
@@ -60,12 +61,8 @@ pub async fn add_favorite(
     State(state): State<Arc<AppState>>,
     Json(body): Json<AddFavoriteRequest>,
 ) -> Response {
-    let effect = {
-        let registry = state.effect_registry.read().await;
-        let Some(effect) = resolve_effect_metadata(&registry, &body.effect) else {
-            return DomainError::not_found(ResourceKind::Effect, &body.effect).into_response();
-        };
-        effect
+    let Some(effect) = state.domains.effects.resolve_metadata(&body.effect).await else {
+        return DomainError::not_found(ResourceKind::Effect, &body.effect).into_response();
     };
 
     let existing = state
@@ -105,12 +102,8 @@ pub async fn remove_favorite(
     State(state): State<Arc<AppState>>,
     Path(effect): Path<String>,
 ) -> Response {
-    let effect = {
-        let registry = state.effect_registry.read().await;
-        let Some(effect) = resolve_effect_metadata(&registry, &effect) else {
-            return DomainError::not_found(ResourceKind::Favorite, &effect).into_response();
-        };
-        effect
+    let Some(effect) = state.domains.effects.resolve_metadata(&effect).await else {
+        return DomainError::not_found(ResourceKind::Favorite, &effect).into_response();
     };
 
     let removed = match state.library_store.remove_favorite(effect.id).await {

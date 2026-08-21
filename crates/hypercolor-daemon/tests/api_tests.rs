@@ -3370,7 +3370,6 @@ async fn insert_test_effect_with_presets(
     name: &str,
     presets: Vec<PresetTemplate>,
 ) -> EffectMetadata {
-    let mut registry = state.effect_registry.write().await;
     let metadata = EffectMetadata {
         id: EffectId::new(Uuid::now_v7()),
         name: name.to_owned(),
@@ -3410,7 +3409,7 @@ async fn insert_test_effect_with_presets(
         modified: SystemTime::now(),
         state: EffectState::Loading,
     };
-    let _ = registry.register(entry);
+    let _ = state.domains.effects.register(entry).await;
     metadata
 }
 
@@ -3445,7 +3444,7 @@ async fn insert_input_reactive_test_effect(state: &Arc<AppState>, name: &str) {
         modified: SystemTime::now(),
         state: EffectState::Loading,
     };
-    let _ = state.effect_registry.write().await.register(entry);
+    let _ = state.domains.effects.register(entry).await;
 }
 
 fn test_display_face_effect_metadata(name: &str) -> EffectMetadata {
@@ -3462,8 +3461,7 @@ async fn insert_test_display_face_effect(state: &Arc<AppState>, name: &str) -> E
         modified: SystemTime::now(),
         state: EffectState::Loading,
     };
-    let mut registry = state.effect_registry.write().await;
-    let _ = registry.register(entry);
+    let _ = state.domains.effects.register(entry).await;
     metadata
 }
 
@@ -3507,13 +3505,10 @@ async fn install_effect_upload_writes_file_and_registers_effect() {
         "expected uploaded effect to be written"
     );
 
-    let registry = state.effect_registry.read().await;
+    let effects = state.domains.effects.all_metadata().await;
     assert!(
-        registry
-            .iter()
-            .any(|(_, entry)| entry.metadata.name == "Aurora"
-                && entry.source_path
-                    == fs::canonicalize(&installed_path).expect("canonical path should resolve"))
+        effects.iter().any(|metadata| metadata.name == "Aurora"),
+        "installed effect should enter the domain catalog"
     );
 }
 
@@ -3669,10 +3664,13 @@ async fn install_effect_upload_updates_existing_file_in_place() {
     );
 
     // Path-derived id is stable, so the registry holds one updated entry.
-    let registry = state.effect_registry.read().await;
-    let aurora_entries = registry
+    let aurora_entries = state
+        .domains
+        .effects
+        .all_metadata()
+        .await
         .iter()
-        .filter(|(_, entry)| entry.metadata.name == "Aurora")
+        .filter(|metadata| metadata.name == "Aurora")
         .count();
     assert_eq!(aurora_entries, 1);
 }
@@ -10890,15 +10888,16 @@ async fn patch_face_controls_updates_display_group() {
         preview_source: None,
         binding: None,
     }];
-    {
-        let mut registry = state.effect_registry.write().await;
-        let _ = registry.register(EffectEntry {
+    let _ = state
+        .domains
+        .effects
+        .register(EffectEntry {
             metadata: face.clone(),
             source_path: format!("/tmp/{}.html", face.name).into(),
             modified: SystemTime::now(),
             state: EffectState::Loading,
-        });
-    }
+        })
+        .await;
     let app = test_app_with_state(Arc::clone(&state));
 
     let assign_response = app

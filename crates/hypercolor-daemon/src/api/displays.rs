@@ -18,7 +18,6 @@ use hypercolor_types::spatial::SpatialLayout;
 use tracing::warn;
 
 use crate::api::devices;
-use crate::api::effects::resolve_effect_metadata;
 use crate::api::envelope;
 use crate::api::publish_render_group_changed;
 use crate::app_state::AppState;
@@ -173,8 +172,12 @@ pub async fn set_display_face(
     };
 
     let effect = {
-        let registry = state.effect_registry.read().await;
-        let Some(effect) = resolve_effect_metadata(&registry, &body.effect_id) else {
+        let Some(effect) = state
+            .domains
+            .effects
+            .resolve_metadata(&body.effect_id)
+            .await
+        else {
             return DomainError::not_found(ResourceKind::Effect, &body.effect_id).into_response();
         };
         if effect.category != EffectCategory::Display {
@@ -767,12 +770,8 @@ async fn current_display_face_assignment(
             format!("zone:{}", group.id),
         ));
     };
-    let effect = {
-        let registry = state.effect_registry.read().await;
-        let Some(entry) = registry.get(&effect_id) else {
-            return Err(DomainError::not_found(ResourceKind::Effect, effect_id));
-        };
-        entry.metadata.clone()
+    let Some(effect) = state.domains.effects.metadata(effect_id).await else {
+        return Err(DomainError::not_found(ResourceKind::Effect, effect_id));
     };
 
     let default_assigned = {
@@ -845,10 +844,12 @@ pub(crate) async fn apply_display_preference_overlay(
 
     let tracked = state.device_registry.get(&device_id).await?;
     let surface = display_surface_info(&tracked.info)?;
-    let effect_resolves = {
-        let registry = state.effect_registry.read().await;
-        registry.get(&preference.effect_id).is_some()
-    };
+    let effect_resolves = state
+        .domains
+        .effects
+        .metadata(preference.effect_id)
+        .await
+        .is_some();
     if !effect_resolves {
         warn!(
             %device_id,
@@ -937,12 +938,8 @@ async fn current_default_face_assignment(
             "Default face zone has no effect"
         )));
     };
-    let effect = {
-        let registry = state.effect_registry.read().await;
-        let Some(entry) = registry.get(&effect_id) else {
-            return Err(DomainError::not_found(ResourceKind::Effect, effect_id));
-        };
-        entry.metadata.clone()
+    let Some(effect) = state.domains.effects.metadata(effect_id).await else {
+        return Err(DomainError::not_found(ResourceKind::Effect, effect_id));
     };
     let scene_id = {
         let scene_manager = state.scene_manager.snapshot().await;

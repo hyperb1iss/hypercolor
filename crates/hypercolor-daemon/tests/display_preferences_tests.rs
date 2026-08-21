@@ -87,7 +87,7 @@ async fn register_face_effect(state: &Arc<AppState>, name: &str) -> EffectId {
         modified: SystemTime::now(),
         state: EffectState::Loading,
     };
-    let _ = state.effect_registry.write().await.register(entry);
+    let _ = state.domains.effects.register(entry).await;
     effect_id
 }
 

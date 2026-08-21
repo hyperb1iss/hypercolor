@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use hypercolor_core::effect::EffectRegistry;
+use hypercolor_core::effect::{EffectEntry, EffectRegistry, RescanReport};
 use strum::VariantNames;
 
 use hypercolor_types::api::scene::SideEffectOutcome;
@@ -64,6 +64,65 @@ impl EffectContext {
     pub async fn metadata(&self, effect_id: EffectId) -> Option<EffectMetadata> {
         let registry = self.registry.read().await;
         registry.get(&effect_id).map(|entry| entry.metadata.clone())
+    }
+
+    /// Resolve an effect by canonical id or catalog lookup name.
+    pub async fn resolve_metadata(&self, id_or_name: &str) -> Option<EffectMetadata> {
+        let registry = self.registry.read().await;
+        if let Ok(uuid) = id_or_name.parse::<uuid::Uuid>() {
+            return registry
+                .get(&EffectId::new(uuid))
+                .map(|entry| entry.metadata.clone());
+        }
+        registry
+            .iter()
+            .find(|(_, entry)| entry.metadata.matches_lookup(id_or_name))
+            .map(|(_, entry)| entry.metadata.clone())
+    }
+
+    /// Capture every catalog entry as owned metadata.
+    pub async fn all_metadata(&self) -> Vec<EffectMetadata> {
+        self.registry
+            .read()
+            .await
+            .iter()
+            .map(|(_, entry)| entry.metadata.clone())
+            .collect()
+    }
+
+    /// Return the number of registered effects.
+    pub async fn len(&self) -> usize {
+        self.registry.read().await.len()
+    }
+
+    /// Whether the effect catalog is empty.
+    pub async fn is_empty(&self) -> bool {
+        self.registry.read().await.is_empty()
+    }
+
+    /// Whether any requested effect currently requires live audio input.
+    pub async fn any_audio_reactive(&self, effect_ids: impl IntoIterator<Item = EffectId>) -> bool {
+        let registry = self.registry.read().await;
+        effect_ids.into_iter().any(|effect_id| {
+            registry
+                .get(&effect_id)
+                .is_some_and(|entry| entry.metadata.audio_reactive)
+        })
+    }
+
+    /// Rescan the owned effect catalog.
+    pub async fn rescan(&self) -> RescanReport {
+        self.registry.write().await.rescan()
+    }
+
+    /// Register one validated effect and report whether it replaced an entry.
+    pub async fn register(&self, entry: EffectEntry) -> bool {
+        self.registry.write().await.register(entry).is_some()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn registry_handle(&self) -> Arc<RwLock<EffectRegistry>> {
+        Arc::clone(&self.registry)
     }
 }
 

@@ -5,7 +5,6 @@ use std::sync::{Arc, LazyLock, Mutex};
 use axum::body::Body;
 use http::{Request, StatusCode};
 use hypercolor_core::config::ConfigManager;
-use hypercolor_core::effect::EffectRegistry;
 use hypercolor_daemon::api;
 use hypercolor_daemon::app_state::AppState;
 use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
@@ -178,11 +177,7 @@ async fn rescan_effects_invalidates_active_render_group_revision() {
         scene_manager.active_render_groups_revision()
     };
 
-    let user_effects_dir = tempdir.path().join("effects");
-    {
-        let mut registry = state.effect_registry.write().await;
-        *registry = EffectRegistry::new(vec![user_effects_dir.clone()]);
-    }
+    let user_effects_dir = tempdir.path().join("data/effects");
     std::fs::create_dir_all(&user_effects_dir).expect("user effects dir should be created");
     std::fs::write(
         user_effects_dir.join("rescan.html"),

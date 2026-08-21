@@ -496,10 +496,12 @@ pub(super) async fn find_effect_metadata(
     primary_name: &str,
     fallback_name: &str,
 ) -> Option<hypercolor_types::effect::EffectMetadata> {
-    let registry = state.effect_registry.read().await;
-    registry
-        .iter()
-        .map(|(_, entry)| entry.metadata.clone())
+    state
+        .domains
+        .effects
+        .all_metadata()
+        .await
+        .into_iter()
         .find(|metadata| {
             metadata.name.eq_ignore_ascii_case(primary_name)
                 || metadata.name.eq_ignore_ascii_case(fallback_name)
@@ -511,20 +513,20 @@ pub(super) async fn resolve_effect_selector(
     parameter: &str,
     query: &str,
 ) -> Result<hypercolor_types::effect::EffectMetadata, ToolError> {
-    let candidates = {
-        let registry = state.effect_registry.read().await;
-        registry
-            .iter()
-            .map(|(_, entry)| {
-                let metadata = entry.metadata.clone();
-                crate::mcp::selector::SelectorCandidate::named(
-                    metadata.id.to_string(),
-                    metadata.name.clone(),
-                    metadata,
-                )
-            })
-            .collect()
-    };
+    let candidates = state
+        .domains
+        .effects
+        .all_metadata()
+        .await
+        .into_iter()
+        .map(|metadata| {
+            crate::mcp::selector::SelectorCandidate::named(
+                metadata.id.to_string(),
+                metadata.name.clone(),
+                metadata,
+            )
+        })
+        .collect();
     crate::mcp::selector::resolve(query, candidates)
         .map_err(|error| ToolError::selector(parameter, error))
 }

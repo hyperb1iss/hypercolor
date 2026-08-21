@@ -631,7 +631,7 @@ async fn system_status_with_privacy(
     include_private_selection_ids: bool,
 ) -> SystemStatus {
     let device_count = state.device_registry.len().await;
-    let effect_count = state.effect_registry.read().await.len();
+    let effect_count = state.domains.effects.len().await;
     let scene_count = state.scene_manager.snapshot().await.scene_count();
     let subscribers = state.event_bus.subscriber_count();
 

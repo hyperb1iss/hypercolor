@@ -202,15 +202,16 @@ fn sample_layout(outputs: Vec<Output>) -> SpatialLayout {
 async fn seed_tree(state: &Arc<AppState>) -> EffectId {
     let metadata = sample_effect("Aurora");
     let effect_id = metadata.id;
-    {
-        let mut registry = state.effect_registry.write().await;
-        registry.register(EffectEntry {
+    let _ = state
+        .domains
+        .effects
+        .register(EffectEntry {
             metadata: metadata.clone(),
             source_path: "/tmp/aurora.rs".into(),
             modified: SystemTime::now(),
             state: EffectState::Loading,
-        });
-    }
+        })
+        .await;
     let mut mutation = state.scene_manager.begin_mutation().await;
     mutation
         .upsert_primary_zone(
@@ -317,12 +318,16 @@ async fn first_effect_apply_persists_a_fresh_real_layer_identity() {
     let (state, _tmp) = isolated_state();
     let metadata = sample_effect("First Light");
     let effect_id = metadata.id;
-    state.effect_registry.write().await.register(EffectEntry {
-        metadata,
-        source_path: "/tmp/first-light.rs".into(),
-        modified: SystemTime::now(),
-        state: EffectState::Loading,
-    });
+    let _ = state
+        .domains
+        .effects
+        .register(EffectEntry {
+            metadata,
+            source_path: "/tmp/first-light.rs".into(),
+            modified: SystemTime::now(),
+            state: EffectState::Loading,
+        })
+        .await;
     let app = api::build_router(Arc::clone(&state), None);
 
     let response = send(
@@ -1296,13 +1301,12 @@ async fn clearing_the_tree_leaves_display_faces_alone() {
     let effect_id = seed_tree(&state).await;
 
     let display_zone_id = {
-        let metadata = {
-            let registry = state.effect_registry.read().await;
-            registry
-                .get(&effect_id)
-                .map(|entry| entry.metadata.clone())
-                .expect("seeded effect")
-        };
+        let metadata = state
+            .domains
+            .effects
+            .metadata(effect_id)
+            .await
+            .expect("seeded effect");
         let device_id = hypercolor_types::device::DeviceId::new();
         let mut mutation = state.scene_manager.begin_mutation().await;
         let zone_id = mutation
@@ -1358,13 +1362,12 @@ async fn generic_live_tree_mutations_cannot_edit_display_owned_zones() {
     let app = api::build_router(Arc::clone(&state), None);
     let effect_id = seed_tree(&state).await;
     let display_zone_id = {
-        let metadata = {
-            let registry = state.effect_registry.read().await;
-            registry
-                .get(&effect_id)
-                .map(|entry| entry.metadata.clone())
-                .expect("seeded effect")
-        };
+        let metadata = state
+            .domains
+            .effects
+            .metadata(effect_id)
+            .await
+            .expect("seeded effect");
         let device_id = hypercolor_types::device::DeviceId::new();
         let mut mutation = state.scene_manager.begin_mutation().await;
         let zone_id = mutation

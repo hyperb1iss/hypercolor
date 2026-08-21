@@ -38,11 +38,10 @@ pub(crate) async fn metadata_for_effect_id(
     state: &Arc<AppState>,
     effect_id: EffectId,
 ) -> Result<EffectMetadata, String> {
-    let registry = state.effect_registry.read().await;
-    let Some(entry) = registry.get(&effect_id) else {
+    let Some(metadata) = state.domains.effects.metadata(effect_id).await else {
         return Err(format!("effect not found: {effect_id}"));
     };
-    Ok(entry.metadata.clone())
+    Ok(metadata)
 }
 
 pub(crate) fn store_error_to_response(error: &LibraryStoreError) -> Response {

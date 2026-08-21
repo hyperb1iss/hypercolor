@@ -89,9 +89,6 @@ pub struct AppState {
     /// Device tracking and lifecycle management.
     pub device_registry: DeviceRegistry,
 
-    /// Effect catalog (metadata, search, categories).
-    pub effect_registry: Arc<RwLock<EffectRegistry>>,
-
     /// Scene CRUD, priority stack, and transitions.
     pub scene_manager: SceneService,
 
@@ -405,7 +402,9 @@ impl AppState {
                 .expect("default app state should open credential store"),
         );
         let device_registry = DeviceRegistry::new();
-        let effect_registry = Arc::new(RwLock::new(EffectRegistry::default()));
+        let effect_registry = Arc::new(RwLock::new(EffectRegistry::new(vec![
+            data_dir.join("effects"),
+        ])));
         let scenes_path = data_dir.join("scenes.json");
         let scene_store = SceneStore::load(&scenes_path)
             .expect("default app state should load scene persistence");
@@ -597,7 +596,6 @@ impl AppState {
         Self {
             domains,
             device_registry,
-            effect_registry,
             scene_manager,
             scene_store,
             event_bus,
@@ -687,7 +685,6 @@ impl AppState {
         Self {
             domains,
             device_registry: daemon.device_registry.clone(),
-            effect_registry: Arc::clone(&daemon.effect_registry),
             scene_manager: daemon.scene_manager.clone(),
             scene_store: Arc::clone(&daemon.scene_store),
             event_bus: Arc::clone(&daemon.event_bus),

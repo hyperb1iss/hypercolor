@@ -74,7 +74,7 @@ async fn insert_effect(state: &AppState, metadata: &EffectMetadata) {
         modified: SystemTime::now(),
         state: EffectState::Loading,
     };
-    let _ = state.effect_registry.write().await.register(entry);
+    let _ = state.domains.effects.register(entry).await;
 }
 
 /// Load `metadata` into the default scene's primary zone and hand back

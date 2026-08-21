@@ -101,8 +101,7 @@ async fn insert_test_effect(state: &Arc<AppState>, name: &str) -> EffectMetadata
         modified: std::time::SystemTime::now(),
         state: hypercolor_types::effect::EffectState::Loading,
     };
-    let mut registry = state.effect_registry.write().await;
-    let _ = registry.register(entry);
+    let _ = state.domains.effects.register(entry).await;
     metadata
 }
 
