@@ -377,9 +377,13 @@ async fn apply_effect_loads_the_primary_zone_and_commits_durably() {
     let metadata = test_effect_metadata("aurora");
     insert_effect(&state, &metadata).await;
 
-    let applied = apply_effect(&state, apply_command(&metadata), MutationContext::api())
-        .await
-        .expect("apply should succeed");
+    let applied = apply_effect(
+        &state.effects,
+        apply_command(&metadata),
+        MutationContext::api(),
+    )
+    .await
+    .expect("apply should succeed");
 
     assert_eq!(applied.effect.id, metadata.id.to_string());
     assert_eq!(applied.effect.name, "aurora");
@@ -405,12 +409,20 @@ async fn apply_effect_reports_the_outgoing_effect_of_the_target_zone() {
     insert_effect(&state, &first).await;
     insert_effect(&state, &second).await;
 
-    apply_effect(&state, apply_command(&first), MutationContext::api())
-        .await
-        .expect("first apply should succeed");
-    let applied = apply_effect(&state, apply_command(&second), MutationContext::api())
-        .await
-        .expect("second apply should succeed");
+    apply_effect(
+        &state.effects,
+        apply_command(&first),
+        MutationContext::api(),
+    )
+    .await
+    .expect("first apply should succeed");
+    let applied = apply_effect(
+        &state.effects,
+        apply_command(&second),
+        MutationContext::api(),
+    )
+    .await
+    .expect("second apply should succeed");
 
     let previous = applied
         .previous_effect
@@ -426,9 +438,13 @@ async fn apply_effect_refuses_a_display_face() {
     metadata.category = EffectCategory::Display;
     insert_effect(&state, &metadata).await;
 
-    let error = apply_effect(&state, apply_command(&metadata), MutationContext::api())
-        .await
-        .expect_err("a display face should not reach the LED pipeline");
+    let error = apply_effect(
+        &state.effects,
+        apply_command(&metadata),
+        MutationContext::api(),
+    )
+    .await
+    .expect_err("a display face should not reach the LED pipeline");
     assert!(
         matches!(error, DomainError::Validation { .. }),
         "expected Validation, got {error:?}"
@@ -446,7 +462,7 @@ async fn apply_effect_refuses_an_unimplemented_transition_from_either_transport(
     for trigger in [MutationContext::api(), MutationContext::mcp()] {
         let mut command = apply_command(&metadata);
         command.transition = RequestedTransition::of_duration(500);
-        let error = apply_effect(&state, command, trigger)
+        let error = apply_effect(&state.effects, command, trigger)
             .await
             .expect_err("a non-zero transition is not implemented");
         match error {
@@ -460,7 +476,7 @@ async fn apply_effect_refuses_an_unimplemented_transition_from_either_transport(
 
     // A zero-duration cut is the one request the daemon can honor.
     let applied = apply_effect(
-        &state,
+        &state.effects,
         ApplyEffect {
             transition: RequestedTransition::of_duration(0),
             ..apply_command(&metadata)
@@ -482,9 +498,13 @@ async fn apply_effect_conflicts_when_the_active_scene_is_snapshot_locked() {
     scene.mutation_mode = SceneMutationMode::Snapshot;
     seed_active_scene(&state, scene).await;
 
-    let error = apply_effect(&state, apply_command(&metadata), MutationContext::mcp())
-        .await
-        .expect_err("a snapshot scene refuses runtime rewriting");
+    let error = apply_effect(
+        &state.effects,
+        apply_command(&metadata),
+        MutationContext::mcp(),
+    )
+    .await
+    .expect_err("a snapshot scene refuses runtime rewriting");
     assert!(
         matches!(error, DomainError::Conflict { .. }),
         "expected Conflict, got {error:?}"
@@ -972,9 +992,13 @@ async fn a_rejected_candidate_leaves_the_live_state_untouched() {
         )
         .expect("candidate mutation should apply");
 
-    apply_effect(&state, apply_command(&metadata), MutationContext::api())
-        .await
-        .expect("the winning apply should succeed");
+    apply_effect(
+        &state.effects,
+        apply_command(&metadata),
+        MutationContext::api(),
+    )
+    .await
+    .expect("the winning apply should succeed");
 
     let mut events = state.event_bus.subscribe_all();
     commit_scene(&state, stale)
@@ -1055,9 +1079,13 @@ async fn a_non_durable_write_reports_retrying_and_publishes_nothing() {
     writer.set_injected_replace_failures(usize::MAX);
 
     let mut events = state.event_bus.subscribe_all();
-    let applied = apply_effect(&state, apply_command(&metadata), MutationContext::api())
-        .await
-        .expect("a non-durable write is not a rejection");
+    let applied = apply_effect(
+        &state.effects,
+        apply_command(&metadata),
+        MutationContext::api(),
+    )
+    .await
+    .expect("a non-durable write is not a rejection");
 
     assert_eq!(applied.commit.durability(), CommitDurability::Retrying);
     assert!(applied.commit.retry_error().is_some());
@@ -1078,9 +1106,13 @@ async fn commit_generations_advance_the_scene_revision_in_order() {
 
     let mut generations = Vec::new();
     for _ in 0..3 {
-        let applied = apply_effect(&state, apply_command(&metadata), MutationContext::api())
-            .await
-            .expect("apply should succeed");
+        let applied = apply_effect(
+            &state.effects,
+            apply_command(&metadata),
+            MutationContext::api(),
+        )
+        .await
+        .expect("apply should succeed");
         generations.push(applied.commit.generation());
         assert_eq!(applied.commit.generation(), applied.commit.revision());
     }
@@ -1138,9 +1170,13 @@ async fn snapshot_scene_preserves_the_live_tree_and_captures_the_active_layout()
     let (state, _tempdir) = isolated_state();
     let metadata = test_effect_metadata("aurora");
     insert_effect(&state, &metadata).await;
-    apply_effect(&state, apply_command(&metadata), MutationContext::api())
-        .await
-        .expect("the live scene should contain one effect layer");
+    apply_effect(
+        &state.effects,
+        apply_command(&metadata),
+        MutationContext::api(),
+    )
+    .await
+    .expect("the live scene should contain one effect layer");
     let active = state
         .scene_manager
         .snapshot()

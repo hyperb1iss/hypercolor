@@ -440,7 +440,7 @@ async fn activate_playlist_item(state: &Arc<AppState>, item: &PlaylistItem) -> R
     };
 
     let (controls, rejected) =
-        crate::api::effects::normalize_control_values(&metadata, &requested_controls);
+        crate::domain::effect::normalize_control_values(&metadata, &requested_controls);
     if !rejected.is_empty() {
         warn!(
             effect_id = %metadata.id,
@@ -451,7 +451,7 @@ async fn activate_playlist_item(state: &Arc<AppState>, item: &PlaylistItem) -> R
     }
 
     crate::domain::effect::apply_effect(
-        state,
+        &state.effects,
         crate::domain::effect::ApplyEffect {
             effect: metadata,
             controls,

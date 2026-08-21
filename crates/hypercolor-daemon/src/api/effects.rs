@@ -25,10 +25,9 @@ use hypercolor_types::api::scene::{
 use hypercolor_types::effect::{
     ControlValue, EffectCategory, EffectId, EffectMetadata, EffectSource,
 };
-use hypercolor_types::event::{EffectRef, HypercolorEvent};
+use hypercolor_types::event::HypercolorEvent;
 use hypercolor_types::library::PresetId;
 use hypercolor_types::scene::Zone;
-use hypercolor_types::spatial::SpatialLayout;
 
 use crate::api::AppState;
 use crate::api::control_values::json_to_control_value;
@@ -47,7 +46,7 @@ const EFFECT_COVER_FILE_NAME: &str = "default.webp";
 const EFFECT_COVER_CONTENT_TYPE: &str = "image/webp";
 
 pub(crate) async fn invalidate_active_render_groups_after_effect_registry_update(state: &AppState) {
-    if let Err(error) = domain::effect::invalidate_active_zones(state).await {
+    if let Err(error) = domain::effect::invalidate_active_zones(&state.effects).await {
         warn!(%error, "Failed to refresh active zones after an effect registry update");
     }
 }
@@ -154,7 +153,7 @@ pub async fn list_effects(
             Err(error) => return error.into_response(),
         };
 
-    let items: Vec<EffectSummary> = domain::effect::list_catalog(state.as_ref(), &catalog_query)
+    let items: Vec<EffectSummary> = domain::effect::list_catalog(&state.effects, &catalog_query)
         .await
         .into_iter()
         .map(|meta| effect_summary(&meta, includes))
@@ -343,7 +342,7 @@ pub async fn apply_effect(
     let (normalized_controls, dropped_controls) = if requested_controls.is_empty()
         && let Some(preset) = resolved_preset.as_ref()
     {
-        normalize_control_values(&metadata, &preset.controls)
+        domain::effect::normalize_control_values(&metadata, &preset.controls)
     } else {
         let mut owned = HashMap::with_capacity(requested_controls.len());
         for (name, value) in requested_controls {
@@ -359,7 +358,7 @@ pub async fn apply_effect(
             };
             owned.insert(name, projected);
         }
-        normalize_control_values(&metadata, &owned)
+        domain::effect::normalize_control_values(&metadata, &owned)
     };
     if !dropped_controls.is_empty() {
         return DomainError::validation_details(
@@ -373,7 +372,7 @@ pub async fn apply_effect(
     // Commit before waking output. A wake failure rides in the 200 because
     // the scene mutation is already real.
     let applied = match domain::effect::apply_effect(
-        state.as_ref(),
+        &state.effects,
         domain::effect::ApplyEffect {
             effect: metadata.clone(),
             controls: normalized_controls,
@@ -730,52 +729,6 @@ pub(crate) fn normalize_control_payload(
     (normalized, rejected)
 }
 
-pub(crate) fn normalize_control_values(
-    metadata: &EffectMetadata,
-    control_values: &HashMap<String, ControlValue>,
-) -> (HashMap<String, ControlValue>, Vec<String>) {
-    let mut normalized = HashMap::new();
-    let mut rejected = Vec::new();
-
-    for (name, value) in control_values {
-        let result = metadata.control_by_id(name).map_or_else(
-            || Ok(value.clone()),
-            |control| control.validate_value(value),
-        );
-        match result {
-            Ok(control_value) => {
-                normalized.insert(name.clone(), control_value);
-            }
-            Err(error) => rejected.push(format!("{name} ({error})")),
-        }
-    }
-
-    (normalized, rejected)
-}
-
-pub(crate) fn default_control_values(metadata: &EffectMetadata) -> HashMap<String, ControlValue> {
-    metadata
-        .controls
-        .iter()
-        .map(|control| {
-            (
-                control.control_id().to_owned(),
-                control.default_value.clone(),
-            )
-        })
-        .collect()
-}
-
-/// Resolve the full device-output roster as a [`SpatialLayout`] — every
-/// discovered device output with default placement. This is the canonical
-/// source for a fresh `Primary` zone (§5.2): a new scene's Default zone,
-/// the lazily created `effects/apply` `Primary`, and `Primary` recovery
-/// all seed from it.
-pub(crate) async fn resolve_full_scope_layout(state: &AppState) -> SpatialLayout {
-    let spatial = state.spatial_engine.snapshot();
-    spatial.layout().as_ref().clone()
-}
-
 fn log_effect_apply_completion(
     previous_effect: Option<&str>,
     effect_name: &str,
@@ -799,14 +752,6 @@ fn log_effect_apply_completion(
             dropped_controls = ?dropped_controls,
             "Ignored unsupported control value payloads"
         );
-    }
-}
-
-pub(crate) fn effect_ref(metadata: &EffectMetadata) -> EffectRef {
-    EffectRef {
-        id: metadata.id.to_string(),
-        name: metadata.name.clone(),
-        engine: "servo".to_owned(),
     }
 }
 

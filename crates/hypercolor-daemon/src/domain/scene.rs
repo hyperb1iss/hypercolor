@@ -1836,7 +1836,7 @@ pub async fn create_scene(
 ) -> Result<SceneWritten, DomainError> {
     let _ = meta;
 
-    let default_layout = crate::api::effects::resolve_full_scope_layout(state).await;
+    let default_layout = state.effects.full_scope_layout();
     let scene = Scene {
         id: SceneId::new(),
         name: command.name,
@@ -1939,7 +1939,7 @@ pub async fn replace_scene(
         ));
     }
 
-    let default_layout = crate::api::effects::resolve_full_scope_layout(state).await;
+    let default_layout = state.effects.full_scope_layout();
     let mut mutation = state.scene_manager.begin_mutation().await;
     crate::domain::scene_tree::check_scene_revision(&mutation, command.expected_revision)?;
     let existing = mutation

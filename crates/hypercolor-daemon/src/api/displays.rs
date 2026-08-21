@@ -560,7 +560,7 @@ pub async fn patch_display_face_controls(
             Err(error) => return error.into_response(),
         };
         let (normalized_controls, rejected) =
-            crate::api::effects::normalize_control_values(&effect, &requested_controls);
+            crate::domain::effect::normalize_control_values(&effect, &requested_controls);
         if !rejected.is_empty() {
             return DomainError::validation_details(
                 "Invalid display face control values",
@@ -610,7 +610,7 @@ pub async fn patch_display_face_controls(
         Err(error) => return error.into_response(),
     };
     let (normalized_controls, rejected) =
-        crate::api::effects::normalize_control_values(&effect, &requested_controls);
+        crate::domain::effect::normalize_control_values(&effect, &requested_controls);
     if !rejected.is_empty() {
         return DomainError::validation_details(
             "Invalid display face control values",

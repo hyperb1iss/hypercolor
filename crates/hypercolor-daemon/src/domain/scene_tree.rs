@@ -342,7 +342,7 @@ pub async fn clear_scene(
     let _ = meta;
 
     let effect_refs = if command.zone.is_none() {
-        super::effect::effect_ref_index(state).await
+        super::effect::effect_ref_index(&state.effects).await
     } else {
         HashMap::new()
     };
@@ -830,12 +830,11 @@ async fn normalize_against_layer(
     };
     let mut previous = metadata
         .as_ref()
-        .map_or_else(HashMap::new, crate::api::effects::default_control_values);
+        .map_or_else(HashMap::new, super::effect::default_control_values);
     previous.extend(layer_controls);
 
     let values = if let Some(metadata) = metadata {
-        let (normalized, rejected) =
-            crate::api::effects::normalize_control_values(&metadata, &values);
+        let (normalized, rejected) = super::effect::normalize_control_values(&metadata, &values);
         if !rejected.is_empty() {
             return Err(DomainError::validation_details(
                 "one or more control values were rejected",

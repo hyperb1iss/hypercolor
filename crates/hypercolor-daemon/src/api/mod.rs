@@ -88,6 +88,7 @@ use crate::device_settings::DeviceSettingsStore;
 use crate::display_frames::DisplayFrameRuntime;
 use crate::display_preferences::DisplayPreferencesStore;
 use crate::domain::context::{DeviceContext, RuntimeSessionService, SceneContext};
+use crate::domain::effect::EffectContext;
 use crate::domain::output::OutputContext;
 use crate::domain::scene::SceneService;
 use crate::domain::spatial::SpatialService;
@@ -136,6 +137,9 @@ pub struct AppState {
 
     /// Global output power, brightness, and quiescence authority.
     pub output: OutputContext,
+
+    /// Effect catalog, validation, and activation authority.
+    pub effects: EffectContext,
 
     /// Device tracking and lifecycle management.
     pub device_registry: DeviceRegistry,
@@ -630,12 +634,19 @@ impl AppState {
             devices.clone(),
             start_time,
         );
+        let effects = EffectContext::new(
+            Arc::clone(&effect_registry),
+            scene.clone(),
+            spatial_engine.clone(),
+            output.clone(),
+        );
 
         Self {
             scene,
             runtime_session,
             devices,
             output,
+            effects,
             device_registry,
             effect_registry,
             scene_manager,
@@ -762,12 +773,19 @@ impl AppState {
             devices.clone(),
             daemon.start_time,
         );
+        let effects = EffectContext::new(
+            Arc::clone(&daemon.effect_registry),
+            scene.clone(),
+            daemon.spatial_engine.clone(),
+            output.clone(),
+        );
 
         Self {
             scene,
             runtime_session,
             devices,
             output,
+            effects,
             device_registry: daemon.device_registry.clone(),
             effect_registry: Arc::clone(&daemon.effect_registry),
             scene_manager: daemon.scene_manager.clone(),
@@ -967,7 +985,7 @@ async fn resolve_effect_ref_for_fallback(state: &AppState, effect_id: &str) -> E
     if let Some(parsed_id) = parsed_id {
         let registry = state.effect_registry.read().await;
         if let Some(entry) = registry.get(&parsed_id) {
-            return crate::api::effects::effect_ref(&entry.metadata);
+            return crate::domain::effect::effect_ref(&entry.metadata);
         }
     }
 

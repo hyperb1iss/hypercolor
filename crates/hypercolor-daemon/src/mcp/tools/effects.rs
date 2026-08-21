@@ -190,7 +190,7 @@ pub(super) async fn handle_set_effect_with_state(
     }
 
     let applied = apply_effect(
-        state,
+        &state.effects,
         ApplyEffect {
             effect,
             controls: normalized_controls,
@@ -222,7 +222,7 @@ pub(super) async fn handle_list_effects_with_state(
             params.get("query").and_then(Value::as_str),
         )?
     };
-    let filtered = list_catalog(state, &query).await;
+    let filtered = list_catalog(&state.effects, &query).await;
 
     let total = filtered.len();
     let limit = usize::try_from(limit_u64).unwrap_or(20);
@@ -325,7 +325,7 @@ pub(super) async fn handle_set_color_with_state(
     }
 
     let applied = apply_effect(
-        state,
+        &state.effects,
         ApplyEffect {
             effect: solid_effect.clone(),
             controls,
