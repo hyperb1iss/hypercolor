@@ -373,7 +373,7 @@ fn bench_publish_handoff(c: &mut Criterion) {
                 copy_frame_number,
                 timestamp_ms,
             );
-            let _ = copy_bus.canvas_sender().send(frame);
+            let _ = copy_bus.canvas_lane().send(frame);
             black_box(copied);
             copy_frame_number = copy_frame_number.saturating_add(1);
         });
@@ -397,7 +397,7 @@ fn bench_publish_handoff(c: &mut Criterion) {
             let timestamp_ms = pooled_frame_number.saturating_mul(FRAME_INTERVAL_MS);
             let surface = lease.submit(pooled_frame_number, timestamp_ms);
             let _ = pooled_bus
-                .canvas_sender()
+                .canvas_lane()
                 .send(CanvasFrame::from_surface(black_box(surface)));
             pooled_frame_number = pooled_frame_number.saturating_add(1);
         });
@@ -475,10 +475,10 @@ fn bench_render_pipeline(c: &mut Criterion) {
                 active_frame_number,
                 timestamp_ms,
             );
-            active_recycled_frame = active_bus.frame_sender().send_replace(frame);
+            active_recycled_frame = active_bus.frame_lane().send_replace(frame);
             let surface = lease.submit(active_frame_number, timestamp_ms);
             let _ = active_bus
-                .canvas_sender()
+                .canvas_lane()
                 .send(CanvasFrame::from_surface(black_box(surface)));
             active_frame_number = active_frame_number.saturating_add(1);
         });
@@ -501,14 +501,14 @@ fn bench_render_pipeline(c: &mut Criterion) {
                 screen_frame_number,
                 timestamp_ms,
             );
-            screen_recycled_frame = screen_bus.frame_sender().send_replace(frame);
+            screen_recycled_frame = screen_bus.frame_lane().send_replace(frame);
 
             let surface = source_surface.with_frame_metadata(screen_frame_number, timestamp_ms);
             let _ = screen_bus
-                .canvas_sender()
+                .canvas_lane()
                 .send(CanvasFrame::from_surface(surface.clone()));
             let _ = screen_bus
-                .screen_canvas_sender()
+                .screen_canvas_lane()
                 .send(CanvasFrame::from_surface(surface));
 
             screen_frame_number = screen_frame_number.saturating_add(1);

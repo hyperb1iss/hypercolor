@@ -189,14 +189,14 @@ impl OutputContext {
                 .send_replace(group_frame.clone());
         }
         self.event_bus
-            .frame_sender()
+            .frame_lane()
             .send_replace(FrameData::new(zones, frame_number, elapsed_ms));
         self.event_bus
-            .scene_canvas_sender()
+            .scene_canvas_lane()
             .send_replace(canvas_frame.clone());
-        self.event_bus.canvas_sender().send_replace(canvas_frame);
+        self.event_bus.canvas_lane().send_replace(canvas_frame);
         self.preview_runtime
-            .record_canvas_publication(frame_number, elapsed_ms);
+            .note_canvas_frame(frame_number, elapsed_ms);
     }
 }
 

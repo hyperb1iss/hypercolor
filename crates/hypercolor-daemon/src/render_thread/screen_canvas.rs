@@ -121,7 +121,7 @@ pub(crate) fn publish_screen_zones(
 
     state
         .event_bus
-        .screen_zones_sender()
+        .screen_zones_lane()
         .send_if_modified(|current| {
             if current.same_content(&frame) {
                 false

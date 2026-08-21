@@ -13,7 +13,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use axum::body::Bytes;
 use axum::extract::ws::Utf8Bytes;
-use hypercolor_core::bus::EventTimestamp;
+use hypercolor_core::bus::{EventTimestamp, PreviewKind};
 use hypercolor_core::device::usb_actor_metrics_snapshot;
 use hypercolor_core::engine::RenderLoopState;
 use hypercolor_core::input::BrowserInputPublicationId;
@@ -1707,7 +1707,7 @@ pub(super) async fn relay_canvas(
             }
             () = tokio::time::sleep(preview_send_delay(last_sent_at, active_fps, Instant::now())), if pending_send => {
                 // Clone out of the watch borrow before encoding so the
-                // render thread's canvas_sender().send() isn't blocked on
+                // render thread's canvas lane publication isn't blocked on
                 // bilinear/JPEG work. CanvasFrame's pixel storage is
                 // Arc-backed, so clone is cheap (refcount bumps).
                 let (canvas_snapshot, surface_identity) = {
@@ -2221,7 +2221,7 @@ pub(super) async fn relay_zone_preview(
                     latest.clone()
                 };
                 let mut active_streams = HashSet::new();
-                for zone_preview in &zone_previews {
+                for zone_preview in zone_previews.iter() {
                     let stream = PreviewStreamId::Zone {
                         scene_id: *zone_preview.scene_id.0.as_bytes(),
                         zone_id: *zone_preview.zone_id.0.as_bytes(),
@@ -2995,6 +2995,11 @@ pub(super) async fn build_metrics_message(
     let daemon_rss_mb = process_rss_mb().unwrap_or(0.0);
     let client_count = WS_CLIENT_COUNT.load(Ordering::Relaxed);
     let preview_runtime = state.preview_runtime.snapshot();
+    let canvas_preview = preview_runtime.preview(PreviewKind::Canvas);
+    let scene_canvas_preview = preview_runtime.preview(PreviewKind::SceneCanvas);
+    let screen_canvas_preview = preview_runtime.preview(PreviewKind::ScreenCanvas);
+    let web_viewport_canvas_preview = preview_runtime.preview(PreviewKind::WebViewportCanvas);
+    let zone_preview = preview_runtime.zone_preview;
     let canvas_demand = state.preview_runtime.canvas_demand();
     let scene_canvas_demand = state.preview_runtime.scene_canvas_demand();
     let screen_canvas_demand = state.preview_runtime.screen_canvas_demand();
@@ -3303,24 +3308,22 @@ pub(super) async fn build_metrics_message(
                 compositor_pool_dequeued_slots: latest_frame.compositor_pool_dequeued_slots,
             },
             preview: MetricsPreview {
-                canvas_receivers: preview_runtime.canvas_receivers,
-                scene_canvas_receivers: preview_runtime.scene_canvas_receivers,
-                screen_canvas_receivers: preview_runtime.screen_canvas_receivers,
-                web_viewport_canvas_receivers: preview_runtime.web_viewport_canvas_receivers,
-                zone_preview_receivers: preview_runtime.zone_preview_receivers,
-                canvas_frames_published: preview_runtime.canvas_frames_published,
-                scene_canvas_frames_published: preview_runtime.scene_canvas_frames_published,
-                screen_canvas_frames_published: preview_runtime.screen_canvas_frames_published,
-                web_viewport_canvas_frames_published: preview_runtime
-                    .web_viewport_canvas_frames_published,
-                zone_preview_frames_published: preview_runtime.zone_preview_frames_published,
-                latest_canvas_frame_number: preview_runtime.latest_canvas_frame_number,
-                latest_scene_canvas_frame_number: preview_runtime.latest_scene_canvas_frame_number,
-                latest_screen_canvas_frame_number: preview_runtime
-                    .latest_screen_canvas_frame_number,
-                latest_web_viewport_canvas_frame_number: preview_runtime
-                    .latest_web_viewport_canvas_frame_number,
-                latest_zone_preview_frame_number: preview_runtime.latest_zone_preview_frame_number,
+                canvas_receivers: canvas_preview.receivers,
+                scene_canvas_receivers: scene_canvas_preview.receivers,
+                screen_canvas_receivers: screen_canvas_preview.receivers,
+                web_viewport_canvas_receivers: web_viewport_canvas_preview.receivers,
+                zone_preview_receivers: zone_preview.receivers,
+                canvas_frames_published: canvas_preview.frames_published,
+                scene_canvas_frames_published: scene_canvas_preview.frames_published,
+                screen_canvas_frames_published: screen_canvas_preview.frames_published,
+                web_viewport_canvas_frames_published: web_viewport_canvas_preview.frames_published,
+                zone_preview_frames_published: zone_preview.frames_published,
+                latest_canvas_frame_number: canvas_preview.latest_frame_number,
+                latest_scene_canvas_frame_number: scene_canvas_preview.latest_frame_number,
+                latest_screen_canvas_frame_number: screen_canvas_preview.latest_frame_number,
+                latest_web_viewport_canvas_frame_number: web_viewport_canvas_preview
+                    .latest_frame_number,
+                latest_zone_preview_frame_number: zone_preview.latest_frame_number,
                 canvas_demand: metrics_preview_demand(canvas_demand),
                 scene_canvas_demand: metrics_preview_demand(scene_canvas_demand),
                 screen_canvas_demand: metrics_preview_demand(screen_canvas_demand),

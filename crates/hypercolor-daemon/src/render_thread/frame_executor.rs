@@ -608,7 +608,7 @@ pub(crate) async fn execute_frame(
                 manager.reuse_routed_frame_outputs(unassigned_output_plan.layout())
             }
             OutputFrameSource::PublishedFrame => {
-                let published_frame = state.event_bus.frame_sender().borrow();
+                let published_frame = state.event_bus.frame_lane().borrow();
                 let zones = unassigned_output_plan.zones_for(&published_frame.zones);
                 manager.write_frame_with_brightness(
                     &zones,
@@ -926,16 +926,16 @@ async fn force_static_sleep_snapshot(
     }
     state
         .event_bus
-        .frame_sender()
+        .frame_lane()
         .send_replace(FrameData::new(zones, frame_number, elapsed_ms));
     state
         .event_bus
-        .scene_canvas_sender()
+        .scene_canvas_lane()
         .send_replace(canvas_frame.clone());
-    state.event_bus.canvas_sender().send_replace(canvas_frame);
+    state.event_bus.canvas_lane().send_replace(canvas_frame);
     state
         .preview_runtime
-        .record_canvas_publication(frame_number, elapsed_ms);
+        .note_canvas_frame(frame_number, elapsed_ms);
 }
 
 fn should_switch_to_late_sleep_frame(

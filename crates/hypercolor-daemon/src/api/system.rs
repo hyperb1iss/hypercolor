@@ -12,6 +12,7 @@ use anyhow::Context;
 use axum::extract::{Extension, State};
 use axum::response::{IntoResponse, Response};
 use cpal::traits::{DeviceTrait, HostTrait};
+use hypercolor_core::bus::PreviewKind;
 use hypercolor_core::config::canonical_audio_device_id;
 use hypercolor_core::engine::RenderLoopState;
 #[cfg(target_os = "linux")]
@@ -1493,19 +1494,23 @@ fn latest_frame_status(frame: &LatestFrameMetrics, render_elapsed_ms: f64) -> La
 
 fn preview_runtime_status(runtime: &PreviewRuntime) -> PreviewRuntimeStatus {
     let snapshot = runtime.snapshot();
+    let canvas = snapshot.preview(PreviewKind::Canvas);
+    let scene_canvas = snapshot.preview(PreviewKind::SceneCanvas);
+    let screen_canvas = snapshot.preview(PreviewKind::ScreenCanvas);
+    let zone_preview = snapshot.zone_preview;
     PreviewRuntimeStatus {
-        canvas_receivers: snapshot.canvas_receivers,
-        scene_canvas_receivers: snapshot.scene_canvas_receivers,
-        screen_canvas_receivers: snapshot.screen_canvas_receivers,
-        zone_preview_receivers: snapshot.zone_preview_receivers,
-        canvas_frames_published: snapshot.canvas_frames_published,
-        scene_canvas_frames_published: snapshot.scene_canvas_frames_published,
-        screen_canvas_frames_published: snapshot.screen_canvas_frames_published,
-        zone_preview_frames_published: snapshot.zone_preview_frames_published,
-        latest_canvas_frame_number: snapshot.latest_canvas_frame_number,
-        latest_scene_canvas_frame_number: snapshot.latest_scene_canvas_frame_number,
-        latest_screen_canvas_frame_number: snapshot.latest_screen_canvas_frame_number,
-        latest_zone_preview_frame_number: snapshot.latest_zone_preview_frame_number,
+        canvas_receivers: canvas.receivers,
+        scene_canvas_receivers: scene_canvas.receivers,
+        screen_canvas_receivers: screen_canvas.receivers,
+        zone_preview_receivers: zone_preview.receivers,
+        canvas_frames_published: canvas.frames_published,
+        scene_canvas_frames_published: scene_canvas.frames_published,
+        screen_canvas_frames_published: screen_canvas.frames_published,
+        zone_preview_frames_published: zone_preview.frames_published,
+        latest_canvas_frame_number: canvas.latest_frame_number,
+        latest_scene_canvas_frame_number: scene_canvas.latest_frame_number,
+        latest_screen_canvas_frame_number: screen_canvas.latest_frame_number,
+        latest_zone_preview_frame_number: zone_preview.latest_frame_number,
         canvas_demand: preview_demand_status(runtime.canvas_demand()),
         scene_canvas_demand: preview_demand_status(runtime.scene_canvas_demand()),
         screen_canvas_demand: preview_demand_status(runtime.screen_canvas_demand()),
@@ -2402,24 +2407,24 @@ mod tests {
         let canvas_frame = CanvasFrame::from_canvas(&Canvas::new(2, 1), 88, 44);
         let scene_frame = CanvasFrame::from_canvas(&Canvas::new(2, 1), 66, 33);
         let screen_frame = CanvasFrame::from_canvas(&Canvas::new(1, 1), 45, 21);
-        let _ = state.event_bus.canvas_sender().send(canvas_frame.clone());
+        let _ = state.event_bus.canvas_lane().send(canvas_frame.clone());
         let _ = state
             .event_bus
-            .scene_canvas_sender()
+            .scene_canvas_lane()
             .send(scene_frame.clone());
         let _ = state
             .event_bus
-            .screen_canvas_sender()
+            .screen_canvas_lane()
             .send(screen_frame.clone());
         state
             .preview_runtime
-            .record_canvas_publication(canvas_frame.frame_number, canvas_frame.timestamp_ms);
+            .note_canvas_frame(canvas_frame.frame_number, canvas_frame.timestamp_ms);
         state
             .preview_runtime
-            .record_scene_canvas_publication(scene_frame.frame_number, scene_frame.timestamp_ms);
+            .note_scene_canvas_frame(scene_frame.frame_number, scene_frame.timestamp_ms);
         state
             .preview_runtime
-            .record_screen_canvas_publication(screen_frame.frame_number, screen_frame.timestamp_ms);
+            .note_screen_canvas_frame(screen_frame.frame_number, screen_frame.timestamp_ms);
         {
             let mut performance = state.performance.write().await;
             performance.record_effect_error();

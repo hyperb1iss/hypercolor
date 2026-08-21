@@ -654,24 +654,24 @@ async fn metrics_message_includes_latest_frame_timeline() {
     let canvas_frame = CanvasFrame::from_canvas(&Canvas::new(2, 1), 88, 44);
     let scene_frame = CanvasFrame::from_canvas(&Canvas::new(2, 1), 66, 33);
     let screen_frame = CanvasFrame::from_canvas(&Canvas::new(1, 1), 45, 21);
-    let _ = state.event_bus.canvas_sender().send(canvas_frame.clone());
+    let _ = state.event_bus.canvas_lane().send(canvas_frame.clone());
     let _ = state
         .event_bus
-        .scene_canvas_sender()
+        .scene_canvas_lane()
         .send(scene_frame.clone());
     let _ = state
         .event_bus
-        .screen_canvas_sender()
+        .screen_canvas_lane()
         .send(screen_frame.clone());
     state
         .preview_runtime
-        .record_canvas_publication(canvas_frame.frame_number, canvas_frame.timestamp_ms);
+        .note_canvas_frame(canvas_frame.frame_number, canvas_frame.timestamp_ms);
     state
         .preview_runtime
-        .record_scene_canvas_publication(scene_frame.frame_number, scene_frame.timestamp_ms);
+        .note_scene_canvas_frame(scene_frame.frame_number, scene_frame.timestamp_ms);
     state
         .preview_runtime
-        .record_screen_canvas_publication(screen_frame.frame_number, screen_frame.timestamp_ms);
+        .note_screen_canvas_frame(screen_frame.frame_number, screen_frame.timestamp_ms);
     {
         let mut performance = state.performance.write().await;
         performance.record_effect_error();
@@ -1638,7 +1638,7 @@ async fn relay_frames_wakes_when_subscription_changes() {
     let (json_tx, _json_rx) = tokio::sync::mpsc::channel::<Utf8Bytes>(1);
     let (binary_tx, mut binary_rx) = tokio::sync::mpsc::channel::<Bytes>(1);
     let state = Arc::new(AppState::new());
-    let _ = state.event_bus.frame_sender().send(sample_frame());
+    let _ = state.event_bus.frame_lane().send(sample_frame());
 
     let relay_handle = tokio::spawn(relay_frames(
         Arc::clone(&state),
@@ -1683,10 +1683,7 @@ async fn relay_spectrum_subscribes_lazily() {
     let (json_tx, _json_rx) = tokio::sync::mpsc::channel::<Utf8Bytes>(1);
     let (binary_tx, mut binary_rx) = tokio::sync::mpsc::channel::<Bytes>(1);
     let state = Arc::new(AppState::new());
-    let _ = state
-        .event_bus
-        .spectrum_sender()
-        .send(SpectrumData::empty());
+    let _ = state.event_bus.spectrum_lane().send(SpectrumData::empty());
 
     let relay_handle = tokio::spawn(relay_spectrum(
         Arc::clone(&state),
@@ -1914,8 +1911,10 @@ async fn relay_screen_zones_paces_each_connection_and_sends_the_latest_frame() {
     assert_eq!(initial.frame_number, 0);
 
     for frame_number in [1, 2] {
-        state.event_bus.screen_zones_sender().send_replace(
-            hypercolor_core::bus::ScreenZonesFrame {
+        state
+            .event_bus
+            .screen_zones_lane()
+            .send_replace(hypercolor_core::bus::ScreenZonesFrame {
                 frame_number,
                 timestamp_ms: frame_number,
                 source_width: 1,
@@ -1929,8 +1928,7 @@ async fn relay_screen_zones_paces_each_connection_and_sends_the_latest_frame() {
                     3,
                 ]]
                 .into(),
-            },
-        );
+            });
         tokio::task::yield_now().await;
     }
 
@@ -1972,14 +1970,14 @@ async fn relay_zone_preview_cancels_streams_retired_by_scene_changes() {
     let zone_b = ZoneId::new();
     let mut canvas = Canvas::new(1, 1);
     canvas.set_pixel(0, 0, Rgba::new(1, 2, 3, 255));
-    state
-        .event_bus
-        .zone_preview_sender()
-        .send_replace(vec![ZonePreviewFrame {
+    state.event_bus.zone_preview_lane().send_replace(
+        vec![ZonePreviewFrame {
             scene_id: scene_a,
             zone_id: zone_a,
             frame: CanvasFrame::from_canvas(&canvas, 1, 1),
-        }]);
+        }]
+        .into(),
+    );
 
     let first = tokio::time::timeout(Duration::from_millis(250), async {
         loop {
@@ -1998,14 +1996,14 @@ async fn relay_zone_preview_cancels_streams_retired_by_scene_changes() {
         }
     );
 
-    state
-        .event_bus
-        .zone_preview_sender()
-        .send_replace(vec![ZonePreviewFrame {
+    state.event_bus.zone_preview_lane().send_replace(
+        vec![ZonePreviewFrame {
             scene_id: scene_b,
             zone_id: zone_b,
             frame: CanvasFrame::from_canvas(&canvas, 2, 2),
-        }]);
+        }]
+        .into(),
+    );
 
     let retired_stream = PreviewStreamId::Zone {
         scene_id: *scene_a.0.as_bytes(),

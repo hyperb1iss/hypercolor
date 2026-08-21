@@ -16,7 +16,7 @@ use tokio::sync::{Mutex, Notify, RwLock, watch};
 
 use hypercolor_core::asset::AssetLibrary;
 use hypercolor_core::attachment::ComponentRegistry;
-use hypercolor_core::bus::{CanvasFrame, DisplayGroupFrame, HypercolorBus};
+use hypercolor_core::bus::{CanvasFrame, DisplayGroupFrame, HypercolorBus, PreviewKind};
 use hypercolor_core::device::mock::{MockDeviceBackend, MockDeviceConfig};
 use hypercolor_core::device::{
     BackendInfo, BackendManager, DeviceBackend, DeviceLifecycleManager, DeviceRegistry,
@@ -3653,8 +3653,18 @@ async fn pipeline_retains_screen_preview_surface_when_input_stalls() {
         retained_canvas.rgba_bytes().as_ptr(),
         retained_screen.rgba_bytes().as_ptr()
     );
-    assert!(preview_snapshot.latest_canvas_frame_number > initial_canvas.frame_number);
-    assert!(preview_snapshot.latest_screen_canvas_frame_number > initial_screen.frame_number);
+    assert!(
+        preview_snapshot
+            .preview(PreviewKind::Canvas)
+            .latest_frame_number
+            > initial_canvas.frame_number
+    );
+    assert!(
+        preview_snapshot
+            .preview(PreviewKind::ScreenCanvas)
+            .latest_frame_number
+            > initial_screen.frame_number
+    );
 }
 
 #[cfg(feature = "wgpu")]
@@ -4457,7 +4467,7 @@ async fn idle_pipeline_skips_spectrum_publication_without_receivers() {
     }
     rt.shutdown().await.expect("shutdown");
 
-    let published_spectrum = state.event_bus.spectrum_sender().borrow().clone();
+    let published_spectrum = state.event_bus.spectrum_lane().borrow().clone();
     assert_eq!(published_spectrum.timestamp_ms, 0);
     assert!(published_spectrum.level.abs() <= f32::EPSILON);
     assert_eq!(published_spectrum.bins.len(), 0);
@@ -4618,12 +4628,13 @@ async fn idle_pipeline_skips_canvas_publication_without_receivers() {
     }
     rt.shutdown().await.expect("shutdown");
 
-    let published_canvas = state.event_bus.canvas_sender().borrow().clone();
+    let published_canvas = state.event_bus.canvas_lane().borrow().clone();
     let preview_snapshot = state.preview_runtime.snapshot();
     assert_eq!(published_canvas.width, 0);
     assert_eq!(published_canvas.height, 0);
-    assert_eq!(preview_snapshot.canvas_frames_published, 0);
-    assert!(preview_snapshot.latest_canvas_frame_number > 0);
+    let canvas_preview = preview_snapshot.preview(PreviewKind::Canvas);
+    assert_eq!(canvas_preview.frames_published, 0);
+    assert!(canvas_preview.latest_frame_number > 0);
 }
 
 #[tokio::test]
@@ -4665,13 +4676,22 @@ async fn pipeline_throttles_canvas_preview_publication_to_tracked_receiver_fps()
 
     let preview_snapshot = state.preview_runtime.snapshot();
     assert!(
-        preview_snapshot.canvas_frames_published <= 3,
+        preview_snapshot
+            .preview(PreviewKind::Canvas)
+            .frames_published
+            <= 3,
         "expected low-fps preview demand to gate source publication, got {} canvas publications",
-        preview_snapshot.canvas_frames_published
+        preview_snapshot
+            .preview(PreviewKind::Canvas)
+            .frames_published
     );
     assert!(
-        preview_snapshot.latest_canvas_frame_number
-            > preview_snapshot.canvas_frames_published as u32,
+        preview_snapshot
+            .preview(PreviewKind::Canvas)
+            .latest_frame_number
+            > preview_snapshot
+                .preview(PreviewKind::Canvas)
+                .frames_published as u32,
         "expected preview telemetry to keep advancing even when source publication is throttled"
     );
 }

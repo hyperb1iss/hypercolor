@@ -752,7 +752,7 @@ async fn event_bus_frame_data_watch_channel() {
         100,
     );
 
-    bus.frame_sender()
+    bus.frame_lane()
         .send(frame)
         .expect("frame send should succeed");
 
