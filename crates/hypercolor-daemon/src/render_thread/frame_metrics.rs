@@ -465,6 +465,7 @@ mod tests {
                 active_scene_id: None,
                 active_scene_name: None,
                 active_transition: Some(SceneTransitionSnapshot {
+                    epoch: 1,
                     from_scene: None,
                     to_scene: None,
                     progress: 0.25,

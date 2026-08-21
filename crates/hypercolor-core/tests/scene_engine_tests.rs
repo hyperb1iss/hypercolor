@@ -7,7 +7,6 @@ use std::time::Duration;
 
 use hypercolor_core::scene::automation::AutomationEngine;
 use hypercolor_core::scene::priority::PriorityStack;
-use hypercolor_core::scene::transition::TransitionState;
 use hypercolor_core::scene::{LayerMutationError, SceneManager, make_scene};
 use hypercolor_types::canvas::LinearRgba;
 use hypercolor_types::effect::{
@@ -18,7 +17,7 @@ use hypercolor_types::layer::{
 };
 use hypercolor_types::scene::{
     ActionKind, AutomationRule, ColorInterpolation, EasingFunction, SceneId, ScenePriority,
-    TransitionSpec, TriggerSource, UnassignedBehavior, Zone, ZoneAssignment, ZoneId, ZoneRole,
+    TransitionSpec, TriggerSource, UnassignedBehavior, Zone, ZoneId, ZoneRole,
 };
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
@@ -52,16 +51,6 @@ fn make_rule(
         action,
         cooldown_secs,
         enabled,
-    }
-}
-
-/// Build a zone assignment.
-fn zone(name: &str, effect: &str, brightness: Option<f32>) -> ZoneAssignment {
-    ZoneAssignment {
-        zone_name: name.to_string(),
-        effect_name: effect.to_string(),
-        parameters: HashMap::new(),
-        brightness,
     }
 }
 
@@ -759,8 +748,9 @@ fn scene_manager_transition_plan_keeps_authored_zones_without_flat_assignments()
     mgr.activate(&id_a, None).expect("activate A");
     mgr.activate(&id_b, None).expect("activate B");
 
-    let transition = mgr.active_transition().expect("transition should exist");
-    assert!(transition.blend().is_empty());
+    let transition = mgr.transition_plan().expect("transition should exist");
+    assert_eq!(transition.from_scene, id_a);
+    assert_eq!(transition.to_scene, id_b);
 
     let plan = mgr.plan_snapshot(7);
     assert_eq!(plan.generation, 7);
@@ -771,136 +761,6 @@ fn scene_manager_transition_plan_keeps_authored_zones_without_flat_assignments()
 // ═══════════════════════════════════════════════════════════════════════
 // Transition Tests
 // ═══════════════════════════════════════════════════════════════════════
-
-#[test]
-fn transition_linear_progress() {
-    let from = vec![zone("strip", "rainbow", Some(1.0))];
-    let to = vec![zone("strip", "breathe", Some(0.5))];
-
-    let mut transition = TransitionState::new(
-        SceneId::new(),
-        SceneId::new(),
-        transition_spec(1000, EasingFunction::Linear),
-        from,
-        to,
-    );
-
-    assert!(!transition.is_complete());
-    assert!((transition.progress - 0.0).abs() < f32::EPSILON);
-
-    // Advance 500ms (half duration).
-    transition.tick(0.5);
-    assert!(
-        (transition.progress - 0.5).abs() < 0.01,
-        "progress should be ~0.5, got {}",
-        transition.progress
-    );
-
-    // Advance another 500ms (complete).
-    transition.tick(0.5);
-    assert!(transition.is_complete());
-    assert!((transition.progress - 1.0).abs() < f32::EPSILON);
-}
-
-#[test]
-fn transition_easing_ease_in_slow_start() {
-    let from = vec![zone("z", "static", Some(1.0))];
-    let to = vec![zone("z", "wave", Some(1.0))];
-
-    let mut transition = TransitionState::new(
-        SceneId::new(),
-        SceneId::new(),
-        transition_spec(1000, EasingFunction::EaseIn),
-        from,
-        to,
-    );
-
-    // At 25% linear progress, eased progress should be less than 0.25
-    // because EaseIn (cubic) starts slow: t^3 at 0.25 = 0.015625.
-    transition.tick(0.25);
-    let eased = transition.eased_progress();
-    assert!(
-        eased < 0.25,
-        "EaseIn at 25% linear should produce eased < 0.25, got {eased}"
-    );
-    assert!(
-        (eased - 0.015_625).abs() < 0.01,
-        "EaseIn at 0.25 should be ~0.015625, got {eased}"
-    );
-}
-
-#[test]
-fn transition_completion_detection() {
-    let mut transition = TransitionState::new(
-        SceneId::new(),
-        SceneId::new(),
-        transition_spec(500, EasingFunction::Linear),
-        vec![],
-        vec![],
-    );
-
-    assert!(!transition.is_complete());
-
-    // Overshoot.
-    transition.tick(1.0);
-    assert!(transition.is_complete());
-    // Progress clamped to 1.0.
-    assert!((transition.progress - 1.0).abs() < f32::EPSILON);
-
-    // Further ticks are no-ops.
-    transition.tick(1.0);
-    assert!(transition.is_complete());
-}
-
-#[test]
-fn transition_zero_duration_is_instant() {
-    let transition = TransitionState::new(
-        SceneId::new(),
-        SceneId::new(),
-        transition_spec(0, EasingFunction::Linear),
-        vec![zone("z", "a", Some(1.0))],
-        vec![zone("z", "b", Some(0.5))],
-    );
-
-    assert!(
-        transition.is_complete(),
-        "zero-duration transition should be instantly complete"
-    );
-
-    // Blend should return the target state.
-    let blended = transition.blend();
-    assert_eq!(blended.len(), 1);
-    let b = blended.first().expect("should have one zone");
-    // At t=1.0 the brightness should be the target's brightness.
-    assert!(
-        (b.brightness.unwrap_or(0.0) - 0.5).abs() < 0.01,
-        "brightness should be ~0.5 (target), got {:?}",
-        b.brightness
-    );
-}
-
-#[test]
-fn transition_blends_brightness() {
-    let from = vec![zone("strip", "static", Some(1.0))];
-    let to = vec![zone("strip", "static", Some(0.0))];
-
-    let mut transition = TransitionState::new(
-        SceneId::new(),
-        SceneId::new(),
-        transition_spec(1000, EasingFunction::Linear),
-        from,
-        to,
-    );
-
-    transition.tick(0.5);
-    let blended = transition.blend();
-    let b = blended.first().expect("one zone");
-    let brightness = b.brightness.unwrap_or(0.0);
-    assert!(
-        (brightness - 0.5).abs() < 0.05,
-        "midpoint brightness should be ~0.5, got {brightness}"
-    );
-}
 
 #[test]
 fn transition_color_interpolation_oklab() {
@@ -1331,44 +1191,13 @@ fn scene_manager_activate_starts_transition() {
 
     // Activate A — no transition (first activation).
     mgr.activate(&id_a, None).expect("activate A");
-    assert!(!mgr.is_transitioning());
+    assert!(mgr.transition_plan().is_none());
 
     // Activate B — should start a transition from A to B.
     mgr.activate(&id_b, Some(transition_spec(500, EasingFunction::Linear)))
         .expect("activate B");
-    assert!(mgr.is_transitioning());
-
-    // Tick to completion.
-    mgr.tick_transition(1.0);
-    assert!(
-        !mgr.is_transitioning(),
-        "transition should complete after sufficient tick"
-    );
-}
-
-#[test]
-fn scene_manager_tick_transition_clears_on_complete() {
-    let mut mgr = SceneManager::new();
-
-    let a = make_scene("A");
-    let id_a = a.id;
-    mgr.create(a).expect("create A");
-
-    let b = make_scene("B");
-    let id_b = b.id;
-    mgr.create(b).expect("create B");
-
-    mgr.activate(&id_a, None).expect("activate A");
-    mgr.activate(&id_b, Some(transition_spec(100, EasingFunction::Linear)))
-        .expect("activate B");
-
-    assert!(mgr.is_transitioning());
-
-    // Small tick — not enough to complete.
-    mgr.tick_transition(0.05);
-    assert!(mgr.is_transitioning());
-
-    // Large tick — should complete.
-    mgr.tick_transition(1.0);
-    assert!(!mgr.is_transitioning());
+    let plan = mgr.transition_plan().expect("transition plan should exist");
+    assert_eq!(plan.from_scene, id_a);
+    assert_eq!(plan.to_scene, id_b);
+    assert_eq!(plan.spec.duration_ms, 500);
 }

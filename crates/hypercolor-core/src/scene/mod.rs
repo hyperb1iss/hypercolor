@@ -1,4 +1,4 @@
-//! Scene engine — scene lifecycle, transition blending, priority management,
+//! Scene engine — scene lifecycle, transition planning, priority management,
 //! and automation rule evaluation.
 //!
 //! This module is the orchestration layer that sits between the effect
@@ -7,7 +7,7 @@
 //! - **Scene CRUD** — create, read, update, delete scenes.
 //! - **Activation** — activate a scene with a transition, track the active scene.
 //! - **Deactivation** — deactivate the current scene, restoring the previous one.
-//! - **Transitions** — cross-fade blending via [`TransitionState`].
+//! - **Transitions** — immutable activation plans via [`TransitionPlan`].
 //! - **Priority stacking** — conflict resolution via [`PriorityStack`].
 //! - **Automation** — rule evaluation via [`AutomationEngine`].
 
@@ -17,7 +17,9 @@ pub mod transition;
 
 pub use automation::AutomationEngine;
 pub use priority::{PriorityStack, StackEntry};
-pub use transition::{TransitionState, interpolate_color, interpolate_oklab, interpolate_srgb};
+pub use transition::{
+    TransitionIdentity, TransitionPlan, interpolate_color, interpolate_oklab, interpolate_srgb,
+};
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -143,7 +145,7 @@ pub struct ScenePlanSnapshot {
     pub generation: u64,
     pub active_scene_id: Option<SceneId>,
     pub active_scene_name: Option<String>,
-    pub transition: Option<TransitionState>,
+    pub transition: Option<TransitionPlan>,
     pub zones: Arc<[Zone]>,
     pub zones_revision: u64,
     pub unassigned_behavior: crate::types::scene::UnassignedBehavior,
@@ -151,9 +153,8 @@ pub struct ScenePlanSnapshot {
 
 /// Central scene lifecycle manager.
 ///
-/// Owns the scene store, the priority stack, and the active transition
-/// state. The render loop calls into the manager each frame to advance
-/// transitions and resolve the effective zone assignments.
+/// Owns the scene store, the priority stack, and immutable transition plans.
+/// Render-local frame state owns clocks and transition progress.
 #[derive(Debug, Clone)]
 pub struct SceneManager {
     /// All registered scenes, keyed by [`SceneId`].
@@ -162,8 +163,8 @@ pub struct SceneManager {
     /// Priority stack for active scene arbitration.
     priority_stack: PriorityStack,
 
-    /// In-progress transition (if any).
-    active_transition: Option<TransitionState>,
+    /// Most recently admitted transition plan (if any).
+    transition_plan: Option<TransitionPlan>,
 
     /// Identity source for immutable transition plans.
     transition_epoch: u64,
@@ -191,7 +192,7 @@ impl SceneManager {
         Self {
             scenes: HashMap::new(),
             priority_stack: PriorityStack::new(),
-            active_transition: None,
+            transition_plan: None,
             transition_epoch: 0,
             activation_history: Vec::new(),
             active_render_groups: Arc::default(),
@@ -338,17 +339,10 @@ impl SceneManager {
 
         let spec = transition_override.unwrap_or_else(|| scene.transition.clone());
         let priority = scene.priority;
-        let to_assignments = Vec::new();
         let to_id = scene.id;
 
         // Capture from-state before pushing.
         let from_state = self.active_scene_id().copied();
-        let from_assignments = from_state
-            .as_ref()
-            .and_then(|fid| self.scenes.get(fid))
-            .map(|_| Vec::new())
-            .unwrap_or_default();
-
         // Record history.
         if let Some(prev_id) = from_state {
             self.activation_history.insert(0, prev_id);
@@ -360,16 +354,18 @@ impl SceneManager {
         if let Some(from_id) = from_state {
             if spec.duration_ms > 0 {
                 self.transition_epoch = self.transition_epoch.saturating_add(1);
-                self.active_transition = Some(
-                    TransitionState::new(from_id, to_id, spec, from_assignments, to_assignments)
-                        .with_epoch(self.transition_epoch),
-                );
+                self.transition_plan = Some(TransitionPlan::new(
+                    self.transition_epoch,
+                    from_id,
+                    to_id,
+                    spec,
+                ));
             } else {
                 // Instant activation — no transition.
-                self.active_transition = None;
+                self.transition_plan = None;
             }
         } else {
-            self.active_transition = None;
+            self.transition_plan = None;
         }
 
         self.refresh_active_render_groups();
@@ -391,7 +387,7 @@ impl SceneManager {
             // If there was a previous scene in history, try to restore it.
             // The priority stack already exposes the next entry via peek().
             // We also clear the transition since we're switching instantly.
-            self.active_transition = None;
+            self.transition_plan = None;
 
             // Remove from history if present.
             self.activation_history.retain(|sid| *sid != entry.scene_id);
@@ -431,7 +427,7 @@ impl SceneManager {
             generation,
             active_scene_id: self.active_scene_id().copied(),
             active_scene_name: self.active_scene().map(|scene| scene.name.clone()),
-            transition: self.active_transition.clone(),
+            transition: self.transition_plan.clone(),
             zones: self.active_render_groups(),
             zones_revision: self.active_render_groups_revision,
             unassigned_behavior: self
@@ -449,28 +445,10 @@ impl SceneManager {
 
     // ── Transition ──────────────────────────────────────────────────
 
-    /// Advance the active transition by `delta_secs`.
-    ///
-    /// If the transition completes, it is cleared.
-    pub fn tick_transition(&mut self, delta_secs: f32) {
-        if let Some(ref mut transition) = self.active_transition {
-            transition.tick(delta_secs);
-            if transition.is_complete() {
-                self.active_transition = None;
-            }
-        }
-    }
-
-    /// Get a reference to the active transition (if any).
+    /// Get the latest immutable transition plan, if activation requested one.
     #[must_use]
-    pub fn active_transition(&self) -> Option<&TransitionState> {
-        self.active_transition.as_ref()
-    }
-
-    /// Whether a transition is currently in progress.
-    #[must_use]
-    pub fn is_transitioning(&self) -> bool {
-        self.active_transition.is_some()
+    pub fn transition_plan(&self) -> Option<&TransitionPlan> {
+        self.transition_plan.as_ref()
     }
 
     // ── Priority Stack Access ───────────────────────────────────────

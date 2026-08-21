@@ -268,6 +268,7 @@ fn discard_zone_sampling_backlog(sampling: &mut SamplingRuntime<'_>) {
 
 fn scene_transition_key(transition: &SceneTransitionSnapshot) -> Option<SceneTransitionKey> {
     Some(SceneTransitionKey {
+        epoch: transition.epoch,
         from_scene: transition.from_scene?,
         to_scene: transition.to_scene?,
     })

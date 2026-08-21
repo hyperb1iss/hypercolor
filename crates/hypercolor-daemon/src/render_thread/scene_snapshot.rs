@@ -19,6 +19,7 @@ use crate::display_output::{DISPLAY_FACE_DEFAULT_FPS, capped_group_direct_displa
 
 #[derive(Debug, Clone)]
 pub(crate) struct SceneTransitionSnapshot {
+    pub epoch: u64,
     pub from_scene: Option<SceneId>,
     pub to_scene: Option<SceneId>,
     pub progress: f32,
@@ -29,6 +30,7 @@ pub(crate) struct SceneTransitionSnapshot {
 impl Default for SceneTransitionSnapshot {
     fn default() -> Self {
         Self {
+            epoch: 0,
             from_scene: None,
             to_scene: None,
             progress: 0.0,
@@ -299,6 +301,7 @@ async fn snapshot_scene_runtime(
         active_scene_name,
         active_transition: plan.transition.as_ref().zip(transition_frame).map(
             |(transition, frame)| SceneTransitionSnapshot {
+                epoch: transition.epoch,
                 from_scene: Some(transition.from_scene),
                 to_scene: Some(transition.to_scene),
                 progress: frame.progress,

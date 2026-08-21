@@ -24,7 +24,7 @@ use hypercolor_core::effect::{
 use hypercolor_core::engine::{
     FpsController, FpsTier, RenderLoop, RenderLoopState, TierTransitionConfig,
 };
-use hypercolor_core::scene::{SceneManager, TransitionState, make_scene};
+use hypercolor_core::scene::{SceneManager, make_scene};
 use hypercolor_core::spatial::{sample_led, sample_zone};
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{Canvas, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, Rgba};
@@ -37,9 +37,7 @@ use hypercolor_types::effect::{
     EffectCategory, EffectId, EffectMetadata, EffectSource, EffectState,
 };
 use hypercolor_types::event::{EventCategory, HypercolorEvent};
-use hypercolor_types::scene::{
-    ColorInterpolation, EasingFunction, ScenePriority, TransitionSpec, ZoneAssignment,
-};
+use hypercolor_types::scene::{ColorInterpolation, EasingFunction, ScenePriority, TransitionSpec};
 use hypercolor_types::spatial::{
     EdgeBehavior, NormalizedPosition, Output, SamplingMode, SpatialLayout,
 };
@@ -790,10 +788,7 @@ fn scene_manager_create_activate_transition() {
         manager.active_scene_id().expect("should have active scene"),
         &id_a
     );
-    assert!(
-        !manager.is_transitioning(),
-        "first activation has no transition"
-    );
+    assert!(manager.transition_plan().is_none());
 
     // Activate scene B with a 1000ms transition
     let transition = TransitionSpec {
@@ -805,25 +800,12 @@ fn scene_manager_create_activate_transition() {
         .activate(&id_b, Some(transition))
         .expect("activate B with transition");
 
-    assert!(manager.is_transitioning(), "should have active transition");
-    let t = manager.active_transition().expect("transition exists");
-    assert!(
-        (t.progress - 0.0).abs() < f32::EPSILON,
-        "progress should start at 0"
-    );
-
-    // Tick the transition halfway (500ms = 0.5 progress)
-    manager.tick_transition(0.5);
-    let t = manager.active_transition().expect("still transitioning");
-    assert!(
-        (t.progress - 0.5).abs() < 0.01,
-        "progress should be ~0.5, got {}",
-        t.progress
-    );
-
-    // Tick to completion
-    manager.tick_transition(0.6);
-    assert!(!manager.is_transitioning(), "transition should be complete");
+    let plan = manager
+        .transition_plan()
+        .expect("activation should publish a transition plan");
+    assert_eq!(plan.from_scene, id_a);
+    assert_eq!(plan.to_scene, id_b);
+    assert_eq!(plan.spec.duration_ms, 1_000);
 }
 
 #[test]
@@ -871,62 +853,6 @@ fn scene_manager_priority_stack_ordering() {
         &user_id,
         "user should restore after alert deactivated"
     );
-}
-
-#[test]
-fn transition_state_progress_and_blending() {
-    let from_id = hypercolor_types::scene::SceneId::new();
-    let to_id = hypercolor_types::scene::SceneId::new();
-
-    let from_assignments = vec![ZoneAssignment {
-        zone_name: "z1".to_string(),
-        effect_name: "aurora".to_string(),
-        parameters: HashMap::new(),
-        brightness: Some(1.0),
-    }];
-
-    let to_assignments = vec![ZoneAssignment {
-        zone_name: "z1".to_string(),
-        effect_name: "strobe".to_string(),
-        parameters: HashMap::new(),
-        brightness: Some(0.5),
-    }];
-
-    let spec = TransitionSpec {
-        duration_ms: 1000,
-        easing: EasingFunction::Linear,
-        color_interpolation: ColorInterpolation::Srgb,
-    };
-
-    let mut ts = TransitionState::new(from_id, to_id, spec, from_assignments, to_assignments);
-    assert!(!ts.is_complete());
-    assert!((ts.progress - 0.0).abs() < f32::EPSILON);
-
-    // Tick 25% (250ms of 1000ms)
-    ts.tick(0.25);
-    assert!((ts.progress - 0.25).abs() < 0.01);
-
-    // Blend should produce interpolated brightness
-    let blended = ts.blend();
-    assert_eq!(blended.len(), 1);
-    let b = blended[0].brightness.expect("brightness set");
-    // At t=0.25: lerp(1.0, 0.5, 0.25) = 0.875
-    assert!(
-        (b - 0.875).abs() < 0.05,
-        "brightness should be ~0.875, got {b}"
-    );
-    // Before midpoint: effect name should still be "from" side
-    assert_eq!(blended[0].effect_name, "aurora");
-
-    // Tick past midpoint
-    ts.tick(0.30);
-    let blended = ts.blend();
-    // Past 0.5: effect name should be "to" side
-    assert_eq!(blended[0].effect_name, "strobe");
-
-    // Tick to completion
-    ts.tick(1.0);
-    assert!(ts.is_complete());
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

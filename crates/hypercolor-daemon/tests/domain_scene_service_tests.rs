@@ -746,7 +746,7 @@ async fn activate_scene_honors_a_transition_override() {
 
     let manager = state.scene_manager.snapshot().await;
     let transition = manager
-        .active_transition()
+        .transition_plan()
         .expect("a non-zero override should start a transition");
     assert_eq!(transition.spec.duration_ms, 2_500);
 }

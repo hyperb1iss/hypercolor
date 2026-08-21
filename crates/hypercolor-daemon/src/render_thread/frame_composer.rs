@@ -85,6 +85,7 @@ struct ComposeContext<'a> {
     skip_decision: SkipDecision,
     inputs: &'a mut FrameInputs,
     frame_delta: Duration,
+    interrupted_transition_base: Option<(ProducerFrame, bool)>,
 }
 
 pub(crate) async fn compose_frame(request: ComposeRequest<'_>) -> RenderStageStats {
@@ -97,6 +98,7 @@ pub(crate) async fn compose_frame(request: ComposeRequest<'_>) -> RenderStageSta
         skip_decision: request.skip_decision,
         inputs: request.inputs,
         frame_delta: request.frame_delta,
+        interrupted_transition_base: None,
     }
     .compose()
     .await
@@ -124,8 +126,32 @@ fn producer_frame_requires_composition_for_preview(
     preview_requested && frame.is_gpu_resident()
 }
 
+fn shared_composed_frame(
+    composed: &ComposedFrameSet,
+    width: u32,
+    height: u32,
+) -> Option<ProducerFrame> {
+    composed
+        .sampling_surface
+        .as_ref()
+        .map(|surface| ProducerFrame::Surface(surface.clone()))
+        .or_else(|| {
+            composed
+                .sampling_canvas
+                .as_ref()
+                .map(|canvas| ProducerFrame::Canvas(canvas.clone()))
+        })
+        .or_else(|| {
+            composed.preview_surface.as_ref().and_then(|surface| {
+                (surface.width() == width && surface.height() == height)
+                    .then(|| ProducerFrame::Surface(surface.clone()))
+            })
+        })
+}
+
 impl ComposeContext<'_> {
     async fn compose(&mut self) -> RenderStageStats {
+        self.interrupted_transition_base = self.capture_interrupted_transition_base();
         let observed_invalidation_epoch = self.inputs.screen_invalidation_epoch;
         if synchronize_screen_invalidation_epoch(
             self.compose.screen_queue,
@@ -134,7 +160,41 @@ impl ComposeContext<'_> {
         ) {
             self.compose.sparkleflinger.release_native_screen_caches();
         }
-        self.compose_render_group_frame_set(Instant::now()).await
+        let result = self.compose_render_group_frame_set(Instant::now()).await;
+        let composed_frame = shared_composed_frame(
+            &result.composed_frame,
+            self.state.canvas_dims.width(),
+            self.state.canvas_dims.height(),
+        );
+        self.compose
+            .composition_planner
+            .observe_composed_frame(&self.scene_snapshot.scene_runtime, composed_frame);
+        result
+    }
+
+    fn capture_interrupted_transition_base(&mut self) -> Option<(ProducerFrame, bool)> {
+        let handoff = self
+            .compose
+            .composition_planner
+            .take_interruption_handoff(&self.scene_snapshot.scene_runtime)?;
+        self.compose
+            .render_group_runtime
+            .release_retained_scene_frame();
+        if let Some(frame) = handoff.frame {
+            return Some((frame, handoff.opaque));
+        }
+
+        #[cfg(feature = "wgpu")]
+        match self.compose.sparkleflinger.immutable_current_output_frame() {
+            Ok(frame) => frame.map(|frame| (frame, handoff.opaque)),
+            Err(error) => {
+                debug!(%error, "failed to freeze interrupted scene transition output");
+                None
+            }
+        }
+
+        #[cfg(not(feature = "wgpu"))]
+        None
     }
 
     async fn compose_render_group_frame_set(&mut self, stage_start: Instant) -> RenderStageStats {
@@ -231,6 +291,7 @@ impl ComposeContext<'_> {
             &self.scene_snapshot.scene_runtime,
             source_frame,
             source_frame_opaque,
+            self.interrupted_transition_base.take(),
         );
         let producer_retained = producer_state.is_some_and(ProducerFrameState::is_retained);
         let preview_request = self.preview_surface_request();
@@ -301,6 +362,7 @@ impl ComposeContext<'_> {
                     &self.scene_snapshot.scene_runtime,
                     scene_frame.clone(),
                     true,
+                    self.interrupted_transition_base.take(),
                 );
                 let preview_request = self.preview_surface_request();
                 let preview_surface_pressure = self.preview_surface_pressure();
@@ -435,6 +497,7 @@ impl ComposeContext<'_> {
                     &self.scene_snapshot.scene_runtime,
                     source_frame,
                     true,
+                    self.interrupted_transition_base.take(),
                 );
                 let preview_request = self.preview_surface_request();
                 let preview_surface_pressure = self.preview_surface_pressure();

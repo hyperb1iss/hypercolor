@@ -1208,6 +1208,7 @@ mod tests {
             &base_layout,
             &current_layout,
             SceneTransitionKey {
+                epoch: 1,
                 from_scene: SceneId::new(),
                 to_scene: SceneId::new(),
             },

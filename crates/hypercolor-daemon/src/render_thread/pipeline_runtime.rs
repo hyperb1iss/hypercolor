@@ -1862,6 +1862,7 @@ pub(crate) struct RenderSurfaceSnapshot {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SceneTransitionKey {
+    pub(crate) epoch: u64,
     pub(crate) from_scene: SceneId,
     pub(crate) to_scene: SceneId,
 }

@@ -1095,25 +1095,6 @@ where
     .expect("expected a matching canvas in time")
 }
 
-async fn wait_for_next_canvas_frame(
-    rx: &mut watch::Receiver<CanvasFrame>,
-    previous_frame_number: u32,
-) -> CanvasFrame {
-    tokio::time::timeout(WAIT_DEADLINE, async {
-        loop {
-            rx.changed()
-                .await
-                .expect("canvas sender should remain connected");
-            let frame = rx.borrow().clone();
-            if frame.frame_number > previous_frame_number {
-                break frame;
-            }
-        }
-    })
-    .await
-    .expect("expected the next canvas frame in time")
-}
-
 #[cfg(feature = "wgpu")]
 async fn wait_for_render_loop_frame_number(
     state: &RenderThreadState,
@@ -1746,43 +1727,6 @@ async fn render_thread_advances_active_scene_transitions() {
         SpatialEngine::new(test_layout(vec![strip_zone("zone_0", "mock:strip", 8)])),
         BackendManager::new(),
     );
-
-    let scene_a = make_scene("Scene A");
-    let scene_b = make_scene("Scene B");
-    install_render_scenes(&state, vec![scene_a.clone(), scene_b.clone()], scene_b.id).await;
-
-    {
-        let mut rl = state.render_loop.write().await;
-        rl.start();
-    }
-
-    let mut rt = RenderThread::spawn(state.clone());
-    tokio::time::sleep(Duration::from_millis(120)).await;
-
-    {
-        let mut rl = state.render_loop.write().await;
-        rl.stop();
-    }
-    rt.shutdown().await.expect("shutdown");
-
-    let scene_manager = state.scene_manager.snapshot().await;
-    let transition = scene_manager
-        .active_transition()
-        .expect("scene transition should still be active");
-    assert!(
-        transition.progress > 0.0,
-        "render thread should advance scene transitions on the frame clock"
-    );
-    assert_eq!(scene_manager.active_scene_id(), Some(&scene_b.id));
-}
-
-#[tokio::test]
-async fn render_thread_crossfades_scene_transition_between_effect_frames() {
-    let state = make_render_state(
-        idle_effect(),
-        SpatialEngine::new(test_layout(vec![strip_zone("zone_0", "mock:strip", 8)])),
-        BackendManager::new(),
-    );
     let mut canvas_rx = state.event_bus.canvas_receiver();
 
     let solid_id = {
@@ -1791,13 +1735,14 @@ async fn render_thread_crossfades_scene_transition_between_effect_frames() {
     };
 
     let mut scene_a = make_scene("Scene A");
+    scene_a.transition.duration_ms = 0;
     scene_a.zones = vec![primary_group(
         solid_id,
         solid_color_controls(255, 0, 0),
         test_layout(vec![strip_zone("zone_0", "mock:strip", 8)]),
     )];
     let mut scene_b = make_scene("Scene B");
-    scene_b.transition.duration_ms = 5_000;
+    scene_b.transition.duration_ms = 60_000;
     scene_b.zones = vec![primary_group(
         solid_id,
         solid_color_controls(0, 0, 255),
@@ -1816,13 +1761,16 @@ async fn render_thread_crossfades_scene_transition_between_effect_frames() {
         .expect("timed out waiting for initial canvas")
         .expect("canvas sender should remain connected");
     let initial_canvas = canvas_rx.borrow().clone();
-    let initial_pixel = &initial_canvas.rgba_bytes()[0..4];
-    assert_eq!(initial_pixel, [255, 0, 0, 255].as_slice());
+    assert_eq!(&initial_canvas.rgba_bytes()[0..4], [255, 0, 0, 255]);
 
     activate_render_scene(&state, scene_b.id).await;
-
-    let blended_canvas =
-        wait_for_next_canvas_frame(&mut canvas_rx, initial_canvas.frame_number).await;
+    let blended_canvas = wait_for_canvas_where(&mut canvas_rx, |frame| {
+        let pixel = &frame.rgba_bytes()[0..4];
+        frame.frame_number > initial_canvas.frame_number
+            && pixel != [255, 0, 0, 255].as_slice()
+            && pixel != [0, 0, 255, 255].as_slice()
+    })
+    .await;
 
     {
         let mut rl = state.render_loop.write().await;
@@ -1830,8 +1778,16 @@ async fn render_thread_crossfades_scene_transition_between_effect_frames() {
     }
     rt.shutdown().await.expect("shutdown");
 
+    let scene_manager = state.scene_manager.snapshot().await;
+    let plan = scene_manager
+        .transition_plan()
+        .expect("scene activation should retain its immutable transition plan");
+    assert_eq!(plan.from_scene, scene_a.id);
+    assert_eq!(plan.to_scene, scene_b.id);
+    assert_eq!(scene_manager.active_scene_id(), Some(&scene_b.id));
     let blended_pixel = &blended_canvas.rgba_bytes()[0..4];
     assert_ne!(blended_pixel, [255, 0, 0, 255].as_slice());
+    assert_ne!(blended_pixel, [0, 0, 255, 255].as_slice());
 }
 
 #[tokio::test]
