@@ -199,13 +199,13 @@ pub(super) async fn handle_activate_scene_with_state(
             .map_err(|error| ToolError::selector("name", error))?
     };
 
-    let admission = state.scene.evaluate_media_admission(&scene).await;
+    let admission = state.domains.scene.evaluate_media_admission(&scene).await;
     if let Some(details) = admission.violation.as_ref() {
         return Err(ToolError::Conflict(details.message.clone()));
     }
 
     let activated = activate_scene(
-        &state.scene_library,
+        &state.domains.scene_library,
         ActivateScene {
             scene_id: scene.id,
             transition: Some(TransitionSpec {
@@ -232,7 +232,7 @@ pub(super) async fn handle_clear_zone_with_state(
 ) -> Result<Value, ToolError> {
     let Some(zone) = params.get("zone") else {
         let written = crate::domain::scene_tree::clear_scene(
-            &state.scene_tree,
+            &state.domains.scene_tree,
             ClearScene {
                 zone: None,
                 expected_revision: None,
@@ -249,7 +249,7 @@ pub(super) async fn handle_clear_zone_with_state(
     };
 
     loop {
-        let document = crate::domain::scene_tree::read_document(&state.scene_tree).await?;
+        let document = crate::domain::scene_tree::read_document(&state.domains.scene_tree).await?;
         let revision = document.revision;
         let candidates = document
             .zones
@@ -266,7 +266,7 @@ pub(super) async fn handle_clear_zone_with_state(
         }
 
         match crate::domain::scene_tree::clear_scene(
-            &state.scene_tree,
+            &state.domains.scene_tree,
             ClearScene {
                 zone: Some(zone.id),
                 expected_revision: Some(revision),
@@ -309,7 +309,7 @@ pub(super) async fn handle_adjust_controls_with_state(
     })?;
 
     loop {
-        let document = crate::domain::scene_tree::read_document(&state.scene_tree).await?;
+        let document = crate::domain::scene_tree::read_document(&state.domains.scene_tree).await?;
         let revision = document.revision;
         let zone_candidates = document
             .zones
@@ -351,7 +351,7 @@ pub(super) async fn handle_adjust_controls_with_state(
         }
 
         match crate::domain::scene_tree::patch_layer_controls(
-            &state.scene_tree,
+            &state.domains.scene_tree,
             PatchLayerControls {
                 zone_id: zone.id,
                 layer_id: layer.id,
@@ -433,7 +433,7 @@ pub(super) async fn handle_create_scene_with_state(
     };
 
     let created = create_scene(
-        &state.scene_library,
+        &state.domains.scene_library,
         CreateScene {
             name: name.to_owned(),
             description: params

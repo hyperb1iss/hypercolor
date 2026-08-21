@@ -90,7 +90,7 @@ pub(super) async fn handle_set_display_face_with_state(
 
     if clear {
         let cleared = clear_display_face(
-            &state.scene,
+            &state.domains.scene,
             ClearDisplayFace {
                 device_id,
                 device_name: info.name.clone(),
@@ -137,7 +137,7 @@ pub(super) async fn handle_set_display_face_with_state(
     // The face blends over the live effect by default; Replace is opt-in
     // through the REST composition endpoint for face-only looks.
     let written = set_display_face(
-        &state.scene,
+        &state.domains.scene,
         SetDisplayFace {
             device_id,
             device_name: info.name.clone(),
@@ -214,7 +214,7 @@ async fn handle_default_scope(
                 .and_then(|scene| scene.display_zone_for(device_id))
                 .is_some_and(|zone| zone.effect_ids().next().is_some())
         };
-        let cleared_zone = remove_default_display_overlay(&state.scene, device_id).await?;
+        let cleared_zone = remove_default_display_overlay(&state.domains.scene, device_id).await?;
         if removed
             && !scene_assigned
             && let Some(mut zone) = cleared_zone

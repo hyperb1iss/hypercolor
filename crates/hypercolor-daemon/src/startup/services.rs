@@ -56,6 +56,11 @@ use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 use crate::attachment_profiles::ComponentProfileStore;
 use crate::device_metrics::DeviceMetricsSnapshot;
 use crate::device_settings::DeviceSettingsStore;
+use crate::domain::context::{
+    DeviceContext, DomainContextResources, DomainContexts, RuntimeSessionService, SceneContext,
+};
+use crate::domain::layout::LayoutContext;
+use crate::domain::output::OutputContext;
 use crate::driver_inventory::{DRIVER_INVENTORY_FILENAME, DriverInventoryStore};
 use crate::extensions::ExtensionRegistry;
 use crate::interaction_routing::InteractionRoutingControl;
@@ -686,9 +691,72 @@ impl DaemonState {
 
         let library_path = ConfigManager::data_dir().join("library.json");
         let library_store = open_persisted_library_store(&library_path)?;
+        let output_power_transition = Arc::new(Mutex::new(()));
+        let start_time = Instant::now();
+        let runtime_session = RuntimeSessionService::new(
+            runtime_state_path.clone(),
+            scene_manager.clone(),
+            spatial_engine.clone(),
+            power_state.clone(),
+            Arc::clone(&driver_host),
+            Arc::clone(&driver_registry),
+        );
+        let devices = DeviceContext::new(
+            device_registry.clone(),
+            Arc::clone(&lifecycle_manager),
+            Arc::clone(&driver_host),
+            Arc::clone(&driver_registry),
+            Some(Arc::clone(&config_manager)),
+            Arc::clone(&layout_auto_exclusions),
+            layout_auto_exclusions_path.clone(),
+        );
+        let scene = SceneContext::new(
+            scene_manager.clone(),
+            runtime_session.clone(),
+            Arc::clone(&asset_library),
+            Some(Arc::clone(&config_manager)),
+            Arc::clone(&render_loop),
+            devices.clone(),
+        );
+        let layout = LayoutContext::new(
+            Arc::clone(&layouts),
+            spatial_engine.clone(),
+            scene_manager.clone(),
+            scene_transactions.clone(),
+            runtime_state_path.clone(),
+            runtime_session.clone(),
+            devices.clone(),
+        );
+        let output = OutputContext::new(
+            power_state.clone(),
+            Arc::clone(&output_power_transition),
+            Arc::clone(&device_settings),
+            Arc::clone(&event_bus),
+            runtime_session.clone(),
+            Arc::clone(&performance),
+            Arc::clone(&render_loop),
+            spatial_engine.clone(),
+            Arc::clone(&backend_manager),
+            Arc::clone(&preview_runtime),
+            devices.clone(),
+            start_time,
+        );
+        let domains = DomainContexts::assemble(
+            runtime_session,
+            devices,
+            scene,
+            layout,
+            output,
+            DomainContextResources {
+                effect_registry: Arc::clone(&effect_registry),
+                spatial: spatial_engine.clone(),
+                event_bus: Arc::clone(&event_bus),
+            },
+        );
         info!("All subsystems initialized");
 
         Ok(Self {
+            domains,
             config_manager,
             extensions: ExtensionRegistry::default(),
             api_extensions,
@@ -744,7 +812,7 @@ impl DaemonState {
             startup_runtime_snapshot,
             discovery_in_progress,
             power_state,
-            output_power_transition: Arc::new(Mutex::new(())),
+            output_power_transition,
             scene_transactions,
             render_thread: None,
             display_output_thread: None,
@@ -756,7 +824,7 @@ impl DaemonState {
             device_metrics_collector_task: None,
             input_status_event_publisher: None,
             session_controller: None,
-            start_time: Instant::now(),
+            start_time,
             server_identity,
         })
     }

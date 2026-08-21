@@ -65,3 +65,33 @@ fn driver_host_and_workers_reuse_the_discovery_context() {
     assert!(worker.contains("discovery: DiscoveryRuntime"));
     assert!(!worker.contains("DiscoveryRuntime {\n            device_registry:"));
 }
+
+#[test]
+fn application_state_reuses_one_domain_graph() {
+    let sources = daemon_sources();
+    let source = |suffix: &str| {
+        sources
+            .iter()
+            .find(|(path, _)| path.ends_with(suffix))
+            .map(|(_, source)| source.as_str())
+            .unwrap_or_else(|| panic!("missing daemon source {suffix}"))
+    };
+    let app_state = source("app_state.rs");
+    assert!(app_state.contains("pub domains: DomainContexts"));
+    assert!(app_state.contains("let domains = daemon.domains.clone();"));
+    for retired_field in [
+        "pub scene: SceneContext",
+        "pub runtime_session: RuntimeSessionService",
+        "pub devices: DeviceContext",
+        "pub layout: LayoutContext",
+        "pub output: OutputContext",
+        "pub effects: EffectContext",
+        "pub scene_tree: SceneTreeContext",
+        "pub scene_library: SceneLibraryContext",
+    ] {
+        assert!(!app_state.contains(retired_field), "found {retired_field}");
+    }
+
+    let startup = source("startup/mod.rs");
+    assert!(startup.contains("pub domains: DomainContexts"));
+}

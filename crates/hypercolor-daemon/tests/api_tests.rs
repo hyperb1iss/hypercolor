@@ -3718,7 +3718,7 @@ async fn activate_empty_test_scene_with_mode(
             hypercolor_types::event::SceneChangeReason::UserActivate,
         )
         .expect("test scene should activate");
-    hypercolor_daemon::domain::scene::commit_scene(&state.scene, mutation)
+    hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
         .await
         .expect("test scene should commit");
     scene.id
@@ -3808,7 +3808,7 @@ async fn activate_display_face_test_scene_with_layers(
             hypercolor_types::event::SceneChangeReason::UserActivate,
         )
         .expect("display face scene should activate");
-    hypercolor_daemon::domain::scene::commit_scene(&state.scene, mutation)
+    hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
         .await
         .expect("display face scene should commit");
     scene.id
@@ -5773,7 +5773,7 @@ async fn apply_effect_targets_a_named_zone_via_zone_id() {
             .active_scene()
             .and_then(Scene::primary_zone)
             .and_then(|group| group.effect_ids().next());
-        hypercolor_daemon::domain::scene::commit_scene(&state.scene, mutation)
+        hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
             .await
             .expect("custom zone should commit");
         (custom_id, primary_effect)
@@ -5828,7 +5828,7 @@ async fn effect_started_event_for_named_zone_carries_zone_identity() {
         let zone_id = mutation
             .create_zone(SceneId::DEFAULT, "Ambient".to_owned(), None, (320, 200))
             .expect("custom zone should be created");
-        hypercolor_daemon::domain::scene::commit_scene(&state.scene, mutation)
+        hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
             .await
             .expect("custom zone should commit");
         zone_id
@@ -6812,7 +6812,7 @@ async fn library_playlist_advance_replaces_stack_without_waking_output() {
     assert_eq!(create_response.status(), StatusCode::CREATED);
 
     hypercolor_daemon::domain::output::set_power(
-        &state.output,
+        &state.domains.output,
         hypercolor_types::api::output::OutputPowerMode::Paused,
     )
     .await;
@@ -11947,7 +11947,7 @@ async fn deleting_display_device_prunes_scene_display_groups_and_persists_cleanu
                 hypercolor_types::scene::DisplayFaceTarget::new(display_id),
             )
             .expect("default scene face should be assigned");
-        hypercolor_daemon::domain::scene::commit_scene(&state.scene, mutation)
+        hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
             .await
             .expect("default scene face should commit");
     }
@@ -11955,7 +11955,7 @@ async fn deleting_display_device_prunes_scene_display_groups_and_persists_cleanu
         activate_display_face_test_scene(&state, "Desk Scene", face.id, display_id).await;
     let mut mutation = state.scene_manager.begin_mutation().await;
     mutation.deactivate_current(hypercolor_types::event::SceneChangeReason::UserDeactivate);
-    hypercolor_daemon::domain::scene::commit_scene(&state.scene, mutation)
+    hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
         .await
         .expect("default scene should reactivate");
 

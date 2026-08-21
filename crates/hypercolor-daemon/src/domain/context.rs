@@ -4,8 +4,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use hypercolor_core::asset::AssetLibrary;
+use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::config::ConfigManager;
 use hypercolor_core::device::{DeviceLifecycleManager, DeviceRegistry};
+use hypercolor_core::effect::EffectRegistry;
 use hypercolor_core::engine::RenderLoop;
 use hypercolor_core::scene::SceneManager;
 use hypercolor_network::DriverModuleRegistry;
@@ -17,15 +19,86 @@ use tokio::sync::{Mutex, RwLock, watch};
 
 use crate::domain::DomainError;
 use crate::domain::commit::SceneCommit;
+use crate::domain::effect::EffectContext;
+use crate::domain::layout::LayoutContext;
+use crate::domain::output::OutputContext;
 use crate::domain::scene::{
-    COMMIT_ATTEMPTS, MEDIA_SOFT_PRODUCER_COST_US, MediaAdmissionContext, SceneMediaAdmission,
-    SceneMutation, SceneService,
+    COMMIT_ATTEMPTS, MEDIA_SOFT_PRODUCER_COST_US, MediaAdmissionContext, SceneLibraryContext,
+    SceneMediaAdmission, SceneMutation, SceneService,
 };
+use crate::domain::scene_tree::SceneTreeContext;
 use crate::domain::spatial::SpatialService;
 use crate::network::DaemonDriverHost;
 use crate::runtime_state::{self, RuntimeSessionSnapshot};
 use crate::session::{OutputPowerState, current_global_brightness};
 use crate::{discovery, layout_auto_exclusions};
+
+/// Complete daemon domain graph assembled once by the composition root.
+#[derive(Clone)]
+pub struct DomainContexts {
+    /// Runtime-session snapshot and persistence authority.
+    pub runtime_session: RuntimeSessionService,
+    /// Device lifecycle and discovery reconciliation authority.
+    pub devices: DeviceContext,
+    /// Live scene transaction authority.
+    pub scene: SceneContext,
+    /// Layout catalog and activation authority.
+    pub layout: LayoutContext,
+    /// Global output power and brightness authority.
+    pub output: OutputContext,
+    /// Effect catalog, validation, and activation authority.
+    pub effects: EffectContext,
+    /// Live scene-tree mutation authority.
+    pub scene_tree: SceneTreeContext,
+    /// Named scene library and activation authority.
+    pub scene_library: SceneLibraryContext,
+}
+
+pub(crate) struct DomainContextResources {
+    pub effect_registry: Arc<RwLock<EffectRegistry>>,
+    pub spatial: SpatialService,
+    pub event_bus: Arc<HypercolorBus>,
+}
+
+impl DomainContexts {
+    pub(crate) fn assemble(
+        runtime_session: RuntimeSessionService,
+        devices: DeviceContext,
+        scene: SceneContext,
+        layout: LayoutContext,
+        output: OutputContext,
+        resources: DomainContextResources,
+    ) -> Self {
+        let effects = EffectContext::new(
+            Arc::clone(&resources.effect_registry),
+            scene.clone(),
+            resources.spatial,
+            output.clone(),
+        );
+        let scene_tree = SceneTreeContext::new(
+            scene.clone(),
+            effects.clone(),
+            devices.clone(),
+            output.clone(),
+        );
+        let scene_library = SceneLibraryContext::new(
+            scene.clone(),
+            layout.clone(),
+            output.clone(),
+            resources.event_bus,
+        );
+        Self {
+            runtime_session,
+            devices,
+            scene,
+            layout,
+            output,
+            effects,
+            scene_tree,
+            scene_library,
+        }
+    }
+}
 
 /// Owning runtime-session persistence boundary.
 #[derive(Clone)]

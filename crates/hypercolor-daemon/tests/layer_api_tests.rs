@@ -175,7 +175,7 @@ async fn install_media_scene(state: &Arc<AppState>, layers: Vec<SceneLayer>) -> 
 
     let mut mutation = state.scene_manager.begin_mutation().await;
     mutation.create_scene(scene).expect("scene should create");
-    hypercolor_daemon::domain::scene::commit_scene(&state.scene, mutation)
+    hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
         .await
         .expect("scene should commit");
     scene_id

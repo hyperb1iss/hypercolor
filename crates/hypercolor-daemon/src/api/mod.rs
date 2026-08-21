@@ -150,7 +150,7 @@ async fn clear_active_scene_effect_groups(
         return Ok(None);
     }
 
-    crate::domain::scene::commit_scene(&state.scene, mutation)
+    crate::domain::scene::commit_scene(&state.domains.scene, mutation)
         .await?
         .log_if_retrying("Failed to persist effect fallback");
     persist_runtime_session(state).await;
@@ -202,15 +202,18 @@ pub(crate) async fn prune_scene_display_groups_for_device(
         }
     };
 
-    let pruned =
-        match crate::domain::display::prune_display_zones_for_device(&state.scene, device_id).await
-        {
-            Ok(pruned) => pruned,
-            Err(error) => {
-                warn!(%error, %device_id, "Failed to prune display zones for deleted device");
-                crate::domain::display::PrunedDisplayZones::empty()
-            }
-        };
+    let pruned = match crate::domain::display::prune_display_zones_for_device(
+        &state.domains.scene,
+        device_id,
+    )
+    .await
+    {
+        Ok(pruned) => pruned,
+        Err(error) => {
+            warn!(%error, %device_id, "Failed to prune display zones for deleted device");
+            crate::domain::display::PrunedDisplayZones::empty()
+        }
+    };
 
     if pruned.removed_zones.is_empty() && pruned.removed_default.is_none() && !removed_preference {
         return;
@@ -220,11 +223,11 @@ pub(crate) async fn prune_scene_display_groups_for_device(
 
 /// Persist discovery auto-sync exclusions to disk.
 pub(crate) async fn persist_layout_auto_exclusions(state: &AppState) {
-    state.devices.persist_layout_auto_exclusions().await;
+    state.domains.devices.persist_layout_auto_exclusions().await;
 }
 
 pub(crate) async fn save_runtime_session_snapshot(state: &AppState) {
-    state.runtime_session.save().await;
+    state.domains.runtime_session.save().await;
 }
 
 pub(crate) async fn persist_runtime_session(state: &Arc<AppState>) {

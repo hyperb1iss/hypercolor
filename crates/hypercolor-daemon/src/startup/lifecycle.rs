@@ -205,7 +205,11 @@ impl DaemonState {
             face_fps_cap: config.display.effective_face_fps_cap(),
         }));
         let startup_output_state = AppState::from_daemon_state(self);
-        startup_output_state.output.reconcile_static_hold().await;
+        startup_output_state
+            .domains
+            .output
+            .reconcile_static_hold()
+            .await;
         self.device_metrics_collector_task = Some(spawn_device_metrics_collector(
             Arc::clone(&self.device_metrics),
             Arc::clone(&self.backend_manager),
@@ -793,12 +797,12 @@ impl DaemonState {
             loop {
                 match event_rx.recv().await {
                     Ok(event) if matches!(event.event, HypercolorEvent::DeviceConnected { .. }) => {
-                        state.output.reconcile_static_hold().await;
+                        state.domains.output.reconcile_static_hold().await;
                     }
                     Ok(_) => {}
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
                         warn!(skipped, "Static output hold worker lagged");
-                        state.output.reconcile_static_hold().await;
+                        state.domains.output.reconcile_static_hold().await;
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }

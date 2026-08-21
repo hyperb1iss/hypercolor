@@ -145,7 +145,7 @@ async fn active_targets_follow_the_candidate_scene_for_every_deferred_service() 
             hypercolor_types::event::SceneChangeReason::UserActivate,
         )
         .expect("scene A should activate");
-    hypercolor_daemon::domain::scene::commit_scene(&state.scene, mutation)
+    hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
         .await
         .expect("scene A should commit");
 
@@ -175,22 +175,28 @@ async fn active_targets_follow_the_candidate_scene_for_every_deferred_service() 
             hypercolor_types::event::SceneChangeReason::UserActivate,
         )
         .expect("scene B should activate before candidates are opened");
-    hypercolor_daemon::domain::scene::commit_scene(&state.scene, mutation)
+    hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
         .await
         .expect("scene B should commit");
 
-    let created = create_zone(&state.scene, create)
+    let created = create_zone(&state.domains.scene, create)
         .await
         .expect("zone creation should follow scene B");
-    let updated = update_zone(&state.scene, update)
+    let updated = update_zone(&state.domains.scene, update)
         .await
         .expect("zone update should follow scene B");
     assert_eq!(updated.zone.name, "candidate zone renamed");
 
-    let inserted = insert_layer(&state.scene, shared_zone_id, inserted_layer, None, None)
-        .await
-        .expect("layer insertion should follow scene B")
-        .expect("layer insertion should be admitted");
+    let inserted = insert_layer(
+        &state.domains.scene,
+        shared_zone_id,
+        inserted_layer,
+        None,
+        None,
+    )
+    .await
+    .expect("layer insertion should follow scene B")
+    .expect("layer insertion should be admitted");
     assert!(
         inserted
             .zone()
@@ -200,7 +206,7 @@ async fn active_targets_follow_the_candidate_scene_for_every_deferred_service() 
     );
 
     let reordered = reorder_layers(
-        &state.scene,
+        &state.domains.scene,
         shared_zone_id,
         vec![inserted_layer_id, shared_layer_ids[1], shared_layer_ids[0]],
         None,
@@ -218,10 +224,15 @@ async fn active_targets_follow_the_candidate_scene_for_every_deferred_service() 
         vec![inserted_layer_id, shared_layer_ids[1], shared_layer_ids[0]]
     );
 
-    let removed = remove_layer(&state.scene, shared_zone_id, shared_layer_ids[1], None)
-        .await
-        .expect("layer deletion should follow scene B")
-        .expect("layer deletion should be admitted");
+    let removed = remove_layer(
+        &state.domains.scene,
+        shared_zone_id,
+        shared_layer_ids[1],
+        None,
+    )
+    .await
+    .expect("layer deletion should follow scene B")
+    .expect("layer deletion should be admitted");
     assert!(
         removed
             .zone()
@@ -230,7 +241,7 @@ async fn active_targets_follow_the_candidate_scene_for_every_deferred_service() 
             .all(|layer| layer.id != shared_layer_ids[1])
     );
 
-    delete_zone(&state.scene, delete)
+    delete_zone(&state.domains.scene, delete)
         .await
         .expect("zone deletion should follow scene B");
 
@@ -274,14 +285,14 @@ async fn active_targets_refuse_every_deferred_service_in_snapshot_mode() {
             hypercolor_types::event::SceneChangeReason::UserActivate,
         )
         .expect("snapshot scene should activate");
-    hypercolor_daemon::domain::scene::commit_scene(&state.scene, mutation)
+    hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
         .await
         .expect("snapshot scene should commit");
     let revision = state.scene_manager.revision();
 
     assert_conflict(
         create_zone(
-            &state.scene,
+            &state.domains.scene,
             CreateZone {
                 name: "blocked".to_owned(),
                 color: None,
@@ -293,7 +304,7 @@ async fn active_targets_refuse_every_deferred_service_in_snapshot_mode() {
     );
     assert_conflict(
         update_zone(
-            &state.scene,
+            &state.domains.scene,
             UpdateZone {
                 zone_id,
                 patch: rename_patch("blocked"),
@@ -304,7 +315,7 @@ async fn active_targets_refuse_every_deferred_service_in_snapshot_mode() {
     );
     assert_conflict(
         delete_zone(
-            &state.scene,
+            &state.domains.scene,
             DeleteZone {
                 zone_id,
                 expected_revision: Some(revision),
@@ -314,7 +325,7 @@ async fn active_targets_refuse_every_deferred_service_in_snapshot_mode() {
     );
     assert_conflict(
         insert_layer(
-            &state.scene,
+            &state.domains.scene,
             zone_id,
             color_layer(SceneLayerId::new(), 2),
             None,
@@ -324,14 +335,16 @@ async fn active_targets_refuse_every_deferred_service_in_snapshot_mode() {
     );
     assert_conflict(
         reorder_layers(
-            &state.scene,
+            &state.domains.scene,
             zone_id,
             layer_ids.into_iter().rev().collect(),
             Some(revision),
         )
         .await,
     );
-    assert_conflict(remove_layer(&state.scene, zone_id, layer_ids[0], Some(revision)).await);
+    assert_conflict(
+        remove_layer(&state.domains.scene, zone_id, layer_ids[0], Some(revision)).await,
+    );
 
     let manager = state.scene_manager.snapshot().await;
     assert_eq!(manager.get(&scene_id), Some(&scene));

@@ -46,7 +46,7 @@ const EFFECT_COVER_FILE_NAME: &str = "default.webp";
 const EFFECT_COVER_CONTENT_TYPE: &str = "image/webp";
 
 pub(crate) async fn invalidate_active_render_groups_after_effect_registry_update(state: &AppState) {
-    if let Err(error) = domain::effect::invalidate_active_zones(&state.effects).await {
+    if let Err(error) = domain::effect::invalidate_active_zones(&state.domains.effects).await {
         warn!(%error, "Failed to refresh active zones after an effect registry update");
     }
 }
@@ -153,11 +153,12 @@ pub async fn list_effects(
             Err(error) => return error.into_response(),
         };
 
-    let items: Vec<EffectSummary> = domain::effect::list_catalog(&state.effects, &catalog_query)
-        .await
-        .into_iter()
-        .map(|meta| effect_summary(&meta, includes))
-        .collect();
+    let items: Vec<EffectSummary> =
+        domain::effect::list_catalog(&state.domains.effects, &catalog_query)
+            .await
+            .into_iter()
+            .map(|meta| effect_summary(&meta, includes))
+            .collect();
 
     let total = items.len();
     envelope::ok(EffectListResponse {
@@ -372,7 +373,7 @@ pub async fn apply_effect(
     // Commit before waking output. A wake failure rides in the 200 because
     // the scene mutation is already real.
     let applied = match domain::effect::apply_effect(
-        &state.effects,
+        &state.domains.effects,
         domain::effect::ApplyEffect {
             effect: metadata.clone(),
             controls: normalized_controls,

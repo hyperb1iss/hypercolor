@@ -271,7 +271,7 @@ pub async fn set_display_face(
     };
 
     let written = match crate::domain::display::set_display_face(
-        &state.scene,
+        &state.domains.scene,
         crate::domain::display::SetDisplayFace {
             device_id,
             device_name: tracked.info.name.clone(),
@@ -374,7 +374,7 @@ pub async fn patch_display_face_composition(
     };
 
     let written = match crate::domain::display::patch_display_composition(
-        &state.scene,
+        &state.domains.scene,
         crate::domain::display::PatchDisplayComposition {
             zone_id: group.id,
             blend_mode: body.blend_mode,
@@ -441,7 +441,11 @@ pub async fn delete_display_face(
                 .and_then(|scene| scene.display_zone_for(device_id))
                 .is_some_and(display_zone_has_face_assignment)
         };
-        match crate::domain::display::remove_default_display_overlay(&state.scene, device_id).await
+        match crate::domain::display::remove_default_display_overlay(
+            &state.domains.scene,
+            device_id,
+        )
+        .await
         {
             Ok(cleared) => {
                 if removed
@@ -485,7 +489,7 @@ pub async fn delete_display_face(
     };
 
     let cleared = match crate::domain::display::clear_display_face(
-        &state.scene,
+        &state.domains.scene,
         crate::domain::display::ClearDisplayFace {
             device_id,
             device_name: tracked.info.name.clone(),
@@ -616,7 +620,7 @@ pub async fn patch_display_face_controls(
     }
 
     let written = match crate::domain::display::patch_display_face_controls(
-        &state.scene,
+        &state.domains.scene,
         crate::domain::display::PatchDisplayFaceControls {
             zone_id: group.id,
             controls: normalized_controls,
@@ -861,7 +865,9 @@ pub(crate) async fn apply_display_preference_overlay(
         &preference,
         display_face_layout(device_id, tracked.info.name.as_str(), surface),
     );
-    match crate::domain::display::set_default_display_overlay(&state.scene, device_id, zone).await {
+    match crate::domain::display::set_default_display_overlay(&state.domains.scene, device_id, zone)
+        .await
+    {
         Ok(installed) => installed,
         Err(error) => {
             warn!(%error, %device_id, "Failed to install the default face overlay");
@@ -874,7 +880,8 @@ pub(crate) async fn apply_display_preference_overlay(
 /// so the caller reads it as "no overlay is installed".
 async fn retract_default_display_overlay(state: &AppState, device_id: DeviceId) -> Option<Zone> {
     if let Err(error) =
-        crate::domain::display::remove_default_display_overlay(&state.scene, device_id).await
+        crate::domain::display::remove_default_display_overlay(&state.domains.scene, device_id)
+            .await
     {
         warn!(%error, %device_id, "Failed to retract the default face overlay");
     }
@@ -971,9 +978,14 @@ fn display_zone_has_face_assignment(group: &Zone) -> bool {
 }
 
 pub(crate) async fn sync_connected_display_surfaces(state: &AppState) {
-    let displays = state.devices.connected_display_surface_layouts().await;
+    let displays = state
+        .domains
+        .devices
+        .connected_display_surface_layouts()
+        .await;
     if let Err(error) =
-        crate::domain::display::hydrate_existing_display_surfaces(&state.scene, displays).await
+        crate::domain::display::hydrate_existing_display_surfaces(&state.domains.scene, displays)
+            .await
     {
         warn!(%error, "Failed to hydrate connected display surfaces");
     }

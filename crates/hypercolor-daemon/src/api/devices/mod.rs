@@ -814,7 +814,11 @@ pub(super) async fn ensure_default_logical_entry(
     state: &AppState,
     device_info: &DeviceInfo,
 ) -> String {
-    let fallback_layout_id = state.devices.resolved_layout_device_id(device_info).await;
+    let fallback_layout_id = state
+        .domains
+        .devices
+        .resolved_layout_device_id(device_info)
+        .await;
 
     let mut store = state.logical_devices.write().await;
     let default = crate::logical_devices::ensure_default_logical_device(
@@ -1224,6 +1228,7 @@ async fn run_identify_flash(
     let power = *state.power_state.borrow();
     if power.sleeping() {
         state
+            .domains
             .output
             .publish_static_snapshot(power.effective_off_output_color())
             .await;

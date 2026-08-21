@@ -225,7 +225,7 @@ async fn seed_tree(state: &Arc<AppState>) -> EffectId {
             None,
         )
         .expect("primary zone should seed");
-    hypercolor_daemon::domain::scene::commit_scene(&state.scene, mutation)
+    hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
         .await
         .expect("primary zone should commit");
     effect_id
@@ -372,7 +372,8 @@ async fn replacing_a_layer_mints_a_fresh_id_and_strands_the_old_one() {
         .as_str()
         .expect("layer id")
         .to_owned();
-    hypercolor_daemon::domain::output::set_power(&state.output, OutputPowerMode::Paused).await;
+    hypercolor_daemon::domain::output::set_power(&state.domains.output, OutputPowerMode::Paused)
+        .await;
 
     // Replace the layer with one running the very same effect. Spec 78
     // §1.4 mints a fresh id regardless: replacement is creation.
@@ -587,7 +588,8 @@ async fn effect_apply_sugars_reject_stale_revisions_before_waking_output() {
     let before = read_document(&app).await;
     let revision = before["data"]["revision"].as_u64().expect("revision");
 
-    hypercolor_daemon::domain::output::set_power(&state.output, OutputPowerMode::Paused).await;
+    hypercolor_daemon::domain::output::set_power(&state.domains.output, OutputPowerMode::Paused)
+        .await;
 
     let routes = [
         format!("/api/v1/effects/{effect_id}/apply"),
@@ -768,7 +770,7 @@ async fn a_write_to_a_bound_control_is_refused_and_recoverable_in_one_request() 
                 },
             )
             .expect("binding should attach");
-        hypercolor_daemon::domain::scene::commit_scene(&state.scene, mutation)
+        hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
             .await
             .expect("binding should commit");
     }
@@ -1314,7 +1316,7 @@ async fn clearing_the_tree_leaves_display_faces_alone() {
             )
             .expect("face assigns")
             .id;
-        hypercolor_daemon::domain::scene::commit_scene(&state.scene, mutation)
+        hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
             .await
             .expect("face should commit");
         zone_id
@@ -1376,7 +1378,7 @@ async fn generic_live_tree_mutations_cannot_edit_display_owned_zones() {
             )
             .expect("face assigns")
             .id;
-        hypercolor_daemon::domain::scene::commit_scene(&state.scene, mutation)
+        hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
             .await
             .expect("face should commit");
         zone_id

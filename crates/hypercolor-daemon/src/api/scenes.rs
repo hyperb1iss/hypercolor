@@ -69,7 +69,7 @@ pub async fn create_scene(
     Json(body): Json<CreateSceneRequest>,
 ) -> Response {
     let created = match crate::domain::scene::create_scene(
-        &state.scene_library,
+        &state.domains.scene_library,
         crate::domain::scene::CreateScene {
             name: body.name,
             description: body.description,
@@ -93,7 +93,7 @@ pub async fn snapshot_scene(
     Json(body): Json<SnapshotSceneRequest>,
 ) -> Response {
     let created = match crate::domain::scene::snapshot_scene(
-        &state.scene_library,
+        &state.domains.scene_library,
         crate::domain::scene::SnapshotScene {
             name: body.name,
             description: body.description,
@@ -125,7 +125,7 @@ pub async fn update_scene(
     };
 
     let updated = match crate::domain::scene::replace_scene(
-        &state.scene_library,
+        &state.domains.scene_library,
         crate::domain::scene::ReplaceScene {
             scene_id,
             document: body,
@@ -160,7 +160,9 @@ pub async fn delete_scene(State(state): State<Arc<AppState>>, Path(id): Path<Str
         return DomainError::not_found(ResourceKind::Scene, &id).into_response();
     };
 
-    if let Err(error) = crate::domain::scene::delete_scene(&state.scene_library, scene_id).await {
+    if let Err(error) =
+        crate::domain::scene::delete_scene(&state.domains.scene_library, scene_id).await
+    {
         return match error {
             // The service reports the resolved id; the caller gets back
             // the id it actually sent.
@@ -190,7 +192,7 @@ pub async fn activate_scene(
         let Some(scene) = manager.get(&scene_id) else {
             return DomainError::not_found(ResourceKind::Scene, &id).into_response();
         };
-        let admission = state.scene.evaluate_media_admission(scene).await;
+        let admission = state.domains.scene.evaluate_media_admission(scene).await;
         (scene_id, admission)
     };
     if let Some(violation) = admission.violation.as_ref() {
@@ -206,7 +208,7 @@ pub async fn activate_scene(
     }
 
     let activated = match crate::domain::scene::activate_scene(
-        &state.scene_library,
+        &state.domains.scene_library,
         crate::domain::scene::ActivateScene {
             scene_id,
             transition: None,

@@ -40,6 +40,7 @@ use crate::device_settings::DeviceSettingsStore;
 use crate::discovery;
 use crate::display_output::DisplayOutputThread;
 use crate::display_preferences::DisplayPreferencesStore;
+use crate::domain::context::DomainContexts;
 use crate::domain::scene::SceneService;
 use crate::domain::spatial::SpatialService;
 use crate::extensions::{ApiExtension, DaemonLifecycleExtension, ExtensionRegistry};
@@ -88,6 +89,9 @@ pub use signals::{SUPERVISED_PARENT_PID_ENV, install_signal_handlers};
 /// Fields are `pub` because the API and MCP modules (built by other agents)
 /// will need direct access to subsystems.
 pub struct DaemonState {
+    /// Complete domain service graph shared by every transport.
+    pub domains: DomainContexts,
+
     /// Live configuration manager (lock-free reads via `arc_swap`).
     pub config_manager: Arc<ConfigManager>,
 

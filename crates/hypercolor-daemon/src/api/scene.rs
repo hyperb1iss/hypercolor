@@ -43,7 +43,7 @@ use axum::Json;
 
 /// `GET /api/v1/scene` — the full live document.
 pub async fn get_scene(State(state): State<Arc<AppState>>) -> Response {
-    match scene_tree::read_document(&state.scene_tree).await {
+    match scene_tree::read_document(&state.domains.scene_tree).await {
         Ok(document) => {
             let revision = document.revision;
             with_revision(envelope::ok(document), revision)
@@ -64,7 +64,7 @@ pub async fn patch_scene(
     };
     tree_response(
         scene_tree::patch_scene(
-            &state.scene_tree,
+            &state.domains.scene_tree,
             PatchScene {
                 name: body.name,
                 unassigned_behavior: body.unassigned_behavior,
@@ -77,7 +77,7 @@ pub async fn patch_scene(
 
 /// `POST /api/v1/scene/deactivate` — return to the default scene.
 pub async fn deactivate_scene(State(state): State<Arc<AppState>>) -> Response {
-    if let Err(error) = crate::domain::scene::deactivate_scene(&state.scene_library).await {
+    if let Err(error) = crate::domain::scene::deactivate_scene(&state.domains.scene_library).await {
         return error.into_response();
     }
     get_scene(State(state)).await
@@ -96,7 +96,7 @@ pub async fn clear_scene(
     let zone = body.and_then(|Json(body)| body.zone);
     tree_response(
         scene_tree::clear_scene(
-            &state.scene_tree,
+            &state.domains.scene_tree,
             ClearScene {
                 zone,
                 expected_revision: expected,
@@ -139,7 +139,7 @@ pub async fn create_zone(
     };
 
     let created = crate::domain::zone::create_zone(
-        &state.scene,
+        &state.domains.scene,
         crate::domain::zone::CreateZone {
             name: body.name,
             color: body.color,
@@ -171,7 +171,7 @@ pub async fn get_zone(State(state): State<Arc<AppState>>, Path(zone): Path<Strin
         Ok(zone_id) => zone_id,
         Err(error) => return error.into_response(),
     };
-    match scene_tree::read_zone(&state.scene_tree, zone_id).await {
+    match scene_tree::read_zone(&state.domains.scene_tree, zone_id).await {
         Ok((resource, revision)) => with_revision(envelope::ok(resource), revision),
         Err(error) => error.into_response(),
     }
@@ -191,7 +191,7 @@ pub async fn patch_zone(
 
     zone_written_response(
         crate::domain::zone::update_zone(
-            &state.scene,
+            &state.domains.scene,
             crate::domain::zone::UpdateZone {
                 zone_id,
                 patch: hypercolor_core::scene::ZoneMetaPatch {
@@ -221,7 +221,7 @@ pub async fn delete_zone(
     };
 
     if let Err(error) = crate::domain::zone::delete_zone(
-        &state.scene,
+        &state.domains.scene,
         crate::domain::zone::DeleteZone {
             zone_id,
             expected_revision: expected,
@@ -251,7 +251,13 @@ pub async fn put_zone_layout(
     };
 
     written_response(
-        scene_tree::set_zone_layout(&state.scene_tree, zone_id, body.placements, expected).await,
+        scene_tree::set_zone_layout(
+            &state.domains.scene_tree,
+            zone_id,
+            body.placements,
+            expected,
+        )
+        .await,
     )
 }
 
@@ -273,7 +279,7 @@ pub async fn assign_members(
 
     written_response(
         scene_tree::assign_members(
-            &state.scene_tree,
+            &state.domains.scene_tree,
             AssignMembers {
                 zone_id,
                 request: body,
@@ -300,8 +306,13 @@ pub async fn unassign_member(
     };
 
     written_response(
-        scene_tree::unassign_member(&state.scene_tree, zone_id, &ZoneMemberId(member), expected)
-            .await,
+        scene_tree::unassign_member(
+            &state.domains.scene_tree,
+            zone_id,
+            &ZoneMemberId(member),
+            expected,
+        )
+        .await,
     )
 }
 
@@ -313,7 +324,7 @@ pub async fn list_layers(State(state): State<Arc<AppState>>, Path(zone): Path<St
         Ok(zone_id) => zone_id,
         Err(error) => return error.into_response(),
     };
-    match scene_tree::read_zone(&state.scene_tree, zone_id).await {
+    match scene_tree::read_zone(&state.domains.scene_tree, zone_id).await {
         Ok((resource, revision)) => {
             let total = resource.layers.len() as u64;
             with_revision(
@@ -345,7 +356,8 @@ pub async fn create_layer(
         Err(error) => return error.into_response(),
     };
     let inserted =
-        crate::domain::layer::insert_layer(&state.scene, zone_id, layer, None, expected).await;
+        crate::domain::layer::insert_layer(&state.domains.scene, zone_id, layer, None, expected)
+            .await;
 
     match inserted {
         Ok(Ok(written)) => {
@@ -377,7 +389,8 @@ pub async fn reorder_layers(
     };
 
     layer_stack_response(
-        crate::domain::layer::reorder_layers(&state.scene, zone_id, body.order, expected).await,
+        crate::domain::layer::reorder_layers(&state.domains.scene, zone_id, body.order, expected)
+            .await,
         zone_id,
     )
 }
@@ -410,7 +423,7 @@ pub async fn replace_layer(
     };
     written_response(
         scene_tree::replace_layer(
-            &state.scene_tree,
+            &state.domains.scene_tree,
             ReplaceLayer {
                 zone_id,
                 layer_id,
@@ -438,7 +451,7 @@ pub async fn delete_layer(
     };
 
     layer_stack_response(
-        crate::domain::layer::remove_layer(&state.scene, zone_id, layer_id, expected).await,
+        crate::domain::layer::remove_layer(&state.domains.scene, zone_id, layer_id, expected).await,
         zone_id,
     )
 }
@@ -472,7 +485,7 @@ pub async fn patch_layer_controls(
     }
     written_response(
         scene_tree::patch_layer_controls(
-            &state.scene_tree,
+            &state.domains.scene_tree,
             PatchLayerControls {
                 zone_id,
                 layer_id,

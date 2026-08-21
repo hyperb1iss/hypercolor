@@ -476,6 +476,7 @@ async fn apply_layout_workflow(state: Arc<AppState>, id: String) -> Response {
     };
 
     let admission = state
+        .domains
         .layout
         .admit_persisted_update_under_guard(&guard, layout.clone())
         .await;
@@ -483,7 +484,7 @@ async fn apply_layout_workflow(state: Arc<AppState>, id: String) -> Response {
     if let Err(error) = admission {
         return layout_update_error_response(error);
     }
-    let persistence = state.layout.converge_persisted_update().await;
+    let persistence = state.domains.layout.converge_persisted_update().await;
     layout_persistence_response(
         ApplyLayoutResponse {
             layout,
@@ -623,6 +624,7 @@ async fn delete_layout_workflow(state: Arc<AppState>, id: String) -> Response {
     let active_layout_changed = next_active_layout.is_some();
     if let Some(layout) = next_active_layout
         && let Err(error) = state
+            .domains
             .layout
             .admit_persisted_update_under_guard(&guard, layout)
             .await
@@ -647,6 +649,7 @@ async fn delete_layout_workflow(state: Arc<AppState>, id: String) -> Response {
         }
         if active_layout_changed
             && let Err(rollback_error) = state
+                .domains
                 .layout
                 .admit_persisted_update_under_guard(&guard, active_layout)
                 .await
@@ -655,7 +658,8 @@ async fn delete_layout_workflow(state: Arc<AppState>, id: String) -> Response {
         }
         drop(guard);
         if active_layout_changed
-            && state.layout.converge_persisted_update().await == LayoutPersistenceStatus::Pending
+            && state.domains.layout.converge_persisted_update().await
+                == LayoutPersistenceStatus::Pending
         {
             rollback_errors.push("active layout rollback persistence remains pending".to_owned());
         }
@@ -676,7 +680,7 @@ async fn delete_layout_workflow(state: Arc<AppState>, id: String) -> Response {
     drop(guard);
 
     let persistence = if active_layout_changed {
-        state.layout.converge_persisted_update().await
+        state.domains.layout.converge_persisted_update().await
     } else {
         LayoutPersistenceStatus::Synchronized
     };

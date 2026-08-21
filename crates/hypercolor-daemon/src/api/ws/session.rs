@@ -1824,7 +1824,7 @@ mod zone_layout_preview_race_tests {
         mutation
             .create_scene(next)
             .expect("next scene should be created");
-        crate::domain::scene::commit_scene(&state.scene, mutation)
+        crate::domain::scene::commit_scene(&state.domains.scene, mutation)
             .await
             .expect("next scene should commit");
 
@@ -1846,7 +1846,7 @@ mod zone_layout_preview_race_tests {
         let activation_state = Arc::clone(&state);
         let activation = tokio::spawn(async move {
             activate_scene(
-                &activation_state.scene_library,
+                &activation_state.domains.scene_library,
                 ActivateScene {
                     scene_id: next_scene_id,
                     transition: None,
@@ -1882,7 +1882,7 @@ mod zone_layout_preview_race_tests {
         let tempdir = tempfile::tempdir().expect("tempdir");
         let state = Arc::new(AppState::new_with_data_dir(tempdir.path().join("data")));
         let created = create_zone(
-            &state.scene,
+            &state.domains.scene,
             CreateZone {
                 name: "temporary".to_owned(),
                 color: None,
@@ -1913,7 +1913,7 @@ mod zone_layout_preview_race_tests {
         let delete_state = Arc::clone(&state);
         let deletion = tokio::spawn(async move {
             delete_zone(
-                &delete_state.scene,
+                &delete_state.domains.scene,
                 DeleteZone {
                     zone_id,
                     expected_revision: None,

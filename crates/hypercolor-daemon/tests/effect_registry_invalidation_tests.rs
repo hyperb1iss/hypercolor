@@ -107,7 +107,7 @@ async fn install_effect_invalidates_active_render_group_revision() {
             None,
         )
         .expect("primary group should be created");
-    hypercolor_daemon::domain::scene::commit_scene(&state.scene, mutation)
+    hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
         .await
         .expect("primary group should commit");
 
@@ -169,7 +169,7 @@ async fn rescan_effects_invalidates_active_render_group_revision() {
             None,
         )
         .expect("primary group should be created");
-    hypercolor_daemon::domain::scene::commit_scene(&state.scene, mutation)
+    hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
         .await
         .expect("primary group should commit");
 

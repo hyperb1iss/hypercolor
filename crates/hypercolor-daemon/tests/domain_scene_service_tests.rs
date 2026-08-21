@@ -63,7 +63,7 @@ async fn seed_scene(state: &Arc<AppState>, scene: Scene) {
     mutation
         .create_scene(scene)
         .expect("test scene should be created");
-    commit_scene(&state.scene, mutation)
+    commit_scene(&state.domains.scene, mutation)
         .await
         .expect("test scene should commit");
 }
@@ -81,7 +81,7 @@ async fn seed_active_scene(state: &Arc<AppState>, scene: Scene) {
             hypercolor_types::event::SceneChangeReason::UserActivate,
         )
         .expect("test scene should activate");
-    commit_scene(&state.scene, mutation)
+    commit_scene(&state.domains.scene, mutation)
         .await
         .expect("test scene should commit");
 }
@@ -158,7 +158,7 @@ async fn clearing_a_zone_retires_its_transient_layout_preview() {
         .await;
 
     clear_scene(
-        &state.scene_tree,
+        &state.domains.scene_tree,
         ClearScene {
             zone: Some(zone_id),
             expected_revision: None,
@@ -179,14 +179,14 @@ async fn clearing_a_zone_retires_its_transient_layout_preview() {
 #[tokio::test]
 async fn control_patch_refuses_a_revision_resolved_before_a_scene_switch() {
     let (state, _tempdir) = isolated_state();
-    let stale = read_document(&state.scene_tree)
+    let stale = read_document(&state.domains.scene_tree)
         .await
         .expect("default scene should be readable");
     let next_scene = named_scene("next");
     let next_scene_id = next_scene.id;
     seed_scene(&state, next_scene).await;
     activate_scene(
-        &state.scene_library,
+        &state.domains.scene_library,
         ActivateScene {
             scene_id: next_scene_id,
             transition: None,
@@ -196,7 +196,7 @@ async fn control_patch_refuses_a_revision_resolved_before_a_scene_switch() {
     .expect("next scene should activate");
 
     let error = patch_layer_controls(
-        &state.scene_tree,
+        &state.domains.scene_tree,
         PatchLayerControls {
             zone_id: stale.zones[0].id,
             layer_id: SceneLayerId::new(),
@@ -378,7 +378,7 @@ async fn apply_effect_loads_the_primary_zone_and_commits_durably() {
     insert_effect(&state, &metadata).await;
 
     let applied = apply_effect(
-        &state.effects,
+        &state.domains.effects,
         apply_command(&metadata),
         MutationContext::api(),
     )
@@ -410,14 +410,14 @@ async fn apply_effect_reports_the_outgoing_effect_of_the_target_zone() {
     insert_effect(&state, &second).await;
 
     apply_effect(
-        &state.effects,
+        &state.domains.effects,
         apply_command(&first),
         MutationContext::api(),
     )
     .await
     .expect("first apply should succeed");
     let applied = apply_effect(
-        &state.effects,
+        &state.domains.effects,
         apply_command(&second),
         MutationContext::api(),
     )
@@ -439,7 +439,7 @@ async fn apply_effect_refuses_a_display_face() {
     insert_effect(&state, &metadata).await;
 
     let error = apply_effect(
-        &state.effects,
+        &state.domains.effects,
         apply_command(&metadata),
         MutationContext::api(),
     )
@@ -462,7 +462,7 @@ async fn apply_effect_refuses_an_unimplemented_transition_from_either_transport(
     for trigger in [MutationContext::api(), MutationContext::mcp()] {
         let mut command = apply_command(&metadata);
         command.transition = RequestedTransition::of_duration(500);
-        let error = apply_effect(&state.effects, command, trigger)
+        let error = apply_effect(&state.domains.effects, command, trigger)
             .await
             .expect_err("a non-zero transition is not implemented");
         match error {
@@ -476,7 +476,7 @@ async fn apply_effect_refuses_an_unimplemented_transition_from_either_transport(
 
     // A zero-duration cut is the one request the daemon can honor.
     let applied = apply_effect(
-        &state.effects,
+        &state.domains.effects,
         ApplyEffect {
             transition: RequestedTransition::of_duration(0),
             ..apply_command(&metadata)
@@ -499,7 +499,7 @@ async fn apply_effect_conflicts_when_the_active_scene_is_snapshot_locked() {
     seed_active_scene(&state, scene).await;
 
     let error = apply_effect(
-        &state.effects,
+        &state.domains.effects,
         apply_command(&metadata),
         MutationContext::mcp(),
     )
@@ -522,7 +522,7 @@ async fn activate_scene_switches_the_current_scene_and_publishes_once() {
     let mut events = state.event_bus.subscribe_all();
 
     let activated = activate_scene(
-        &state.scene_library,
+        &state.domains.scene_library,
         ActivateScene {
             scene_id,
             transition: None,
@@ -576,7 +576,7 @@ async fn activation_hydrates_only_existing_connected_display_zones() {
     seed_scene(&state, scene).await;
 
     activate_scene(
-        &state.scene_library,
+        &state.domains.scene_library,
         ActivateScene {
             scene_id,
             transition: None,
@@ -606,7 +606,7 @@ async fn activation_commits_before_layout_failure_and_still_applies_brightness()
     let mut events = state.event_bus.subscribe_all();
 
     let activated = activate_scene(
-        &state.scene_library,
+        &state.domains.scene_library,
         ActivateScene {
             scene_id,
             transition: None,
@@ -638,7 +638,7 @@ async fn activation_commits_before_layout_failure_and_still_applies_brightness()
     );
     assert!(activated.brightness.applied);
     assert_eq!(
-        hypercolor_daemon::domain::output::get_output(&state.output).brightness,
+        hypercolor_daemon::domain::output::get_output(&state.domains.output).brightness,
         0.42
     );
 
@@ -677,7 +677,7 @@ async fn activation_applies_a_named_layout_without_reentering_its_guard() {
     seed_scene(&state, scene).await;
 
     let activation = activate_scene(
-        &state.scene_library,
+        &state.domains.scene_library,
         ActivateScene {
             scene_id,
             transition: None,
@@ -732,7 +732,7 @@ async fn activate_scene_honors_a_transition_override() {
     seed_scene(&state, second).await;
 
     activate_scene(
-        &state.scene_library,
+        &state.domains.scene_library,
         ActivateScene {
             scene_id: first_id,
             transition: None,
@@ -745,7 +745,7 @@ async fn activate_scene_honors_a_transition_override() {
     // than echoing it, which is why it is a command field and not an
     // adapter detail.
     activate_scene(
-        &state.scene_library,
+        &state.domains.scene_library,
         ActivateScene {
             scene_id: second_id,
             transition: Some(TransitionSpec {
@@ -775,7 +775,7 @@ async fn activating_another_scene_retires_transient_layout_previews() {
     seed_scene(&state, second).await;
 
     activate_scene(
-        &state.scene_library,
+        &state.domains.scene_library,
         ActivateScene {
             scene_id: first_id,
             transition: None,
@@ -796,7 +796,7 @@ async fn activating_another_scene_retires_transient_layout_previews() {
         .await;
 
     activate_scene(
-        &state.scene_library,
+        &state.domains.scene_library,
         ActivateScene {
             scene_id: second_id,
             transition: None,
@@ -805,7 +805,7 @@ async fn activating_another_scene_retires_transient_layout_previews() {
     .await
     .expect("second activation should succeed");
     activate_scene(
-        &state.scene_library,
+        &state.domains.scene_library,
         ActivateScene {
             scene_id: first_id,
             transition: None,
@@ -828,7 +828,7 @@ async fn activating_another_scene_retires_transient_layout_previews() {
 async fn activate_scene_refuses_an_unknown_scene() {
     let (state, _tempdir) = isolated_state();
     let error = activate_scene(
-        &state.scene_library,
+        &state.domains.scene_library,
         ActivateScene {
             scene_id: SceneId::new(),
             transition: None,
@@ -920,7 +920,7 @@ async fn a_stale_base_revision_is_rejected_before_admission() {
             None,
         )
         .expect("candidate mutation should apply");
-    let commit = commit_scene(&state.scene, winner)
+    let commit = commit_scene(&state.domains.scene, winner)
         .await
         .expect("the first commit wins");
     assert_eq!(commit.durability(), CommitDurability::Written);
@@ -935,7 +935,7 @@ async fn a_stale_base_revision_is_rejected_before_admission() {
             None,
         )
         .expect("candidate mutation should apply");
-    let error = commit_scene(&state.scene, stale)
+    let error = commit_scene(&state.domains.scene, stale)
         .await
         .expect_err("a candidate built from a dead revision must not land");
     // Losing the commit compare-and-swap is a conflict, not a failed
@@ -983,7 +983,7 @@ async fn a_rejected_candidate_leaves_the_live_state_untouched() {
         .expect("candidate mutation should apply");
 
     apply_effect(
-        &state.effects,
+        &state.domains.effects,
         apply_command(&metadata),
         MutationContext::api(),
     )
@@ -991,7 +991,7 @@ async fn a_rejected_candidate_leaves_the_live_state_untouched() {
     .expect("the winning apply should succeed");
 
     let mut events = state.event_bus.subscribe_all();
-    commit_scene(&state.scene, stale)
+    commit_scene(&state.domains.scene, stale)
         .await
         .expect_err("the stale candidate must be refused");
 
@@ -1070,7 +1070,7 @@ async fn a_non_durable_write_reports_retrying_and_publishes_nothing() {
 
     let mut events = state.event_bus.subscribe_all();
     let applied = apply_effect(
-        &state.effects,
+        &state.domains.effects,
         apply_command(&metadata),
         MutationContext::api(),
     )
@@ -1097,7 +1097,7 @@ async fn commit_generations_advance_the_scene_revision_in_order() {
     let mut generations = Vec::new();
     for _ in 0..3 {
         let applied = apply_effect(
-            &state.effects,
+            &state.domains.effects,
             apply_command(&metadata),
             MutationContext::api(),
         )
@@ -1130,7 +1130,7 @@ async fn create_scene_seeds_a_default_zone_and_announces_the_scene() {
     let (state, _tempdir) = isolated_state();
     let mut events = state.event_bus.subscribe_all();
 
-    let created = create_scene(&state.scene_library, create_command("evening"))
+    let created = create_scene(&state.domains.scene_library, create_command("evening"))
         .await
         .expect("scene should be created");
 
@@ -1161,7 +1161,7 @@ async fn snapshot_scene_preserves_the_live_tree_and_captures_the_active_layout()
     let metadata = test_effect_metadata("aurora");
     insert_effect(&state, &metadata).await;
     apply_effect(
-        &state.effects,
+        &state.domains.effects,
         apply_command(&metadata),
         MutationContext::api(),
     )
@@ -1177,7 +1177,7 @@ async fn snapshot_scene_preserves_the_live_tree_and_captures_the_active_layout()
     let active_layout_id = state.spatial_engine.snapshot().layout().id.clone();
 
     let snapshot = snapshot_scene(
-        &state.scene_library,
+        &state.domains.scene_library,
         SnapshotScene {
             name: "Captured desk".to_owned(),
             description: Some("Runtime state".to_owned()),
@@ -1212,10 +1212,10 @@ async fn snapshot_scene_preserves_the_live_tree_and_captures_the_active_layout()
 async fn create_scene_behaves_identically_for_both_transports() {
     let (state, _tempdir) = isolated_state();
 
-    let via_api = create_scene(&state.scene_library, create_command("api-made"))
+    let via_api = create_scene(&state.domains.scene_library, create_command("api-made"))
         .await
         .expect("api create should succeed");
-    let via_mcp = create_scene(&state.scene_library, create_command("mcp-made"))
+    let via_mcp = create_scene(&state.domains.scene_library, create_command("mcp-made"))
         .await
         .expect("mcp create should succeed");
 
@@ -1236,7 +1236,7 @@ async fn create_scene_carries_adapter_metadata_onto_the_scene() {
     command.mutation_mode = Some(SceneMutationMode::Snapshot);
     command.enabled = Some(false);
 
-    let created = create_scene(&state.scene_library, command)
+    let created = create_scene(&state.domains.scene_library, command)
         .await
         .expect("scene should be created");
 
@@ -1255,11 +1255,11 @@ async fn create_scene_carries_adapter_metadata_onto_the_scene() {
 #[tokio::test]
 async fn delete_scene_deactivates_it_and_announces_both_changes() {
     let (state, _tempdir) = isolated_state();
-    let created = create_scene(&state.scene_library, create_command("evening"))
+    let created = create_scene(&state.domains.scene_library, create_command("evening"))
         .await
         .expect("scene should be created");
     activate_scene(
-        &state.scene_library,
+        &state.domains.scene_library,
         ActivateScene {
             scene_id: created.scene.id,
             transition: None,
@@ -1278,7 +1278,7 @@ async fn delete_scene_deactivates_it_and_announces_both_changes() {
         .await;
     let mut events = state.event_bus.subscribe_all();
 
-    let deleted = delete_scene(&state.scene_library, created.scene.id)
+    let deleted = delete_scene(&state.domains.scene_library, created.scene.id)
         .await
         .expect("scene should be deleted");
 
@@ -1323,7 +1323,7 @@ async fn delete_scene_deactivates_it_and_announces_both_changes() {
 #[tokio::test]
 async fn delete_scene_refuses_the_default_scene() {
     let (state, _tempdir) = isolated_state();
-    let error = delete_scene(&state.scene_library, SceneId::DEFAULT)
+    let error = delete_scene(&state.domains.scene_library, SceneId::DEFAULT)
         .await
         .expect_err("the default scene is not deletable");
     assert!(
@@ -1335,11 +1335,11 @@ async fn delete_scene_refuses_the_default_scene() {
 #[tokio::test]
 async fn deactivate_scene_returns_to_default_and_reports_both_ends() {
     let (state, _tempdir) = isolated_state();
-    let created = create_scene(&state.scene_library, create_command("evening"))
+    let created = create_scene(&state.domains.scene_library, create_command("evening"))
         .await
         .expect("scene should be created");
     activate_scene(
-        &state.scene_library,
+        &state.domains.scene_library,
         ActivateScene {
             scene_id: created.scene.id,
             transition: None,
@@ -1348,7 +1348,7 @@ async fn deactivate_scene_returns_to_default_and_reports_both_ends() {
     .await
     .expect("scene should activate");
 
-    let deactivated = deactivate_scene(&state.scene_library)
+    let deactivated = deactivate_scene(&state.domains.scene_library)
         .await
         .expect("deactivation should succeed");
 

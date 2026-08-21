@@ -451,7 +451,7 @@ async fn activate_playlist_item(state: &Arc<AppState>, item: &PlaylistItem) -> R
     }
 
     crate::domain::effect::apply_effect(
-        &state.effects,
+        &state.domains.effects,
         crate::domain::effect::ApplyEffect {
             effect: metadata,
             controls,

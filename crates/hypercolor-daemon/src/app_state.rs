@@ -41,12 +41,12 @@ use crate::device_metrics::{DeviceMetricsSnapshot, DeviceMetricsSnapshotStore};
 use crate::device_settings::DeviceSettingsStore;
 use crate::display_frames::DisplayFrameRuntime;
 use crate::display_preferences::DisplayPreferencesStore;
-use crate::domain::context::{DeviceContext, RuntimeSessionService, SceneContext};
-use crate::domain::effect::EffectContext;
+use crate::domain::context::{
+    DeviceContext, DomainContextResources, DomainContexts, RuntimeSessionService, SceneContext,
+};
 use crate::domain::layout::LayoutContext;
 use crate::domain::output::OutputContext;
-use crate::domain::scene::{SceneLibraryContext, SceneService};
-use crate::domain::scene_tree::SceneTreeContext;
+use crate::domain::scene::SceneService;
 use crate::domain::spatial::SpatialService;
 use crate::driver_inventory::{DRIVER_INVENTORY_FILENAME, DriverInventoryStore};
 use crate::extensions::{ApiExtension, ExtensionRegistry};
@@ -83,29 +83,8 @@ type CapturePickerPersistenceTask = Arc<StdMutex<Option<(u64, JoinHandle<()>)>>>
 /// via [`from_daemon_state`](Self::from_daemon_state). This guarantees
 /// that API calls operate on the same subsystems as the render pipeline.
 pub struct AppState {
-    /// Narrow scene transaction authority used by domain services.
-    pub scene: SceneContext,
-
-    /// Runtime-session snapshot and persistence authority.
-    pub runtime_session: RuntimeSessionService,
-
-    /// Device lifecycle and discovery-layout reconciliation authority.
-    pub devices: DeviceContext,
-
-    /// Spatial layout catalog, activation, and durability authority.
-    pub layout: LayoutContext,
-
-    /// Global output power, brightness, and quiescence authority.
-    pub output: OutputContext,
-
-    /// Effect catalog, validation, and activation authority.
-    pub effects: EffectContext,
-
-    /// Live scene-tree read and mutation authority.
-    pub scene_tree: SceneTreeContext,
-
-    /// Named scene library and activation authority.
-    pub scene_library: SceneLibraryContext,
+    /// Complete domain service graph assembled by the composition root.
+    pub domains: DomainContexts,
 
     /// Device tracking and lifecycle management.
     pub device_registry: DeviceRegistry,
@@ -602,34 +581,21 @@ impl AppState {
             devices.clone(),
             start_time,
         );
-        let scene_library = SceneLibraryContext::new(
-            scene.clone(),
-            layout.clone(),
-            output.clone(),
-            Arc::clone(&event_bus),
-        );
-        let effects = EffectContext::new(
-            Arc::clone(&effect_registry),
-            scene.clone(),
-            spatial_engine.clone(),
-            output.clone(),
-        );
-        let scene_tree = SceneTreeContext::new(
-            scene.clone(),
-            effects.clone(),
-            devices.clone(),
-            output.clone(),
+        let domains = DomainContexts::assemble(
+            runtime_session,
+            devices,
+            scene,
+            layout,
+            output,
+            DomainContextResources {
+                effect_registry: Arc::clone(&effect_registry),
+                spatial: spatial_engine.clone(),
+                event_bus: Arc::clone(&event_bus),
+            },
         );
 
         Self {
-            scene,
-            runtime_session,
-            devices,
-            layout,
-            output,
-            effects,
-            scene_tree,
-            scene_library,
+            domains,
             device_registry,
             effect_registry,
             scene_manager,
@@ -716,82 +682,10 @@ impl AppState {
         let library_store = Arc::clone(&daemon.library_store);
         let driver_host = Arc::clone(&daemon.driver_host);
         let driver_registry = Arc::clone(&daemon.driver_registry);
-        let runtime_session = RuntimeSessionService::new(
-            daemon.runtime_state_path.clone(),
-            daemon.scene_manager.clone(),
-            daemon.spatial_engine.clone(),
-            daemon.power_state.clone(),
-            Arc::clone(&driver_host),
-            Arc::clone(&driver_registry),
-        );
-        let devices = DeviceContext::new(
-            daemon.device_registry.clone(),
-            Arc::clone(&daemon.lifecycle_manager),
-            Arc::clone(&driver_host),
-            Arc::clone(&driver_registry),
-            Some(Arc::clone(&daemon.config_manager)),
-            Arc::clone(&daemon.layout_auto_exclusions),
-            daemon.layout_auto_exclusions_path.clone(),
-        );
-        let scene = SceneContext::new(
-            daemon.scene_manager.clone(),
-            runtime_session.clone(),
-            Arc::clone(&daemon.asset_library),
-            Some(Arc::clone(&daemon.config_manager)),
-            Arc::clone(&daemon.render_loop),
-            devices.clone(),
-        );
-        let layout = LayoutContext::new(
-            Arc::clone(&daemon.layouts),
-            daemon.spatial_engine.clone(),
-            daemon.scene_manager.clone(),
-            daemon.scene_transactions.clone(),
-            daemon.runtime_state_path.clone(),
-            runtime_session.clone(),
-            devices.clone(),
-        );
-        let output = OutputContext::new(
-            daemon.power_state.clone(),
-            Arc::clone(&daemon.output_power_transition),
-            Arc::clone(&daemon.device_settings),
-            Arc::clone(&daemon.event_bus),
-            runtime_session.clone(),
-            Arc::clone(&daemon.performance),
-            Arc::clone(&daemon.render_loop),
-            daemon.spatial_engine.clone(),
-            Arc::clone(&daemon.backend_manager),
-            Arc::clone(&daemon.preview_runtime),
-            devices.clone(),
-            daemon.start_time,
-        );
-        let scene_library = SceneLibraryContext::new(
-            scene.clone(),
-            layout.clone(),
-            output.clone(),
-            Arc::clone(&daemon.event_bus),
-        );
-        let effects = EffectContext::new(
-            Arc::clone(&daemon.effect_registry),
-            scene.clone(),
-            daemon.spatial_engine.clone(),
-            output.clone(),
-        );
-        let scene_tree = SceneTreeContext::new(
-            scene.clone(),
-            effects.clone(),
-            devices.clone(),
-            output.clone(),
-        );
+        let domains = daemon.domains.clone();
 
         Self {
-            scene,
-            runtime_session,
-            devices,
-            layout,
-            output,
-            effects,
-            scene_tree,
-            scene_library,
+            domains,
             device_registry: daemon.device_registry.clone(),
             effect_registry: Arc::clone(&daemon.effect_registry),
             scene_manager: daemon.scene_manager.clone(),

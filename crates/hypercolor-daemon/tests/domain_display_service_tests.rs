@@ -173,14 +173,14 @@ async fn set_display_face_creates_the_zone_then_updates_it() {
     insert_effect(&state, &second).await;
     let mut events = state.event_bus.subscribe_all();
 
-    let created = set_display_face(&state.scene, assign_command(device_id, &first))
+    let created = set_display_face(&state.domains.scene, assign_command(device_id, &first))
         .await
         .expect("the face should be assigned");
     assert_eq!(created.change, ZoneChangeKind::Created);
     assert_eq!(created.zone.effect_ids().next(), Some(first.id));
     assert_eq!(created.zone.role, ZoneRole::Display);
 
-    let updated = set_display_face(&state.scene, assign_command(device_id, &second))
+    let updated = set_display_face(&state.domains.scene, assign_command(device_id, &second))
         .await
         .expect("the face should be replaced");
     assert_eq!(updated.change, ZoneChangeKind::Updated);
@@ -217,7 +217,7 @@ async fn set_display_face_applies_the_requested_composition() {
         device_id,
         opacity: 0.4,
     };
-    let written = set_display_face(&state.scene, command)
+    let written = set_display_face(&state.domains.scene, command)
         .await
         .expect("the face should be assigned");
 
@@ -235,12 +235,12 @@ async fn clear_display_face_keeps_the_zone_and_drops_the_effect() {
     let device_id = DeviceId::new();
     let effect = face_effect("clock");
     insert_effect(&state, &effect).await;
-    let created = set_display_face(&state.scene, assign_command(device_id, &effect))
+    let created = set_display_face(&state.domains.scene, assign_command(device_id, &effect))
         .await
         .expect("the face should be assigned");
 
     let cleared = clear_display_face(
-        &state.scene,
+        &state.domains.scene,
         ClearDisplayFace {
             device_id,
             device_name: "Kraken".to_owned(),
@@ -276,11 +276,11 @@ async fn display_face_mutations_conflict_on_a_snapshot_locked_scene() {
             hypercolor_types::event::SceneChangeReason::UserActivate,
         )
         .expect("scene should activate");
-    hypercolor_daemon::domain::scene::commit_scene(&state.scene, mutation)
+    hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
         .await
         .expect("scene should commit");
 
-    let error = set_display_face(&state.scene, assign_command(device_id, &effect))
+    let error = set_display_face(&state.domains.scene, assign_command(device_id, &effect))
         .await
         .expect_err("a snapshot scene refuses runtime rewriting");
     assert!(
@@ -298,7 +298,7 @@ async fn patching_composition_and_controls_reports_a_missing_zone() {
 
     assert!(
         patch_display_composition(
-            &state.scene,
+            &state.domains.scene,
             PatchDisplayComposition {
                 zone_id: ZoneId::new(),
                 blend_mode: Some(DisplayFaceBlendMode::Replace),
@@ -312,7 +312,7 @@ async fn patching_composition_and_controls_reports_a_missing_zone() {
 
     assert!(
         patch_display_face_controls(
-            &state.scene,
+            &state.domains.scene,
             PatchDisplayFaceControls {
                 zone_id: ZoneId::new(),
                 controls: HashMap::from([("accent".to_owned(), ControlValue::Float(0.5))]),
@@ -330,12 +330,12 @@ async fn patch_display_face_controls_merges_onto_the_zone() {
     let device_id = DeviceId::new();
     let effect = face_effect("clock");
     insert_effect(&state, &effect).await;
-    let created = set_display_face(&state.scene, assign_command(device_id, &effect))
+    let created = set_display_face(&state.domains.scene, assign_command(device_id, &effect))
         .await
         .expect("the face should be assigned");
 
     let written = patch_display_face_controls(
-        &state.scene,
+        &state.domains.scene,
         PatchDisplayFaceControls {
             zone_id: created.zone.id,
             controls: HashMap::from([("accent".to_owned(), ControlValue::Float(0.5))]),
@@ -375,12 +375,12 @@ async fn sync_display_surfaces_skips_a_snapshot_locked_scene() {
             hypercolor_types::event::SceneChangeReason::UserActivate,
         )
         .expect("scene should activate");
-    hypercolor_daemon::domain::scene::commit_scene(&state.scene, mutation)
+    hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
         .await
         .expect("scene should commit");
 
     let changed = sync_display_surfaces(
-        &state.scene,
+        &state.domains.scene,
         vec![(device_id, "Kraken".to_owned(), face_layout(device_id))],
     )
     .await
@@ -395,13 +395,13 @@ async fn sync_display_surfaces_reports_whether_anything_moved() {
     let displays = vec![(device_id, "Kraken".to_owned(), face_layout(device_id))];
 
     assert!(
-        sync_display_surfaces(&state.scene, displays.clone())
+        sync_display_surfaces(&state.domains.scene, displays.clone())
             .await
             .expect("the first sync installs a surface"),
         "installing a surface is a change"
     );
     assert!(
-        !sync_display_surfaces(&state.scene, displays)
+        !sync_display_surfaces(&state.domains.scene, displays)
             .await
             .expect("the second sync is idempotent"),
         "an unchanged surface must not commit"
@@ -414,14 +414,18 @@ async fn prune_display_zones_removes_both_layers_for_a_deleted_device() {
     let device_id = DeviceId::new();
     let effect = face_effect("clock");
     insert_effect(&state, &effect).await;
-    set_display_face(&state.scene, assign_command(device_id, &effect))
+    set_display_face(&state.domains.scene, assign_command(device_id, &effect))
         .await
         .expect("the face should be assigned");
-    set_default_display_overlay(&state.scene, device_id, overlay_zone(device_id, effect.id))
-        .await
-        .expect("the overlay should install");
+    set_default_display_overlay(
+        &state.domains.scene,
+        device_id,
+        overlay_zone(device_id, effect.id),
+    )
+    .await
+    .expect("the overlay should install");
 
-    let pruned = prune_display_zones_for_device(&state.scene, device_id)
+    let pruned = prune_display_zones_for_device(&state.domains.scene, device_id)
         .await
         .expect("pruning should succeed");
 
@@ -450,14 +454,17 @@ async fn the_default_overlay_installs_and_retracts_without_persisting() {
     let effect = face_effect("clock");
     insert_effect(&state, &effect).await;
 
-    let installed =
-        set_default_display_overlay(&state.scene, device_id, overlay_zone(device_id, effect.id))
-            .await
-            .expect("the overlay should install")
-            .expect("the overlay is readable back");
+    let installed = set_default_display_overlay(
+        &state.domains.scene,
+        device_id,
+        overlay_zone(device_id, effect.id),
+    )
+    .await
+    .expect("the overlay should install")
+    .expect("the overlay is readable back");
     assert_eq!(installed.effect_ids().next(), Some(effect.id));
 
-    let removed = remove_default_display_overlay(&state.scene, device_id)
+    let removed = remove_default_display_overlay(&state.domains.scene, device_id)
         .await
         .expect("the overlay should retract")
         .expect("the retraction reports what it removed");
@@ -489,7 +496,7 @@ async fn reinstalling_an_unchanged_default_overlay_mints_no_revision() {
     insert_effect(&state, &effect).await;
 
     let zone = overlay_zone(device_id, effect.id);
-    set_default_display_overlay(&state.scene, device_id, zone.clone())
+    set_default_display_overlay(&state.domains.scene, device_id, zone.clone())
         .await
         .expect("the first install lands");
     let after_install = state.scene_manager.revision();
@@ -497,7 +504,7 @@ async fn reinstalling_an_unchanged_default_overlay_mints_no_revision() {
     for _ in 0..3 {
         let mut refresh = zone.clone();
         refresh.layers[0].id = SceneLayerId::new();
-        let installed = set_default_display_overlay(&state.scene, device_id, refresh)
+        let installed = set_default_display_overlay(&state.domains.scene, device_id, refresh)
             .await
             .expect("a repeat install succeeds")
             .expect("it reports the installed overlay");
@@ -517,7 +524,7 @@ async fn retracting_an_absent_default_overlay_mints_no_revision() {
     let before = state.scene_manager.revision();
 
     assert!(
-        remove_default_display_overlay(&state.scene, DeviceId::new())
+        remove_default_display_overlay(&state.domains.scene, DeviceId::new())
             .await
             .expect("retracting nothing succeeds")
             .is_none()
@@ -536,16 +543,23 @@ async fn a_changed_default_overlay_still_commits() {
     insert_effect(&state, &first).await;
     insert_effect(&state, &second).await;
 
-    set_default_display_overlay(&state.scene, device_id, overlay_zone(device_id, first.id))
-        .await
-        .expect("the first install lands");
+    set_default_display_overlay(
+        &state.domains.scene,
+        device_id,
+        overlay_zone(device_id, first.id),
+    )
+    .await
+    .expect("the first install lands");
     let after_first = state.scene_manager.revision();
 
-    let installed =
-        set_default_display_overlay(&state.scene, device_id, overlay_zone(device_id, second.id))
-            .await
-            .expect("the replacement lands")
-            .expect("it reports the installed overlay");
+    let installed = set_default_display_overlay(
+        &state.domains.scene,
+        device_id,
+        overlay_zone(device_id, second.id),
+    )
+    .await
+    .expect("the replacement lands")
+    .expect("it reports the installed overlay");
 
     assert_eq!(installed.effect_ids().next(), Some(second.id));
     assert!(
@@ -559,7 +573,7 @@ async fn pruning_a_device_that_owns_no_display_zones_mints_no_revision() {
     let (state, _tempdir) = isolated_state();
     let before = state.scene_manager.revision();
 
-    let pruned = prune_display_zones_for_device(&state.scene, DeviceId::new())
+    let pruned = prune_display_zones_for_device(&state.domains.scene, DeviceId::new())
         .await
         .expect("pruning nothing succeeds");
 

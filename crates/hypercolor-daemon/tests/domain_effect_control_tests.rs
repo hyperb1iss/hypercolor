@@ -82,7 +82,7 @@ async fn insert_effect(state: &AppState, metadata: &EffectMetadata) {
 async fn running_effect(state: &AppState, metadata: &EffectMetadata) -> ZoneId {
     insert_effect(state, metadata).await;
     let applied = apply_effect(
-        &state.effects,
+        &state.domains.effects,
         ApplyEffect {
             effect: metadata.clone(),
             controls: HashMap::new(),
@@ -109,7 +109,7 @@ async fn invalidating_the_active_zones_advances_the_revision_every_time() {
         let manager = state.scene_manager.snapshot().await;
         manager.active_render_groups_revision()
     };
-    invalidate_active_zones(&state.effects)
+    invalidate_active_zones(&state.domains.effects)
         .await
         .expect("the invalidation should land");
     let after = {
