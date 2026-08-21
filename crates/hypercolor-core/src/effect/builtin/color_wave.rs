@@ -7,6 +7,7 @@ use std::array;
 use std::path::PathBuf;
 
 use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, LinearRgba, Oklch, Rgba};
+use hypercolor_types::control::{ControlDeltaBatch, ControlValue as CanonicalControlValue};
 use hypercolor_types::effect::{
     ControlDefinition, ControlValue, EffectCategory, EffectMetadata, EffectSource, PresetTemplate,
 };
@@ -15,7 +16,7 @@ use super::common::{
     builtin_effect_id, color_control, dropdown_control, preset_with_desc, slider_control,
 };
 use crate::blend_math::{decode_srgb_channel, encode_srgb_channel};
-use crate::effect::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
+use crate::effect::traits::{ControlError, EffectRenderer, FrameInput, prepare_target_canvas};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WaveDirection {
@@ -400,64 +401,70 @@ impl EffectRenderer for ColorWaveRenderer {
         Ok(canvas)
     }
 
-    fn set_control(&mut self, name: &str, value: &ControlValue) {
-        match name {
-            "color" | "wave_color" => {
-                if let ControlValue::Color(c) = value {
-                    self.wave_color = *c;
+    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> Result<(), ControlError> {
+        for (control_id, value) in batch.changes {
+            match control_id.as_str() {
+                "color" | "wave_color" => {
+                    if let CanonicalControlValue::ColorLinear(color) = value {
+                        self.wave_color = [color.r, color.g, color.b, color.a];
+                    }
                 }
-            }
-            "background_color" => {
-                if let ControlValue::Color(c) = value {
-                    self.background_color = *c;
+                "background_color" => {
+                    if let CanonicalControlValue::ColorLinear(color) = value {
+                        self.background_color = [color.r, color.g, color.b, color.a];
+                    }
                 }
-            }
-            "speed" => {
-                if let Some(v) = value.as_f32() {
-                    self.speed = v.clamp(0.0, 100.0);
+                "speed" => {
+                    if let Some(value) = value.as_effect_f32() {
+                        self.speed = value.clamp(0.0, 100.0);
+                    }
                 }
-            }
-            "wave_width" => {
-                if let Some(v) = value.as_f32() {
-                    self.wave_width = v.clamp(1.0, 100.0);
-                    self.reset_state();
+                "wave_width" => {
+                    if let Some(value) = value.as_effect_f32() {
+                        self.wave_width = value.clamp(1.0, 100.0);
+                        self.reset_state();
+                    }
                 }
-            }
-            "spawn_delay" => {
-                if let Some(v) = value.as_f32() {
-                    self.spawn_delay = v.clamp(0.0, 100.0);
+                "spawn_delay" => {
+                    if let Some(value) = value.as_effect_f32() {
+                        self.spawn_delay = value.clamp(0.0, 100.0);
+                    }
                 }
-            }
-            "direction" => {
-                if let ControlValue::Enum(choice) | ControlValue::Text(choice) = value {
-                    self.direction = WaveDirection::from_str(choice);
-                    self.reset_state();
+                "direction" => {
+                    if let CanonicalControlValue::Enum(choice)
+                    | CanonicalControlValue::Text(choice) = value
+                    {
+                        self.direction = WaveDirection::from_str(choice);
+                        self.reset_state();
+                    }
                 }
-            }
-            "color_mode" => {
-                if let ControlValue::Enum(choice) | ControlValue::Text(choice) = value {
-                    self.color_mode = WaveColorMode::from_str(choice);
+                "color_mode" => {
+                    if let CanonicalControlValue::Enum(choice)
+                    | CanonicalControlValue::Text(choice) = value
+                    {
+                        self.color_mode = WaveColorMode::from_str(choice);
+                    }
                 }
-            }
-            "cycle_speed" => {
-                if let Some(v) = value.as_f32() {
-                    self.cycle_speed = v.clamp(0.0, 100.0);
+                "cycle_speed" => {
+                    if let Some(value) = value.as_effect_f32() {
+                        self.cycle_speed = value.clamp(0.0, 100.0);
+                    }
                 }
-            }
-            "trail" => {
-                if let Some(v) = value.as_f32() {
-                    self.trail = v.clamp(0.0, 100.0);
+                "trail" => {
+                    if let Some(value) = value.as_effect_f32() {
+                        self.trail = value.clamp(0.0, 100.0);
+                    }
                 }
-            }
-            "brightness" => {
-                if let Some(v) = value.as_f32() {
-                    self.brightness = v.clamp(0.0, 1.0);
+                "brightness" => {
+                    if let Some(value) = value.as_effect_f32() {
+                        self.brightness = value.clamp(0.0, 1.0);
+                    }
                 }
+                _ => {}
             }
-            _ => {}
         }
+        Ok(())
     }
-
     fn destroy(&mut self) {
         self.reset_state();
     }

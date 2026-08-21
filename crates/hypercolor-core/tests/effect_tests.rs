@@ -5,13 +5,15 @@ use std::sync::LazyLock;
 use std::time::SystemTime;
 
 use hypercolor_core::effect::{
-    EffectEntry, EffectRegistry, EffectRenderer, FrameInput, create_renderer_for_metadata,
+    ControlError, EffectEntry, EffectRegistry, EffectRenderer, FrameInput,
+    create_renderer_for_metadata,
 };
 use hypercolor_core::input::InteractionData;
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{Canvas, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH};
+use hypercolor_types::control::ControlDeltaBatch;
 use hypercolor_types::effect::{
-    ControlValue, EffectCategory, EffectId, EffectMetadata, EffectSource, EffectState,
+    EffectCategory, EffectId, EffectMetadata, EffectSource, EffectState,
 };
 use hypercolor_types::sensor::SystemSnapshot;
 use uuid::Uuid;
@@ -71,7 +73,9 @@ impl EffectRenderer for MockRenderer {
         Ok(())
     }
 
-    fn set_control(&mut self, _name: &str, _value: &ControlValue) {}
+    fn apply_controls(&mut self, _batch: &ControlDeltaBatch<'_>) -> Result<(), ControlError> {
+        Ok(())
+    }
 
     fn destroy(&mut self) {
         self.destroyed = true;

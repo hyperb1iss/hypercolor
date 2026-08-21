@@ -18,7 +18,9 @@ use hypercolor_core::bus::{EventFilter, HypercolorBus};
 use hypercolor_core::device::{
     DeviceRegistry, DiscoveredDevice, DiscoveryConnectBehavior, DiscoveryOrchestrator,
 };
-use hypercolor_core::effect::{EffectEntry, EffectRegistry, EffectRenderer, FrameInput};
+use hypercolor_core::effect::{
+    ControlError, EffectEntry, EffectRegistry, EffectRenderer, FrameInput,
+};
 use hypercolor_core::engine::{
     FpsController, FpsTier, RenderLoop, RenderLoopState, TierTransitionConfig,
 };
@@ -26,12 +28,13 @@ use hypercolor_core::scene::{SceneManager, TransitionState, make_scene};
 use hypercolor_core::spatial::{sample_led, sample_zone};
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{Canvas, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, Rgba};
+use hypercolor_types::control::ControlDeltaBatch;
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
     DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, SegmentInfo,
 };
 use hypercolor_types::effect::{
-    ControlValue, EffectCategory, EffectId, EffectMetadata, EffectSource, EffectState,
+    EffectCategory, EffectId, EffectMetadata, EffectSource, EffectState,
 };
 use hypercolor_types::event::{EventCategory, HypercolorEvent};
 use hypercolor_types::scene::{
@@ -84,7 +87,12 @@ impl EffectRenderer for TestGradientRenderer {
         Ok(())
     }
 
-    fn set_control(&mut self, _name: &str, _value: &ControlValue) {}
+    fn apply_controls(
+        &mut self,
+        _batch: &ControlDeltaBatch<'_>,
+    ) -> std::result::Result<(), ControlError> {
+        Ok(())
+    }
 
     fn destroy(&mut self) {
         self.initialized = false;
@@ -122,7 +130,12 @@ impl EffectRenderer for TestSolidRenderer {
         Ok(())
     }
 
-    fn set_control(&mut self, _name: &str, _value: &ControlValue) {}
+    fn apply_controls(
+        &mut self,
+        _batch: &ControlDeltaBatch<'_>,
+    ) -> std::result::Result<(), ControlError> {
+        Ok(())
+    }
 
     fn destroy(&mut self) {}
 }

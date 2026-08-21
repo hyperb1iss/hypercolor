@@ -4,8 +4,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
 use hypercolor_types::canvas::Canvas;
+use hypercolor_types::control::{ControlDeltaBatch, ControlValue as CanonicalControlValue};
 use hypercolor_types::effect::{
-    ControlDefinition, ControlValue, EffectCategory, EffectMetadata, EffectSource, PreviewSource,
+    ControlDefinition, EffectCategory, EffectMetadata, EffectSource, PreviewSource,
 };
 use hypercolor_types::viewport::{FitMode, ViewportRect};
 
@@ -16,7 +17,7 @@ use crate::effect::servo::{
     ServoProducerRole, ServoRenderStatus, ServoSessionHandle, SessionConfig,
     note_servo_session_error,
 };
-use crate::effect::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
+use crate::effect::traits::{ControlError, EffectRenderer, FrameInput, prepare_target_canvas};
 use crate::spatial::sample_viewport;
 
 const URL_LOAD_DEBOUNCE: Duration = Duration::from_millis(250);
@@ -46,7 +47,7 @@ pub struct WebViewportRenderer {
 }
 
 /// Matches Spec 46 § 8.1 — both axes share the same 0..32768 upper
-/// bound so the control definition and the `set_control` clamp stay
+/// bound so the control definition and the renderer clamp stay
 /// symmetric.
 const SCROLL_AXIS_MAX: f32 = 32768.0;
 
@@ -285,68 +286,76 @@ impl EffectRenderer for WebViewportRenderer {
         Ok(())
     }
 
-    fn set_control(&mut self, name: &str, value: &ControlValue) {
-        match name {
-            "url" => {
-                if let ControlValue::Text(url) | ControlValue::Enum(url) = value {
-                    let normalized = normalize_web_url_input(url);
-                    if normalized != self.url {
-                        self.url = normalized;
-                        self.loaded_url = None;
-                        self.load_failed = false;
-                        self.preview_canvas = None;
-                        self.url_dirty_at = Some(Instant::now());
+    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> Result<(), ControlError> {
+        for (control_id, value) in batch.changes {
+            match control_id.as_str() {
+                "url" => {
+                    if let CanonicalControlValue::Text(url) | CanonicalControlValue::Enum(url) =
+                        value
+                    {
+                        let normalized = normalize_web_url_input(url);
+                        if normalized != self.url {
+                            self.url = normalized;
+                            self.loaded_url = None;
+                            self.load_failed = false;
+                            self.preview_canvas = None;
+                            self.url_dirty_at = Some(Instant::now());
+                        }
                     }
                 }
-            }
-            "viewport" => {
-                if let ControlValue::Rect(rect) = value {
-                    self.viewport = rect.clamp();
-                }
-            }
-            "fit_mode" => {
-                if let ControlValue::Enum(mode) | ControlValue::Text(mode) = value {
-                    self.fit_mode = parse_fit_mode(mode);
-                }
-            }
-            "brightness" => {
-                if let Some(brightness) = value.as_f32() {
-                    self.brightness = brightness.clamp(0.0, 2.0);
-                }
-            }
-            "refresh_interval" => {
-                if let Some(interval) = value.as_f32() {
-                    self.refresh_interval_secs = interval.max(0.0);
-                }
-            }
-            "render_width" => {
-                if let Some(width) = value.as_f32() {
-                    self.render_width = width.round().clamp(640.0, 1920.0) as u32;
-                    if let Some(session) = self.session.as_mut() {
-                        session.resize(self.render_width, self.render_height);
+                "viewport" => {
+                    if let CanonicalControlValue::Rect(rect) = value {
+                        self.viewport =
+                            ViewportRect::new(rect.x, rect.y, rect.width, rect.height).clamp();
                     }
                 }
-            }
-            "render_height" => {
-                if let Some(height) = value.as_f32() {
-                    self.render_height = height.round().clamp(360.0, 1080.0) as u32;
-                    if let Some(session) = self.session.as_mut() {
-                        session.resize(self.render_width, self.render_height);
+                "fit_mode" => {
+                    if let CanonicalControlValue::Enum(mode) | CanonicalControlValue::Text(mode) =
+                        value
+                    {
+                        self.fit_mode = parse_fit_mode(mode);
                     }
                 }
-            }
-            "scroll_x" => {
-                if let Some(v) = value.as_f32() {
-                    self.scroll_x = v.round().clamp(0.0, SCROLL_AXIS_MAX) as i32;
+                "brightness" => {
+                    if let Some(brightness) = value.as_effect_f32() {
+                        self.brightness = brightness.clamp(0.0, 2.0);
+                    }
                 }
-            }
-            "scroll_y" => {
-                if let Some(v) = value.as_f32() {
-                    self.scroll_y = v.round().clamp(0.0, SCROLL_AXIS_MAX) as i32;
+                "refresh_interval" => {
+                    if let Some(interval) = value.as_effect_f32() {
+                        self.refresh_interval_secs = interval.max(0.0);
+                    }
                 }
+                "render_width" => {
+                    if let Some(width) = value.as_effect_f32() {
+                        self.render_width = width.round().clamp(640.0, 1920.0) as u32;
+                        if let Some(session) = self.session.as_mut() {
+                            session.resize(self.render_width, self.render_height);
+                        }
+                    }
+                }
+                "render_height" => {
+                    if let Some(height) = value.as_effect_f32() {
+                        self.render_height = height.round().clamp(360.0, 1080.0) as u32;
+                        if let Some(session) = self.session.as_mut() {
+                            session.resize(self.render_width, self.render_height);
+                        }
+                    }
+                }
+                "scroll_x" => {
+                    if let Some(v) = value.as_effect_f32() {
+                        self.scroll_x = v.round().clamp(0.0, SCROLL_AXIS_MAX) as i32;
+                    }
+                }
+                "scroll_y" => {
+                    if let Some(v) = value.as_effect_f32() {
+                        self.scroll_y = v.round().clamp(0.0, SCROLL_AXIS_MAX) as i32;
+                    }
+                }
+                _ => {}
             }
-            _ => {}
         }
+        Ok(())
     }
 
     fn preview_canvas(&self) -> Option<Canvas> {
@@ -626,8 +635,15 @@ mod tests {
         looks_like_host_input, normalize_web_url_input, validate_web_url,
     };
     use crate::effect::traits::EffectRenderer;
-    use hypercolor_types::effect::ControlValue;
+    use hypercolor_types::control::{ControlDeltaBatch, ControlId, ControlValue, SetRevision};
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
+    fn apply_control(renderer: &mut WebViewportRenderer, name: &str, value: ControlValue) {
+        let changes = [(ControlId::from(name), value)];
+        renderer
+            .apply_controls(&ControlDeltaBatch::new(SetRevision::default(), 0, &changes))
+            .expect("test control delivery");
+    }
 
     #[test]
     fn pending_scripts_are_empty_at_origin_with_no_dispatch_history() {
@@ -641,7 +657,7 @@ mod tests {
     #[test]
     fn pending_scripts_inject_absolute_scroll_when_nonzero() {
         let mut renderer = WebViewportRenderer::new();
-        renderer.set_control("scroll_y", &ControlValue::Float(240.0));
+        apply_control(&mut renderer, "scroll_y", ControlValue::Float(240.0));
         let scripts = renderer.pending_scripts_for_render();
         assert_eq!(scripts.len(), 1);
         // Absolute `scrollTo` with behaviour: 'instant' matches the
@@ -660,7 +676,7 @@ mod tests {
     #[test]
     fn pending_scripts_skip_when_scroll_unchanged_after_dispatch() {
         let mut renderer = WebViewportRenderer::new();
-        renderer.set_control("scroll_y", &ControlValue::Float(500.0));
+        apply_control(&mut renderer, "scroll_y", ControlValue::Float(500.0));
         // Simulate a previous successful dispatch (matches what
         // `render_into` records once the scripts reach Servo).
         renderer.last_applied_scroll = Some((0, 500));
@@ -672,7 +688,7 @@ mod tests {
     #[test]
     fn pending_scripts_re_inject_after_navigation_reset() {
         let mut renderer = WebViewportRenderer::new();
-        renderer.set_control("scroll_y", &ControlValue::Float(500.0));
+        apply_control(&mut renderer, "scroll_y", ControlValue::Float(500.0));
         renderer.last_applied_scroll = Some((0, 500));
         // Navigation (URL load / destroy) resets the dispatch memo;
         // `last_applied_scroll` returning to None should force a
@@ -685,8 +701,8 @@ mod tests {
     #[test]
     fn scroll_control_values_clamp_to_axis_max() {
         let mut renderer = WebViewportRenderer::new();
-        renderer.set_control("scroll_x", &ControlValue::Float(-100.0));
-        renderer.set_control("scroll_y", &ControlValue::Float(99_999.0));
+        apply_control(&mut renderer, "scroll_x", ControlValue::Float(-100.0));
+        apply_control(&mut renderer, "scroll_y", ControlValue::Float(99_999.0));
         assert_eq!(renderer.scroll_x, 0);
         assert_eq!(renderer.scroll_y, 32_768);
     }

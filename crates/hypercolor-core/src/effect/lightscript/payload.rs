@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use hypercolor_types::effect::ControlValue;
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::lighting::LightingState;
 use hypercolor_types::media::MediaState;
 use hypercolor_types::net::NetStats;
@@ -572,26 +572,36 @@ impl LightScriptScreenPayload {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub(super) enum LightScriptControlValue {
-    Float(f32),
-    Integer(i32),
+    Null,
+    Float(f64),
+    Integer(i64),
     Boolean(bool),
     Text(String),
     Gradient(Vec<LightScriptGradientStop>),
     Rect(LightScriptRect),
+    List(Vec<LightScriptControlValue>),
+    Map(BTreeMap<String, LightScriptControlValue>),
 }
 
 impl LightScriptControlValue {
     pub(super) fn from_control_value(value: &ControlValue) -> Self {
         match value {
-            ControlValue::Float(value) => Self::Float(sanitize_f32(*value)),
-            ControlValue::Integer(value) => Self::Integer(*value),
-            ControlValue::Boolean(value) => Self::Boolean(*value),
-            ControlValue::Color([red, green, blue, _alpha]) => Self::Text(format!(
+            ControlValue::Null | ControlValue::Unknown => Self::Null,
+            ControlValue::Float(value) => Self::Float(sanitize_f64(*value)),
+            ControlValue::Int(value) => Self::Integer(*value),
+            ControlValue::Bool(value) => Self::Boolean(*value),
+            ControlValue::ColorLinear(color) => Self::Text(format!(
                 "#{:02x}{:02x}{:02x}",
-                color_byte(*red),
-                color_byte(*green),
-                color_byte(*blue)
+                color_byte(color.r),
+                color_byte(color.g),
+                color_byte(color.b)
             )),
+            ControlValue::ColorRgb(color) => {
+                Self::Text(format!("#{:02x}{:02x}{:02x}", color.r, color.g, color.b))
+            }
+            ControlValue::ColorRgba(color) => {
+                Self::Text(format!("#{:02x}{:02x}{:02x}", color.r, color.g, color.b))
+            }
             ControlValue::Gradient(stops) => Self::Gradient(
                 stops
                     .iter()
@@ -608,6 +618,24 @@ impl LightScriptControlValue {
                 width: sanitize_f32(rect.width),
                 height: sanitize_f32(rect.height),
             }),
+            ControlValue::SecretRef(value) => Self::Text(value.as_str().to_owned()),
+            ControlValue::Ip(value) => Self::Text(value.as_str().to_owned()),
+            ControlValue::Mac(value) => Self::Text(value.as_str().to_owned()),
+            ControlValue::Duration(value) => {
+                Self::Integer(i64::try_from(value.as_millis()).unwrap_or(i64::MAX))
+            }
+            ControlValue::Flags(values) => {
+                Self::List(values.iter().cloned().map(Self::Text).collect())
+            }
+            ControlValue::List(values) => {
+                Self::List(values.iter().map(Self::from_control_value).collect())
+            }
+            ControlValue::Map(values) => Self::Map(
+                values
+                    .iter()
+                    .map(|(key, value)| (key.clone(), Self::from_control_value(value)))
+                    .collect(),
+            ),
         }
     }
 }
@@ -843,14 +871,14 @@ mod tests {
     fn control_values_serialize_as_lightscript_globals() {
         assert_eq!(
             serde_json::to_value(LightScriptControlValue::from_control_value(
-                &ControlValue::Color([0.0, 0.5, 1.0, 1.0]),
+                &ControlValue::ColorLinear(hypercolor_color::LinearRgba::new(0.0, 0.5, 1.0, 1.0,)),
             ))
             .expect("color should serialize"),
             serde_json::json!("#0080ff")
         );
         assert_eq!(
             serde_json::to_value(LightScriptControlValue::from_control_value(
-                &ControlValue::Float(f32::NAN),
+                &ControlValue::Float(f64::NAN),
             ))
             .expect("float should serialize"),
             serde_json::json!(0.0)

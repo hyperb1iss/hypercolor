@@ -1,5 +1,8 @@
 //! Security and resolution tests for the builtin `media_player` effect.
 
+#[path = "support/control_renderer.rs"]
+mod control_renderer;
+
 use std::io::Cursor;
 use std::sync::Arc;
 
@@ -14,6 +17,8 @@ use hypercolor_types::sensor::SystemSnapshot;
 use image::{ImageBuffer, ImageFormat, Rgba};
 use tempfile::TempDir;
 use tokio::sync::RwLock;
+
+use control_renderer::TestControlRenderer;
 
 const W: u32 = 16;
 const H: u32 = 16;
@@ -38,9 +43,11 @@ fn render_media_player_with_controls(
 ) -> Canvas {
     let mut renderer = create_builtin_renderer("media_player").expect("media_player renderer");
     renderer.bind_asset_library(library);
-    renderer.set_control("asset", &ControlValue::Text(asset_value.to_owned()));
+    renderer
+        .as_mut()
+        .apply_test_control("asset", &ControlValue::Text(asset_value.to_owned()));
     for (name, value) in controls {
-        renderer.set_control(name, value);
+        renderer.as_mut().apply_test_control(name, value);
     }
 
     let audio = AudioData::silence();

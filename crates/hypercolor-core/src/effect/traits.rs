@@ -8,8 +8,9 @@ use std::sync::Arc;
 
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::Canvas;
+use hypercolor_types::control::{ControlDeltaBatch, ControlSet, SetRevision};
 use hypercolor_types::display::DisplayDescriptor;
-use hypercolor_types::effect::{ControlValue, EffectMetadata};
+use hypercolor_types::effect::EffectMetadata;
 use hypercolor_types::lighting::LightingState;
 use hypercolor_types::media::MediaState;
 use hypercolor_types::net::NetStats;
@@ -74,7 +75,7 @@ pub struct FrameDataSources<'a> {
 ///
 /// Contains timing information, the current audio analysis snapshot,
 /// and the target canvas dimensions. Control values are delivered
-/// separately via [`EffectRenderer::set_control`].
+/// separately via [`EffectRenderer::apply_controls`].
 #[derive(Debug, Clone, Copy)]
 pub struct FrameInput<'a> {
     /// Elapsed time in seconds since the effect was activated.
@@ -162,13 +163,15 @@ impl EffectRenderOutput {
 ///
 /// # Lifecycle
 ///
-/// 1. **`init`** — Called once when the effect is activated. The renderer
+/// 1. **`init`**: Called once when the effect is activated. The renderer
 ///    should compile shaders, load resources, and prepare for rendering.
-/// 2. **`render_into`** — Called once per frame. Produces pixels in a caller-
+/// 2. **`render_into`**: Called once per frame. Produces pixels in a caller-
 ///    owned [`Canvas`] using the given [`FrameInput`].
-/// 3. **`set_control`** — Called whenever a control value changes (user
-///    interaction, preset load, API call). May be called between ticks.
-/// 4. **`destroy`** — Called when the effect is deactivated. The renderer
+/// 3. **`initialize_controls`**: Called with the authoritative snapshot
+///    before the first frame after renderer creation or rebuild.
+/// 4. **`apply_controls`**: Called with ordered atomic deltas whenever
+///    authored or resolved values change. May be called between ticks.
+/// 5. **`destroy`**: Called when the effect is deactivated. The renderer
 ///    should release GPU resources, close web views, etc.
 pub trait EffectRenderer: Send {
     /// Initialize the renderer for the given effect.
@@ -239,12 +242,34 @@ pub trait EffectRenderer: Send {
         Ok(canvas)
     }
 
-    /// Update a control parameter value.
+    /// Initialize derived renderer state from the authoritative snapshot.
     ///
-    /// Called when a user adjusts a control, a preset is loaded, or the API
-    /// pushes a value. The renderer should store the value and apply it on
-    /// the next [`render_into`](Self::render_into) call.
-    fn set_control(&mut self, name: &str, value: &ControlValue);
+    /// The default delivers the complete snapshot as resolution sequence
+    /// zero. Implementations may override this when replacing derived state
+    /// needs behavior distinct from applying an ordinary delta.
+    fn initialize_controls(
+        &mut self,
+        revision: SetRevision,
+        controls: &ControlSet,
+    ) -> Result<(), ControlError> {
+        if revision != controls.set_revision() {
+            return Err(ControlError::RevisionMismatch {
+                supplied: revision,
+                authoritative: controls.set_revision(),
+            });
+        }
+        let changes = controls
+            .iter()
+            .map(|(control_id, value)| (control_id.clone(), value.clone()))
+            .collect::<Vec<_>>();
+        self.apply_controls(&ControlDeltaBatch::new(revision, 0, &changes))
+    }
+
+    /// Apply one ordered batch of resolved control changes atomically.
+    ///
+    /// Implementations update only derived renderer caches. The owning effect
+    /// slot retains the authoritative [`ControlSet`].
+    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> Result<(), ControlError>;
 
     /// Bind the content-addressed asset library.
     ///
@@ -275,4 +300,25 @@ pub trait EffectRenderer: Send {
     /// Called when the effect transitions to `Destroying`. After this call,
     /// the renderer will not receive any further method calls.
     fn destroy(&mut self);
+}
+
+/// A renderer rejected authoritative control delivery.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ControlError {
+    /// The initialization revision did not match the supplied snapshot.
+    #[error(
+        "control snapshot revision mismatch: supplied {supplied}, authoritative {authoritative}"
+    )]
+    RevisionMismatch {
+        /// Revision passed to the renderer lifecycle call.
+        supplied: SetRevision,
+        /// Revision carried by the authoritative snapshot.
+        authoritative: SetRevision,
+    },
+    /// The renderer refused a canonical value or an atomic batch invariant.
+    #[error("renderer rejected controls: {reason}")]
+    Rejected {
+        /// Stable rejection description suitable for diagnostics.
+        reason: String,
+    },
 }

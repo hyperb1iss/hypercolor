@@ -236,7 +236,7 @@ fn abandoned_prepared_effect_pool_keeps_live_slots_renderable() {
 }
 
 #[test]
-fn changed_controls_replace_slot_only_when_prepared_pool_commits() {
+fn changed_controls_update_slot_only_when_prepared_pool_commits() {
     let registry = registry_with_builtins();
     let solid_id = builtin_effect_id(&registry, "solid_color");
     let mut live_group = render_group(ZoneId::new(), solid_id);
@@ -251,6 +251,7 @@ fn changed_controls_replace_slot_only_when_prepared_pool_commits() {
         "color",
         ControlValue::Color([0.0, 0.0, 1.0, 1.0]),
     );
+    candidate_group.controls_version += 1;
     let mut pool = EffectPool::new();
     pool.reconcile(
         std::slice::from_ref(&live_group),
@@ -265,7 +266,7 @@ fn changed_controls_replace_slot_only_when_prepared_pool_commits() {
             &registry,
             &HashMap::new(),
         )
-        .expect("changed controls should prepare a replacement slot");
+        .expect("changed controls should prepare a slot update");
     let mut canvas = Canvas::new(1, 1);
     pool.render_group_into(
         &live_group,
@@ -280,7 +281,7 @@ fn changed_controls_replace_slot_only_when_prepared_pool_commits() {
     .expect("live slot should remain unchanged during preparation");
     assert_eq!(top_left(&canvas), Rgba::new(255, 0, 0, 255));
 
-    pool.commit_reconcile(prepared);
+    pool.commit_reconcile(prepared).expect("commit reconcile");
     pool.render_group_into(
         &candidate_group,
         0.016,
@@ -291,7 +292,7 @@ fn changed_controls_replace_slot_only_when_prepared_pool_commits() {
         hypercolor_core::effect::FrameDataSources::default(),
         &mut canvas,
     )
-    .expect("committed replacement slot should render");
+    .expect("committed control update should render");
     assert_eq!(top_left(&canvas), Rgba::new(0, 0, 255, 255));
 }
 

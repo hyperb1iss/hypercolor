@@ -13,17 +13,18 @@ use anyhow::{Result, bail};
 
 use hypercolor_color::Hsv;
 use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, Rgba};
+use hypercolor_types::control::{ControlDeltaBatch, ControlValue};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceError, DeviceFamily,
     DeviceFeatures, DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint,
     FingerprintNamespace, SegmentInfo,
 };
-use hypercolor_types::effect::{ControlValue, EffectMetadata};
+use hypercolor_types::effect::EffectMetadata;
 use hypercolor_types::spatial::LedTopology;
 
 use super::traits::{BackendInfo, DeviceBackend};
 use crate::device::{DiscoveredDevice, DiscoveryConnectBehavior};
-use crate::effect::{EffectRenderer, FrameInput};
+use crate::effect::{ControlError, EffectRenderer, FrameInput};
 
 // ── Call Tracking ───────────────────────────────────────────────────────────
 
@@ -458,8 +459,14 @@ impl EffectRenderer for MockEffectRenderer {
         Ok(())
     }
 
-    fn set_control(&mut self, name: &str, value: &ControlValue) {
-        self.controls.insert(name.to_owned(), value.clone());
+    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> Result<(), ControlError> {
+        self.controls.extend(
+            batch
+                .changes
+                .iter()
+                .map(|(control_id, value)| (control_id.to_string(), value.clone())),
+        );
+        Ok(())
     }
 
     fn destroy(&mut self) {

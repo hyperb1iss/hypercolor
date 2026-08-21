@@ -30,6 +30,17 @@ static EMPTY_SENSORS: LazyLock<SystemSnapshot> = LazyLock::new(SystemSnapshot::e
 static SOFT_STALL_TELEMETRY_TEST_LOCK: LazyLock<std::sync::Mutex<()>> =
     LazyLock::new(std::sync::Mutex::default);
 
+fn apply_control(renderer: &mut ServoRenderer, name: &str, value: ControlValue) {
+    let changes = [(hypercolor_types::control::ControlId::from(name), value)];
+    renderer
+        .apply_controls(&ControlDeltaBatch::new(
+            hypercolor_types::control::SetRevision::default(),
+            0,
+            &changes,
+        ))
+        .expect("test control delivery");
+}
+
 fn frame_input(delta_secs: f32) -> FrameInput<'static> {
     FrameInput {
         time_secs: 0.0,
@@ -430,7 +441,7 @@ fn sensor_updates_are_limited_to_sensor_aware_metadata() {
         name: "Sensor".to_owned(),
         kind: ControlKind::Sensor,
         control_type: ControlType::Dropdown,
-        default_value: ControlValue::Enum("cpu_temp".to_owned()),
+        default_value: hypercolor_types::effect::ControlValue::Enum("cpu_temp".to_owned()),
         min: None,
         max: None,
         step: None,
@@ -820,7 +831,7 @@ fn host_driven_control_updates_still_use_full_payload() {
     let mut renderer = ServoRenderer::new();
     renderer.host_driven_animation = true;
     renderer.include_audio_updates = false;
-    renderer.set_control("speed", &ControlValue::Float(0.75));
+    apply_control(&mut renderer, "speed", ControlValue::Float(0.75));
 
     renderer.enqueue_frame_payloads(&frame_input(1.0 / 30.0));
 
@@ -1177,7 +1188,7 @@ fn queued_frames_submit_latest_state_after_in_flight_render_finishes() {
     renderer.initialized = true;
     renderer.include_interaction_updates = true;
     renderer.enqueue_bootstrap_scripts();
-    renderer.set_control("speed", &ControlValue::Float(0.25));
+    apply_control(&mut renderer, "speed", ControlValue::Float(0.25));
 
     let first_audio = custom_audio(0.1);
     let mut first_interaction = custom_interaction(&["a"], &["a"]);
@@ -1206,7 +1217,7 @@ fn queued_frames_submit_latest_state_after_in_flight_render_finishes() {
     let first_payload = frame_payload_value(&first_render.frame_payloads);
     assert_eq!(first_payload["controls"]["speed"], serde_json::json!(0.25));
 
-    renderer.set_control("speed", &ControlValue::Float(0.75));
+    apply_control(&mut renderer, "speed", ControlValue::Float(0.75));
     let second_audio = custom_audio(0.6);
     let mut second_interaction = custom_interaction(&["b"], &["b"]);
     second_interaction.batch.events = vec![timed_key("host", "b", InputButtonState::Pressed, 2, 1)];

@@ -139,6 +139,12 @@ impl From<u64> for SetRevision {
     }
 }
 
+impl fmt::Display for SetRevision {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
 /// A validated, ordered control snapshot owned by one effect slot.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ControlSet {
@@ -708,6 +714,28 @@ impl ControlValue {
             Self::List(_) => "list",
             Self::Map(_) => "map",
             Self::Unknown => "unknown",
+        }
+    }
+
+    /// Return an effect-compatible scalar when this value is numeric.
+    ///
+    /// Values outside the effect renderer's `f32`/`i32` range are refused
+    /// instead of narrowing to infinity or silently losing integer width.
+    #[must_use]
+    pub fn as_effect_f32(&self) -> Option<f32> {
+        match self {
+            Self::Float(value) => {
+                #[expect(clippy::cast_possible_truncation, clippy::as_conversions)]
+                let narrowed = *value as f32;
+                narrowed.is_finite().then_some(narrowed)
+            }
+            Self::Int(value) => i32::try_from(*value).ok().map(|value| {
+                #[expect(clippy::cast_precision_loss, clippy::as_conversions)]
+                let narrowed = value as f32;
+                narrowed
+            }),
+            Self::Bool(value) => Some(if *value { 1.0 } else { 0.0 }),
+            _ => None,
         }
     }
 

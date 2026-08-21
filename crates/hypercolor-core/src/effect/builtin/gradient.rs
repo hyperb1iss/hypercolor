@@ -7,6 +7,7 @@
 use std::path::PathBuf;
 
 use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, LinearRgba, Oklab, Oklch};
+use hypercolor_types::control::{ControlDeltaBatch, ControlValue as CanonicalControlValue};
 use hypercolor_types::effect::{
     ControlDefinition, ControlValue, EffectCategory, EffectMetadata, EffectSource, PresetTemplate,
 };
@@ -15,7 +16,7 @@ use super::common::{
     builtin_effect_id, color_control, dropdown_control, preset, preset_with_desc, slider_control,
     toggle_control,
 };
-use crate::effect::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
+use crate::effect::traits::{ControlError, EffectRenderer, FrameInput, prepare_target_canvas};
 
 /// High-level gradient shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -447,114 +448,124 @@ impl EffectRenderer for GradientRenderer {
         clippy::too_many_lines,
         reason = "control dispatch mirrors the public schema and keeps cache invalidation local"
     )]
-    fn set_control(&mut self, name: &str, value: &ControlValue) {
-        match name {
-            "color_start" => {
-                if let ControlValue::Color(c) = value {
-                    self.color_start = *c;
-                    self.invalidate_cache();
+    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> Result<(), ControlError> {
+        for (control_id, value) in batch.changes {
+            match control_id.as_str() {
+                "color_start" => {
+                    if let CanonicalControlValue::ColorLinear(color) = value {
+                        self.color_start = [color.r, color.g, color.b, color.a];
+                        self.invalidate_cache();
+                    }
                 }
-            }
-            "color_mid" => {
-                if let ControlValue::Color(c) = value {
-                    self.color_mid = *c;
-                    self.invalidate_cache();
+                "color_mid" => {
+                    if let CanonicalControlValue::ColorLinear(color) = value {
+                        self.color_mid = [color.r, color.g, color.b, color.a];
+                        self.invalidate_cache();
+                    }
                 }
-            }
-            "color_end" => {
-                if let ControlValue::Color(c) = value {
-                    self.color_end = *c;
-                    self.invalidate_cache();
+                "color_end" => {
+                    if let CanonicalControlValue::ColorLinear(color) = value {
+                        self.color_end = [color.r, color.g, color.b, color.a];
+                        self.invalidate_cache();
+                    }
                 }
-            }
-            "use_mid_color" => {
-                if let ControlValue::Boolean(flag) = value {
-                    self.use_mid_color = *flag;
-                    self.invalidate_cache();
+                "use_mid_color" => {
+                    if let CanonicalControlValue::Bool(flag) = value {
+                        self.use_mid_color = *flag;
+                        self.invalidate_cache();
+                    }
                 }
-            }
-            "midpoint" => {
-                if let Some(v) = value.as_f32() {
-                    self.midpoint = v.clamp(0.05, 0.95);
-                    self.invalidate_cache();
+                "midpoint" => {
+                    if let Some(v) = value.as_effect_f32() {
+                        self.midpoint = v.clamp(0.05, 0.95);
+                        self.invalidate_cache();
+                    }
                 }
-            }
-            "mode" => {
-                if let ControlValue::Enum(choice) | ControlValue::Text(choice) = value {
-                    self.mode = GradientMode::from_str(choice);
-                    self.invalidate_cache();
+                "mode" => {
+                    if let CanonicalControlValue::Enum(choice)
+                    | CanonicalControlValue::Text(choice) = value
+                    {
+                        self.mode = GradientMode::from_str(choice);
+                        self.invalidate_cache();
+                    }
                 }
-            }
-            "repeat_mode" => {
-                if let ControlValue::Enum(choice) | ControlValue::Text(choice) = value {
-                    self.repeat_mode = RepeatMode::from_str(choice);
-                    self.invalidate_cache();
+                "repeat_mode" => {
+                    if let CanonicalControlValue::Enum(choice)
+                    | CanonicalControlValue::Text(choice) = value
+                    {
+                        self.repeat_mode = RepeatMode::from_str(choice);
+                        self.invalidate_cache();
+                    }
                 }
-            }
-            "angle" => {
-                if let Some(v) = value.as_f32() {
-                    self.angle_degrees = v.rem_euclid(360.0);
-                    self.invalidate_cache();
+                "angle" => {
+                    if let Some(v) = value.as_effect_f32() {
+                        self.angle_degrees = v.rem_euclid(360.0);
+                        self.invalidate_cache();
+                    }
                 }
-            }
-            "center_x" => {
-                if let Some(v) = value.as_f32() {
-                    self.center_x = v.clamp(0.0, 1.0);
-                    self.invalidate_cache();
+                "center_x" => {
+                    if let Some(v) = value.as_effect_f32() {
+                        self.center_x = v.clamp(0.0, 1.0);
+                        self.invalidate_cache();
+                    }
                 }
-            }
-            "center_y" => {
-                if let Some(v) = value.as_f32() {
-                    self.center_y = v.clamp(0.0, 1.0);
-                    self.invalidate_cache();
+                "center_y" => {
+                    if let Some(v) = value.as_effect_f32() {
+                        self.center_y = v.clamp(0.0, 1.0);
+                        self.invalidate_cache();
+                    }
                 }
-            }
-            "scale" => {
-                if let Some(v) = value.as_f32() {
-                    self.scale = v.max(0.1);
-                    self.invalidate_cache();
+                "scale" => {
+                    if let Some(v) = value.as_effect_f32() {
+                        self.scale = v.max(0.1);
+                        self.invalidate_cache();
+                    }
                 }
-            }
-            "offset" => {
-                if let Some(v) = value.as_f32() {
-                    self.offset = v;
-                    self.invalidate_cache();
+                "offset" => {
+                    if let Some(v) = value.as_effect_f32() {
+                        self.offset = v;
+                        self.invalidate_cache();
+                    }
                 }
-            }
-            "speed" => {
-                if let Some(v) = value.as_f32() {
-                    self.speed = v;
-                    self.invalidate_cache();
+                "speed" => {
+                    if let Some(v) = value.as_effect_f32() {
+                        self.speed = v;
+                        self.invalidate_cache();
+                    }
                 }
-            }
-            "brightness" => {
-                if let Some(v) = value.as_f32() {
-                    self.brightness = v.clamp(0.0, 1.0);
-                    self.invalidate_cache();
+                "brightness" => {
+                    if let Some(v) = value.as_effect_f32() {
+                        self.brightness = v.clamp(0.0, 1.0);
+                        self.invalidate_cache();
+                    }
                 }
-            }
-            "interpolation" => {
-                if let ControlValue::Enum(choice) | ControlValue::Text(choice) = value {
-                    self.interpolation = InterpolationMode::from_str(choice);
-                    self.invalidate_cache();
+                "interpolation" => {
+                    if let CanonicalControlValue::Enum(choice)
+                    | CanonicalControlValue::Text(choice) = value
+                    {
+                        self.interpolation = InterpolationMode::from_str(choice);
+                        self.invalidate_cache();
+                    }
                 }
-            }
-            "saturation" => {
-                if let Some(v) = value.as_f32() {
-                    self.saturation = v.clamp(0.5, 1.5);
-                    self.invalidate_cache();
+                "saturation" => {
+                    if let Some(v) = value.as_effect_f32() {
+                        self.saturation = v.clamp(0.5, 1.5);
+                        self.invalidate_cache();
+                    }
                 }
-            }
-            "easing" => {
-                if let ControlValue::Enum(choice) | ControlValue::Text(choice) = value {
-                    self.easing = EasingMode::from_str(choice);
-                    self.invalidate_cache();
+                "easing" => {
+                    if let CanonicalControlValue::Enum(choice)
+                    | CanonicalControlValue::Text(choice) = value
+                    {
+                        self.easing = EasingMode::from_str(choice);
+                        self.invalidate_cache();
+                    }
                 }
+                _ => {}
             }
-            _ => {}
         }
+        Ok(())
     }
-
     fn destroy(&mut self) {
         self.invalidate_cache();
     }

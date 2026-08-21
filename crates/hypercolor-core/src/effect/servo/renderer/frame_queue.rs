@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
 
-use hypercolor_types::effect::{ControlValue, EffectCategory, EffectMetadata};
+use hypercolor_types::control::ControlValue;
+use hypercolor_types::effect::{EffectCategory, EffectMetadata};
 use hypercolor_types::event::{InputButtonState, InputEvent};
 use hypercolor_types::sensor::SystemSnapshot;
 use tracing::warn;

@@ -78,6 +78,7 @@ pub(crate) async fn service_scene_transactions(
                     height,
                 } = prepared;
                 let completion = activation.clone();
+                let mut reconcile_error = None;
                 let publication = publish_prepared_layout_activation(
                     &state.spatial_engine,
                     &state.scene_manager,
@@ -97,13 +98,21 @@ pub(crate) async fn service_scene_transactions(
                         render
                             .sparkleflinger
                             .apply_projected_scene_resources(prepared_projected_scene);
-                        render
+                        if let Err(error) = render
                             .render_group_runtime
-                            .commit_reconcile(prepared_groups);
+                            .commit_reconcile(prepared_groups)
+                        {
+                            reconcile_error = Some(error.to_string());
+                        }
                         scene.render_state.replace_spatial_engine(spatial_engine);
                     },
                 )
                 .await;
+                let publication = publication.and_then(|()| {
+                    reconcile_error.map_or(Ok(()), |message| {
+                        Err(LayoutTransactionRejection::PreparationFailed { message })
+                    })
+                });
                 completion.complete(publication);
             }
         }

@@ -7,6 +7,7 @@
 use std::path::PathBuf;
 
 use hypercolor_types::canvas::{Canvas, LinearRgba, Oklab};
+use hypercolor_types::control::{ControlDeltaBatch, ControlValue as CanonicalControlValue};
 use hypercolor_types::effect::{
     ControlDefinition, ControlValue, EffectCategory, EffectMetadata, EffectSource, PresetTemplate,
 };
@@ -14,7 +15,7 @@ use hypercolor_types::effect::{
 use super::common::{
     builtin_effect_id, color_control, dropdown_control, preset_with_desc, slider_control,
 };
-use crate::effect::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
+use crate::effect::traits::{ControlError, EffectRenderer, FrameInput, prepare_target_canvas};
 
 /// Zone arrangement on the canvas.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,7 +42,7 @@ impl ZoneLayout {
 pub struct ColorZonesRenderer {
     zones: [[f32; 4]; 9],
     /// Oklab-converted cache of `zones`. Zone colors only change through
-    /// `set_control`, so the per-pixel blend path reads this cache instead of
+    /// control batches, so the per-pixel blend path reads this cache instead of
     /// re-deriving Oklab (three cube roots per conversion) for every corner
     /// of every pixel each frame.
     zones_oklab: [Oklab; 9],
@@ -205,48 +206,54 @@ impl EffectRenderer for ColorZonesRenderer {
         Ok(())
     }
 
-    fn set_control(&mut self, name: &str, value: &ControlValue) {
-        if name == "zone_count" {
-            if let ControlValue::Enum(choice) | ControlValue::Text(choice) = value
-                && let Ok(n) = choice.parse::<u8>()
-            {
-                self.zone_count = n.clamp(2, 9);
+    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> Result<(), ControlError> {
+        for (control_id, value) in batch.changes {
+            let name = control_id.as_str();
+            if name == "zone_count" {
+                if let CanonicalControlValue::Enum(choice) | CanonicalControlValue::Text(choice) =
+                    value
+                    && let Ok(count) = choice.parse::<u8>()
+                {
+                    self.zone_count = count.clamp(2, 9);
+                }
+                continue;
             }
-            return;
-        }
 
-        // Handle zone_1 through zone_9.
-        if let Some(idx) = name.strip_prefix("zone_") {
-            if let Ok(n) = idx.parse::<usize>()
-                && (1..=9).contains(&n)
-                && let ControlValue::Color(c) = value
-            {
-                self.zones[n - 1] = *c;
-                self.zones_oklab[n - 1] = rgba_to_oklab(*c);
+            if let Some(index) = name.strip_prefix("zone_") {
+                if let Ok(number) = index.parse::<usize>()
+                    && (1..=9).contains(&number)
+                    && let CanonicalControlValue::ColorLinear(color) = value
+                {
+                    let rgba = [color.r, color.g, color.b, color.a];
+                    self.zones[number - 1] = rgba;
+                    self.zones_oklab[number - 1] = rgba_to_oklab(rgba);
+                }
+                continue;
             }
-            return;
-        }
 
-        match name {
-            "layout" => {
-                if let ControlValue::Enum(choice) | ControlValue::Text(choice) = value {
-                    self.layout = ZoneLayout::from_str(choice);
+            match name {
+                "layout" => {
+                    if let CanonicalControlValue::Enum(choice)
+                    | CanonicalControlValue::Text(choice) = value
+                    {
+                        self.layout = ZoneLayout::from_str(choice);
+                    }
                 }
-            }
-            "blend" => {
-                if let Some(v) = value.as_f32() {
-                    self.blend = v.clamp(0.0, 1.0);
+                "blend" => {
+                    if let Some(value) = value.as_effect_f32() {
+                        self.blend = value.clamp(0.0, 1.0);
+                    }
                 }
-            }
-            "brightness" => {
-                if let Some(v) = value.as_f32() {
-                    self.brightness = v.clamp(0.0, 1.0);
+                "brightness" => {
+                    if let Some(value) = value.as_effect_f32() {
+                        self.brightness = value.clamp(0.0, 1.0);
+                    }
                 }
+                _ => {}
             }
-            _ => {}
         }
+        Ok(())
     }
-
     fn destroy(&mut self) {}
 }
 

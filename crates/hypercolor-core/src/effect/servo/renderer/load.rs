@@ -6,8 +6,9 @@ use std::thread;
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::display::DisplayDescriptor;
-use hypercolor_types::effect::{ControlValue, EffectMetadata, EffectSource};
+use hypercolor_types::effect::{EffectMetadata, EffectSource};
 use tracing::{debug, info, warn};
 
 use super::super::telemetry::{
@@ -139,12 +140,11 @@ impl ServoRenderer {
             .controls
             .iter()
             .map(|control| {
-                (
-                    control.control_id().to_owned(),
-                    control.default_value.clone(),
-                )
+                ControlValue::try_from(control.default_value.clone())
+                    .map(|value| (control.control_id().to_owned(), value))
             })
-            .collect();
+            .collect::<Result<HashMap<_, _>, _>>()
+            .context("HTML effect metadata contains an invalid control default")?;
         if !self.controls.is_empty() {
             debug!(
                 effect = %metadata.name,

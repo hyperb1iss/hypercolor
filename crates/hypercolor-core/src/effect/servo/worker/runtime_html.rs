@@ -3,9 +3,12 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::display::DisplayDescriptor;
-use hypercolor_types::effect::{ControlValue, EffectCategory, EffectMetadata};
+use hypercolor_types::effect::{EffectCategory, EffectMetadata};
 use reqwest::Url;
+
+use crate::effect::lightscript::control_js_literal;
 
 /// Whether an effect should receive `engine.audio.*` updates each frame.
 pub(in crate::effect::servo) fn effect_is_audio_reactive(metadata: &EffectMetadata) -> bool {
@@ -102,7 +105,7 @@ fn build_control_preamble_script(
         let _ = writeln!(
             script,
             "  if (typeof globalThis[{key_literal}] === 'undefined') globalThis[{key_literal}] = {};",
-            value.to_js_literal()
+            control_js_literal(value)
         );
     }
     script.push_str("})();");
@@ -139,7 +142,7 @@ mod tests {
     fn control_preamble_assigns_all_defaults() {
         let mut controls = HashMap::new();
         controls.insert("speed".to_owned(), ControlValue::Float(42.0));
-        controls.insert("enabled".to_owned(), ControlValue::Boolean(true));
+        controls.insert("enabled".to_owned(), ControlValue::Bool(true));
         controls.insert("color".to_owned(), ControlValue::Text("#00ffaa".to_owned()));
 
         let script = build_control_preamble_script(&controls, false, None);
