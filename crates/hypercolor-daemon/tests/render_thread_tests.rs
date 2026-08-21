@@ -2991,8 +2991,11 @@ async fn newer_success_fences_deferred_async_failure_recovery() {
         lifecycle_manager: Arc::clone(&lifecycle_manager),
         reconnect_tasks: Arc::new(StdMutex::new(HashMap::new())),
         event_bus: Arc::clone(&event_bus),
-        spatial_engine: Arc::clone(&state.spatial_engine),
-        scene_manager: SceneService::new(SceneManager::with_default(), Arc::clone(&event_bus)),
+        spatial_engine: state.spatial_engine.clone(),
+        scene_manager: SceneService::in_memory(
+            SceneManager::with_default(),
+            Arc::clone(&event_bus),
+        ),
         layouts: Arc::new(RwLock::new(HashMap::new())),
         layouts_path: PathBuf::from("layouts.json"),
         layout_auto_exclusions: Arc::new(RwLock::new(HashMap::new())),
