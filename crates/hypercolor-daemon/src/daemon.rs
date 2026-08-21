@@ -89,7 +89,7 @@ impl PreparedDaemon {
     ///
     /// Returns an error when subsystem startup, serving, or shutdown fails.
     pub async fn run(self, shutdown_rx: watch::Receiver<bool>) -> Result<()> {
-        self.run_with_extensions(shutdown_rx, &[]).await
+        Box::pin(self.run_with_extensions(shutdown_rx, &[])).await
     }
 
     /// Return the primary address owned by this prepared daemon.
@@ -214,7 +214,7 @@ pub fn build_main_runtime() -> Result<tokio::runtime::Runtime> {
 ///
 /// Returns an error when startup, serving, or graceful shutdown fails.
 pub async fn run(options: DaemonRunOptions, shutdown_rx: watch::Receiver<bool>) -> Result<()> {
-    run_with_extensions(options, shutdown_rx, &[]).await
+    Box::pin(run_with_extensions(options, shutdown_rx, &[])).await
 }
 
 /// Run the daemon with downstream extension installers.
@@ -228,10 +228,8 @@ pub async fn run_with_extensions(
     shutdown_rx: watch::Receiver<bool>,
     extension_installers: &[&dyn DaemonExtensionInstaller],
 ) -> Result<()> {
-    prepare(options)
-        .await?
-        .run_with_extensions(shutdown_rx, extension_installers)
-        .await
+    let prepared = prepare(options).await?;
+    Box::pin(prepared.run_with_extensions(shutdown_rx, extension_installers)).await
 }
 
 /// Load configuration and bind every final API listener without starting the

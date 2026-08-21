@@ -398,17 +398,27 @@ impl RenderThread {
                         return Ok(());
                     }
                 };
+                #[cfg(all(
+                    target_os = "macos",
+                    feature = "wgpu",
+                    feature = "screen-capture"
+                ))]
                 let pipeline = runtime.block_on(pipeline_runtime::PipelineRuntime::from_state(
                     &state,
                     input_pump.reader(),
                     pipeline_demands,
-                    #[cfg(all(
-                        target_os = "macos",
-                        feature = "wgpu",
-                        feature = "screen-capture"
-                    ))]
                     macos_screen_parity_mailbox,
                 ));
+                #[cfg(not(all(
+                    target_os = "macos",
+                    feature = "wgpu",
+                    feature = "screen-capture"
+                )))]
+                let pipeline = pipeline_runtime::PipelineRuntime::from_state(
+                    &state,
+                    input_pump.reader(),
+                    pipeline_demands,
+                );
                 match pipeline {
                     Ok(runtime_state) => {
                         let monitor = input_pump.monitor();
