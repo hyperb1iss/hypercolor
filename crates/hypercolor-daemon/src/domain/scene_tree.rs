@@ -1020,11 +1020,14 @@ fn layout_from_placements(
 /// the same way the structural zone services do.
 async fn reconcile_member_exclusions(state: &AppState, scene_id: SceneId, previous: &[Zone]) {
     let updated = {
-        let manager = state.scene_manager.snapshot().await;
+        let manager = state.scene.snapshot().await;
         manager
             .get(&scene_id)
             .map(|scene| scene.zones.clone())
             .unwrap_or_default()
     };
-    crate::domain::zone::reconcile_zone_auto_exclusions(state, scene_id, previous, &updated).await;
+    state
+        .devices
+        .reconcile_zone_auto_exclusions(scene_id, previous, &updated)
+        .await;
 }

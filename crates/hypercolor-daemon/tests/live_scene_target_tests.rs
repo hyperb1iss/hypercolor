@@ -5,11 +5,11 @@ use std::sync::Arc;
 
 use hypercolor_core::scene::{ZoneMetaPatch, default_primary_group};
 use hypercolor_daemon::api::AppState;
+use hypercolor_daemon::domain::DomainError;
 use hypercolor_daemon::domain::layer::{insert_layer, remove_layer, reorder_layers};
 use hypercolor_daemon::domain::zone::{
     CreateZone, DeleteZone, UpdateZone, create_zone, delete_zone, update_zone,
 };
-use hypercolor_daemon::domain::{DomainError, MutationContext};
 use hypercolor_types::layer::{
     LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
 };
@@ -179,10 +179,10 @@ async fn active_targets_follow_the_candidate_scene_for_every_deferred_service() 
         .await
         .expect("scene B should commit");
 
-    let created = create_zone(&state, create, MutationContext::api())
+    let created = create_zone(&state.scene, create)
         .await
         .expect("zone creation should follow scene B");
-    let updated = update_zone(&state, update, MutationContext::api())
+    let updated = update_zone(&state.scene, update)
         .await
         .expect("zone update should follow scene B");
     assert_eq!(updated.zone.name, "candidate zone renamed");
@@ -230,7 +230,7 @@ async fn active_targets_follow_the_candidate_scene_for_every_deferred_service() 
             .all(|layer| layer.id != shared_layer_ids[1])
     );
 
-    delete_zone(&state, delete, MutationContext::api())
+    delete_zone(&state.scene, delete)
         .await
         .expect("zone deletion should follow scene B");
 
@@ -281,37 +281,34 @@ async fn active_targets_refuse_every_deferred_service_in_snapshot_mode() {
 
     assert_conflict(
         create_zone(
-            &state,
+            &state.scene,
             CreateZone {
                 name: "blocked".to_owned(),
                 color: None,
                 fallback_canvas: (640, 480),
                 expected_revision: Some(revision),
             },
-            MutationContext::api(),
         )
         .await,
     );
     assert_conflict(
         update_zone(
-            &state,
+            &state.scene,
             UpdateZone {
                 zone_id,
                 patch: rename_patch("blocked"),
                 expected_revision: Some(revision),
             },
-            MutationContext::api(),
         )
         .await,
     );
     assert_conflict(
         delete_zone(
-            &state,
+            &state.scene,
             DeleteZone {
                 zone_id,
                 expected_revision: Some(revision),
             },
-            MutationContext::api(),
         )
         .await,
     );

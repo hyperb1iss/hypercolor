@@ -9,7 +9,7 @@ use hypercolor_core::engine::RenderLoop;
 use hypercolor_core::scene::SceneManager;
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::layer::{LayerSource, SceneLayer};
-use hypercolor_types::scene::{Scene, SceneId};
+use hypercolor_types::scene::{Scene, SceneId, Zone, ZoneId};
 use tokio::sync::{RwLock, watch};
 
 use crate::domain::DomainError;
@@ -24,6 +24,7 @@ use crate::runtime_state::{self, RuntimeSessionSnapshot};
 use crate::scene_store::SceneStore;
 use crate::session::{OutputPowerState, current_global_brightness};
 use crate::zone_layout_preview::ZoneLayoutPreviewStore;
+use crate::{discovery, layout_auto_exclusions};
 
 /// Owning runtime-session persistence boundary.
 #[derive(Clone)]
@@ -127,6 +128,7 @@ pub struct SceneContext {
     asset_library: Arc<RwLock<AssetLibrary>>,
     config_manager: Option<Arc<ConfigManager>>,
     render_loop: Arc<RwLock<RenderLoop>>,
+    devices: DeviceContext,
 }
 
 impl SceneContext {
@@ -138,6 +140,7 @@ impl SceneContext {
         asset_library: Arc<RwLock<AssetLibrary>>,
         config_manager: Option<Arc<ConfigManager>>,
         render_loop: Arc<RwLock<RenderLoop>>,
+        devices: DeviceContext,
     ) -> Self {
         Self {
             scenes,
@@ -147,6 +150,7 @@ impl SceneContext {
             asset_library,
             config_manager,
             render_loop,
+            devices,
         }
     }
 
@@ -198,6 +202,12 @@ impl SceneContext {
     /// Persist the durable runtime-session projection after a scene mutation.
     pub async fn save_runtime_session(&self) {
         self.runtime_session.save().await;
+    }
+
+    /// Device lifecycle authority needed after scene targeting changes.
+    #[must_use]
+    pub const fn devices(&self) -> &DeviceContext {
+        &self.devices
     }
 
     /// Resolve the current media producer policy and asset vocabulary.
@@ -268,5 +278,112 @@ impl SceneContext {
             "Scene media producer cost exceeds soft cap; preemptively downshifting render loop"
         );
         render_loop.set_tier(next_tier);
+    }
+}
+
+/// Device lifecycle and discovery-layout reconciliation authority.
+#[derive(Clone)]
+pub struct DeviceContext {
+    driver_host: Arc<DaemonDriverHost>,
+    layout_auto_exclusions: Arc<RwLock<layout_auto_exclusions::LayoutAutoExclusionStore>>,
+    layout_auto_exclusions_path: PathBuf,
+}
+
+impl DeviceContext {
+    pub(crate) fn new(
+        driver_host: Arc<DaemonDriverHost>,
+        layout_auto_exclusions: Arc<RwLock<layout_auto_exclusions::LayoutAutoExclusionStore>>,
+        layout_auto_exclusions_path: PathBuf,
+    ) -> Self {
+        Self {
+            driver_host,
+            layout_auto_exclusions,
+            layout_auto_exclusions_path,
+        }
+    }
+
+    /// Re-evaluate device eligibility after scene targeting changes.
+    pub async fn sync_connectivity(&self) {
+        let runtime = self.driver_host.discovery_runtime();
+        discovery::sync_active_layout_connectivity(&runtime, None).await;
+    }
+
+    /// Reconcile discovery exclusions after zone layouts change.
+    pub async fn reconcile_zone_auto_exclusions(
+        &self,
+        scene_id: SceneId,
+        previous_zones: &[Zone],
+        updated_zones: &[Zone],
+    ) {
+        let changed = {
+            let mut exclusions = self.layout_auto_exclusions.write().await;
+            let mut changed = false;
+            for previous_zone in previous_zones {
+                let Some(updated_zone) = updated_zones
+                    .iter()
+                    .find(|zone| zone.id == previous_zone.id)
+                else {
+                    continue;
+                };
+                if previous_zone.layout.zones == updated_zone.layout.zones {
+                    continue;
+                }
+
+                let key = layout_auto_exclusions::LayoutAutoExclusionKey::zone(
+                    scene_id,
+                    previous_zone.id,
+                );
+                let current = exclusions.get(&key).cloned().unwrap_or_default();
+                let next = layout_auto_exclusions::reconcile_layout_device_exclusions(
+                    &previous_zone.layout.zones,
+                    &updated_zone.layout.zones,
+                    &current,
+                );
+                if next == current {
+                    continue;
+                }
+                if next.is_empty() {
+                    exclusions.remove(&key);
+                } else {
+                    exclusions.insert(key, next);
+                }
+                changed = true;
+            }
+            changed
+        };
+
+        if changed {
+            self.persist_layout_auto_exclusions().await;
+        }
+    }
+
+    /// Drop discovery exclusions owned by a removed zone.
+    pub async fn remove_zone_auto_exclusions(&self, scene_id: SceneId, zone_id: ZoneId) {
+        let removed = {
+            let mut exclusions = self.layout_auto_exclusions.write().await;
+            exclusions
+                .remove(&layout_auto_exclusions::LayoutAutoExclusionKey::zone(
+                    scene_id, zone_id,
+                ))
+                .is_some()
+        };
+
+        if removed {
+            self.persist_layout_auto_exclusions().await;
+        }
+    }
+
+    /// Persist the discovery auto-sync exclusion store.
+    pub async fn persist_layout_auto_exclusions(&self) {
+        let exclusions = self.layout_auto_exclusions.read().await;
+        if let Err(error) =
+            layout_auto_exclusions::save(&self.layout_auto_exclusions_path, &exclusions)
+        {
+            tracing::warn!(
+                path = %self.layout_auto_exclusions_path.display(),
+                %error,
+                "Failed to persist layout auto-exclusion store"
+            );
+        }
     }
 }

@@ -87,7 +87,7 @@ use crate::device_metrics::{DeviceMetricsSnapshot, DeviceMetricsSnapshotStore};
 use crate::device_settings::DeviceSettingsStore;
 use crate::display_frames::DisplayFrameRuntime;
 use crate::display_preferences::DisplayPreferencesStore;
-use crate::domain::context::{RuntimeSessionService, SceneContext};
+use crate::domain::context::{DeviceContext, RuntimeSessionService, SceneContext};
 use crate::domain::scene::SceneService;
 use crate::domain::spatial::SpatialService;
 use crate::driver_inventory::{DRIVER_INVENTORY_FILENAME, DriverInventoryStore};
@@ -129,6 +129,9 @@ pub struct AppState {
 
     /// Runtime-session snapshot and persistence authority.
     pub runtime_session: RuntimeSessionService,
+
+    /// Device lifecycle and discovery-layout reconciliation authority.
+    pub devices: DeviceContext,
 
     /// Device tracking and lifecycle management.
     pub device_registry: DeviceRegistry,
@@ -573,6 +576,11 @@ impl AppState {
             Arc::clone(&driver_host),
             Arc::clone(&driver_registry),
         );
+        let devices = DeviceContext::new(
+            Arc::clone(&driver_host),
+            Arc::clone(&layout_auto_exclusions),
+            layout_auto_exclusions_path.clone(),
+        );
         let scene = SceneContext::new(
             scene_manager.clone(),
             Arc::clone(&scene_store),
@@ -581,11 +589,13 @@ impl AppState {
             Arc::clone(&asset_library),
             None,
             Arc::clone(&render_loop),
+            devices.clone(),
         );
 
         Self {
             scene,
             runtime_session,
+            devices,
             device_registry,
             effect_registry,
             scene_manager,
@@ -681,6 +691,11 @@ impl AppState {
             Arc::clone(&driver_host),
             Arc::clone(&driver_registry),
         );
+        let devices = DeviceContext::new(
+            Arc::clone(&driver_host),
+            Arc::clone(&daemon.layout_auto_exclusions),
+            daemon.layout_auto_exclusions_path.clone(),
+        );
         let scene = SceneContext::new(
             daemon.scene_manager.clone(),
             Arc::clone(&daemon.scene_store),
@@ -689,11 +704,13 @@ impl AppState {
             Arc::clone(&daemon.asset_library),
             Some(Arc::clone(&daemon.config_manager)),
             Arc::clone(&daemon.render_loop),
+            devices.clone(),
         );
 
         Self {
             scene,
             runtime_session,
+            devices,
             device_registry: daemon.device_registry.clone(),
             effect_registry: Arc::clone(&daemon.effect_registry),
             scene_manager: daemon.scene_manager.clone(),
@@ -947,16 +964,7 @@ pub(crate) async fn prune_scene_display_groups_for_device(
 
 /// Persist discovery auto-sync exclusions to disk.
 pub(crate) async fn persist_layout_auto_exclusions(state: &AppState) {
-    let exclusions = state.layout_auto_exclusions.read().await;
-    if let Err(error) =
-        crate::layout_auto_exclusions::save(&state.layout_auto_exclusions_path, &exclusions)
-    {
-        warn!(
-            path = %state.layout_auto_exclusions_path.display(),
-            %error,
-            "Failed to persist layout auto-exclusion store"
-        );
-    }
+    state.devices.persist_layout_auto_exclusions().await;
 }
 
 pub(crate) async fn save_runtime_session_snapshot(state: &AppState) {
@@ -984,8 +992,7 @@ pub(crate) fn discovery_runtime(state: &AppState) -> crate::discovery::Discovery
 /// apply stale eligibility out of order, and an in-flight connect could
 /// outlive shutdown's disconnect sweep.
 pub(crate) async fn sync_connectivity(state: &AppState) {
-    let runtime = discovery_runtime(state);
-    crate::discovery::sync_active_layout_connectivity(&runtime, None).await;
+    state.devices.sync_connectivity().await;
 }
 
 // ── Router ───────────────────────────────────────────────────────────────

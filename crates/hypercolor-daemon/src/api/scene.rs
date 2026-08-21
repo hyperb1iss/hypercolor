@@ -143,14 +143,13 @@ pub async fn create_zone(
     };
 
     let created = crate::domain::zone::create_zone(
-        state.as_ref(),
+        &state.scene,
         crate::domain::zone::CreateZone {
             name: body.name,
             color: body.color,
             fallback_canvas: canvas,
             expected_revision: expected,
         },
-        MutationContext::api(),
     )
     .await;
 
@@ -196,7 +195,7 @@ pub async fn patch_zone(
 
     zone_written_response(
         crate::domain::zone::update_zone(
-            state.as_ref(),
+            &state.scene,
             crate::domain::zone::UpdateZone {
                 zone_id,
                 patch: hypercolor_core::scene::ZoneMetaPatch {
@@ -209,7 +208,6 @@ pub async fn patch_zone(
                 },
                 expected_revision: expected,
             },
-            MutationContext::api(),
         )
         .await,
     )
@@ -227,12 +225,11 @@ pub async fn delete_zone(
     };
 
     if let Err(error) = crate::domain::zone::delete_zone(
-        state.as_ref(),
+        &state.scene,
         crate::domain::zone::DeleteZone {
             zone_id,
             expected_revision: expected,
         },
-        MutationContext::api(),
     )
     .await
     {

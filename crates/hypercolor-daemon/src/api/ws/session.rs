@@ -1884,14 +1884,13 @@ mod zone_layout_preview_race_tests {
         let tempdir = tempfile::tempdir().expect("tempdir");
         let state = Arc::new(AppState::new_with_data_dir(tempdir.path().join("data")));
         let created = create_zone(
-            &state,
+            &state.scene,
             CreateZone {
                 name: "temporary".to_owned(),
                 color: None,
                 fallback_canvas: (640, 480),
                 expected_revision: None,
             },
-            MutationContext::api(),
         )
         .await
         .expect("custom zone should be created");
@@ -1916,12 +1915,11 @@ mod zone_layout_preview_race_tests {
         let delete_state = Arc::clone(&state);
         let deletion = tokio::spawn(async move {
             delete_zone(
-                &delete_state,
+                &delete_state.scene,
                 DeleteZone {
                     zone_id,
                     expected_revision: None,
                 },
-                MutationContext::api(),
             )
             .await
         });

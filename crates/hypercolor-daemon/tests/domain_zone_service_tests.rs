@@ -14,11 +14,11 @@ use hypercolor_types::scene::{
 };
 
 use hypercolor_daemon::api::AppState;
+use hypercolor_daemon::domain::DomainError;
 use hypercolor_daemon::domain::commit::CommitDurability;
 use hypercolor_daemon::domain::zone::{
     CreateZone, DeleteZone, UpdateZone, create_zone, delete_zone, update_zone,
 };
-use hypercolor_daemon::domain::{DomainError, MutationContext};
 use hypercolor_daemon::zone_layout_preview::ZoneLayoutPreviewOwner;
 
 // ── Harness ──────────────────────────────────────────────────────────────
@@ -121,7 +121,7 @@ async fn create_zone_adds_a_custom_zone_and_announces_it() {
     let before = state.scene_manager.revision();
     let mut events = state.event_bus.subscribe_all();
 
-    let written = create_zone(&state, create_command("Desk"), MutationContext::api())
+    let written = create_zone(&state.scene, create_command("Desk"))
         .await
         .expect("zone should be created");
 
@@ -153,7 +153,7 @@ async fn create_zone_refuses_a_blank_name() {
     let (state, _tempdir) = isolated_state();
     seeded_scene(&state).await;
 
-    let error = create_zone(&state, create_command("   "), MutationContext::api())
+    let error = create_zone(&state.scene, create_command("   "))
         .await
         .expect_err("a zone needs a name");
     match error {
@@ -168,14 +168,14 @@ async fn create_zone_refuses_a_blank_name() {
 async fn a_stale_scene_revision_is_refused_before_the_mutation() {
     let (state, _tempdir) = isolated_state();
     let scene_id = seeded_scene(&state).await;
-    create_zone(&state, create_command("Desk"), MutationContext::api())
+    create_zone(&state.scene, create_command("Desk"))
         .await
         .expect("first zone should be created");
     let current = state.scene_manager.revision();
 
     let mut command = create_command("Shelf");
     command.expected_revision = Some(current.saturating_sub(1));
-    let error = create_zone(&state, command, MutationContext::api())
+    let error = create_zone(&state.scene, command)
         .await
         .expect_err("a stale revision must not mutate");
     match error {
@@ -202,13 +202,13 @@ async fn a_stale_scene_revision_is_refused_before_the_mutation() {
 async fn a_cosmetic_zone_patch_honors_the_scene_revision() {
     let (state, _tempdir) = isolated_state();
     seeded_scene(&state).await;
-    let created = create_zone(&state, create_command("Desk"), MutationContext::api())
+    let created = create_zone(&state.scene, create_command("Desk"))
         .await
         .expect("zone should be created");
 
     let current = state.scene_manager.revision();
     let written = update_zone(
-        &state,
+        &state.scene,
         UpdateZone {
             zone_id: created.zone.id,
             patch: ZoneMetaPatch {
@@ -217,7 +217,6 @@ async fn a_cosmetic_zone_patch_honors_the_scene_revision() {
             },
             expected_revision: Some(current),
         },
-        MutationContext::api(),
     )
     .await
     .expect("a rename should accept the current scene revision");
@@ -228,12 +227,12 @@ async fn a_cosmetic_zone_patch_honors_the_scene_revision() {
 async fn promoting_a_zone_to_primary_honors_the_revision_precondition() {
     let (state, _tempdir) = isolated_state();
     seeded_scene(&state).await;
-    let created = create_zone(&state, create_command("Desk"), MutationContext::api())
+    let created = create_zone(&state.scene, create_command("Desk"))
         .await
         .expect("zone should be created");
 
     let error = update_zone(
-        &state,
+        &state.scene,
         UpdateZone {
             zone_id: created.zone.id,
             patch: ZoneMetaPatch {
@@ -242,7 +241,6 @@ async fn promoting_a_zone_to_primary_honors_the_revision_precondition() {
             },
             expected_revision: Some(0),
         },
-        MutationContext::api(),
     )
     .await
     .expect_err("a structural patch must respect the revision the caller saw");
@@ -258,7 +256,7 @@ async fn promoting_a_zone_to_primary_honors_the_revision_precondition() {
 async fn delete_zone_removes_it_and_announces_the_removal() {
     let (state, _tempdir) = isolated_state();
     let scene_id = seeded_scene(&state).await;
-    let created = create_zone(&state, create_command("Desk"), MutationContext::api())
+    let created = create_zone(&state.scene, create_command("Desk"))
         .await
         .expect("zone should be created");
     let preview_layout = state.spatial_engine.snapshot().layout().as_ref().clone();
@@ -274,12 +272,11 @@ async fn delete_zone_removes_it_and_announces_the_removal() {
     let mut events = state.event_bus.subscribe_all();
 
     let removed = delete_zone(
-        &state,
+        &state.scene,
         DeleteZone {
             zone_id: created.zone.id,
             expected_revision: None,
         },
-        MutationContext::api(),
     )
     .await
     .expect("zone should be removed");
@@ -325,12 +322,11 @@ async fn delete_zone_refuses_the_primary_zone() {
     };
 
     let error = delete_zone(
-        &state,
+        &state.scene,
         DeleteZone {
             zone_id: primary_id,
             expected_revision: None,
         },
-        MutationContext::api(),
     )
     .await
     .expect_err("the primary zone is not deletable through this path");
@@ -346,12 +342,11 @@ async fn delete_zone_refuses_an_unknown_zone() {
     seeded_scene(&state).await;
 
     let error = delete_zone(
-        &state,
+        &state.scene,
         DeleteZone {
             zone_id: ZoneId::new(),
             expected_revision: None,
         },
-        MutationContext::api(),
     )
     .await
     .expect_err("an unknown zone has nothing to delete");
