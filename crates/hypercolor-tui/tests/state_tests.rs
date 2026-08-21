@@ -12,44 +12,31 @@ use hypercolor_tui::state::{
 #[test]
 fn control_value_float_as_f32() {
     let v = ControlValue::Float(0.75);
-    assert_eq!(v.as_f32(), Some(0.75));
+    assert_eq!(v.as_effect_f32(), Some(0.75));
 }
 
 #[test]
 fn control_value_integer_as_f32() {
-    let v = ControlValue::Integer(42);
-    assert_eq!(v.as_f32(), Some(42.0));
+    let v = ControlValue::Int(42);
+    assert_eq!(v.as_effect_f32(), Some(42.0));
 }
 
 #[test]
-fn control_value_boolean_as_f32_returns_none() {
-    let v = ControlValue::Boolean(true);
-    assert!(v.as_f32().is_none());
+fn control_value_boolean_maps_to_effect_scalar() {
+    let v = ControlValue::Bool(true);
+    assert_eq!(v.as_effect_f32(), Some(1.0));
 }
 
 #[test]
 fn control_value_text_as_f32_returns_none() {
     let v = ControlValue::Text("hello".to_string());
-    assert!(v.as_f32().is_none());
+    assert!(v.as_effect_f32().is_none());
 }
 
 #[test]
 fn control_value_color_as_f32_returns_none() {
-    let v = ControlValue::Color([1.0, 0.0, 0.5, 1.0]);
-    assert!(v.as_f32().is_none());
-}
-
-#[test]
-fn control_value_boolean_as_bool() {
-    assert_eq!(ControlValue::Boolean(true).as_bool(), Some(true));
-    assert_eq!(ControlValue::Boolean(false).as_bool(), Some(false));
-}
-
-#[test]
-fn control_value_non_boolean_as_bool_returns_none() {
-    assert!(ControlValue::Float(1.0).as_bool().is_none());
-    assert!(ControlValue::Integer(1).as_bool().is_none());
-    assert!(ControlValue::Text("true".to_string()).as_bool().is_none());
+    let v = ControlValue::linear_color([1.0, 0.0, 0.5, 1.0]);
+    assert!(v.as_effect_f32().is_none());
 }
 
 // ── Serde round-trip tests ───────────────────────────────────────
@@ -59,15 +46,15 @@ fn control_value_float_serde_roundtrip() {
     let v = ControlValue::Float(2.72);
     let json = serde_json::to_string(&v).expect("serialize");
     let parsed: ControlValue = serde_json::from_str(&json).expect("deserialize");
-    assert_eq!(parsed.as_f32(), Some(2.72));
+    assert_eq!(parsed.as_effect_f32(), Some(2.72));
 }
 
 #[test]
 fn control_value_boolean_serde_roundtrip() {
-    let v = ControlValue::Boolean(true);
+    let v = ControlValue::Bool(true);
     let json = serde_json::to_string(&v).expect("serialize");
     let parsed: ControlValue = serde_json::from_str(&json).expect("deserialize");
-    assert_eq!(parsed.as_bool(), Some(true));
+    assert_eq!(parsed, ControlValue::Bool(true));
 }
 
 #[test]
@@ -200,7 +187,7 @@ fn control_definition_full_roundtrip() {
     let parsed: ControlDefinition = serde_json::from_str(&json).expect("deserialize");
     assert_eq!(parsed.id, "speed");
     assert_eq!(parsed.control_type, "slider");
-    assert_eq!(parsed.default_value.as_f32(), Some(0.5));
+    assert_eq!(parsed.default_value.as_effect_f32(), Some(0.5));
     assert_eq!(parsed.min, Some(0.0));
     assert_eq!(parsed.max, Some(1.0));
 }

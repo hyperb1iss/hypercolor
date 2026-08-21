@@ -335,7 +335,7 @@ impl EffectBrowserView {
             .get(ctrl_idx)?
             .clone();
         let current = current_value(&self.control_values, &ctrl)
-            .as_f32()
+            .as_effect_f32()
             .unwrap_or(0.0);
         let step = ctrl.step.unwrap_or(DEFAULT_STEP);
         let min = ctrl.min.unwrap_or(0.0);
@@ -358,7 +358,7 @@ impl EffectBrowserView {
         self.last_slider_adjust = now;
 
         let new_val = (current + step * self.slider_accel * direction).clamp(min, max);
-        let new_cv = ControlValue::Float(new_val);
+        let new_cv = ControlValue::Float(f64::from(new_val));
         self.control_values.insert(ctrl.id.clone(), new_cv.clone());
         Some(Action::UpdateControl(ctrl.id, new_cv))
     }
@@ -370,10 +370,11 @@ impl EffectBrowserView {
             .controls
             .get(ctrl_idx)?
             .clone();
-        let current = current_value(&self.control_values, &ctrl)
-            .as_bool()
-            .unwrap_or(false);
-        let new_cv = ControlValue::Boolean(!current);
+        let current = matches!(
+            current_value(&self.control_values, &ctrl),
+            ControlValue::Bool(true)
+        );
+        let new_cv = ControlValue::Bool(!current);
         self.control_values.insert(ctrl.id.clone(), new_cv.clone());
         Some(Action::UpdateControl(ctrl.id, new_cv))
     }
@@ -388,8 +389,9 @@ impl EffectBrowserView {
         if ctrl.labels.is_empty() {
             return None;
         }
-        let current_text = match current_value(&self.control_values, &ctrl) {
-            ControlValue::Text(s) => s,
+        let current_value = current_value(&self.control_values, &ctrl);
+        let current_text = match &current_value {
+            ControlValue::Enum(value) | ControlValue::Text(value) => value.clone(),
             _ => String::new(),
         };
         let current_idx = ctrl
@@ -405,7 +407,11 @@ impl EffectBrowserView {
             current_idx - 1
         };
         let new_text = ctrl.labels.get(new_idx)?.clone();
-        let new_cv = ControlValue::Text(new_text);
+        let new_cv = if matches!(current_value, ControlValue::Enum(_)) {
+            ControlValue::Enum(new_text)
+        } else {
+            ControlValue::Text(new_text)
+        };
         self.control_values.insert(ctrl.id.clone(), new_cv.clone());
         Some(Action::UpdateControl(ctrl.id, new_cv))
     }
@@ -544,7 +550,7 @@ impl EffectBrowserView {
         let min = ctrl.min.unwrap_or(0.0);
         let max = ctrl.max.unwrap_or(1.0);
         let new_val = min + t * (max - min);
-        let new_cv = ControlValue::Float(new_val);
+        let new_cv = ControlValue::Float(f64::from(new_val));
         self.control_values.insert(ctrl.id.clone(), new_cv.clone());
         Some(Action::UpdateControl(ctrl.id, new_cv))
     }
@@ -561,11 +567,11 @@ impl EffectBrowserView {
             return;
         };
         if ctrl.control_type == "color" {
-            let color_arr = match current_value(&self.control_values, &ctrl) {
-                ControlValue::Color(c) => c,
-                _ => [0.5, 0.5, 0.5, 1.0],
+            let (red, green, blue) = match current_value(&self.control_values, &ctrl) {
+                ControlValue::ColorLinear(color) => (color.r, color.g, color.b),
+                _ => (0.5, 0.5, 0.5),
             };
-            let (h, s, l) = rgb_to_hsl(color_arr[0], color_arr[1], color_arr[2]);
+            let (h, s, l) = rgb_to_hsl(red, green, blue);
             self.color_picker = Some(ColorPickerState {
                 ctrl_idx: idx,
                 hsl: [h, s, l],
@@ -584,10 +590,10 @@ impl EffectBrowserView {
             .clone();
         let (r, g, b) = hsl_to_rgb(picker.hsl[0], picker.hsl[1], picker.hsl[2]);
         let alpha = match current_value(&self.control_values, &ctrl) {
-            ControlValue::Color(c) => c[3],
+            ControlValue::ColorLinear(color) => color.a,
             _ => 1.0,
         };
-        let new_cv = ControlValue::Color([r, g, b, alpha]);
+        let new_cv = ControlValue::linear_color([r, g, b, alpha]);
         self.control_values.insert(ctrl.id.clone(), new_cv.clone());
         Some(Action::UpdateControl(ctrl.id, new_cv))
     }
@@ -1321,9 +1327,10 @@ impl EffectBrowserView {
                 frame.render_widget(slider, area);
             }
             "toggle" => {
-                let on = current_value(&self.control_values, ctrl)
-                    .as_bool()
-                    .unwrap_or(false);
+                let on = matches!(
+                    current_value(&self.control_values, ctrl),
+                    ControlValue::Bool(true)
+                );
                 let name_style = selected_style(is_selected);
                 let (indicator, state_text, color) = if on {
                     ("\u{25C9}", "On", SUCCESS_GREEN)
@@ -1346,7 +1353,7 @@ impl EffectBrowserView {
             }
             "dropdown" => {
                 let current_text = match current_value(&self.control_values, ctrl) {
-                    ControlValue::Text(s) => s,
+                    ControlValue::Enum(value) | ControlValue::Text(value) => value,
                     _ => String::new(),
                 };
                 let name_style = selected_style(is_selected);
@@ -1373,13 +1380,13 @@ impl EffectBrowserView {
             }
             "color" => {
                 let name_style = selected_style(is_selected);
-                let color_arr = match current_value(&self.control_values, ctrl) {
-                    ControlValue::Color(c) => c,
-                    _ => [0.5, 0.5, 0.5, 1.0],
+                let (red, green, blue) = match current_value(&self.control_values, ctrl) {
+                    ControlValue::ColorLinear(color) => (color.r, color.g, color.b),
+                    _ => (0.5, 0.5, 0.5),
                 };
-                let r = float_to_u8(color_arr[0]);
-                let g = float_to_u8(color_arr[1]);
-                let b = float_to_u8(color_arr[2]);
+                let r = float_to_u8(red);
+                let g = float_to_u8(green);
+                let b = float_to_u8(blue);
                 let swatch = Color::Rgb(r, g, b);
                 let mut spans = vec![
                     Span::styled(
@@ -1452,7 +1459,9 @@ fn current_value(values: &HashMap<String, ControlValue>, ctrl: &ControlDefinitio
 /// Normalize a control's current value to `[0, 1]`.
 fn normalized_value(values: &HashMap<String, ControlValue>, ctrl: &ControlDefinition) -> f32 {
     normalize(
-        current_value(values, ctrl).as_f32().unwrap_or(0.0),
+        current_value(values, ctrl)
+            .as_effect_f32()
+            .unwrap_or(0.0),
         ctrl.min.unwrap_or(0.0),
         ctrl.max.unwrap_or(1.0),
     )

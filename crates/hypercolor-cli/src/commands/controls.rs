@@ -7,8 +7,8 @@ use clap::{Args, Subcommand};
 use hypercolor_color::{Rgb, Rgba};
 use hypercolor_types::api::controls::InvokeControlActionRequest;
 use hypercolor_types::api::scene::PatchControlsRequest;
-use hypercolor_types::control::ControlValue as CanonicalControlValue;
-use hypercolor_types::controls::{ControlValue, ControlValueMap};
+use hypercolor_types::control::{ControlValue, SecretRef};
+use hypercolor_types::controls::ControlValueMap;
 use serde_json::Value;
 
 use crate::client::DaemonClient;
@@ -373,11 +373,11 @@ fn action_rows(surface: &Value, ctx: &OutputContext) -> Vec<Vec<String>> {
 
 pub(crate) fn assignments_to_values(
     assignments: &[String],
-) -> Result<BTreeMap<String, CanonicalControlValue>> {
+) -> Result<BTreeMap<String, ControlValue>> {
     let mut values = BTreeMap::new();
     for assignment in assignments {
         let (field_id, value) = parse_assignment(assignment)?;
-        let value = CanonicalControlValue::try_from(value)?;
+        value.validate()?;
         if values.insert(field_id.clone(), value).is_some() {
             bail!("duplicate control value assignment: {field_id}");
         }
@@ -420,38 +420,38 @@ fn parse_control_value(raw: &str) -> Result<ControlValue> {
         return Ok(ControlValue::Bool(value));
     }
     if let Ok(value) = raw.parse::<i64>() {
-        return Ok(ControlValue::Integer(value));
+        return Ok(ControlValue::Int(value));
     }
     if let Ok(value) = raw.parse::<f64>() {
         return Ok(ControlValue::Float(value));
     }
-    Ok(ControlValue::String(raw.to_owned()))
+    Ok(ControlValue::Text(raw.to_owned()))
 }
 
 fn typed_control_value(kind: &str, value: &str) -> Result<ControlValue> {
     match kind.replace(['-', '_'], "").to_ascii_lowercase().as_str() {
         "null" => Ok(ControlValue::Null),
         "bool" | "boolean" => Ok(ControlValue::Bool(value.parse::<bool>()?)),
-        "int" | "integer" => Ok(ControlValue::Integer(value.parse::<i64>()?)),
+        "int" | "integer" => Ok(ControlValue::Int(value.parse::<i64>()?)),
         "float" | "number" => Ok(ControlValue::Float(value.parse::<f64>()?)),
-        "string" | "str" => Ok(ControlValue::String(value.to_owned())),
-        "secret" | "secretref" => Ok(ControlValue::SecretRef(value.to_owned())),
-        "ip" | "ipaddress" => Ok(ControlValue::IpAddress(value.to_owned())),
-        "mac" | "macaddress" => Ok(ControlValue::MacAddress(value.to_owned())),
-        "duration" | "durationms" => Ok(ControlValue::DurationMs(value.parse::<u64>()?)),
+        "string" | "str" => Ok(ControlValue::Text(value.to_owned())),
+        "secret" | "secretref" => Ok(ControlValue::SecretRef(SecretRef::new(value))),
+        "ip" | "ipaddress" => Ok(ControlValue::ip(value)?),
+        "mac" | "macaddress" => Ok(ControlValue::mac(value)?),
+        "duration" | "durationms" => Ok(ControlValue::Duration(
+            std::time::Duration::from_millis(value.parse::<u64>()?),
+        )),
         "enum" => Ok(ControlValue::Enum(value.to_owned())),
         "flags" => Ok(ControlValue::Flags(split_list(value))),
         "rgb" | "colorrgb" => {
             let color =
                 Rgb::from_hex(value).with_context(|| format!("invalid rgb color: {value}"))?;
-            Ok(ControlValue::ColorRgb([color.r, color.g, color.b]))
+            Ok(ControlValue::ColorRgb(color))
         }
         "rgba" | "colorrgba" => {
             let color =
                 Rgba::from_hex(value).with_context(|| format!("invalid rgba color: {value}"))?;
-            Ok(ControlValue::ColorRgba([
-                color.r, color.g, color.b, color.a,
-            ]))
+            Ok(ControlValue::ColorRgba(color))
         }
         "json" => json_to_control_value(value),
         _ => bail!("unknown control value kind: {kind}"),
@@ -469,21 +469,21 @@ fn json_value_to_control_value(value: Value) -> Result<ControlValue> {
         Value::Bool(value) => Ok(ControlValue::Bool(value)),
         Value::Number(value) => {
             if let Some(integer) = value.as_i64() {
-                Ok(ControlValue::Integer(integer))
+                Ok(ControlValue::Int(integer))
             } else if let Some(float) = value.as_f64() {
                 Ok(ControlValue::Float(float))
             } else {
                 bail!("unsupported JSON number: {value}")
             }
         }
-        Value::String(value) => Ok(ControlValue::String(value)),
+        Value::String(value) => Ok(ControlValue::Text(value)),
         Value::Array(values) => Ok(ControlValue::List(
             values
                 .into_iter()
                 .map(json_value_to_control_value)
                 .collect::<Result<Vec<_>>>()?,
         )),
-        Value::Object(values) => Ok(ControlValue::Object(
+        Value::Object(values) => Ok(ControlValue::Map(
             values
                 .into_iter()
                 .map(|(key, value)| Ok((key, json_value_to_control_value(value)?)))

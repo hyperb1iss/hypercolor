@@ -4,10 +4,11 @@ use std::cell::Cell as StdCell;
 
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::controls::{
     ActionConfirmationLevel, ControlAccess, ControlActionDescriptor, ControlAvailabilityState,
     ControlFieldDescriptor, ControlGroupDescriptor, ControlSurfaceDocument, ControlSurfaceScope,
-    ControlValue, ControlValueMap, ControlValueType,
+    ControlValueMap, ControlValueType,
 };
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -988,24 +989,32 @@ fn control_value_summary(value: &ControlValue) -> String {
     match value {
         ControlValue::Null => "-".to_string(),
         ControlValue::Bool(value) => value.to_string(),
-        ControlValue::Integer(value) => value.to_string(),
+        ControlValue::Int(value) => value.to_string(),
         ControlValue::Float(value) => format!("{value:.2}"),
-        ControlValue::String(value)
-        | ControlValue::IpAddress(value)
-        | ControlValue::MacAddress(value)
-        | ControlValue::Enum(value) => value.clone(),
+        ControlValue::Text(value) | ControlValue::Enum(value) => value.clone(),
+        ControlValue::Ip(value) => value.as_str().to_owned(),
+        ControlValue::Mac(value) => value.as_str().to_owned(),
         ControlValue::SecretRef(_) => "configured".to_owned(),
         ControlValue::ColorRgb(value) => {
-            format!("#{:02x}{:02x}{:02x}", value[0], value[1], value[2])
+            format!("#{:02x}{:02x}{:02x}", value.r, value.g, value.b)
         }
         ControlValue::ColorRgba(value) => format!(
             "#{:02x}{:02x}{:02x}{:02x}",
-            value[0], value[1], value[2], value[3]
+            value.r, value.g, value.b, value.a
         ),
-        ControlValue::DurationMs(value) => format!("{value}ms"),
+        ControlValue::Duration(value) => format!("{}ms", value.as_millis()),
+        ControlValue::ColorLinear(value) => format!(
+            "linear({:.2}, {:.2}, {:.2}, {:.2})",
+            value.r, value.g, value.b, value.a
+        ),
+        ControlValue::Gradient(values) => format!("{} gradient stops", values.len()),
+        ControlValue::Rect(value) => format!(
+            "{:.2},{:.2} {:.2}×{:.2}",
+            value.x, value.y, value.width, value.height
+        ),
         ControlValue::Flags(values) => values.join(", "),
         ControlValue::List(values) => format!("{} items", values.len()),
-        ControlValue::Object(values) => format!("{} fields", values.len()),
+        ControlValue::Map(values) => format!("{} fields", values.len()),
         ControlValue::Unknown => "unsupported value".to_owned(),
     }
 }
@@ -1018,14 +1027,14 @@ fn next_control_value(
 ) -> Option<ControlValue> {
     match (value_type, current) {
         (ControlValueType::Bool, ControlValue::Bool(value)) => Some(ControlValue::Bool(!value)),
-        (ControlValueType::Integer { min, max, step }, ControlValue::Integer(value)) => {
+        (ControlValueType::Integer { min, max, step }, ControlValue::Int(value)) => {
             let delta = step.unwrap_or(1).abs().max(1);
             let next = if direction < 0 {
                 value.saturating_sub(delta)
             } else {
                 value.saturating_add(delta)
             };
-            Some(ControlValue::Integer(clamp_i64(next, *min, *max)))
+            Some(ControlValue::Int(clamp_i64(next, *min, *max)))
         }
         (ControlValueType::Float { min, max, step }, ControlValue::Float(value)) => {
             let delta = step.unwrap_or(1.0).abs().max(f64::EPSILON);
@@ -1081,14 +1090,16 @@ fn rect_contains(r: Rect, col: u16, row: u16) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use hypercolor_types::controls::ControlValue;
+    use hypercolor_types::control::{ControlValue, SecretRef};
 
     use super::control_value_summary;
 
     #[test]
     fn control_value_summary_hides_secret_refs() {
         assert_eq!(
-            control_value_summary(&ControlValue::SecretRef("driver-owned-secret".to_owned())),
+            control_value_summary(&ControlValue::SecretRef(SecretRef::new(
+                "driver-owned-secret"
+            ))),
             "configured"
         );
     }

@@ -47,7 +47,7 @@ fn toggle_effect() -> EffectSummary {
             id: "sparkle".to_string(),
             name: "Sparkle".to_string(),
             control_type: "toggle".to_string(),
-            default_value: ControlValue::Boolean(false),
+            default_value: ControlValue::Bool(false),
             min: None,
             max: None,
             step: None,
@@ -120,7 +120,7 @@ fn mouse_click_on_toggle_control_updates_value() {
         .expect("mouse event should be handled");
 
     match action {
-        Some(Action::UpdateControl(id, ControlValue::Boolean(true))) => {
+        Some(Action::UpdateControl(id, ControlValue::Bool(true))) => {
             assert_eq!(id, "sparkle");
         }
         other => panic!("expected toggle control update, got {other:?}"),

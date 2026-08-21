@@ -9,8 +9,8 @@ use hypercolor_types::api::output::{OutputPatchRequest, OutputPowerMode};
 use hypercolor_types::api::scene::{
     ApplyEffectRequest, ClearSceneRequest, PatchControlsRequest, ReplaceLayerRequest,
 };
-use hypercolor_types::control::ControlValue as ApiControlValue;
-use hypercolor_types::effect::{ControlValue, EffectCategory};
+use hypercolor_types::control::ControlValue;
+use hypercolor_types::effect::EffectCategory;
 use hypercolor_types::layer::{LayerSource, SceneLayer};
 use hypercolor_types::scene::{ZoneId, ZoneRole};
 
@@ -215,20 +215,15 @@ async fn execute_activate(
     if let Some(speed) = args.speed {
         controls.insert(
             "speed".to_string(),
-            ControlValue::Integer(i32::try_from(speed)?),
+            ControlValue::Int(i64::from(speed)),
         );
     }
     if let Some(intensity) = args.intensity {
         controls.insert(
             "intensity".to_string(),
-            ControlValue::Integer(i32::try_from(intensity)?),
+            ControlValue::Int(i64::from(intensity)),
         );
     }
-
-    let controls = controls
-        .into_iter()
-        .map(|(name, value)| ApiControlValue::try_from(value).map(|value| (name, value)))
-        .collect::<Result<BTreeMap<_, _>, _>>()?;
 
     let body = ApplyEffectRequest {
         controls: (!controls.is_empty()).then_some(controls),
@@ -340,7 +335,7 @@ async fn execute_patch(
     for (key, value) in &args.param {
         values.insert(
             key.clone(),
-            ApiControlValue::try_from(control_value_from_json(parse_control_value(value))?)?,
+            control_value_from_json(parse_control_value(value))?,
         );
     }
 
@@ -467,22 +462,24 @@ async fn active_effect_layer(
 
 fn control_value_from_json(value: serde_json::Value) -> Result<ControlValue> {
     if let Some(value) = value.as_i64() {
-        return Ok(ControlValue::Integer(i32::try_from(value)?));
+        return Ok(ControlValue::Int(value));
     }
     if value.is_number() {
         return Ok(ControlValue::Float(serde_json::from_value(value)?));
     }
     if let Some(value) = value.as_bool() {
-        return Ok(ControlValue::Boolean(value));
+        return Ok(ControlValue::Bool(value));
     }
     if let Some(value) = value.as_str() {
         return Ok(ControlValue::Text(value.to_owned()));
     }
     if let Ok(color) = serde_json::from_value::<[f32; 4]>(value.clone()) {
-        return Ok(ControlValue::Color(color));
+        return Ok(ControlValue::linear_color(color));
     }
-    if let Ok(rect) = serde_json::from_value(value) {
-        return Ok(ControlValue::Rect(rect));
+    if let Ok(rect) =
+        serde_json::from_value::<hypercolor_types::viewport::ViewportRect>(value)
+    {
+        return Ok(ControlValue::rect(rect));
     }
     anyhow::bail!("Unsupported effect control value")
 }

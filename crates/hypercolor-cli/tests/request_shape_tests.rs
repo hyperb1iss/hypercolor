@@ -152,7 +152,9 @@ async fn effects_reset_replaces_the_real_layer_without_reapplying() -> Result<()
                                 "source": {
                                     "type": "effect",
                                     "effect_id": EFFECT_ID,
-                                    "controls": { "speed": { "float": 0.9 } }
+                                    "controls": {
+                                        "speed": { "kind": "float", "value": 0.9 }
+                                    }
                                 },
                                 "blend": "replace",
                                 "opacity": 1.0
@@ -570,7 +572,7 @@ async fn devices_action_targets_device_surface() -> Result<()> {
         serde_json::json!({
             "input": {
                 "duration_ms": {
-                    "kind": "duration_ms",
+                    "kind": "duration",
                     "value": 1200
                 }
             }
