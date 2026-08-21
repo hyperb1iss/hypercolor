@@ -509,7 +509,7 @@ fn map_async_hid_error(error: HidError) -> TransportError {
         HidError::NotConnected => TransportError::NotFound {
             detail: "hidraw device is not connected".to_owned(),
         },
-        HidError::Disconnected => TransportError::IoError {
+        HidError::Disconnected => TransportError::Disconnected {
             detail: "hidraw device disconnected".to_owned(),
         },
         HidError::Message(message) => map_error_detail(message.into_owned()),
@@ -677,5 +677,19 @@ fn format_hex_preview(bytes: &[u8], max_bytes: usize) -> String {
         "<empty>".to_owned()
     } else {
         rendered
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn async_hid_disconnect_preserves_transport_liveness() {
+        assert!(matches!(
+            map_async_hid_error(HidError::Disconnected),
+            TransportError::Disconnected { detail }
+                if detail == "hidraw device disconnected"
+        ));
     }
 }

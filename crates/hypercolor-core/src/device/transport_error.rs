@@ -27,9 +27,11 @@ pub(super) fn map_hal_transport_error(
         Some(TransportError::Timeout { timeout_ms }) => DeviceError::Timeout {
             after: Duration::from_millis(*timeout_ms),
         },
-        Some(TransportError::Closed) => DeviceError::Disconnected {
-            device: device_id.to_string(),
-        },
+        Some(TransportError::Disconnected { .. } | TransportError::Closed) => {
+            DeviceError::Disconnected {
+                device: device_id.to_string(),
+            }
+        }
         Some(TransportError::PermissionDenied { detail }) => DeviceError::PermissionDenied {
             device: device_id.to_string(),
             detail: detail.clone(),

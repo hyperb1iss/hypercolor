@@ -695,37 +695,18 @@ impl UsbBackend {
             .chain()
             .find_map(|cause| cause.downcast_ref::<TransportError>())
         {
-            Some(TransportError::IoError { detail })
-                if Self::io_error_indicates_liveness_loss(detail) =>
-            {
-                FrameWriteDisposition::Fatal
-            }
             Some(TransportError::Timeout { .. } | TransportError::IoError { .. }) => {
                 FrameWriteDisposition::Transient
             }
             Some(
                 TransportError::NotFound { .. }
+                | TransportError::Disconnected { .. }
                 | TransportError::Closed
                 | TransportError::PermissionDenied { .. }
                 | TransportError::UnsupportedTransfer { .. },
             )
             | None => FrameWriteDisposition::Fatal,
         }
-    }
-
-    fn io_error_indicates_liveness_loss(detail: &str) -> bool {
-        let detail = detail.to_ascii_lowercase();
-        [
-            "disconnected",
-            "not connected",
-            "device removed",
-            "no such device",
-            "permission denied",
-            "access denied",
-            "transport closed",
-        ]
-        .iter()
-        .any(|marker| detail.contains(marker))
     }
 
     async fn run_device_frame(

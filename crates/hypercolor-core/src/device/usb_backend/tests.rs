@@ -425,7 +425,7 @@ fn transient_and_fatal_frame_write_errors_classify_transport_liveness() {
             transport: "test".to_owned(),
             transfer_type: TransferType::Primary,
         },
-        TransportError::IoError {
+        TransportError::Disconnected {
             detail: "hidraw device disconnected".to_owned(),
         },
     ];
@@ -436,6 +436,15 @@ fn transient_and_fatal_frame_write_errors_classify_transport_liveness() {
             actor::FrameWriteDisposition::Fatal
         );
     }
+
+    let prose_only_disconnect = anyhow!(TransportError::IoError {
+        detail: "hidraw device disconnected".to_owned(),
+    })
+    .context("USB frame write failed");
+    assert_eq!(
+        UsbBackend::classify_frame_write_error(&prose_only_disconnect),
+        actor::FrameWriteDisposition::Transient
+    );
 
     assert_eq!(
         UsbBackend::classify_frame_write_error(&anyhow!("protocol encoding failed")),
