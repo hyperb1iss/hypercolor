@@ -6,6 +6,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
 use arc_swap::ArcSwap;
+#[cfg(target_os = "macos")]
+use hypercolor_core::input::screen::ScreenRendererExecutionState;
 use hypercolor_core::input::screen::{
     CommittedScreenPublicationTransition, InputPublicationDemandRevision, LedToneMapCalibration,
     PixelExtent, RegisteredScreenBranchDemand, ScreenAspectPolicy, ScreenBranchLease,
@@ -71,12 +73,104 @@ pub struct InputPublicationDemand {
     media: u32,
     network: u32,
     sensors: u32,
+    #[cfg(target_os = "macos")]
+    macos_screen_renderer_execution: ScreenRendererExecutionState,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InputScreenBranchDemand {
     branch: RegisteredScreenBranchDemand,
     legacy_extent: PixelExtent,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct InputScreenBranchRequest {
+    requested_hz: NonZeroU32,
+    legacy_extent: PixelExtent,
+    kind: ScreenPublicationKind,
+    extent: ScreenExtentRequest,
+    aspect: ScreenAspectPolicy,
+    processing_profile: Arc<ScreenProcessingProfile>,
+}
+
+impl InputScreenBranchRequest {
+    pub(crate) fn surface(requested_hz: u32, requested_extent: PixelExtent) -> Option<Self> {
+        let requested_hz = NonZeroU32::new(requested_hz)?;
+        let extent = ScreenExtentRequest::bounded(
+            NonZeroU32::new(requested_extent.width()),
+            NonZeroU32::new(requested_extent.height()),
+            ScreenUpscalePolicy::Never,
+        );
+        // The default profile rejects HDR sources outright, which makes an
+        // HDR-configured capture stream permanently unresolvable. Enabling
+        // the spec 76 BT.2390 tone map here is what admits HDR sources at
+        // all; the platform source refreshes the calibration from the live
+        // capture config during branch resolution, so the default
+        // calibration never reaches a kernel.
+        let profile = ScreenProcessingProfile::new(ScreenProcessingProfileConfig {
+            hdr: ScreenHdrPolicy::ToneMap(ScreenToneMapPolicy::from_calibration(
+                ScreenToneMapOperator::Bt2390Eetf,
+                LedToneMapCalibration::DEFAULT,
+            )),
+            ..ScreenProcessingProfileConfig::default()
+        });
+        Some(Self {
+            requested_hz,
+            legacy_extent: requested_extent,
+            kind: ScreenPublicationKind::Surface,
+            extent,
+            aspect: ScreenAspectPolicy::Contain,
+            processing_profile: Arc::new(profile),
+        })
+    }
+
+    pub(crate) fn bind(
+        self,
+        executor: ScreenPublicationExecutorRequest,
+    ) -> InputScreenBranchDemand {
+        let request = ScreenPublicationRequest::new(
+            ScreenSourceSelector::Configured,
+            self.kind,
+            executor,
+            self.extent,
+            self.aspect,
+            self.processing_profile,
+        );
+        InputScreenBranchDemand::new(
+            RegisteredScreenBranchDemand::new(request, self.requested_hz),
+            self.legacy_extent,
+        )
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn bind_macos_native_required(
+        self,
+        target: &ScreenNativeExecutionTarget,
+    ) -> InputScreenBranchDemand {
+        self.bind(ScreenPublicationExecutorRequest::SourceNativeRequired(
+            target.clone(),
+        ))
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn kind(&self) -> ScreenPublicationKind {
+        self.kind
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn extent(&self) -> ScreenExtentRequest {
+        self.extent
+    }
+
+    #[cfg(test)]
+    pub(crate) fn processing_profile(&self) -> &Arc<ScreenProcessingProfile> {
+        &self.processing_profile
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn requested_hz(&self) -> NonZeroU32 {
+        self.requested_hz
+    }
 }
 
 impl InputScreenBranchDemand {
@@ -106,37 +200,8 @@ impl InputScreenBranchDemand {
         requested_extent: PixelExtent,
         executor: ScreenPublicationExecutorRequest,
     ) -> Option<Self> {
-        let requested_hz = NonZeroU32::new(requested_hz)?;
-        let extent = ScreenExtentRequest::bounded(
-            NonZeroU32::new(requested_extent.width()),
-            NonZeroU32::new(requested_extent.height()),
-            ScreenUpscalePolicy::Never,
-        );
-        // The default profile rejects HDR sources outright, which makes an
-        // HDR-configured capture stream permanently unresolvable. Enabling
-        // the spec 76 BT.2390 tone map here is what admits HDR sources at
-        // all; the platform source refreshes the calibration from the live
-        // capture config during branch resolution, so the default
-        // calibration never reaches a kernel.
-        let profile = ScreenProcessingProfile::new(ScreenProcessingProfileConfig {
-            hdr: ScreenHdrPolicy::ToneMap(ScreenToneMapPolicy::from_calibration(
-                ScreenToneMapOperator::Bt2390Eetf,
-                LedToneMapCalibration::DEFAULT,
-            )),
-            ..ScreenProcessingProfileConfig::default()
-        });
-        let request = ScreenPublicationRequest::new(
-            ScreenSourceSelector::Configured,
-            ScreenPublicationKind::Surface,
-            executor,
-            extent,
-            ScreenAspectPolicy::Contain,
-            Arc::new(profile),
-        );
-        Some(Self::new(
-            RegisteredScreenBranchDemand::new(request, requested_hz),
-            requested_extent,
-        ))
+        InputScreenBranchRequest::surface(requested_hz, requested_extent)
+            .map(|request| request.bind(executor))
     }
 
     const fn requested_hz(&self) -> u32 {
@@ -162,6 +227,8 @@ impl InputPublicationDemand {
             media: requested_hz,
             network: requested_hz,
             sensors: requested_hz,
+            #[cfg(target_os = "macos")]
+            macos_screen_renderer_execution: ScreenRendererExecutionState::Inactive,
         }
     }
 
@@ -232,6 +299,15 @@ impl InputPublicationDemand {
         self
     }
 
+    #[cfg(target_os = "macos")]
+    pub(crate) fn with_macos_screen_renderer_execution(
+        mut self,
+        state: ScreenRendererExecutionState,
+    ) -> Self {
+        self.macos_screen_renderer_execution = state;
+        self
+    }
+
     #[cfg(test)]
     pub(crate) fn screen_requested_extent(&self) -> Option<PixelExtent> {
         self.screen
@@ -299,6 +375,8 @@ struct InputPublicationDemandSnapshot {
     compatibility_surface: Option<RegisteredScreenBranchDemand>,
     compatibility_zones: Option<RegisteredScreenBranchDemand>,
     revision: InputPublicationDemandRevision,
+    #[cfg(target_os = "macos")]
+    macos_screen_renderer_execution: ScreenRendererExecutionState,
 }
 
 impl InputPublicationDemandSnapshot {
@@ -356,6 +434,13 @@ impl InputPublicationDemandSnapshot {
             compatibility_screen.map(|(_, screen)| screen.legacy_extent);
         let compatibility_surface = compatibility_surface.map(|(_, screen)| screen.branch.clone());
         let compatibility_zones = compatibility_zones.map(|(_, screen)| screen.branch.clone());
+        #[cfg(target_os = "macos")]
+        let macos_screen_renderer_execution = entries
+            .iter()
+            .find(|entry| entry.consumer == InputPublicationConsumer::Authoritative)
+            .map_or(ScreenRendererExecutionState::Inactive, |entry| {
+                entry.demand.macos_screen_renderer_execution
+            });
         Self {
             entries: entries.into(),
             cadence,
@@ -364,6 +449,8 @@ impl InputPublicationDemandSnapshot {
             compatibility_surface,
             compatibility_zones,
             revision,
+            #[cfg(target_os = "macos")]
+            macos_screen_renderer_execution,
         }
     }
 
@@ -395,6 +482,11 @@ impl InputPublicationDemandSnapshot {
 
     const fn revision(&self) -> InputPublicationDemandRevision {
         self.revision
+    }
+
+    #[cfg(target_os = "macos")]
+    const fn macos_screen_renderer_execution(&self) -> ScreenRendererExecutionState {
+        self.macos_screen_renderer_execution
     }
 
     fn exact_screen_demand(&self, graph_generation: u64) -> ScreenPublicationDemandSnapshot {
@@ -835,15 +927,27 @@ impl InputPublicationReader {
             .observe_matching_lease(|descriptor| {
                 descriptor.kind() == ScreenPublicationKind::Surface
                     && descriptor.geometry().output_extent() == extent
-                    && match (target, descriptor.requested_executor()) {
-                        (
-                            Some(target),
-                            ScreenPublicationExecutorRequest::SourceNative(selected),
-                        ) => selected.id() == target.id(),
-                        (None, ScreenPublicationExecutorRequest::Cpu) => true,
-                        _ => false,
-                    }
+                    && screen_executor_matches_render_target(
+                        target,
+                        descriptor.requested_executor(),
+                    )
             })
+    }
+}
+
+fn screen_executor_matches_render_target(
+    target: Option<&ScreenNativeExecutionTarget>,
+    requested: &ScreenPublicationExecutorRequest,
+) -> bool {
+    match (target, requested) {
+        (
+            Some(target),
+            ScreenPublicationExecutorRequest::SourceNative(selected)
+            | ScreenPublicationExecutorRequest::SourceNativeRequired(selected),
+        ) => selected.id() == target.id(),
+        #[cfg(not(target_os = "macos"))]
+        (None, ScreenPublicationExecutorRequest::Cpu) => true,
+        _ => false,
     }
 }
 
@@ -1213,6 +1317,8 @@ async fn run_pump(
     let mut exact_screen_recovery = None;
     let mut exact_screen_failure_streak: u64 = 0;
     let mut exact_screen_transition: Option<ExactScreenTransitionTask> = None;
+    #[cfg(target_os = "macos")]
+    let mut applied_macos_renderer_execution = None;
     let mut publication_retirements = VecDeque::new();
     let mut worker_retirement_tasks = JoinSet::new();
     let mut due_sources = Vec::with_capacity(SOURCE_KINDS.len());
@@ -1349,6 +1455,15 @@ async fn run_pump(
                 CaptureDemandReconcile::Stale => continue,
             }
             graph = reader.graph_snapshot();
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let renderer_execution = demand.macos_screen_renderer_execution();
+            let renderer_execution_key = (graph.generation(), renderer_execution);
+            if applied_macos_renderer_execution != Some(renderer_execution_key) {
+                manager.set_screen_renderer_execution_state(renderer_execution);
+                applied_macos_renderer_execution = Some(renderer_execution_key);
+            }
         }
         let lifecycle_current = capture_demand.is_current(graph.generation(), desired_capture);
         let exact_screen_key = (demand.revision(), graph.generation());

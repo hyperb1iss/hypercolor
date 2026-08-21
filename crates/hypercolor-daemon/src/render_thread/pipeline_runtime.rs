@@ -13,10 +13,16 @@ use hypercolor_core::engine::FpsTier;
 use hypercolor_core::input::routing::{
     ConsumerIncarnation, InteractionRouteCatalog, InteractionRouter, RoutedInteraction,
 };
+#[cfg(not(target_os = "macos"))]
+use hypercolor_core::input::screen::ScreenPublicationExecutorRequest;
 use hypercolor_core::input::screen::{
     PixelExtent, ResolvedScreenPublicationDescriptor, ScreenBranchDeliveryState, ScreenBranchLease,
     ScreenBranchPublication, ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId,
-    ScreenPlanGeneration, ScreenPublicationExecutorRequest,
+    ScreenPlanGeneration,
+};
+#[cfg(target_os = "macos")]
+use hypercolor_core::input::screen::{
+    ScreenNativeExecutionUnavailableReason, ScreenRendererExecutionState,
 };
 use hypercolor_core::input::{
     DataSourceKind, InputData, InputGraphSnapshot, InputSourceSlot, InteractionData,
@@ -47,6 +53,8 @@ use super::frame_policy::FramePolicy;
 use super::frame_policy::SkipDecision;
 #[cfg(feature = "wgpu")]
 use super::gpu_device::GpuRenderDevice;
+#[cfg(target_os = "macos")]
+use super::input_publication::InputScreenBranchRequest;
 use super::input_publication::{
     InputPublicationConsumer, InputPublicationDemand, InputPublicationDemandHandle,
     InputPublicationDemandRegistration, InputPublicationReader, OwnedInputPublicationDemand,
@@ -1174,7 +1182,44 @@ pub(crate) struct FrameLoopState {
     pub(crate) lighting_feed: super::lighting_feed::LightingFeedState,
     pub(crate) input_demands: InputPublicationDemandHandle,
     pub(crate) authoritative_input_demand: OwnedInputPublicationDemand,
+    #[cfg(target_os = "macos")]
+    pub(crate) macos_screen_native_demand: MacosScreenNativeDemandState,
     _sensor_baseline_input_demand: InputPublicationDemandRegistration,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum MacosScreenNativeUnavailable {
+    MissingTarget(InputScreenBranchRequest),
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum MacosScreenNativeDemandState {
+    Inactive,
+    Ready(ScreenNativeExecutionTargetId),
+    Unavailable(MacosScreenNativeUnavailable),
+}
+
+#[cfg(target_os = "macos")]
+impl MacosScreenNativeDemandState {
+    const fn renderer_execution_state(&self) -> ScreenRendererExecutionState {
+        match self {
+            Self::Inactive => ScreenRendererExecutionState::Inactive,
+            Self::Ready(target_id) => ScreenRendererExecutionState::NativeReady(*target_id),
+            Self::Unavailable(MacosScreenNativeUnavailable::MissingTarget(_)) => {
+                ScreenRendererExecutionState::NativeUnavailable(
+                    ScreenNativeExecutionUnavailableReason::MissingTarget,
+                )
+            }
+        }
+    }
+}
+
+struct AuthoritativeInputDemand {
+    demand: InputPublicationDemand,
+    #[cfg(target_os = "macos")]
+    macos_screen_native: MacosScreenNativeDemandState,
 }
 
 impl FrameLoopState {
@@ -1187,11 +1232,20 @@ impl FrameLoopState {
     ) {
         let authoritative =
             authoritative_input_demand(effect_demand, requested_hz, screen_extent, screen_target);
-        self.authoritative_input_demand.publish(authoritative);
+        self.authoritative_input_demand
+            .publish(authoritative.demand);
+        #[cfg(target_os = "macos")]
+        {
+            self.macos_screen_native_demand = authoritative.macos_screen_native;
+        }
     }
 
     pub(crate) fn clear_input_demands(&mut self) {
         self.authoritative_input_demand.clear();
+        #[cfg(target_os = "macos")]
+        {
+            self.macos_screen_native_demand = MacosScreenNativeDemandState::Inactive;
+        }
     }
 
     pub(crate) fn has_active_input_demand(&self) -> bool {
@@ -1208,19 +1262,36 @@ fn authoritative_input_demand(
     requested_hz: u32,
     screen_extent: PixelExtent,
     screen_target: Option<&ScreenNativeExecutionTarget>,
-) -> InputPublicationDemand {
+) -> AuthoritativeInputDemand {
     let mut demand = InputPublicationDemand::default();
+    #[cfg(target_os = "macos")]
+    let mut macos_screen_native = MacosScreenNativeDemandState::Inactive;
     if effect_demand.audio_capture_active {
         demand = demand.with_source(SourceKind::Audio, requested_hz);
     }
     if effect_demand.screen_capture_active {
-        demand = demand.with_screen_executor(
-            requested_hz,
-            screen_extent,
-            screen_target.map_or(ScreenPublicationExecutorRequest::Cpu, |target| {
-                ScreenPublicationExecutorRequest::SourceNative(target.clone())
-            }),
-        );
+        #[cfg(target_os = "macos")]
+        if let Some(request) = InputScreenBranchRequest::surface(requested_hz, screen_extent) {
+            if let Some(target) = screen_target {
+                let target_id = target.id();
+                demand = demand.with_screen_branches([request.bind_macos_native_required(target)]);
+                macos_screen_native = MacosScreenNativeDemandState::Ready(target_id);
+            } else {
+                macos_screen_native = MacosScreenNativeDemandState::Unavailable(
+                    MacosScreenNativeUnavailable::MissingTarget(request),
+                );
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            demand = demand.with_screen_executor(
+                requested_hz,
+                screen_extent,
+                screen_target.map_or(ScreenPublicationExecutorRequest::Cpu, |target| {
+                    ScreenPublicationExecutorRequest::SourceNative(target.clone())
+                }),
+            );
+        }
     }
     if effect_demand.interaction_capture_active {
         demand = demand.with_source(SourceKind::Interaction, requested_hz);
@@ -1234,7 +1305,16 @@ fn authoritative_input_demand(
     if effect_demand.sensor_input_active {
         demand = demand.with_source(SourceKind::Sensors, BACKGROUND_INPUT_HZ);
     }
-    demand
+    #[cfg(target_os = "macos")]
+    {
+        demand = demand
+            .with_macos_screen_renderer_execution(macos_screen_native.renderer_execution_state());
+    }
+    AuthoritativeInputDemand {
+        demand,
+        #[cfg(target_os = "macos")]
+        macos_screen_native,
+    }
 }
 
 pub(crate) struct RenderCaches {
@@ -2122,6 +2202,8 @@ impl PipelineRuntime {
                     &input_demands,
                     InputPublicationConsumer::Authoritative,
                 ),
+                #[cfg(target_os = "macos")]
+                macos_screen_native_demand: MacosScreenNativeDemandState::Inactive,
                 _sensor_baseline_input_demand: sensor_baseline_input_demand,
             },
             render: RenderCaches {
@@ -2172,6 +2254,10 @@ mod tests {
         ScreenNativePreparationPayload, ScreenNativeTargetPreparation, ScreenNativeTargetPreparer,
         ScreenPhysicalGpuDeviceIdentity, ScreenPublicationExecutorRequest,
     };
+    #[cfg(target_os = "macos")]
+    use hypercolor_core::input::screen::{
+        ScreenNativeExecutionUnavailableReason, ScreenRendererExecutionState,
+    };
     use hypercolor_core::input::{
         DataSource, DataSourceKind, DataSourceRole, InputData, InputGraphSnapshot, InputManager,
         InputSource, InputSourceSlot, InteractionData, InteractionSource, InteractionSourceOrigin,
@@ -2194,6 +2280,8 @@ mod tests {
         OutputReuseKey, OutputReuseState, PipelineRuntime, authoritative_input_demand,
         should_publish_preview_frame,
     };
+    #[cfg(target_os = "macos")]
+    use super::{MacosScreenNativeDemandState, MacosScreenNativeUnavailable};
     use crate::interaction_routing::{InteractionRoutingControl, selected_input_availability};
     use crate::render_thread::input_publication::{InputPublicationDemand, InputPublicationReader};
     use crate::render_thread::scene_snapshot::EffectDemand;
@@ -2880,16 +2968,48 @@ mod tests {
 
         let screen_extent = PixelExtent::new(5_120, 2_160)
             .expect("test screen publication extent should be non-empty");
-        let demand = authoritative_input_demand(effect_demand, 60, screen_extent, None);
+        let authoritative = authoritative_input_demand(effect_demand, 60, screen_extent, None);
         let expected = InputPublicationDemand::default()
             .with_source(SourceKind::Audio, 60)
-            .with_screen(60, screen_extent)
             .with_source(SourceKind::Interaction, 60)
             .with_source(SourceKind::Media, 1)
             .with_source(SourceKind::Network, 1)
             .with_source(SourceKind::Sensors, 1);
 
-        assert_eq!(demand, expected);
+        #[cfg(not(target_os = "macos"))]
+        let expected = expected.with_screen(60, screen_extent);
+        #[cfg(target_os = "macos")]
+        let expected = expected.with_macos_screen_renderer_execution(
+            ScreenRendererExecutionState::NativeUnavailable(
+                ScreenNativeExecutionUnavailableReason::MissingTarget,
+            ),
+        );
+        assert_eq!(authoritative.demand, expected);
+        #[cfg(target_os = "macos")]
+        {
+            let MacosScreenNativeDemandState::Unavailable(
+                MacosScreenNativeUnavailable::MissingTarget(request),
+            ) = authoritative.macos_screen_native
+            else {
+                panic!("missing current Metal target must be typed as native unavailable");
+            };
+            assert_eq!(
+                request.kind(),
+                hypercolor_core::input::screen::ScreenPublicationKind::Surface
+            );
+            assert_eq!(request.requested_hz().get(), 60);
+            assert_eq!(
+                request.extent().bounded_extent().map(|bounded| (
+                    bounded.max_width().map(NonZeroU32::get),
+                    bounded.max_height().map(NonZeroU32::get),
+                )),
+                Some((Some(5_120), Some(2_160)))
+            );
+            assert!(matches!(
+                request.processing_profile().hdr(),
+                hypercolor_core::input::screen::ScreenHdrPolicy::ToneMap(_)
+            ));
+        }
     }
 
     #[test]
@@ -2905,6 +3025,15 @@ mod tests {
         };
         let screen_extent = PixelExtent::new(7_680, 4_320)
             .expect("test screen publication extent should be non-empty");
+        #[cfg(target_os = "macos")]
+        let target = ScreenNativeExecutionTarget::new(
+            ScreenNativeExecutionTargetId::new(NonZeroU64::MIN),
+            PlatformGpuApi::Metal,
+            ScreenPhysicalGpuDeviceIdentity::MetalRegistryId(7),
+            NonZeroU32::new(16_384).expect("test texture limit is non-zero"),
+            Arc::new(InertNativeTargetPreparer),
+        );
+        #[cfg(not(target_os = "macos"))]
         let target = ScreenNativeExecutionTarget::new(
             ScreenNativeExecutionTargetId::new(NonZeroU64::MIN),
             PlatformGpuApi::Direct3d11,
@@ -2916,14 +3045,31 @@ mod tests {
             Arc::new(InertNativeTargetPreparer),
         );
 
-        let demand = authoritative_input_demand(effect_demand, 144, screen_extent, Some(&target));
+        let authoritative =
+            authoritative_input_demand(effect_demand, 144, screen_extent, Some(&target));
+        #[cfg(target_os = "macos")]
+        let expected = InputPublicationDemand::default()
+            .with_screen_executor(
+                144,
+                screen_extent,
+                ScreenPublicationExecutorRequest::SourceNativeRequired(target.clone()),
+            )
+            .with_macos_screen_renderer_execution(ScreenRendererExecutionState::NativeReady(
+                target.id(),
+            ));
+        #[cfg(not(target_os = "macos"))]
         let expected = InputPublicationDemand::default().with_screen_executor(
             144,
             screen_extent,
-            ScreenPublicationExecutorRequest::SourceNative(target),
+            ScreenPublicationExecutorRequest::SourceNative(target.clone()),
         );
 
-        assert_eq!(demand, expected);
+        assert_eq!(authoritative.demand, expected);
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            authoritative.macos_screen_native,
+            MacosScreenNativeDemandState::Ready(target.id())
+        );
     }
 
     #[test]

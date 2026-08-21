@@ -44,13 +44,15 @@ use super::{
     ScreenBranchPayload, ScreenBranchPublisher, ScreenByteAdmissionCoordinator,
     ScreenCaptureBackend, ScreenCaptureCadence, ScreenCaptureDemand, ScreenCaptureInput,
     ScreenComputeCapacityPolicy, ScreenCursorCapabilities, ScreenCursorPolicy,
-    ScreenExecutorColorCapabilities, ScreenGpuSurfacePayload, ScreenNativePreparationPayload,
+    ScreenExecutorColorCapabilities, ScreenGpuSurfacePayload, ScreenNativeExecutionTargetId,
+    ScreenNativeExecutionUnavailableReason, ScreenNativePreparationPayload,
     ScreenNativeWorkPayload, ScreenPhysicalGpuDeviceIdentity, ScreenPreparedWorkerToken,
-    ScreenPublicationColorimetry, ScreenPublicationExecutor, ScreenPublicationExecutorRequest,
+    ScreenPublicationColorimetry, ScreenPublicationError, ScreenPublicationExecutor,
+    ScreenPublicationExecutorFallbackReason, ScreenPublicationExecutorRequest,
     ScreenPublicationHealth, ScreenPublicationHub, ScreenPublicationHubError,
-    ScreenPublicationMetadata, ScreenPublicationRequest, ScreenRequiredResourceMinimum,
-    ScreenResourceApi, ScreenResourceKind, ScreenResourceLifetime, ScreenSourceReflection,
-    ScreenSourceSelector, ScreenWorkerBinding, ScreenWorkerBindingState,
+    ScreenPublicationMetadata, ScreenPublicationRequest, ScreenRendererExecutionState,
+    ScreenRequiredResourceMinimum, ScreenResourceApi, ScreenResourceKind, ScreenResourceLifetime,
+    ScreenSourceReflection, ScreenSourceSelector, ScreenWorkerBinding, ScreenWorkerBindingState,
     ScreenWorkerExactLedgerBuilder, ScreenWorkerPreparation, ScreenWorkerPreparationTicket,
     ScreenWorkerRetirement, SourceScale, analyze_screen_frame,
 };
@@ -108,12 +110,15 @@ const PUBLICATION_PATH_UNKNOWN: u8 = 0;
 const PUBLICATION_PATH_CPU: u8 = 1;
 const PUBLICATION_PATH_NATIVE: u8 = 2;
 const PUBLICATION_PATH_CPU_FALLBACK: u8 = 3;
+const PUBLICATION_PATH_NATIVE_UNAVAILABLE: u8 = 4;
 const TIMING_BUCKET_WIDTH_NS: u64 = 100_000;
 const TIMING_BUCKET_COUNT: usize = 4096;
 
 #[derive(Debug, Default)]
 struct MacosScreenRuntimeTelemetry {
     publication_path: AtomicU8,
+    renderer_authoritative: bool,
+    renderer_target: Mutex<Option<ScreenNativeExecutionTargetId>>,
     fallback_reason: Mutex<Option<Arc<str>>>,
     publication_plan_generation: AtomicU64,
     stale_frames: AtomicU64,
@@ -320,9 +325,8 @@ impl MacosScreenCaptureInput {
         )
     }
 
-    /// Create a production source with shared memory and calibrated CPU fences.
     #[cfg(target_os = "macos")]
-    pub fn with_admission_and_compute_capacity(
+    fn with_admission_and_compute_capacity(
         config: CaptureConfig,
         admission: ScreenByteAdmissionCoordinator,
         compute_capacity_policy: ScreenComputeCapacityPolicy,
@@ -332,7 +336,7 @@ impl MacosScreenCaptureInput {
         let request =
             production_stream_request(&config, ScreenCaptureDemand::Inactive, host_capabilities)?;
         let pool_coordinator = admission.clone();
-        let telemetry = Arc::new(MacosScreenRuntimeTelemetry::default());
+        let telemetry = Arc::new(MacosScreenRuntimeTelemetry::renderer_authoritative());
         let pool_telemetry = Arc::clone(&telemetry);
         let session = MacosScreenCaptureSession::new_with_pool_admission(
             request,
@@ -361,6 +365,7 @@ impl MacosScreenCaptureInput {
                 host_capabilities,
             }),
             telemetry,
+            "screen_capture_kit_native",
         ))
     }
 
@@ -371,6 +376,7 @@ impl MacosScreenCaptureInput {
         compute_capacity_policy: ScreenComputeCapacityPolicy,
         control: Arc<dyn MacosCaptureControl>,
         telemetry: Arc<MacosScreenRuntimeTelemetry>,
+        backend: &'static str,
     ) -> Self {
         let consented = control.authorization() == MacosScreenAuthorizationState::Authorized;
         let authorization = control.authorization();
@@ -391,7 +397,7 @@ impl MacosScreenCaptureInput {
             status: SourceStatusReporter::new(
                 "macos:session",
                 SourceKind::Screen,
-                "screen_capture_kit_cpu",
+                backend,
                 true,
                 consented,
                 false,
@@ -934,6 +940,11 @@ impl ScreenSource for MacosScreenCaptureInput {
         self.demand = demand;
         self.refresh_platform_status()?;
         Ok(())
+    }
+
+    fn set_screen_renderer_execution_state(&mut self, state: ScreenRendererExecutionState) {
+        self.telemetry.set_renderer_execution_state(state);
+        let _ = self.refresh_platform_status();
     }
 
     fn set_screen_publication_hub(&mut self, hub: Arc<ScreenPublicationHub>) {

@@ -912,6 +912,13 @@ pub trait ScreenSource: ManagedSource + SourceRoleBinding<Role = ScreenSourceRol
         Ok(())
     }
 
+    /// Apply the hardware renderer's authoritative screen execution state.
+    fn set_screen_renderer_execution_state(
+        &mut self,
+        _state: crate::input::screen::ScreenRendererExecutionState,
+    ) {
+    }
+
     /// Bind this source to the process-wide exact publication authority.
     fn set_screen_publication_hub(
         &mut self,

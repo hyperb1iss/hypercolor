@@ -1355,6 +1355,11 @@ impl InputManager {
         self.with_detached_inner(|inner| inner.set_screen_capture_demand(demand))
     }
 
+    /// Apply the hardware renderer's authoritative screen execution state.
+    pub fn set_screen_renderer_execution_state(&self, state: screen::ScreenRendererExecutionState) {
+        self.with_inner(|inner| inner.set_screen_renderer_execution_state(state));
+    }
+
     /// Try applying every capture domain inside one lifecycle transaction.
     ///
     /// Domain failures do not prevent later domains from running. Each domain
@@ -2307,6 +2312,19 @@ impl InputManagerState {
     /// Returns an error if a screen source cannot update its capture state.
     pub fn set_screen_capture_demand(&mut self, demand: ScreenCaptureDemand) -> anyhow::Result<()> {
         self.transition_screen_capture_demand(demand)
+    }
+
+    /// Apply the hardware renderer's authoritative screen execution state.
+    pub fn set_screen_renderer_execution_state(
+        &mut self,
+        state: screen::ScreenRendererExecutionState,
+    ) {
+        for source in &mut self.sources {
+            if let Some(screen) = source.as_screen_mut() {
+                screen.set_screen_renderer_execution_state(state);
+            }
+        }
+        self.publish_source_status_registry();
     }
 
     /// Stable lock-free publication authority shared across screen-source replacement.

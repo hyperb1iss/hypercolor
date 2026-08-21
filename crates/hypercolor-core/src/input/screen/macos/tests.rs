@@ -3,6 +3,7 @@ use super::publication::{
     bind_current_macos_exact_runtime, capture_colorimetry, capture_pixel_format,
     legacy_analysis_decimation, macos_native_descriptor_is_identity, native_cpu_capture_frame,
     publish_macos_native_exact, publish_macos_scalar_exact, resolve_macos_publication_branch,
+    resolve_macos_publication_branch_with_telemetry,
 };
 use super::worker::{report_macos_worker_health, synchronize_macos_invalidation_generation};
 use super::*;
@@ -1582,6 +1583,23 @@ fn native_demand(target: &ScreenNativeExecutionTarget) -> RegisteredScreenBranch
     native_demand_for_format(target, CapturePixelFormat::Bgra8)
 }
 
+fn required_native_demand(target: &ScreenNativeExecutionTarget) -> RegisteredScreenBranchDemand {
+    let mut demand = native_demand(target);
+    let request = demand.request();
+    demand = RegisteredScreenBranchDemand::new(
+        ScreenPublicationRequest::new(
+            request.selector().clone(),
+            request.kind(),
+            ScreenPublicationExecutorRequest::SourceNativeRequired(target.clone()),
+            request.extent(),
+            request.aspect(),
+            Arc::clone(request.processing_profile()),
+        ),
+        demand.requested_hz(),
+    );
+    demand
+}
+
 fn native_demand_for_format(
     target: &ScreenNativeExecutionTarget,
     format: CapturePixelFormat,
@@ -1719,6 +1737,170 @@ fn native_publication_commits_owner_backed_metal_surface() {
             .sample_count,
         1
     );
+}
+
+#[test]
+fn required_native_publication_reports_only_native_or_typed_unavailable() {
+    let frame = frame();
+    let source = source(&frame);
+    let native_target = target();
+    let telemetry = Arc::new(MacosScreenRuntimeTelemetry::default());
+    let resolved = resolve_macos_publication_branch_with_telemetry(
+        &source,
+        &required_native_demand(&native_target),
+        &telemetry,
+    )
+    .expect("matching required native demand resolves")
+    .expect("configured macOS source owns required native demand");
+    assert!(matches!(
+        resolved.descriptor().executor(),
+        ScreenPublicationExecutor::SourceNative(_)
+    ));
+    assert_eq!(telemetry.publication_path().as_deref(), Some("native"));
+    assert!(lock(&telemetry.fallback_reason).is_none());
+
+    let incompatible = ScreenNativeExecutionTarget::new(
+        ScreenNativeExecutionTargetId::new(NonZeroU64::new(12).expect("nonzero target")),
+        PlatformGpuApi::Direct3d11,
+        ScreenPhysicalGpuDeviceIdentity::Direct3dAdapterLuid {
+            low_part: 7,
+            high_part: 11,
+        },
+        NonZeroU32::new(16_384).expect("nonzero texture limit"),
+        Arc::new(TestTargetPreparer),
+    );
+    let error = resolve_macos_publication_branch_with_telemetry(
+        &source,
+        &required_native_demand(&incompatible),
+        &telemetry,
+    )
+    .expect_err("required native demand rejects a non-Metal target");
+    assert_eq!(
+        error.downcast_ref::<ScreenPublicationError>(),
+        Some(&ScreenPublicationError::RequiredNativeUnavailable(
+            ScreenPublicationExecutorFallbackReason::PlatformApiMismatch,
+        ))
+    );
+    assert_eq!(
+        telemetry.publication_path().as_deref(),
+        Some("native_unavailable")
+    );
+    assert_eq!(
+        lock(&telemetry.fallback_reason).as_deref(),
+        Some("platform_api_mismatch")
+    );
+}
+
+#[test]
+fn passive_cpu_preview_cannot_overwrite_missing_native_renderer_diagnostics() {
+    let frame = frame();
+    let publication_source = source(&frame);
+    let admission =
+        ScreenByteAdmissionCoordinator::new(ScreenAdmissionCapacity::new(u64::MAX, u64::MAX));
+    let (mut input, _fixture) = MacosScreenCaptureFixture::renderer_authoritative_source(
+        CaptureConfig::default(),
+        admission,
+    );
+    input.set_screen_renderer_execution_state(ScreenRendererExecutionState::NativeUnavailable(
+        ScreenNativeExecutionUnavailableReason::MissingTarget,
+    ));
+
+    let resolved = resolve_macos_publication_branch_with_telemetry(
+        &publication_source,
+        &cpu_demand(ScreenProcessingProfile::default()),
+        &input.telemetry,
+    )
+    .expect("passive CPU preview demand resolves")
+    .expect("configured macOS source owns passive CPU demand");
+    assert!(matches!(
+        resolved.descriptor().executor(),
+        ScreenPublicationExecutor::Cpu
+    ));
+    assert_eq!(
+        input.telemetry.publication_path().as_deref(),
+        Some("native_unavailable")
+    );
+    assert_eq!(
+        lock(&input.telemetry.fallback_reason).as_deref(),
+        Some("missing_target")
+    );
+    input
+        .refresh_platform_status()
+        .expect("production diagnostics refresh");
+    let diagnostics = input
+        .source_status_handle()
+        .expect("macOS source publishes status")
+        .snapshot()
+        .diagnostics
+        .clone()
+        .expect("macOS source publishes platform diagnostics");
+    assert_eq!(
+        diagnostics.payload()["publication_path"],
+        "native_unavailable"
+    );
+    assert_eq!(diagnostics.payload()["fallback_reason"], "missing_target");
+}
+
+fn incompatible_target(id: u64) -> ScreenNativeExecutionTarget {
+    ScreenNativeExecutionTarget::new(
+        ScreenNativeExecutionTargetId::new(NonZeroU64::new(id).expect("nonzero target")),
+        PlatformGpuApi::Direct3d11,
+        ScreenPhysicalGpuDeviceIdentity::Direct3dAdapterLuid {
+            low_part: 7,
+            high_part: 11,
+        },
+        NonZeroU32::new(16_384).expect("nonzero texture limit"),
+        Arc::new(TestTargetPreparer),
+    )
+}
+
+#[test]
+fn stale_required_target_cannot_overwrite_successor_target_diagnostics() {
+    let frame = frame();
+    let source = source(&frame);
+    let stale = incompatible_target(21);
+    let current = target();
+    let telemetry = Arc::new(MacosScreenRuntimeTelemetry::renderer_authoritative());
+    telemetry.set_renderer_execution_state(ScreenRendererExecutionState::NativeReady(stale.id()));
+    telemetry.set_renderer_execution_state(ScreenRendererExecutionState::NativeReady(current.id()));
+
+    resolve_macos_publication_branch_with_telemetry(
+        &source,
+        &required_native_demand(&stale),
+        &telemetry,
+    )
+    .expect_err("stale incompatible target still fails its own resolution");
+    assert_eq!(telemetry.publication_path().as_deref(), Some("native"));
+    assert!(lock(&telemetry.fallback_reason).is_none());
+    assert_eq!(*lock(&telemetry.renderer_target), Some(current.id()));
+}
+
+#[test]
+fn stale_required_target_cannot_overwrite_missing_target_diagnostics() {
+    let frame = frame();
+    let source = source(&frame);
+    let stale = incompatible_target(22);
+    let telemetry = Arc::new(MacosScreenRuntimeTelemetry::renderer_authoritative());
+    telemetry.set_renderer_execution_state(ScreenRendererExecutionState::NativeReady(stale.id()));
+    telemetry.set_renderer_execution_state(ScreenRendererExecutionState::NativeUnavailable(
+        ScreenNativeExecutionUnavailableReason::MissingTarget,
+    ));
+
+    resolve_macos_publication_branch_with_telemetry(
+        &source,
+        &required_native_demand(&stale),
+        &telemetry,
+    )
+    .expect_err("stale incompatible target still fails its own resolution");
+    assert_eq!(
+        telemetry.publication_path().as_deref(),
+        Some("native_unavailable")
+    );
+    assert_eq!(
+        lock(&telemetry.fallback_reason).as_deref(),
+        Some("missing_target")
+    );
+    assert_eq!(*lock(&telemetry.renderer_target), None);
 }
 
 #[test]

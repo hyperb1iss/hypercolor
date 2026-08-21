@@ -5,16 +5,22 @@ use std::time::{Duration, Instant};
 
 use hypercolor_core::input::screen::{
     CaptureColorimetry, CaptureEpoch, CaptureGeometry, CapturePixelFormat, CaptureRotation,
-    CaptureSourceId, CpuReductionExecutor, PhysicalOrigin, PixelExtent,
+    CaptureSourceId, CpuReductionExecutor, PhysicalOrigin, PixelExtent, PlatformGpuApi,
     RegisteredScreenBranchDemand, ResolvedScreenSource, ResolvedScreenSourceConfig,
     ScreenAspectPolicy, ScreenBackendResourceIdentity, ScreenBranchPayload, ScreenCaptureBackend,
-    ScreenCaptureDemand, ScreenExtentRequest, ScreenProcessingProfile,
+    ScreenCaptureDemand, ScreenExtentRequest, ScreenNativeExecutionTarget,
+    ScreenNativeExecutionTargetId, ScreenNativePreparationPayload, ScreenNativeTargetPreparation,
+    ScreenNativeTargetPreparer, ScreenPhysicalGpuDeviceIdentity, ScreenProcessingProfile,
     ScreenPublicationColorimetry, ScreenPublicationExecutorRequest, ScreenPublicationHealth,
     ScreenPublicationHub, ScreenPublicationKind, ScreenPublicationMetadata,
     ScreenPublicationRequest, ScreenResourceApi, ScreenResourceLifetime, ScreenSourceReflection,
     ScreenSourceSelector, ScreenSurfacePayload, ScreenUpscalePolicy, ScreenWorkerBinding,
     ScreenWorkerBindingState, ScreenWorkerExactLedgerBuilder, ScreenWorkerPreparation,
     ScreenWorkerPreparationTicket, ScreenWorkerRetirement, SourceScale,
+};
+#[cfg(target_os = "macos")]
+use hypercolor_core::input::screen::{
+    ScreenNativeExecutionUnavailableReason, ScreenRendererExecutionState,
 };
 use hypercolor_core::input::{
     InputData, InputManager, InputSource, InteractionSource, InteractionSourceRole,
@@ -29,11 +35,71 @@ use super::{
     InputPublicationReader, InputPublicationSchedule, InputPublicationStatus,
     InputScreenBranchDemand, LIFECYCLE_PROBE_INTERVAL, cadence_interval,
     exact_screen_failure_retry_at, run_exact_screen_transition,
+    screen_executor_matches_render_target,
 };
+#[cfg(not(target_os = "macos"))]
 use crate::render_thread::producer_queue::ProducerFrame;
 
 fn extent(width: u32, height: u32) -> PixelExtent {
     PixelExtent::new(width, height).expect("test extent is non-empty")
+}
+
+struct ObservationTargetPreparer;
+
+impl ScreenNativeTargetPreparer for ObservationTargetPreparer {
+    fn quote_retained_bytes(
+        &self,
+        _descriptor: &hypercolor_core::input::screen::ResolvedScreenPublicationDescriptor,
+        _platform: &ScreenNativePreparationPayload,
+    ) -> anyhow::Result<u64> {
+        anyhow::bail!("observation target never prepares resources")
+    }
+
+    fn prepare(
+        &self,
+        _descriptor: &hypercolor_core::input::screen::ResolvedScreenPublicationDescriptor,
+        _platform: &ScreenNativePreparationPayload,
+    ) -> anyhow::Result<ScreenNativeTargetPreparation> {
+        anyhow::bail!("observation target never prepares resources")
+    }
+}
+
+fn observation_target(id: u64) -> ScreenNativeExecutionTarget {
+    ScreenNativeExecutionTarget::new(
+        ScreenNativeExecutionTargetId::new(
+            NonZeroU64::new(id).expect("observation target id is non-zero"),
+        ),
+        PlatformGpuApi::Metal,
+        ScreenPhysicalGpuDeviceIdentity::MetalRegistryId(7),
+        NonZeroU32::new(16_384).expect("observation texture limit is non-zero"),
+        Arc::new(ObservationTargetPreparer),
+    )
+}
+
+#[test]
+fn renderer_observation_rejects_missing_and_stale_macos_targets() {
+    let selected = observation_target(1);
+    let current = observation_target(2);
+    let required = ScreenPublicationExecutorRequest::SourceNativeRequired(selected.clone());
+
+    assert!(screen_executor_matches_render_target(
+        Some(&selected),
+        &required
+    ));
+    assert!(!screen_executor_matches_render_target(
+        Some(&current),
+        &required
+    ));
+    #[cfg(target_os = "macos")]
+    assert!(!screen_executor_matches_render_target(
+        None,
+        &ScreenPublicationExecutorRequest::Cpu
+    ));
+    #[cfg(not(target_os = "macos"))]
+    assert!(screen_executor_matches_render_target(
+        None,
+        &ScreenPublicationExecutorRequest::Cpu
+    ));
 }
 
 struct CountingSource {
@@ -66,6 +132,8 @@ struct ScreenDemandSource {
     retirement_started: Option<Arc<Notify>>,
     retirement_release: Option<Arc<Notify>>,
     running: bool,
+    #[cfg(target_os = "macos")]
+    renderer_execution: Arc<StdMutex<Vec<ScreenRendererExecutionState>>>,
 }
 
 struct ScreenRuntimeAllocation {
@@ -118,6 +186,8 @@ impl ScreenDemandSource {
             retirement_started: None,
             retirement_release: None,
             running: false,
+            #[cfg(target_os = "macos")]
+            renderer_execution: Arc::new(StdMutex::new(Vec::new())),
         }
     }
 
@@ -142,6 +212,11 @@ impl ScreenDemandSource {
         self.retirement_started = Some(retirement_started);
         self.retirement_release = Some(retirement_release);
         self
+    }
+
+    #[cfg(target_os = "macos")]
+    fn renderer_execution(&self) -> Arc<StdMutex<Vec<ScreenRendererExecutionState>>> {
+        Arc::clone(&self.renderer_execution)
     }
 }
 
@@ -184,6 +259,14 @@ impl ScreenSource for ScreenDemandSource {
             .expect("screen demand transition lock")
             .push(demand);
         Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    fn set_screen_renderer_execution_state(&mut self, state: ScreenRendererExecutionState) {
+        self.renderer_execution
+            .lock()
+            .expect("screen renderer execution lock")
+            .push(state);
     }
 
     fn set_screen_publication_hub(&mut self, _hub: Arc<ScreenPublicationHub>) {}
@@ -1085,7 +1168,7 @@ async fn pump_propagates_exact_branches_with_revision_and_graph_fences() {
 }
 
 #[tokio::test]
-async fn reader_exposes_exact_cpu_surface_without_legacy_screen_data() {
+async fn reader_applies_platform_execution_policy_to_passive_cpu_surface() {
     let transitions = Arc::new(StdMutex::new(Vec::new()));
     let source = ScreenDemandSource::new(Arc::clone(&transitions));
     let runtime = Arc::clone(&source.runtime);
@@ -1103,7 +1186,7 @@ async fn reader_exposes_exact_cpu_surface_without_legacy_screen_data() {
     let publications = reader.screen_publications();
     let output_extent = extent(16, 9);
     let registration = demands.register(
-        InputPublicationConsumer::Authoritative,
+        InputPublicationConsumer::PassiveStream,
         InputPublicationDemand::default().with_screen(60, output_extent),
     );
 
@@ -1147,22 +1230,83 @@ async fn reader_exposes_exact_cpu_surface_without_legacy_screen_data() {
 
     let (generation, lease) = reader.screen_observation(None, output_extent);
     assert_eq!(generation, committed.plan().generation());
-    let publication = lease
-        .expect("CPU route has a lease")
-        .read()
-        .expect("CPU route reads its publication");
-    let frame = ProducerFrame::screen_publication(publication)
-        .expect("RGBA exact surface is a producer frame");
-    assert_eq!((frame.width(), frame.height()), (16, 9));
-    #[cfg(feature = "wgpu")]
-    assert_eq!(frame.cpu_rgba_bytes(), Some(pixels.as_slice()));
-    let (canvas, retained_surface) = frame
-        .into_cpu_render_frame()
-        .expect("CPU backend materializes exact publication");
-    assert!(retained_surface.is_none());
-    assert_eq!(canvas.as_rgba_bytes(), pixels);
+    #[cfg(target_os = "macos")]
+    assert!(
+        lease.is_none(),
+        "missing Metal target must not borrow a passive CPU publication"
+    );
+    #[cfg(not(target_os = "macos"))]
+    {
+        let publication = lease
+            .expect("generic CPU route has a lease")
+            .read()
+            .expect("generic CPU route reads its publication");
+        let frame = ProducerFrame::screen_publication(publication)
+            .expect("RGBA exact surface is a producer frame");
+        assert_eq!((frame.width(), frame.height()), (16, 9));
+        #[cfg(feature = "wgpu")]
+        assert_eq!(frame.cpu_rgba_bytes(), Some(pixels.as_slice()));
+        let (canvas, retained_surface) = frame
+            .into_cpu_render_frame()
+            .expect("CPU backend materializes exact publication");
+        assert!(retained_surface.is_none());
+        assert_eq!(canvas.as_rgba_bytes(), pixels);
+    }
 
     drop(registration);
+    pump.shutdown().await.expect("publication pump stops");
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn missing_native_authority_reaches_source_alongside_passive_cpu_preview() {
+    let transitions = Arc::new(StdMutex::new(Vec::new()));
+    let source = ScreenDemandSource::new(transitions);
+    let renderer_execution = source.renderer_execution();
+    let manager = InputManager::new();
+    manager
+        .add_source(ManagedSourceRole::screen(Box::new(source)))
+        .expect("screen demand source should register");
+    manager.start_all().expect("screen source starts");
+    let demands = InputPublicationDemandHandle::new();
+    let mut pump = InputPublicationPump::start(manager, demands.clone())
+        .await
+        .expect("publication pump starts");
+    let output_extent = extent(16, 9);
+    let authoritative = demands.register(
+        InputPublicationConsumer::Authoritative,
+        InputPublicationDemand::default().with_macos_screen_renderer_execution(
+            ScreenRendererExecutionState::NativeUnavailable(
+                ScreenNativeExecutionUnavailableReason::MissingTarget,
+            ),
+        ),
+    );
+    let passive = demands.register(
+        InputPublicationConsumer::PassiveStream,
+        InputPublicationDemand::default().with_screen(60, output_extent),
+    );
+
+    wait_for_exact_extent(&pump.reader().screen_publications(), output_extent).await;
+    tokio::time::timeout(Duration::from_millis(500), async {
+        loop {
+            if renderer_execution
+                .lock()
+                .expect("screen renderer execution lock")
+                .last()
+                == Some(&ScreenRendererExecutionState::NativeUnavailable(
+                    ScreenNativeExecutionUnavailableReason::MissingTarget,
+                ))
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("missing native renderer state reaches the source");
+
+    drop(passive);
+    drop(authoritative);
     pump.shutdown().await.expect("publication pump stops");
 }
 

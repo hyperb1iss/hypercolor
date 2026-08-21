@@ -6,8 +6,9 @@ use super::{
     MacosScreenTahoeSelectionStatus, MacosScreenTahoeStatus, MacosSourceTimingStatus,
     NativeCaptureCapabilities, NativeProtectedSourceState, NativeTahoeSelectionCapabilities,
     Ordering, PUBLICATION_PATH_CPU, PUBLICATION_PATH_CPU_FALLBACK, PUBLICATION_PATH_NATIVE,
-    PUBLICATION_PATH_UNKNOWN, PlatformGpuSurfaceTimingSink, SourceIssue, TIMING_BUCKET_COUNT,
-    TIMING_BUCKET_WIDTH_NS, lock,
+    PUBLICATION_PATH_NATIVE_UNAVAILABLE, PUBLICATION_PATH_UNKNOWN, PlatformGpuSurfaceTimingSink,
+    ScreenNativeExecutionUnavailableReason, ScreenPublicationExecutorFallbackReason,
+    ScreenRendererExecutionState, SourceIssue, TIMING_BUCKET_COUNT, TIMING_BUCKET_WIDTH_NS, lock,
 };
 
 impl AtomicTimingHistogram {
@@ -129,22 +130,94 @@ impl PlatformGpuSurfaceTimingSink for MacosScreenRuntimeTelemetry {
 }
 
 impl MacosScreenRuntimeTelemetry {
+    pub(super) fn renderer_authoritative() -> Self {
+        Self {
+            renderer_authoritative: true,
+            ..Self::default()
+        }
+    }
+
     pub(super) fn set_cpu(&self) {
+        if self.renderer_authoritative {
+            return;
+        }
         self.publication_path
             .store(PUBLICATION_PATH_CPU, Ordering::Release);
         *lock(&self.fallback_reason) = None;
     }
 
-    pub(super) fn set_native(&self) {
+    pub(super) fn set_native(
+        &self,
+        required: bool,
+        target_id: super::ScreenNativeExecutionTargetId,
+    ) {
+        if self.renderer_authoritative && !required {
+            return;
+        }
+        let renderer_target = self
+            .renderer_authoritative
+            .then(|| lock(&self.renderer_target));
+        if renderer_target
+            .as_deref()
+            .is_some_and(|current| *current != Some(target_id))
+        {
+            return;
+        }
         self.publication_path
             .store(PUBLICATION_PATH_NATIVE, Ordering::Release);
         *lock(&self.fallback_reason) = None;
     }
 
     pub(super) fn set_cpu_fallback(&self, reason: &'static str) {
+        if self.renderer_authoritative {
+            return;
+        }
         self.publication_path
             .store(PUBLICATION_PATH_CPU_FALLBACK, Ordering::Release);
         *lock(&self.fallback_reason) = Some(Arc::from(reason));
+    }
+
+    pub(super) fn set_native_unavailable(
+        &self,
+        reason: ScreenPublicationExecutorFallbackReason,
+        target_id: super::ScreenNativeExecutionTargetId,
+    ) {
+        if self.renderer_authoritative {
+            let renderer_target = lock(&self.renderer_target);
+            if *renderer_target != Some(target_id) {
+                return;
+            }
+            self.publication_path
+                .store(PUBLICATION_PATH_NATIVE_UNAVAILABLE, Ordering::Release);
+            *lock(&self.fallback_reason) = Some(Arc::from(native_unavailable_reason(reason)));
+            return;
+        }
+        self.publication_path
+            .store(PUBLICATION_PATH_NATIVE_UNAVAILABLE, Ordering::Release);
+        *lock(&self.fallback_reason) = Some(Arc::from(native_unavailable_reason(reason)));
+    }
+
+    pub(super) fn set_renderer_execution_state(&self, state: ScreenRendererExecutionState) {
+        if !self.renderer_authoritative {
+            return;
+        }
+        let mut renderer_target = lock(&self.renderer_target);
+        let (path, reason) = match state {
+            ScreenRendererExecutionState::Inactive => (PUBLICATION_PATH_UNKNOWN, None),
+            ScreenRendererExecutionState::NativeReady(target_id) => {
+                *renderer_target = Some(target_id);
+                (PUBLICATION_PATH_NATIVE, None)
+            }
+            ScreenRendererExecutionState::NativeUnavailable(reason) => (
+                PUBLICATION_PATH_NATIVE_UNAVAILABLE,
+                Some(Arc::from(native_execution_unavailable_reason(reason))),
+            ),
+        };
+        if !matches!(state, ScreenRendererExecutionState::NativeReady(_)) {
+            *renderer_target = None;
+        }
+        self.publication_path.store(path, Ordering::Release);
+        *lock(&self.fallback_reason) = reason;
     }
 
     pub(super) fn publication_path(&self) -> Option<Arc<str>> {
@@ -152,6 +225,7 @@ impl MacosScreenRuntimeTelemetry {
             PUBLICATION_PATH_CPU => Some(Arc::from("cpu")),
             PUBLICATION_PATH_NATIVE => Some(Arc::from("native")),
             PUBLICATION_PATH_CPU_FALLBACK => Some(Arc::from("cpu_fallback")),
+            PUBLICATION_PATH_NATIVE_UNAVAILABLE => Some(Arc::from("native_unavailable")),
             PUBLICATION_PATH_UNKNOWN => None,
             _ => None,
         }
@@ -169,6 +243,38 @@ impl MacosScreenRuntimeTelemetry {
     pub(super) fn record_converted_publication(&self, captured_at: Instant) {
         self.capture_to_converted_publication_timing
             .record(Instant::now().saturating_duration_since(captured_at));
+    }
+}
+
+const fn native_unavailable_reason(
+    reason: ScreenPublicationExecutorFallbackReason,
+) -> &'static str {
+    match reason {
+        ScreenPublicationExecutorFallbackReason::CpuSource => "cpu_source",
+        ScreenPublicationExecutorFallbackReason::PlatformApiMismatch => "platform_api_mismatch",
+        ScreenPublicationExecutorFallbackReason::MissingPhysicalGpuDevice => {
+            "missing_physical_gpu_device"
+        }
+        ScreenPublicationExecutorFallbackReason::PhysicalGpuDeviceMismatch => {
+            "physical_gpu_device_mismatch"
+        }
+        ScreenPublicationExecutorFallbackReason::TargetDimensionLimitExceeded => {
+            "target_dimension_limit_exceeded"
+        }
+        ScreenPublicationExecutorFallbackReason::NativeColorContractUnsupported => {
+            "native_color_contract_unsupported"
+        }
+    }
+}
+
+const fn native_execution_unavailable_reason(
+    reason: ScreenNativeExecutionUnavailableReason,
+) -> &'static str {
+    match reason {
+        ScreenNativeExecutionUnavailableReason::MissingTarget => "missing_target",
+        ScreenNativeExecutionUnavailableReason::Executor(reason) => {
+            native_unavailable_reason(reason)
+        }
     }
 }
 

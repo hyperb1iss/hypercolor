@@ -448,15 +448,22 @@ pub enum ScreenPublicationExecutorRequest {
     Cpu,
     /// Execute for one exact native consumer without host readback.
     SourceNative(ScreenNativeExecutionTarget),
+    /// Require one exact native consumer and reject every CPU fallback.
+    SourceNativeRequired(ScreenNativeExecutionTarget),
 }
 
 impl Ord for ScreenPublicationExecutorRequest {
     fn cmp(&self, other: &Self) -> Ordering {
         match (self, other) {
             (Self::Cpu, Self::Cpu) => Ordering::Equal,
-            (Self::Cpu, Self::SourceNative(_)) => Ordering::Less,
-            (Self::SourceNative(_), Self::Cpu) => Ordering::Greater,
+            (Self::Cpu, Self::SourceNative(_) | Self::SourceNativeRequired(_)) => Ordering::Less,
+            (Self::SourceNative(_) | Self::SourceNativeRequired(_), Self::Cpu) => Ordering::Greater,
             (Self::SourceNative(left), Self::SourceNative(right)) => left.cmp(right),
+            (Self::SourceNative(_), Self::SourceNativeRequired(_)) => Ordering::Less,
+            (Self::SourceNativeRequired(_), Self::SourceNative(_)) => Ordering::Greater,
+            (Self::SourceNativeRequired(left), Self::SourceNativeRequired(right)) => {
+                left.cmp(right)
+            }
         }
     }
 }
@@ -1250,6 +1257,27 @@ pub enum ScreenPublicationExecutorFallbackReason {
     TargetDimensionLimitExceeded,
     /// The target cannot execute the requested color contract exactly.
     NativeColorContractUnsupported,
+}
+
+/// Why the renderer cannot satisfy a required native screen execution path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScreenNativeExecutionUnavailableReason {
+    /// The renderer has no current platform-native execution target.
+    MissingTarget,
+    /// The capture source cannot bind the current native target exactly.
+    Executor(ScreenPublicationExecutorFallbackReason),
+}
+
+/// Renderer-authoritative execution state for production screen diagnostics.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ScreenRendererExecutionState {
+    /// No hardware-authoritative screen effect currently requests publication.
+    #[default]
+    Inactive,
+    /// The renderer has a current platform-native target.
+    NativeReady(ScreenNativeExecutionTargetId),
+    /// Native execution is required but unavailable.
+    NativeUnavailable(ScreenNativeExecutionUnavailableReason),
 }
 
 /// Concrete executor selected after resolving the capture source.
@@ -2203,6 +2231,10 @@ impl ScreenPublicationRequest {
             }
             ScreenCursorPolicy::Exclude | ScreenCursorPolicy::Include => {}
         }
+        let native_required = matches!(
+            self.executor,
+            ScreenPublicationExecutorRequest::SourceNativeRequired(_)
+        );
         let color_pipeline = if matches!(execution.executor, ScreenPublicationExecutor::Cpu) {
             resolve_color_pipeline(
                 &source.config,
@@ -2220,7 +2252,7 @@ impl ScreenPublicationRequest {
                 capabilities.source_native(),
             ) {
                 Ok(pipeline) => pipeline,
-                Err(ScreenPublicationError::UnsupportedColorTransform) => {
+                Err(ScreenPublicationError::UnsupportedColorTransform) if !native_required => {
                     let pipeline = resolve_color_pipeline(
                         &source.config,
                         self.kind,
@@ -2232,6 +2264,11 @@ impl ScreenPublicationRequest {
                         ScreenPublicationExecutorFallbackReason::NativeColorContractUnsupported,
                     );
                     pipeline
+                }
+                Err(ScreenPublicationError::UnsupportedColorTransform) => {
+                    return Err(ScreenPublicationError::RequiredNativeUnavailable(
+                        ScreenPublicationExecutorFallbackReason::NativeColorContractUnsupported,
+                    ));
                 }
                 Err(error) => return Err(error),
             }
@@ -2846,6 +2883,9 @@ pub enum ScreenPublicationError {
     /// The reducer has not advertised an executable color transform.
     #[error("screen reducer does not support the requested color transform")]
     UnsupportedColorTransform,
+    /// A required native executor could not consume the exact source contract.
+    #[error("required native screen execution is unavailable: {0:?}")]
+    RequiredNativeUnavailable(ScreenPublicationExecutorFallbackReason),
     /// HDR input did not include the absolute context required for tone mapping.
     #[error("screen HDR source is missing luminance context")]
     MissingSourceLuminance,
@@ -2892,39 +2932,53 @@ fn resolve_executor(
             if matches!(kind, ScreenPublicationKind::Zones { .. }) {
                 return Err(ScreenPublicationError::SourceNativeZonesUnsupported);
             }
-            let ScreenResourceApi::PlatformGpu(source_api) = source.api() else {
-                return Ok(ResolvedScreenExecution::cpu_fallback(
-                    ScreenPublicationExecutorFallbackReason::CpuSource,
-                ));
-            };
-            if source_api != target.accepted_api() {
-                return Ok(ResolvedScreenExecution::cpu_fallback(
-                    ScreenPublicationExecutorFallbackReason::PlatformApiMismatch,
-                ));
-            }
-            let Some(source_device) = source.physical_gpu_device() else {
-                return Ok(ResolvedScreenExecution::cpu_fallback(
-                    ScreenPublicationExecutorFallbackReason::MissingPhysicalGpuDevice,
-                ));
-            };
-            if source_device != target.physical_gpu_device() {
-                return Ok(ResolvedScreenExecution::cpu_fallback(
-                    ScreenPublicationExecutorFallbackReason::PhysicalGpuDeviceMismatch,
-                ));
-            }
-            let max_dimension = target.max_texture_dimension().get();
-            if output_extent.width() > max_dimension || output_extent.height() > max_dimension {
-                return Ok(ResolvedScreenExecution::cpu_fallback(
-                    ScreenPublicationExecutorFallbackReason::TargetDimensionLimitExceeded,
-                ));
+            if let Err(reason) = validate_native_executor(source, target, output_extent) {
+                return Ok(ResolvedScreenExecution::cpu_fallback(reason));
             }
             Ok(ResolvedScreenExecution {
                 executor: ScreenPublicationExecutor::SourceNative(target.clone()),
-                residency: ScreenPublicationResidency::PlatformGpu(source_api.clone()),
+                residency: ScreenPublicationResidency::PlatformGpu(target.accepted_api().clone()),
+                fallback: None,
+            })
+        }
+        ScreenPublicationExecutorRequest::SourceNativeRequired(target) => {
+            if matches!(kind, ScreenPublicationKind::Zones { .. }) {
+                return Err(ScreenPublicationError::SourceNativeZonesUnsupported);
+            }
+            if let Err(reason) = validate_native_executor(source, target, output_extent) {
+                return Err(ScreenPublicationError::RequiredNativeUnavailable(reason));
+            }
+            Ok(ResolvedScreenExecution {
+                executor: ScreenPublicationExecutor::SourceNative(target.clone()),
+                residency: ScreenPublicationResidency::PlatformGpu(target.accepted_api().clone()),
                 fallback: None,
             })
         }
     }
+}
+
+fn validate_native_executor(
+    source: &ScreenBackendResourceIdentity,
+    target: &ScreenNativeExecutionTarget,
+    output_extent: PixelExtent,
+) -> Result<(), ScreenPublicationExecutorFallbackReason> {
+    let ScreenResourceApi::PlatformGpu(source_api) = source.api() else {
+        return Err(ScreenPublicationExecutorFallbackReason::CpuSource);
+    };
+    if source_api != target.accepted_api() {
+        return Err(ScreenPublicationExecutorFallbackReason::PlatformApiMismatch);
+    }
+    let Some(source_device) = source.physical_gpu_device() else {
+        return Err(ScreenPublicationExecutorFallbackReason::MissingPhysicalGpuDevice);
+    };
+    if source_device != target.physical_gpu_device() {
+        return Err(ScreenPublicationExecutorFallbackReason::PhysicalGpuDeviceMismatch);
+    }
+    let max_dimension = target.max_texture_dimension().get();
+    if output_extent.width() > max_dimension || output_extent.height() > max_dimension {
+        return Err(ScreenPublicationExecutorFallbackReason::TargetDimensionLimitExceeded);
+    }
+    Ok(())
 }
 
 fn resolve_color_pipeline(

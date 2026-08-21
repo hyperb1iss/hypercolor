@@ -204,6 +204,27 @@ impl MacosScreenCaptureFixture {
             compute_capacity_policy,
             control.clone(),
             Arc::new(MacosScreenRuntimeTelemetry::default()),
+            "screen_capture_kit_fixture",
+        );
+        (source, Self { control })
+    }
+
+    #[cfg(test)]
+    pub(super) fn renderer_authoritative_source(
+        config: CaptureConfig,
+        admission: ScreenByteAdmissionCoordinator,
+    ) -> (MacosScreenCaptureInput, Self) {
+        let control = Arc::new(FixtureControl {
+            status: Mutex::new(NativeProtectedSourceState::ReadyIdle),
+            ..FixtureControl::default()
+        });
+        let source = MacosScreenCaptureInput::with_control_and_telemetry(
+            config,
+            admission,
+            ScreenComputeCapacityPolicy::UNBOUNDED,
+            control.clone(),
+            Arc::new(MacosScreenRuntimeTelemetry::renderer_authoritative()),
+            "screen_capture_kit_native",
         );
         (source, Self { control })
     }

@@ -17,7 +17,8 @@ use super::{
     ResourceDescriptor, ResourceState, ScreenBackendResourceIdentity, ScreenBranchPayload,
     ScreenCaptureBackend, ScreenComputeCapacityPolicy, ScreenCursorCapabilities,
     ScreenExecutorColorCapabilities, ScreenGpuSurfacePayload, ScreenNativeWorkPayload,
-    ScreenPhysicalGpuDeviceIdentity, ScreenPublicationColorimetry, ScreenPublicationExecutor,
+    ScreenPhysicalGpuDeviceIdentity, ScreenPublicationColorimetry, ScreenPublicationError,
+    ScreenPublicationExecutor, ScreenPublicationExecutorFallbackReason,
     ScreenPublicationExecutorRequest, ScreenPublicationHealth, ScreenPublicationHub,
     ScreenPublicationHubError, ScreenPublicationMetadata, ScreenResourceApi,
     ScreenSourceReflection, ScreenSourceSelector, ScreenWorkerBindingState, SourceScale,
@@ -384,31 +385,56 @@ pub(super) fn resolve_macos_publication_branch_with_telemetry(
         )?));
     }
 
-    let ScreenPublicationExecutorRequest::SourceNative(target) = demand.request().executor() else {
-        unreachable!("screen publication executor requests are exhaustive");
+    let (target, native_required) = match demand.request().executor() {
+        ScreenPublicationExecutorRequest::SourceNative(target) => (target, false),
+        ScreenPublicationExecutorRequest::SourceNativeRequired(target) => (target, true),
+        ScreenPublicationExecutorRequest::Cpu => {
+            unreachable!("CPU publication requests returned above")
+        }
     };
     if target.accepted_api() != &PlatformGpuApi::Metal {
+        if native_required {
+            let reason = ScreenPublicationExecutorFallbackReason::PlatformApiMismatch;
+            telemetry.set_native_unavailable(reason, target.id());
+            return Err(ScreenPublicationError::RequiredNativeUnavailable(reason).into());
+        }
         telemetry.set_cpu_fallback("target_api_not_metal");
     } else if let Ok(native_source) =
         source.gpu_source(selector.clone(), target.physical_gpu_device().clone())
     {
-        if let Ok(resolved) = demand.resolve_with_executor_capabilities(
+        match demand.resolve_with_executor_capabilities(
             &native_source,
             ScreenExecutorColorCapabilities::new(capabilities, target.color_capabilities()),
         ) {
-            if matches!(
-                resolved.descriptor().executor(),
-                ScreenPublicationExecutor::SourceNative(_)
-            ) && MacosNativeTargetManifest::new(resolved.descriptor()).is_ok()
+            Ok(resolved)
+                if matches!(
+                    resolved.descriptor().executor(),
+                    ScreenPublicationExecutor::SourceNative(_)
+                ) && MacosNativeTargetManifest::new(resolved.descriptor()).is_ok() =>
             {
-                telemetry.set_native();
+                telemetry.set_native(native_required, target.id());
                 return Ok(Some(resolved));
             }
-            telemetry.set_cpu_fallback("native_contract_unavailable");
-        } else {
-            telemetry.set_cpu_fallback("native_descriptor_incompatible");
+            Err(ScreenPublicationError::RequiredNativeUnavailable(reason)) => {
+                telemetry.set_native_unavailable(reason, target.id());
+                return Err(ScreenPublicationError::RequiredNativeUnavailable(reason).into());
+            }
+            Ok(_) if native_required => {
+                let reason =
+                    ScreenPublicationExecutorFallbackReason::NativeColorContractUnsupported;
+                telemetry.set_native_unavailable(reason, target.id());
+                return Err(ScreenPublicationError::RequiredNativeUnavailable(reason).into());
+            }
+            Ok(_) => telemetry.set_cpu_fallback("native_contract_unavailable"),
+            Err(error) if native_required => return Err(error.into()),
+            Err(_) => telemetry.set_cpu_fallback("native_descriptor_incompatible"),
         }
     } else {
+        if native_required {
+            let reason = ScreenPublicationExecutorFallbackReason::PhysicalGpuDeviceMismatch;
+            telemetry.set_native_unavailable(reason, target.id());
+            return Err(ScreenPublicationError::RequiredNativeUnavailable(reason).into());
+        }
         telemetry.set_cpu_fallback("metal_device_mismatch");
     }
 
