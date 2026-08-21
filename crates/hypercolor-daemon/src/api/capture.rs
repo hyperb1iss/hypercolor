@@ -17,9 +17,9 @@ use hypercolor_types::api::capture::{
     CaptureAuthorizationResponse, CaptureMonitor, CapturePickerResponse, ProtectedSourceGrantOwner,
 };
 
-use crate::api::AppState;
 use crate::api::envelope;
 use crate::api::security::RequestAuthContext;
+use crate::app_state::AppState;
 use crate::domain::DomainError;
 
 fn domain_validation(message: impl Into<String>) -> Response {

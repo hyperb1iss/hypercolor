@@ -11,8 +11,8 @@ use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use hypercolor_types::api::output::OutputPatchRequest;
 
-use crate::api::AppState;
 use crate::api::envelope;
+use crate::app_state::AppState;
 use crate::domain;
 
 /// `GET /api/v1/output` — Read global output power and brightness.

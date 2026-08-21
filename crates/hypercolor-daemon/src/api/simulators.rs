@@ -15,8 +15,8 @@ use hypercolor_types::canvas::SurfaceDescriptor;
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::event::DisconnectReason;
 
-use crate::api::AppState;
 use crate::api::envelope;
+use crate::app_state::AppState;
 use crate::domain::{DomainError, ResourceKind};
 use crate::logical_devices;
 use crate::scene_transactions::{PreparedLayoutUpdate, apply_prepared_layout_update_under_guard};

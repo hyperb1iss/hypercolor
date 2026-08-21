@@ -1,4 +1,4 @@
-use crate::api::AppState;
+use crate::app_state::AppState;
 use crate::mcp::results::DeviceInventoryItem;
 use hypercolor_types::device::{DeviceInfo, DeviceState};
 

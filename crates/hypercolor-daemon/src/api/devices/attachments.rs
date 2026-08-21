@@ -15,8 +15,8 @@ use hypercolor_types::attachment::{
 };
 use hypercolor_types::device::{DeviceId, DeviceInfo};
 
-use crate::api::AppState;
 use crate::api::envelope;
+use crate::app_state::AppState;
 use crate::domain::{DomainError, ResourceKind};
 use crate::logical_devices;
 

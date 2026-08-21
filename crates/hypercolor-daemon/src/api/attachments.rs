@@ -15,8 +15,8 @@ use hypercolor_types::attachment::{
     ComponentCategory, ComponentOrigin, ComponentTemplate, ComponentTemplateManifest,
 };
 
-use crate::api::AppState;
 use crate::api::envelope;
+use crate::app_state::AppState;
 use crate::domain::DomainError;
 
 // Wire contracts live in hypercolor-types::api::attachments — shared

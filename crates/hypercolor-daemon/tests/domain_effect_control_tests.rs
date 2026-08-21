@@ -12,7 +12,7 @@ use hypercolor_types::effect::{
 use hypercolor_types::scene::ZoneId;
 use uuid::Uuid;
 
-use hypercolor_daemon::api::AppState;
+use hypercolor_daemon::app_state::AppState;
 use hypercolor_daemon::domain::MutationContext;
 use hypercolor_daemon::domain::effect::{
     ApplyEffect, RequestedTransition, apply_effect, invalidate_active_zones,

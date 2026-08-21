@@ -54,7 +54,7 @@ use super::protocol::{
     MetricsSessionLatency, MetricsStages, MetricsTimeline, MetricsWebsocket, ServerMessage,
     SubscriptionState, event_message_parts, should_relay_event,
 };
-use crate::api::AppState;
+use crate::app_state::AppState;
 use crate::interactive_preview::PreviewResourceLease;
 use crate::performance::FrameTimeSummary as RenderFrameTimeSummary;
 use crate::performance::LatestFrameMetrics;

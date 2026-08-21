@@ -14,7 +14,7 @@ use axum::response::{IntoResponse, Response};
 use hypercolor_types::effect::{EffectId, EffectMetadata};
 use hypercolor_types::library::PresetId;
 
-use crate::api::AppState;
+use crate::app_state::AppState;
 use crate::domain::{DomainError, ResourceKind};
 use crate::library::LibraryStoreError;
 

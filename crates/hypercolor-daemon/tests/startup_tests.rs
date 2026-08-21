@@ -16,7 +16,8 @@ use hypercolor_core::device::manager::{
 };
 use hypercolor_core::engine::RenderLoopState;
 use hypercolor_core::spatial::SpatialEngine;
-use hypercolor_daemon::api::{AppState, system::get_status};
+use hypercolor_daemon::api::system::get_status;
+use hypercolor_daemon::app_state::AppState;
 use hypercolor_daemon::daemon::{
     DaemonRunOptions, bind_api_listener, effective_bind_target, effective_bind_targets,
     effective_startup_bind_targets, serve_api_listeners_with_shutdown_timeout,

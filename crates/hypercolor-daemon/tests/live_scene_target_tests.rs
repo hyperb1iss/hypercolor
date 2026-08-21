@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use hypercolor_core::scene::{ZoneMetaPatch, default_primary_group};
-use hypercolor_daemon::api::AppState;
+use hypercolor_daemon::app_state::AppState;
 use hypercolor_daemon::domain::DomainError;
 use hypercolor_daemon::domain::layer::{insert_layer, remove_layer, reorder_layers};
 use hypercolor_daemon::domain::zone::{

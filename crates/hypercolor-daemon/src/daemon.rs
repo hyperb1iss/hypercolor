@@ -18,7 +18,8 @@ use tokio::time::{Duration, sleep};
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
-use crate::api::{self, AppState};
+use crate::api;
+use crate::app_state::AppState;
 use crate::macos_owner::{MacosDaemonOwner, MacosDaemonSessionAttestation, MacosOwnerSnapshot};
 use crate::mdns::MdnsPublisher;
 use crate::startup::{DaemonState, config_sources};
@@ -871,7 +872,7 @@ mod tests {
         bind_api_listener, bind_api_listener_with_lease, default_env_filter,
         notify_api_ready_extensions, resolve_log_level, serve_api_listeners_with_shutdown_timeout,
     };
-    use crate::api::AppState;
+    use crate::app_state::AppState;
     use crate::extensions::DaemonLifecycleExtension;
     use crate::startup::{DaemonState, default_config};
 

@@ -7,8 +7,8 @@ use axum::response::{IntoResponse, Response};
 use hypercolor_types::api::drivers::{DriverConfigResponse, DriverListResponse, DriverSummary};
 use hypercolor_types::config::HypercolorConfig;
 
-use crate::api::AppState;
 use crate::api::envelope;
+use crate::app_state::AppState;
 use crate::domain::{DomainError, ResourceKind};
 use crate::network;
 

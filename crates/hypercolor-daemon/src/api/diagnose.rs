@@ -10,11 +10,11 @@ use hypercolor_types::device::USB_OUTPUT_BACKEND_ID;
 use serde::Serialize;
 use utoipa::ToSchema;
 
-use crate::api::AppState;
 use crate::api::capture::protected_control_rejection;
 use crate::api::envelope;
 use crate::api::security::RequestAuthContext;
 use crate::api::system::{actionable_input_diagnostics, input_status_snapshot};
+use crate::app_state::AppState;
 use crate::device_metrics::{DeviceMetrics, DeviceMetricsSnapshot};
 use crate::display_frames::DisplayOutputMetricsSnapshot;
 use crate::performance::{LatestFrameMetrics, PerformanceSnapshot};

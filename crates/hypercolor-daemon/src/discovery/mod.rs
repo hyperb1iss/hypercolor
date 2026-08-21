@@ -408,7 +408,7 @@ mod tests {
         DiscoveryTarget, PendingDiscoveryScans, default_timeout, normalize_timeout_ms,
         rescan_targets_for_driver, resolve_targets,
     };
-    use crate::api::AppState;
+    use crate::app_state::AppState;
     use hypercolor_driver_api::{
         BackendInfo, DeviceBackend, DeviceBackendFactory, DiscoveredDevice, DiscoveryCapability,
         DiscoveryRequest, DriverConfigView, DriverDescriptor, DriverError, DriverHost,

@@ -59,12 +59,12 @@ use super::relays::{
     publish_subscriptions,
 };
 use super::topics::{RelayContext, spawn_relays};
-use crate::api::AppState;
 use crate::api::layouts::validate_layout_sampling_radii;
 use crate::api::local::{
     TrustedLocalSocketTransport, TrustedLocalWebSocket, trusted_local_socket_pair,
 };
 use crate::api::security::RequestAuthContext;
+use crate::app_state::AppState;
 use crate::interaction_routing::{
     AuthoritativeClaimError, AuthoritativeClaimOutcome, InteractionRoutingControl,
 };
@@ -1715,7 +1715,7 @@ async fn send_json(
 #[cfg(test)]
 mod hello_state_tests {
     use super::build_hello_state;
-    use crate::api::AppState;
+    use crate::app_state::AppState;
     use crate::session::{OutputOverride, set_global_brightness};
 
     #[tokio::test]
@@ -1772,7 +1772,7 @@ mod zone_layout_preview_race_tests {
     use tokio::sync::oneshot;
 
     use super::{ZoneLayoutPreviewOwner, handle_zone_layout_preview};
-    use crate::api::AppState;
+    use crate::app_state::AppState;
     use crate::domain::scene::{ActivateScene, activate_scene};
     use crate::domain::zone::{CreateZone, DeleteZone, create_zone, delete_zone};
 
@@ -1975,7 +1975,7 @@ mod security_tests {
 #[cfg(test)]
 mod origin_tests {
     use super::{header_value_eq_origin, is_loopback_origin, ws_origin_allowed};
-    use crate::api::AppState;
+    use crate::app_state::AppState;
     use axum::http::{HeaderMap, HeaderValue, header};
 
     #[test]

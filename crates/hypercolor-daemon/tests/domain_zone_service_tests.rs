@@ -13,7 +13,7 @@ use hypercolor_types::scene::{
     ScenePriority, TransitionSpec, UnassignedBehavior, ZoneId, ZoneRole,
 };
 
-use hypercolor_daemon::api::AppState;
+use hypercolor_daemon::app_state::AppState;
 use hypercolor_daemon::domain::DomainError;
 use hypercolor_daemon::domain::commit::CommitDurability;
 use hypercolor_daemon::domain::zone::{

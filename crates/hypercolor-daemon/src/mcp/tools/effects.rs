@@ -9,8 +9,8 @@ use super::{
     ToolDefinition, ToolError, find_effect_metadata, output_schema, resolve_effect_selector,
     serialize_result,
 };
-use crate::api::AppState;
 use crate::api::effects::normalize_control_payload;
+use crate::app_state::AppState;
 use crate::domain::MutationContext;
 use crate::domain::effect::{
     ApplyEffect, EffectCatalogQuery, RequestedTransition, apply_effect, list_catalog,

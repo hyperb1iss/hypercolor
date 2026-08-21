@@ -13,8 +13,8 @@ use hypercolor_core::asset::{
 use hypercolor_types::asset::AssetId;
 use hypercolor_types::event::{AssetChangeKind, HypercolorEvent};
 
-use crate::api::AppState;
 use crate::api::envelope;
+use crate::app_state::AppState;
 use crate::domain::{DomainError, ResourceKind};
 
 pub use hypercolor_types::api::assets::{

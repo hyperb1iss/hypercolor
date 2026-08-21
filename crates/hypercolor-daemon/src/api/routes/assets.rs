@@ -4,7 +4,8 @@ use axum::extract::DefaultBodyLimit;
 use utoipa_axum::router::OpenApiRouter;
 
 use crate::api::openapi::OperationDoc;
-use crate::api::{AppState, assets, openapi};
+use crate::api::{assets, openapi};
+use crate::app_state::AppState;
 pub(super) fn router(asset_upload_body_limit: usize) -> OpenApiRouter<Arc<AppState>> {
     OpenApiRouter::new()
         .routes(openapi::documented_route(

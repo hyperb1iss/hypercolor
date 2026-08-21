@@ -5,7 +5,7 @@
 
 use serde_json::{Value, json};
 
-use crate::api::AppState;
+use crate::app_state::AppState;
 
 /// Definition of a single MCP resource.
 #[derive(Debug, Clone)]

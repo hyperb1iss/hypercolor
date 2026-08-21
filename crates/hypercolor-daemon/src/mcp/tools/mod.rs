@@ -12,7 +12,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use utoipa::ToSchema;
 
-use crate::api::AppState;
+use crate::app_state::AppState;
 use crate::mcp::selector::SelectorError;
 
 mod devices;

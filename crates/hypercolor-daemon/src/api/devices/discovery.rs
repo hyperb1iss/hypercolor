@@ -9,8 +9,8 @@ use axum::response::{IntoResponse, Response};
 
 use hypercolor_types::config::HypercolorConfig;
 
-use crate::api::AppState;
 use crate::api::envelope;
+use crate::app_state::AppState;
 use crate::discovery;
 use crate::domain::DomainError;
 

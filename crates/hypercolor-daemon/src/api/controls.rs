@@ -22,9 +22,9 @@ use hypercolor_types::event::HypercolorEvent;
 use serde::Serialize;
 use utoipa::ToSchema;
 
-use crate::api::AppState;
 use crate::api::devices;
 use crate::api::envelope;
+use crate::app_state::AppState;
 use crate::discovery as core_discovery;
 use crate::domain::{DomainError, ResourceKind};
 use crate::network;

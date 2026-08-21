@@ -3,7 +3,8 @@ use std::sync::Arc;
 use utoipa_axum::router::OpenApiRouter;
 
 use crate::api::openapi::OperationDoc;
-use crate::api::{AppState, openapi, output};
+use crate::api::{openapi, output};
+use crate::app_state::AppState;
 pub(super) fn router() -> OpenApiRouter<Arc<AppState>> {
     OpenApiRouter::new().routes(openapi::documented_route(
         "/output",

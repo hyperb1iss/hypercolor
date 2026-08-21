@@ -4,7 +4,8 @@ use serde_json::{Value, json};
 
 use super::{ToolDefinition, ToolError, output_schema, resolve_effect_selector, serialize_result};
 use crate::api::displays::{DisplaySurfaceInfo, display_face_layout, display_surface_info};
-use crate::api::{AppState, publish_render_group_changed};
+use crate::api::publish_render_group_changed;
+use crate::app_state::AppState;
 use crate::domain::display::{
     ClearDisplayFace, SetDisplayFace, clear_display_face, remove_default_display_overlay,
     set_display_face,

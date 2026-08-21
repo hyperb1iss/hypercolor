@@ -47,9 +47,9 @@ use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::sensor::SystemSnapshot;
 use tracing::{debug, warn};
 
-use crate::api::AppState;
 use crate::api::envelope;
 use crate::api::security::RequestAuthContext;
+use crate::app_state::AppState;
 use crate::macos_owner::{MacosDaemonOwner, MacosHandoverPhase, MacosOwnerSnapshot};
 use crate::performance::LatestFrameMetrics;
 use crate::preview_runtime::{PreviewDemandSummary, PreviewRuntime};
@@ -1762,7 +1762,8 @@ mod tests {
         macos_daemon_ownership, macos_selection_state, macos_tahoe_selection_capabilities,
         us_to_ms_f64,
     };
-    use crate::api::{AppState, security::RequestAuthContext};
+    use crate::api::security::RequestAuthContext;
+    use crate::app_state::AppState;
     use crate::macos_owner::{
         MacosDaemonOwner, MacosDaemonSessionAttestation, MacosHandoverPhase, MacosOwnerConflict,
         MacosOwnerIdentity, MacosOwnerRecoveryRequired, MacosOwnerSnapshot,

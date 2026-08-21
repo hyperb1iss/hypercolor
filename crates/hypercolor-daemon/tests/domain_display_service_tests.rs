@@ -26,7 +26,7 @@ use hypercolor_types::scene::{
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 use uuid::Uuid;
 
-use hypercolor_daemon::api::AppState;
+use hypercolor_daemon::app_state::AppState;
 use hypercolor_daemon::domain::display::{
     ClearDisplayFace, PatchDisplayComposition, PatchDisplayFaceControls, SetDisplayFace,
     clear_display_face, patch_display_composition, patch_display_face_controls,

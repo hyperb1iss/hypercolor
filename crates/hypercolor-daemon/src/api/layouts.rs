@@ -19,9 +19,9 @@ use hypercolor_types::spatial::{Output, SamplingMode, SpatialLayout};
 #[cfg(feature = "persistence-test-hooks")]
 use tokio::sync::{Notify, Semaphore};
 
-use crate::api::AppState;
 use crate::api::envelope;
 use crate::api::{persist_layout_auto_exclusions, persist_layouts};
+use crate::app_state::AppState;
 use crate::discovery;
 use crate::domain::layout::LayoutPersistenceStatus;
 use crate::domain::{DomainError, ResourceKind};

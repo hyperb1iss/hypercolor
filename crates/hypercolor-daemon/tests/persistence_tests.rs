@@ -570,7 +570,7 @@ fn dropped_admitted_payload_is_retained_by_the_shared_supervisor() {
 async fn scene_creation_rolls_back_when_serialization_fails_before_admission() {
     let directory = tempfile::tempdir().expect("temporary directory");
     let data_dir = directory.path().join("data");
-    let state = Arc::new(hypercolor_daemon::api::AppState::new_with_data_dir(
+    let state = Arc::new(hypercolor_daemon::app_state::AppState::new_with_data_dir(
         data_dir,
     ));
     let app = hypercolor_daemon::api::build_router(Arc::clone(&state), None);

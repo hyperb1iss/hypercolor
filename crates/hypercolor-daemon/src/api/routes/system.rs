@@ -5,7 +5,8 @@ use utoipa_axum::router::OpenApiRouter;
 use hypercolor_types::api::system::{AudioDevicesResponse, SystemResource};
 
 use crate::api::openapi::OperationDoc;
-use crate::api::{AppState, openapi, system};
+use crate::api::{openapi, system};
+use crate::app_state::AppState;
 pub(super) fn router() -> OpenApiRouter<Arc<AppState>> {
     OpenApiRouter::new()
         .routes(openapi::documented_route(

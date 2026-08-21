@@ -25,8 +25,8 @@ use hypercolor_types::device::{
 };
 use hypercolor_types::event::HypercolorEvent;
 
-use crate::api::AppState;
 use crate::api::envelope;
+use crate::app_state::AppState;
 use crate::discovery as core_discovery;
 use crate::domain::{DomainError, ResourceKind};
 

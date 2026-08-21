@@ -3,7 +3,7 @@
 use serde_json::{Value, json};
 
 use super::{ToolDefinition, ToolError, brightness_percent, output_schema, serialize_result};
-use crate::api::AppState;
+use crate::app_state::AppState;
 use crate::domain::output;
 use crate::mcp::results::{BrightnessResult, BrightnessScope, DeviceInventoryResult};
 use crate::session::current_global_brightness;

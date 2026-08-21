@@ -3,7 +3,7 @@
 use serde_json::{Value, json};
 
 use super::{ToolDefinition, ToolError, output_schema, serialize_result};
-use crate::api::AppState;
+use crate::app_state::AppState;
 use crate::domain::output;
 use crate::mcp::results::{
     AudioLevelsResult, AudioStateResult, BeatResult, LayoutResult, LayoutSummaryResult,

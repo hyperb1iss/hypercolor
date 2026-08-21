@@ -219,8 +219,8 @@ mod tests {
     use hypercolor_types::config::InteractionRoutePolicy;
 
     use super::{MAX_TRUSTED_LOCAL_WEBSOCKET_MESSAGE_BYTES, TrustedLocalApi, TrustedLocalApiError};
-    use crate::api::AppState;
     use crate::api::security::SecurityState;
+    use crate::app_state::AppState;
     use crate::interaction_routing::InteractionRoutingControl;
     use crate::interactive_preview::{
         InteractivePreviewAcceleration, InteractivePreviewContext, InteractivePreviewExecutor,

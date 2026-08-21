@@ -5,7 +5,8 @@ use utoipa_axum::router::OpenApiRouter;
 use hypercolor_types::api::drivers::{DriverConfigResponse, DriverListResponse};
 
 use crate::api::openapi::OperationDoc;
-use crate::api::{AppState, drivers, openapi};
+use crate::api::{drivers, openapi};
+use crate::app_state::AppState;
 pub(super) fn router() -> OpenApiRouter<Arc<AppState>> {
     OpenApiRouter::new()
         .routes(openapi::documented_route(

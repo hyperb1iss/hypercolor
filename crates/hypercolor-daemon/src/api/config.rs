@@ -24,10 +24,10 @@ use hypercolor_types::config_registry::{
 
 use axum::Extension;
 
-use crate::api::AppState;
 use crate::api::capture::protected_control_rejection;
 use crate::api::envelope;
 use crate::api::security::RequestAuthContext;
+use crate::app_state::AppState;
 use crate::domain::{DomainError, ResourceKind};
 
 pub use hypercolor_types::api::config::{ConfigApplyQuery, ConfigDocument, ConfigKeyResponse};
@@ -1560,7 +1560,7 @@ mod tests {
         capture_statuses_match, live_sections_for, put_config_key,
         validate_prepared_capture_status, write_covers,
     };
-    use crate::api::AppState;
+    use crate::app_state::AppState;
 
     struct TestScreenSource {
         running: bool,

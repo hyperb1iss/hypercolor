@@ -3,7 +3,7 @@
 use serde_json::{Value, json};
 
 use super::{ToolDefinition, ToolError, output_schema, serialize_result};
-use crate::api::AppState;
+use crate::app_state::AppState;
 use crate::domain::scene::{ActivateScene, CreateScene, activate_scene, create_scene};
 use crate::domain::scene_tree::{ClearScene, PatchLayerControls};
 use crate::domain::{DomainError, MutationContext};

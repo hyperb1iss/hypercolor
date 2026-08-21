@@ -13,7 +13,7 @@ use hypercolor_types::config::{EffectErrorFallbackPolicy, HypercolorConfig};
 use hypercolor_types::event::{HypercolorEvent, SceneChangeReason};
 use hypercolor_types::scene::SceneId;
 
-use crate::api::AppState;
+use crate::app_state::AppState;
 use crate::device_metrics::spawn_device_metrics_collector;
 use crate::discovery::{self, DiscoveryTarget};
 use crate::display_output::{

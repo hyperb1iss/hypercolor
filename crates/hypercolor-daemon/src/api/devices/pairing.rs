@@ -15,8 +15,8 @@ use hypercolor_driver_api::{
 use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceState};
 use hypercolor_types::event::HypercolorEvent;
 
-use crate::api::AppState;
 use crate::api::envelope;
+use crate::app_state::AppState;
 use crate::domain::{DomainError, ResourceKind};
 
 use super::{refreshed_device_summary, resolve_device_id_or_error};

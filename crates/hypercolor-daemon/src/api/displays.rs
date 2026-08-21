@@ -17,11 +17,11 @@ use hypercolor_types::scene::{DisplayFaceBlendMode, DisplayFaceTarget, Zone};
 use hypercolor_types::spatial::SpatialLayout;
 use tracing::warn;
 
-use crate::api::AppState;
 use crate::api::devices;
 use crate::api::effects::resolve_effect_metadata;
 use crate::api::envelope;
 use crate::api::publish_render_group_changed;
+use crate::app_state::AppState;
 use crate::display_frames::DisplayFrameSnapshot;
 pub(crate) use crate::domain::display::{
     DisplaySurfaceInfo, display_face_layout, display_surface_info,

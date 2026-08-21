@@ -7,9 +7,9 @@ use super::results::{
     InputAvailability, InputStatusResult, InteractionAvailability, StatusResult,
 };
 use super::tools::{brightness_percent, render_capacity_fps};
-use crate::api::AppState;
 use crate::api::effects::active_effect_metadata;
 use crate::api::system::input_status_snapshot;
+use crate::app_state::AppState;
 use crate::session::current_global_brightness;
 
 #[derive(Debug, Default)]

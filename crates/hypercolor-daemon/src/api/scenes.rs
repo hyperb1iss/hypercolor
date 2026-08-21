@@ -11,8 +11,8 @@ use axum::response::{IntoResponse, Response};
 use hypercolor_core::scene::SceneManager;
 use hypercolor_types::scene::{Scene, SceneId, SceneKind};
 
-use crate::api::AppState;
 use crate::api::envelope;
+use crate::app_state::AppState;
 use crate::domain::{DomainError, ResourceKind};
 
 // ── Request / Response Types ─────────────────────────────────────────────

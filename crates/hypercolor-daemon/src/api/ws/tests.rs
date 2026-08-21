@@ -154,8 +154,8 @@ async fn hello_reports_a_destructive_stop_as_not_running_and_paused() {
     assert!(!hello.running);
     assert!(hello.paused);
 }
-use crate::api::AppState;
 use crate::api::security::{RequestAuthContext, SecurityState};
+use crate::app_state::AppState;
 use crate::device_metrics::{DeviceMetrics, DeviceMetricsSnapshot};
 use crate::display_frames::{DisplayFrameRuntime, DisplayFrameSnapshot};
 use crate::interaction_routing::InteractionRoutingControl;

@@ -8,7 +8,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use utoipa_axum::router::OpenApiRouter;
 
-use crate::api::AppState;
+use crate::app_state::AppState;
 use crate::startup::DaemonState;
 
 #[derive(Clone, Default)]

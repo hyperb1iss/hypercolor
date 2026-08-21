@@ -39,10 +39,11 @@ use hypercolor_core::input::{
     SourceStatusHandle, SourceStatusReporter,
 };
 use hypercolor_core::types::event::InputButtonState;
+use hypercolor_daemon::api;
 #[cfg(feature = "persistence-test-hooks")]
 use hypercolor_daemon::api::layouts::{LayoutMutationTestOperation, LayoutMutationTestPoint};
 use hypercolor_daemon::api::local::TrustedLocalApi;
-use hypercolor_daemon::api::{self, AppState};
+use hypercolor_daemon::app_state::AppState;
 #[cfg(feature = "persistence-test-hooks")]
 use hypercolor_daemon::library::JsonLibraryStore;
 #[cfg(feature = "persistence-test-hooks")]
