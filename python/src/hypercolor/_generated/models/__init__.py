@@ -578,7 +578,6 @@ from .segment_topology_summary_type_5 import SegmentTopologySummaryType5
 from .segment_topology_summary_type_5_type import SegmentTopologySummaryType5Type
 from .sensor_reading import SensorReading
 from .sensor_unit import SensorUnit
-from .server_identity import ServerIdentity
 from .server_info import ServerInfo
 from .session_performance_status import SessionPerformanceStatus
 from .set_capture_source_response_200 import SetCaptureSourceResponse200
@@ -1163,7 +1162,6 @@ __all__ = (
     "SegmentTopologySummaryType5Type",
     "SensorReading",
     "SensorUnit",
-    "ServerIdentity",
     "ServerInfo",
     "SessionPerformanceStatus",
     "SetCaptureSourceResponse200",

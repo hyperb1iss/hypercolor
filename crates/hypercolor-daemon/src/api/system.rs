@@ -894,7 +894,6 @@ async fn system_status_with_privacy(
     SystemStatus {
         running,
         version: env!("CARGO_PKG_VERSION").to_owned(),
-        server: state.server_identity.clone(),
         config_path,
         data_dir,
         cache_dir,

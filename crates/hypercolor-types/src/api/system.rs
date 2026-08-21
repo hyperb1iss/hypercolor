@@ -3,13 +3,10 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::server::ServerIdentity;
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema, Default)]
 pub struct SystemStatus {
     pub running: bool,
     pub version: String,
-    pub server: ServerIdentity,
     pub config_path: String,
     pub data_dir: String,
     pub cache_dir: String,

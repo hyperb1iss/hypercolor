@@ -22,7 +22,11 @@ def test_sync_client_delegates_health() -> None:
                     "status": "healthy",
                     "version": "0.1.0",
                     "uptime_seconds": 42,
-                    "checks": {"render_loop": "ok"},
+                    "checks": {
+                        "render_loop": "ok",
+                        "device_backends": "ok",
+                        "event_bus": "ok",
+                    },
                 }
             ),
         )

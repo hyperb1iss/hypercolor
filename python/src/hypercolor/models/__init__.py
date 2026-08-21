@@ -8,6 +8,8 @@ from .._generated.models.effect_preset import EffectPreset
 from .._generated.models.effect_preset_origin import EffectPresetOrigin
 from .._generated.models.effect_preset_summary import EffectPresetSummary
 from .._generated.models.effect_summary import EffectSummary
+from .._generated.models.health_response import HealthResponse
+from .._generated.models.render_loop_status import RenderLoopStatus
 from .._generated.models.replace_scene_layer_request import ReplaceSceneLayerRequest
 from .._generated.models.replace_scene_request import ReplaceSceneRequest
 from .._generated.models.replace_zone_request import ReplaceZoneRequest
@@ -15,7 +17,10 @@ from .._generated.models.scene_document import SceneDocument
 from .._generated.models.scene_layer import SceneLayer
 from .._generated.models.scene_layout_activation_outcome import SceneLayoutActivationOutcome
 from .._generated.models.scene_summary import SceneSummary
+from .._generated.models.server_info import ServerInfo
 from .._generated.models.side_effect_outcome import SideEffectOutcome
+from .._generated.models.system_resource import SystemResource
+from .._generated.models.system_status import SystemStatus
 from .._generated.models.zone_member import ZoneMember
 from .._generated.models.zone_resource import ZoneResource
 from .attachment import (
@@ -58,15 +63,8 @@ from .driver import (
 from .effect import EffectCoverImage
 from .layout import Layout, LayoutSummary
 from .library import Favorite, Playlist, PlaylistItem, Preset, PresetApplyResult
+from .output import OutputState
 from .spatial import LayoutOutput, NormalizedPosition, SpatialLayout
-from .system import (
-    HealthStatus,
-    OutputState,
-    RenderLoopStatus,
-    ServerIdentity,
-    SystemResource,
-    SystemState,
-)
 
 __all__ = [
     "ActivateSceneResponse",
@@ -105,7 +103,7 @@ __all__ = [
     "EffectSummary",
     "Favorite",
     "FrequencyRange",
-    "HealthStatus",
+    "HealthResponse",
     "IdentifyResult",
     "JsonObject",
     "JsonValue",
@@ -129,12 +127,12 @@ __all__ = [
     "SceneLayer",
     "SceneLayoutActivationOutcome",
     "SceneSummary",
-    "ServerIdentity",
+    "ServerInfo",
     "SideEffectOutcome",
     "SpatialLayout",
     "SpectrumSnapshot",
     "SystemResource",
-    "SystemState",
+    "SystemStatus",
     "TransportKind",
     "ZoneMember",
     "ZoneResource",

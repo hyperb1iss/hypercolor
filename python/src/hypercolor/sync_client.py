@@ -14,9 +14,11 @@ from ._generated.models.delete_scene_response import DeleteSceneResponse
 from ._generated.models.effect_detail_response import EffectDetailResponse
 from ._generated.models.effect_preset_summary import EffectPresetSummary
 from ._generated.models.effect_summary import EffectSummary
+from ._generated.models.health_response import HealthResponse
 from ._generated.models.replace_scene_request import ReplaceSceneRequest
 from ._generated.models.scene_document import SceneDocument
 from ._generated.models.scene_summary import SceneSummary
+from ._generated.models.system_status import SystemStatus
 from ._generated.models.zone_resource import ZoneResource
 from .client import _UNSET_SENTINEL, HypercolorClient, _Unset
 from .models.audio import AudioDevices, SpectrumSnapshot
@@ -31,7 +33,7 @@ from .models.device import Device
 from .models.driver import Driver
 from .models.effect import EffectCoverImage
 from .models.layout import Layout, LayoutSummary
-from .models.system import HealthStatus, OutputState, SystemState
+from .models.output import OutputState
 
 
 class SyncHypercolorClient:
@@ -73,10 +75,10 @@ class SyncHypercolorClient:
             raise RuntimeError(msg)
         return self._loop.run_until_complete(awaitable)
 
-    def health(self) -> HealthStatus:
+    def health(self) -> HealthResponse:
         return self._run(self._client.health())
 
-    def get_status(self) -> SystemState:
+    def get_status(self) -> SystemStatus:
         return self._run(self._client.get_status())
 
     def get_output(self) -> OutputState:

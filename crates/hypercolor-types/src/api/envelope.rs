@@ -10,6 +10,7 @@ use utoipa::ToSchema;
 /// Response metadata included in every envelope.
 ///
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ResponseMeta {
     /// API version string.
     pub api_version: String,
@@ -21,6 +22,7 @@ pub struct ResponseMeta {
 
 /// Standard success envelope: `{ data, meta }`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ApiResponse<T> {
     /// The response payload.
     pub data: T,
@@ -30,6 +32,7 @@ pub struct ApiResponse<T> {
 
 /// Standard error envelope: `{ error: { code, message, details }, meta }`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ApiErrorBody {
     /// The error payload.
     pub error: ApiErrorDetail,
@@ -39,6 +42,7 @@ pub struct ApiErrorBody {
 
 /// The error payload inside [`ApiErrorBody`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ApiErrorDetail {
     /// Stable machine-readable error code (snake_case).
     pub code: String,

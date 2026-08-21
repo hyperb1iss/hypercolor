@@ -59,6 +59,7 @@ from ._generated.api.scenes import (
     update_scene as generated_update_scene,
 )
 from ._generated.api.system import (
+    get_system as generated_get_system,
     health_check as generated_health_check,
     list_audio_devices as generated_list_audio_devices,
 )
@@ -76,6 +77,8 @@ from ._generated.models.effect_preset_summary import EffectPresetSummary
 from ._generated.models.effect_preset_summary_list_response import EffectPresetSummaryListResponse
 from ._generated.models.effect_summary import EffectSummary
 from ._generated.models.effect_summary_list_response import EffectSummaryListResponse
+from ._generated.models.get_system_response_200 import GetSystemResponse200
+from ._generated.models.health_response import HealthResponse
 from ._generated.models.identify_request import IdentifyRequest
 from ._generated.models.invoke_control_action_request import InvokeControlActionRequest
 from ._generated.models.patch_controls_request import PatchControlsRequest
@@ -86,6 +89,7 @@ from ._generated.models.scene_patch_request import ScenePatchRequest
 from ._generated.models.scene_summary import SceneSummary
 from ._generated.models.scene_summary_list_response import SceneSummaryListResponse
 from ._generated.models.snapshot_scene_request import SnapshotSceneRequest
+from ._generated.models.system_status import SystemStatus
 from ._generated.models.update_device_request import UpdateDeviceRequest
 from ._generated.models.zone_layout_request import ZoneLayoutRequest
 from ._generated.models.zone_resource import ZoneResource
@@ -121,7 +125,7 @@ from .models.library import (
     Playlist,
     Preset,
 )
-from .models.system import HealthStatus, OutputState, SystemResource, SystemState
+from .models.output import OutputState
 from .websocket import HypercolorEventStream
 
 ModelT = TypeVar("ModelT")
@@ -199,20 +203,28 @@ class HypercolorClient:
         """Create a WebSocket event stream bound to this client."""
         return HypercolorEventStream(self)
 
-    async def health(self) -> HealthStatus:
+    async def health(self) -> HealthResponse:
         """Run the daemon health check."""
-        return await self._generated_model(
-            generated_health_check._get_kwargs(),
-            HealthStatus,
-            envelope=False,
+        payload = await self._generated_payload(
+            generated_health_check._get_kwargs(), envelope=False
         )
+        try:
+            return HealthResponse.from_dict(_mapping(payload))
+        except (KeyError, TypeError, ValueError, AttributeError) as error:
+            raise HypercolorApiError("Malformed Hypercolor health response") from error
 
-    async def get_status(self) -> SystemState:
+    async def get_status(self) -> SystemStatus:
         """Return the current daemon status snapshot."""
-
-        system = await self._request_model("GET", "/system", SystemResource)
-        if system.status is None:
+        payload = await self._generated_request(generated_get_system._get_kwargs())
+        self._unwrap_data(payload)
+        try:
+            system = GetSystemResponse200.from_dict(_mapping(payload)).data
+        except (KeyError, TypeError, ValueError, AttributeError) as error:
+            raise HypercolorApiError("Malformed Hypercolor system resource") from error
+        if system.status is None or system.status is UNSET:
             raise HypercolorAuthenticationError("System status requires daemon read access")
+        if not isinstance(system.status, SystemStatus):
+            raise HypercolorApiError("Malformed Hypercolor system status")
         return system.status
 
     async def get_output(self) -> OutputState:
@@ -1239,8 +1251,17 @@ class HypercolorClient:
 
     @staticmethod
     def _unwrap_data(response: Any) -> Any:
-        if not isinstance(response, dict) or "data" not in response:
+        if not isinstance(response, dict) or set(response) != {"data", "meta"}:
             message = "Unexpected Hypercolor response envelope"
+            raise HypercolorApiError(message)
+        meta = response["meta"]
+        required_meta = {"api_version", "request_id", "timestamp"}
+        if (
+            not isinstance(meta, dict)
+            or set(meta) != required_meta
+            or any(not isinstance(meta[field], str) for field in required_meta)
+        ):
+            message = "Unexpected Hypercolor response metadata"
             raise HypercolorApiError(message)
         return response["data"]
 

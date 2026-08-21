@@ -17,7 +17,6 @@ if TYPE_CHECKING:
     from ..models.render_acceleration_status import RenderAccelerationStatus
     from ..models.render_loop_status import RenderLoopStatus
     from ..models.screen_capture_capacity_status import ScreenCaptureCapacityStatus
-    from ..models.server_identity import ServerIdentity
     from ..models.session_performance_status import SessionPerformanceStatus
 
 
@@ -58,7 +57,6 @@ class SystemStatus:
         scene_count (int):
         screen_capture_capacity (ScreenCaptureCapacityStatus): Installed byte fences for transactional screen
             publication admission.
-        server (ServerIdentity): Stable identity exposed by each Hypercolor daemon instance.
         session_performance (SessionPerformanceStatus):
         uptime_seconds (int):
         version (str):
@@ -87,7 +85,6 @@ class SystemStatus:
     running: bool
     scene_count: int
     screen_capture_capacity: ScreenCaptureCapacityStatus
-    server: ServerIdentity
     session_performance: SessionPerformanceStatus
     uptime_seconds: int
     version: str
@@ -138,8 +135,6 @@ class SystemStatus:
         scene_count = self.scene_count
 
         screen_capture_capacity = self.screen_capture_capacity.to_dict()
-
-        server = self.server.to_dict()
 
         session_performance = self.session_performance.to_dict()
 
@@ -198,7 +193,6 @@ class SystemStatus:
                 "running": running,
                 "scene_count": scene_count,
                 "screen_capture_capacity": screen_capture_capacity,
-                "server": server,
                 "session_performance": session_performance,
                 "uptime_seconds": uptime_seconds,
                 "version": version,
@@ -225,7 +219,6 @@ class SystemStatus:
         from ..models.render_acceleration_status import RenderAccelerationStatus
         from ..models.render_loop_status import RenderLoopStatus
         from ..models.screen_capture_capacity_status import ScreenCaptureCapacityStatus
-        from ..models.server_identity import ServerIdentity
         from ..models.session_performance_status import SessionPerformanceStatus
 
         d = dict(src_dict)
@@ -270,8 +263,6 @@ class SystemStatus:
         screen_capture_capacity = ScreenCaptureCapacityStatus.from_dict(
             d.pop("screen_capture_capacity")
         )
-
-        server = ServerIdentity.from_dict(d.pop("server"))
 
         session_performance = SessionPerformanceStatus.from_dict(
             d.pop("session_performance")
@@ -359,7 +350,6 @@ class SystemStatus:
             running=running,
             scene_count=scene_count,
             screen_capture_capacity=screen_capture_capacity,
-            server=server,
             session_performance=session_performance,
             uptime_seconds=uptime_seconds,
             version=version,
