@@ -461,7 +461,7 @@ async fn simulated_display_crud_routes_update_runtime_state() {
     assert!(tracked.state.is_renderable());
 
     let active_layout = {
-        let spatial = state.spatial_engine.read().await;
+        let spatial = state.spatial_engine.snapshot();
         spatial.layout().as_ref().clone()
     };
     let layout_device_id = default_layout_device_id(&preview_config);
@@ -597,8 +597,7 @@ async fn simulated_display_crud_routes_update_runtime_state() {
     assert!(
         state
             .spatial_engine
-            .read()
-            .await
+            .snapshot()
             .layout()
             .zones
             .iter()

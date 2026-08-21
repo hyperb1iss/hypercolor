@@ -54,6 +54,7 @@ use crate::api::AppState;
 use crate::api::scenes::MediaAdmissionViolationDetails;
 use crate::domain::commit::SceneCommitSequencer;
 use crate::domain::commit::{CommitDurability, SceneCommit, SceneRevision};
+use crate::domain::spatial::SpatialService;
 use crate::domain::{DomainError, MutationContext, ResourceKind};
 use crate::persistence::AtomicWriteOutcome;
 use crate::scene_transactions::{LayoutTransactionRejection, LayoutUpdateGuard};
@@ -274,7 +275,7 @@ impl SceneService {
 
     pub(crate) async fn publish_layout_activation<F>(
         &self,
-        spatial_engine: &Arc<tokio::sync::RwLock<SpatialEngine>>,
+        spatial_engine: &SpatialService,
         candidate_spatial_engine: SpatialEngine,
         expected_layout: &SpatialLayout,
         expected_active_scene_id: Option<SceneId>,
@@ -285,10 +286,9 @@ impl SceneService {
         F: FnOnce(SpatialEngine),
     {
         let mut manager = self.0.manager.write().await;
-        let mut authoritative_spatial_engine = spatial_engine.write().await;
         let source_is_current = manager.active_scene_id().copied() == expected_active_scene_id
             && manager.active_render_groups_revision() == expected_active_zones_revision
-            && authoritative_spatial_engine.layout().as_ref() == expected_layout;
+            && spatial_engine.has_layout(expected_layout);
         if !source_is_current {
             return Err(LayoutTransactionRejection::Superseded);
         }
@@ -298,7 +298,7 @@ impl SceneService {
         self.0
             .plan
             .store(Arc::new(manager.plan_snapshot(ticket.generation())));
-        *authoritative_spatial_engine = candidate_spatial_engine.clone();
+        spatial_engine.replace(candidate_spatial_engine.clone());
         publish_renderer_state(candidate_spatial_engine);
         ticket.release(Vec::new());
         Ok(())
@@ -1757,7 +1757,7 @@ pub async fn snapshot_scene(
         .cloned()
         .ok_or_else(|| DomainError::conflict("no active scene to snapshot"))?;
     let layout_id = {
-        let spatial = state.spatial_engine.read().await;
+        let spatial = state.spatial_engine.snapshot();
         hypercolor_types::identity::LayoutId::new(spatial.layout().id.clone()).map_err(|error| {
             DomainError::Internal(anyhow::anyhow!("active layout has an invalid id: {error}"))
         })?

@@ -208,7 +208,7 @@ async fn latest_sensor_snapshot(state: &AppState) -> Arc<SystemSnapshot> {
 }
 
 pub(super) async fn handle_get_layout_with_state(state: &AppState) -> Result<Value, ToolError> {
-    let spatial = state.spatial_engine.read().await;
+    let spatial = state.spatial_engine.snapshot();
     let layout = spatial.layout();
     let total_leds: u64 = layout
         .zones

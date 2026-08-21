@@ -261,7 +261,7 @@ pub(crate) async fn run_macos_screen_parity(
     }
     let stability = require_static_live_content(&first, &second)?;
 
-    let current_spatial = state.spatial_engine.read().await;
+    let current_spatial = state.spatial_engine.snapshot();
     let current_layout = current_spatial.layout();
     if current_spatial.plan_generation() != first_layout_generation
         || !Arc::ptr_eq(&current_layout, &first_layout)

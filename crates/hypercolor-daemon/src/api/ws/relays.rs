@@ -2983,7 +2983,7 @@ pub(super) async fn build_metrics_message(
     let connected = devices.len();
 
     let (canvas_width, canvas_height) = {
-        let spatial = state.spatial_engine.read().await;
+        let spatial = state.spatial_engine.snapshot();
         let layout = spatial.layout();
         (layout.canvas_width, layout.canvas_height)
     };

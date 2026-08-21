@@ -123,14 +123,14 @@ impl DaemonState {
 
         // Spawn the render thread.
         let initial_canvas_dims = {
-            let spatial = self.spatial_engine.read().await;
+            let spatial = self.spatial_engine.snapshot();
             let layout = spatial.layout();
             CanvasDims::new(layout.canvas_width, layout.canvas_height)
         };
         let rt_state = RenderThreadState {
             effect_registry: Arc::clone(&self.effect_registry),
             asset_library: Arc::clone(&self.asset_library),
-            spatial_engine: Arc::clone(&self.spatial_engine),
+            spatial_engine: self.spatial_engine.clone(),
             backend_manager: Arc::clone(&self.backend_manager),
             device_registry: self.device_registry.clone(),
             performance: Arc::clone(&self.performance),
@@ -195,7 +195,7 @@ impl DaemonState {
         self.display_output_thread = Some(DisplayOutputThread::spawn(DisplayOutputState {
             backend_manager: Arc::clone(&self.backend_manager),
             device_registry: self.device_registry.clone(),
-            spatial_engine: Arc::clone(&self.spatial_engine),
+            spatial_engine: self.spatial_engine.clone(),
             logical_devices: Arc::clone(&self.logical_devices),
             event_bus: Arc::clone(&self.event_bus),
             preview_runtime: Arc::clone(&self.preview_runtime),
@@ -448,7 +448,7 @@ impl DaemonState {
         };
 
         {
-            let spatial = self.spatial_engine.read().await;
+            let spatial = self.spatial_engine.snapshot();
             snapshot.active_layout_id = Some(spatial.layout().id.clone());
         }
         snapshot.global_brightness = current_global_brightness(&self.power_state);
@@ -525,7 +525,7 @@ impl DaemonState {
             if let Some(layout) = layout {
                 match SpatialEngine::try_new(layout.clone()) {
                     Ok(prepared) => {
-                        *self.spatial_engine.write().await = prepared;
+                        self.spatial_engine.replace(prepared);
                         // PRE-INIT WRITER (1 of 4) — see
                         // `apply_runtime_session_snapshot` for the reasoning
                         // all restore writers share.
@@ -635,7 +635,7 @@ impl DaemonState {
             match layout {
                 Some(layout) => match SpatialEngine::try_new(layout.clone()) {
                     Ok(prepared) => {
-                        *self.spatial_engine.write().await = prepared;
+                        self.spatial_engine.replace(prepared);
                         let mut mutation = self.scene_manager.begin_mutation().await;
                         mutation.sync_primary_layout(&layout);
                         if let Err(error) = self
@@ -712,7 +712,7 @@ impl DaemonState {
             // Persisted groups carry a frozen layout snapshot that may pre-date
             // the active layout restored just above. Re-align the primary group
             // so the render pipeline sees the current layout's zones.
-            let active_layout = self.spatial_engine.read().await.layout().as_ref().clone();
+            let active_layout = self.spatial_engine.snapshot().layout().as_ref().clone();
             mutation.sync_primary_layout(&active_layout);
             self.scene_manager
                 .commit_mutation(
@@ -940,7 +940,7 @@ impl DaemonState {
             config_manager: Arc::clone(&self.config_manager),
             driver_host: Arc::clone(&self.driver_host),
             driver_registry: Arc::clone(&self.driver_registry),
-            spatial_engine: Arc::clone(&self.spatial_engine),
+            spatial_engine: self.spatial_engine.clone(),
             scene_manager: self.scene_manager.clone(),
             layouts: Arc::clone(&self.layouts),
             layouts_path: self.layouts_path.clone(),

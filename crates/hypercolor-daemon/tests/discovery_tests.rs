@@ -23,6 +23,7 @@ use hypercolor_daemon::discovery::{
     sync_active_layout_for_renderable_devices,
 };
 use hypercolor_daemon::domain::scene::SceneService;
+use hypercolor_daemon::domain::spatial::SpatialService;
 use hypercolor_daemon::driver_inventory::{DRIVER_INVENTORY_FILENAME, DriverInventoryStore};
 use hypercolor_daemon::layout_auto_exclusions::LayoutAutoExclusionKey;
 use hypercolor_daemon::logical_devices::{LogicalDevice, LogicalDeviceKind};
@@ -498,7 +499,7 @@ fn make_runtime_with_registry(
     let backend_manager = Arc::new(Mutex::new(BackendManager::new()));
     let reconnect_tasks = Arc::new(StdMutex::new(HashMap::new()));
     let event_bus = Arc::new(HypercolorBus::new());
-    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(empty_layout())));
+    let spatial_engine = SpatialService::new(SpatialEngine::new(empty_layout()));
     let layouts = Arc::new(RwLock::new(HashMap::new()));
     let layout_auto_exclusions = Arc::new(RwLock::new(HashMap::new()));
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
@@ -538,7 +539,7 @@ fn make_runtime_with_registry(
         lifecycle_manager: Arc::clone(&lifecycle_manager),
         reconnect_tasks: Arc::clone(&reconnect_tasks),
         event_bus: Arc::clone(&event_bus),
-        spatial_engine: Arc::clone(&spatial_engine),
+        spatial_engine: spatial_engine.clone(),
         scene_manager: scene_manager.clone(),
         layouts: Arc::clone(&layouts),
         layouts_path,
@@ -936,7 +937,7 @@ async fn sync_active_layout_for_renderable_devices_skips_excluded_devices() {
     sync_active_layout_for_renderable_devices(&runtime, None).await;
 
     let layout = {
-        let spatial = runtime.spatial_engine.read().await;
+        let spatial = runtime.spatial_engine.snapshot();
         spatial.layout().as_ref().clone()
     };
     assert!(
@@ -993,7 +994,7 @@ async fn sync_active_layout_for_renderable_devices_does_not_auto_adopt_new_devic
     sync_active_layout_for_renderable_devices(&runtime, None).await;
 
     let layout = {
-        let spatial = runtime.spatial_engine.read().await;
+        let spatial = runtime.spatial_engine.snapshot();
         spatial.layout().as_ref().clone()
     };
     assert!(
@@ -1086,10 +1087,9 @@ async fn sync_active_layout_connectivity_primes_backend_from_registry_metadata()
 
     let layout_device_id =
         DeviceLifecycleManager::canonical_layout_device_id(&info, Some(&fingerprint));
-    {
-        let mut spatial = runtime.spatial_engine.write().await;
-        spatial.update_layout(layout_with_device(&layout_device_id));
-    }
+    runtime
+        .spatial_engine
+        .update_layout(layout_with_device(&layout_device_id));
 
     sync_active_layout_connectivity(&runtime, None).await;
 
@@ -1141,10 +1141,9 @@ async fn sync_active_layout_connectivity_disconnects_devices_removed_from_layout
 
     let layout_device_id =
         DeviceLifecycleManager::canonical_layout_device_id(&info, Some(&fingerprint));
-    {
-        let mut spatial = runtime.spatial_engine.write().await;
-        spatial.update_layout(layout_with_device(&layout_device_id));
-    }
+    runtime
+        .spatial_engine
+        .update_layout(layout_with_device(&layout_device_id));
 
     sync_active_layout_connectivity(&runtime, None).await;
     assert_eq!(
@@ -1157,10 +1156,7 @@ async fn sync_active_layout_connectivity_disconnects_devices_removed_from_layout
         Some(DeviceState::Connected)
     );
 
-    {
-        let mut spatial = runtime.spatial_engine.write().await;
-        spatial.update_layout(empty_layout());
-    }
+    runtime.spatial_engine.update_layout(empty_layout());
 
     sync_active_layout_connectivity(&runtime, None).await;
     assert_eq!(
@@ -1222,10 +1218,9 @@ async fn sync_active_layout_connectivity_cleans_logical_routes_when_disconnect_f
             },
         );
     }
-    {
-        let mut spatial = runtime.spatial_engine.write().await;
-        spatial.update_layout(layout_with_device(&segment_layout_id));
-    }
+    runtime
+        .spatial_engine
+        .update_layout(layout_with_device(&segment_layout_id));
 
     sync_active_layout_connectivity(&runtime, None).await;
 
@@ -1237,7 +1232,7 @@ async fn sync_active_layout_connectivity_cleans_logical_routes_when_disconnect_f
 
     {
         let layout = {
-            let spatial = runtime.spatial_engine.read().await;
+            let spatial = runtime.spatial_engine.snapshot();
             spatial.layout().as_ref().clone()
         };
         let zone_colors = vec![ZoneColors {
@@ -1251,10 +1246,7 @@ async fn sync_active_layout_connectivity_cleans_logical_routes_when_disconnect_f
         assert_eq!(manager.debug_snapshot().queue_count, 1);
     }
 
-    {
-        let mut spatial = runtime.spatial_engine.write().await;
-        spatial.update_layout(empty_layout());
-    }
+    runtime.spatial_engine.update_layout(empty_layout());
 
     sync_active_layout_connectivity(&runtime, None).await;
 
@@ -1307,10 +1299,9 @@ async fn sync_active_layout_connectivity_only_applies_host_attachment_profiles_f
 
     let layout_device_id =
         DeviceLifecycleManager::canonical_layout_device_id(&info, Some(&fingerprint));
-    {
-        let mut spatial = runtime.spatial_engine.write().await;
-        spatial.update_layout(layout_with_device(&layout_device_id));
-    }
+    runtime
+        .spatial_engine
+        .update_layout(layout_with_device(&layout_device_id));
 
     sync_active_layout_connectivity(&runtime, None).await;
 

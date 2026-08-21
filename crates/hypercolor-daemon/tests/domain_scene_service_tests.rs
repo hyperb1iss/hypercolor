@@ -646,7 +646,7 @@ async fn activation_applies_a_named_layout_without_reentering_its_guard() {
     let layout = SpatialLayout {
         id: layout_id.to_string(),
         name: "Activation Layout".to_owned(),
-        ..state.spatial_engine.read().await.layout().as_ref().clone()
+        ..state.spatial_engine.snapshot().layout().as_ref().clone()
     };
     state
         .layouts
@@ -701,7 +701,7 @@ async fn activation_applies_a_named_layout_without_reentering_its_guard() {
     assert!(activated.layout.applied);
     assert_eq!(activated.layout.layout_id, Some(layout_id));
     assert_eq!(
-        state.spatial_engine.read().await.layout().id,
+        state.spatial_engine.snapshot().layout().id,
         "activation-layout"
     );
 }
@@ -844,7 +844,7 @@ async fn mcp_scene_activation_applies_media_soft_admission() {
     // a 60ms soft cap. Lottie carries no hard cap, so this exercises the
     // soft path without tripping the hard one.
     let mut zone = {
-        let spatial = state.spatial_engine.read().await;
+        let spatial = state.spatial_engine.snapshot();
         hypercolor_core::scene::default_primary_group(spatial.layout().as_ref().clone())
     };
     for index in 0..8u8 {
@@ -891,7 +891,7 @@ async fn a_stale_base_revision_is_rejected_before_admission() {
     let metadata = test_effect_metadata("aurora");
     insert_effect(&state, &metadata).await;
     let layout = {
-        let spatial = state.spatial_engine.read().await;
+        let spatial = state.spatial_engine.snapshot();
         spatial.layout().as_ref().clone()
     };
 
@@ -956,7 +956,7 @@ async fn a_rejected_candidate_leaves_the_live_state_untouched() {
     insert_effect(&state, &metadata).await;
     insert_effect(&state, &other).await;
     let layout = {
-        let spatial = state.spatial_engine.read().await;
+        let spatial = state.spatial_engine.snapshot();
         spatial.layout().as_ref().clone()
     };
 
@@ -1000,7 +1000,7 @@ async fn dropping_an_uncommitted_mutation_is_a_no_op() {
     let metadata = test_effect_metadata("aurora");
     insert_effect(&state, &metadata).await;
     let layout = {
-        let spatial = state.spatial_engine.read().await;
+        let spatial = state.spatial_engine.snapshot();
         spatial.layout().as_ref().clone()
     };
 
@@ -1148,7 +1148,7 @@ async fn snapshot_scene_preserves_the_live_tree_and_captures_the_active_layout()
         .active_scene()
         .cloned()
         .expect("the default scene should be active");
-    let active_layout_id = state.spatial_engine.read().await.layout().id.clone();
+    let active_layout_id = state.spatial_engine.snapshot().layout().id.clone();
 
     let snapshot = snapshot_scene(
         &state,

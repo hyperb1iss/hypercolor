@@ -81,6 +81,7 @@ pub(crate) use self::scene_dependency::SceneDependencyKey;
 use crate::device_settings::DeviceSettingsStore;
 use crate::discovery::DiscoveryRuntime;
 use crate::domain::scene::{ScenePlanReader, SceneService};
+use crate::domain::spatial::SpatialService;
 use crate::interaction_routing::InteractionRoutingControl;
 use crate::performance::PerformanceTracker;
 use crate::preview_runtime::PreviewRuntime;
@@ -93,7 +94,6 @@ use hypercolor_core::device::{BackendManager, DeviceRegistry};
 use hypercolor_core::effect::EffectRegistry;
 use hypercolor_core::engine::{FpsTier, RenderLoop};
 use hypercolor_core::input::InputManager;
-use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::event::ZoneColors;
 
@@ -264,7 +264,7 @@ pub struct RenderThreadState {
     pub asset_library: Arc<RwLock<AssetLibrary>>,
 
     /// Spatial sampling engine — maps canvas pixels to LED positions.
-    pub spatial_engine: Arc<RwLock<SpatialEngine>>,
+    pub spatial_engine: SpatialService,
 
     /// Device backend router — pushes colors to hardware.
     pub backend_manager: Arc<Mutex<BackendManager>>,

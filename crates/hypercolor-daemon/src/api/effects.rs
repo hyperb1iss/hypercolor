@@ -166,7 +166,7 @@ pub(crate) async fn quiesce_output_after_effect_stop(state: &AppState) -> usize 
 
 pub(crate) async fn publish_static_output_snapshot(state: &AppState, color: [u8; 3]) {
     let (layout, canvas, mut zones) = {
-        let spatial = state.spatial_engine.read().await;
+        let spatial = state.spatial_engine.snapshot();
         let layout = spatial.layout();
         let Ok(mut canvas) = Canvas::try_new(layout.canvas_width, layout.canvas_height).inspect_err(
             |error| {
@@ -967,7 +967,7 @@ pub(crate) fn default_control_values(metadata: &EffectMetadata) -> HashMap<Strin
 /// the lazily created `effects/apply` `Primary`, and `Primary` recovery
 /// all seed from it.
 pub(crate) async fn resolve_full_scope_layout(state: &AppState) -> SpatialLayout {
-    let spatial = state.spatial_engine.read().await;
+    let spatial = state.spatial_engine.snapshot();
     spatial.layout().as_ref().clone()
 }
 

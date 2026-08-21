@@ -17,7 +17,6 @@ use hypercolor_core::device::manager::BackendRoutingDebugSnapshot;
 use hypercolor_core::device::{
     BackendManager, DeviceLifecycleManager, DeviceRegistry, UsbProtocolConfigStore,
 };
-use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_driver_api::CredentialStore;
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::HypercolorConfig;
@@ -28,6 +27,7 @@ use crate::attachment_profiles::ComponentProfileStore;
 use crate::device_settings::DeviceSettingsStore;
 use crate::discovery::{self, DiscoveryTarget};
 use crate::domain::scene::SceneService;
+use crate::domain::spatial::SpatialService;
 use crate::layout_auto_exclusions;
 use crate::logical_devices::LogicalDevice;
 use crate::network::DaemonDriverHost;
@@ -46,7 +46,7 @@ pub(super) struct DiscoveryWorkerContext {
     pub(super) config_manager: Arc<ConfigManager>,
     pub(super) driver_host: Arc<DaemonDriverHost>,
     pub(super) driver_registry: Arc<DriverModuleRegistry>,
-    pub(super) spatial_engine: Arc<RwLock<SpatialEngine>>,
+    pub(super) spatial_engine: SpatialService,
     pub(super) scene_manager: SceneService,
     pub(super) layouts: Arc<RwLock<HashMap<String, SpatialLayout>>>,
     pub(super) layouts_path: PathBuf,
@@ -72,7 +72,7 @@ impl DiscoveryWorkerContext {
             lifecycle_manager: Arc::clone(&self.lifecycle_manager),
             reconnect_tasks: Arc::clone(&self.reconnect_tasks),
             event_bus: Arc::clone(&self.event_bus),
-            spatial_engine: Arc::clone(&self.spatial_engine),
+            spatial_engine: self.spatial_engine.clone(),
             scene_manager: self.scene_manager.clone(),
             layouts: Arc::clone(&self.layouts),
             layouts_path: self.layouts_path.clone(),
@@ -217,7 +217,7 @@ impl DiscoveryWorkerContext {
         config: &HypercolorConfig,
     ) -> BTreeMap<String, Vec<String>> {
         let layout = {
-            let spatial = self.spatial_engine.read().await;
+            let spatial = self.spatial_engine.snapshot();
             spatial.layout().as_ref().clone()
         };
         let routing = {

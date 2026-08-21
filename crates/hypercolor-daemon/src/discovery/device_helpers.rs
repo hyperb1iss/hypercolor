@@ -377,7 +377,7 @@ pub(super) async fn active_layout_targets_enabled_device(
     };
 
     let targeted_by_spatial_layout = {
-        let spatial = runtime.spatial_engine.read().await;
+        let spatial = runtime.spatial_engine.snapshot();
         spatial
             .layout()
             .zones

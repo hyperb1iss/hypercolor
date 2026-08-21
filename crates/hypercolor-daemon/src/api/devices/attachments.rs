@@ -516,7 +516,7 @@ async fn active_layout_targets_device(
         logical_ids.push(physical_layout_id);
     }
 
-    let spatial = state.spatial_engine.read().await;
+    let spatial = state.spatial_engine.snapshot();
     spatial.layout().zones.iter().any(|zone| {
         logical_ids
             .iter()

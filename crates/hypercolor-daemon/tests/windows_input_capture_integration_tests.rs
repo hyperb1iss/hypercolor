@@ -28,6 +28,7 @@ use hypercolor_core::scene::{SceneManager, make_scene};
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_daemon::device_settings::DeviceSettingsStore;
 use hypercolor_daemon::domain::scene::SceneService;
+use hypercolor_daemon::domain::spatial::SpatialService;
 use hypercolor_daemon::interaction_routing::InteractionRoutingControl;
 use hypercolor_daemon::performance::PerformanceTracker;
 use hypercolor_daemon::preview_runtime::PreviewRuntime;
@@ -146,7 +147,7 @@ fn render_state(input_manager: InputManager, screen_capture_configured: bool) ->
     RenderThreadState {
         effect_registry: Arc::new(RwLock::new(builtin_effect_registry())),
         asset_library: test_asset_library(),
-        spatial_engine: Arc::new(RwLock::new(SpatialEngine::new(empty_layout()))),
+        spatial_engine: SpatialService::new(SpatialEngine::new(empty_layout())),
         backend_manager: Arc::new(Mutex::new(BackendManager::new())),
         device_registry: DeviceRegistry::new(),
         performance: Arc::new(RwLock::new(PerformanceTracker::default())),

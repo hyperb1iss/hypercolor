@@ -49,7 +49,7 @@ async fn scene_template(
     layer_ids: [SceneLayerId; 2],
     mutation_mode: SceneMutationMode,
 ) -> Scene {
-    let layout = state.spatial_engine.read().await.layout().as_ref().clone();
+    let layout = state.spatial_engine.snapshot().layout().as_ref().clone();
     let mut primary = default_primary_group(layout.clone());
     primary.name = format!("{name} primary");
     let zone = Zone {

@@ -77,7 +77,7 @@ async fn sync_active_layout_for_renderable_devices_workflow(
         .acquire_layout_update_guard()
         .await;
     let original_layout = {
-        let spatial = runtime.spatial_engine.read().await;
+        let spatial = runtime.spatial_engine.snapshot();
         spatial.layout().as_ref().clone()
     };
     let mut layout = original_layout.clone();

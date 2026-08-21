@@ -325,8 +325,7 @@ async fn set_active_layout_for_device(state: &Arc<AppState>, device_id: DeviceId
         version: 1,
     };
 
-    let mut spatial = state.spatial_engine.write().await;
-    spatial.update_layout(layout);
+    state.spatial_engine.update_layout(layout);
 }
 
 async fn register_recording_backend(
@@ -441,7 +440,7 @@ async fn device_attachment_profile_flow_persists_and_clears() {
         }]
     });
     let logical_device_count = state.logical_devices.read().await.len();
-    let layout_before = state.spatial_engine.read().await.layout().clone();
+    let layout_before = state.spatial_engine.snapshot().layout().clone();
     let mut events = state.event_bus.subscribe_all();
     let validation_response = send_json(
         &app,
@@ -487,7 +486,7 @@ async fn device_attachment_profile_flow_persists_and_clears() {
         state.logical_devices.read().await.len(),
         logical_device_count
     );
-    assert_eq!(state.spatial_engine.read().await.layout(), layout_before);
+    assert_eq!(state.spatial_engine.snapshot().layout(), layout_before);
     assert!(state.usb_protocol_configs.config(device_id).await.is_none());
     assert!(events.try_recv().is_err());
 

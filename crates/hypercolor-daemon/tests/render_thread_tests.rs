@@ -31,6 +31,7 @@ use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_daemon::attachment_profiles::ComponentProfileStore;
 use hypercolor_daemon::device_settings::DeviceSettingsStore;
 use hypercolor_daemon::domain::scene::{SceneMutation, SceneService};
+use hypercolor_daemon::domain::spatial::SpatialService;
 use hypercolor_driver_api::CredentialStore;
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{Canvas, PublishedSurface, Rgba};
@@ -1165,7 +1166,7 @@ fn make_render_state(
     RenderThreadState {
         effect_registry: Arc::new(RwLock::new(builtin_effect_registry())),
         asset_library: test_asset_library(),
-        spatial_engine: Arc::new(RwLock::new(spatial_engine)),
+        spatial_engine: SpatialService::new(spatial_engine),
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: DeviceRegistry::new(),
         performance: Arc::new(RwLock::new(PerformanceTracker::default())),
@@ -2791,7 +2792,7 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
     }
 
     let layout = test_layout(vec![strip_zone("zone_0", &layout_device_id, 8)]);
-    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout.clone())));
+    let spatial_engine = SpatialService::new(SpatialEngine::new(layout.clone()));
     let event_bus = Arc::new(HypercolorBus::new());
     let discovery_runtime = DiscoveryRuntime {
         device_registry: device_registry.clone(),
@@ -2799,7 +2800,7 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
         lifecycle_manager: Arc::clone(&lifecycle_manager),
         reconnect_tasks: Arc::new(StdMutex::new(HashMap::new())),
         event_bus: Arc::clone(&event_bus),
-        spatial_engine: Arc::clone(&spatial_engine),
+        spatial_engine: spatial_engine.clone(),
         scene_manager: SceneService::new(SceneManager::with_default(), Arc::clone(&event_bus)),
         layouts: Arc::new(RwLock::new(HashMap::new())),
         layouts_path: PathBuf::from("layouts.json"),
@@ -3176,7 +3177,7 @@ async fn pipeline_keeps_rendering_while_async_write_failure_disconnects() {
     );
     let backend_manager = Arc::clone(&state.backend_manager);
     let event_bus = Arc::clone(&state.event_bus);
-    let spatial_engine = Arc::clone(&state.spatial_engine);
+    let spatial_engine = state.spatial_engine.clone();
     let discovery_runtime = DiscoveryRuntime {
         device_registry: device_registry.clone(),
         backend_manager: Arc::clone(&backend_manager),
@@ -4746,7 +4747,7 @@ async fn release_sleep_clears_published_frame_and_canvas_once() {
     let state = RenderThreadState {
         effect_registry: Arc::new(RwLock::new(builtin_effect_registry())),
         asset_library: test_asset_library(),
-        spatial_engine: Arc::new(RwLock::new(SpatialEngine::new(layout))),
+        spatial_engine: SpatialService::new(SpatialEngine::new(layout)),
         backend_manager: Arc::new(Mutex::new(BackendManager::new())),
         device_registry: DeviceRegistry::new(),
         performance: Arc::new(RwLock::new(PerformanceTracker::default())),

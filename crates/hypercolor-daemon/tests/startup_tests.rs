@@ -1418,7 +1418,7 @@ async fn daemon_start_restores_persisted_active_layout_from_disk() {
     state.start().await.expect("start should succeed");
 
     let active_layout = {
-        let spatial = state.spatial_engine.read().await;
+        let spatial = state.spatial_engine.snapshot();
         spatial.layout().as_ref().clone()
     };
     assert_eq!(active_layout.id, restored_layout.id);
@@ -1530,7 +1530,7 @@ async fn runtime_state_and_driver_inventory_persist_independently() {
 
     {
         let layout = {
-            let spatial = state.spatial_engine.read().await;
+            let spatial = state.spatial_engine.snapshot();
             spatial.layout().as_ref().clone()
         };
         let api_state = AppState::from_daemon_state(&state);
@@ -1719,7 +1719,7 @@ async fn daemon_start_activates_configured_scene_name_without_runtime_snapshot()
     );
     assert!((current_global_brightness(&state.power_state) - 0.35).abs() < f32::EPSILON);
     assert_eq!(
-        state.spatial_engine.read().await.layout().id,
+        state.spatial_engine.snapshot().layout().id,
         selected_layout.id
     );
 
@@ -1917,19 +1917,21 @@ async fn paused_startup_seeds_and_reasserts_late_connected_device_output() {
             .await,
         "late device should enter connected state"
     );
-    *state.spatial_engine.write().await = SpatialEngine::try_new(SpatialLayout {
-        id: "late-paused-layout".to_owned(),
-        name: "Late Paused Layout".to_owned(),
-        description: None,
-        canvas_width: 32,
-        canvas_height: 18,
-        zones: vec![test_zone("late-paused-zone", &layout_device_id)],
-        default_sampling_mode: SamplingMode::Bilinear,
-        default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
-        version: 1,
-    })
-    .expect("late-connect layout should be valid");
+    state.spatial_engine.replace(
+        SpatialEngine::try_new(SpatialLayout {
+            id: "late-paused-layout".to_owned(),
+            name: "Late Paused Layout".to_owned(),
+            description: None,
+            canvas_width: 32,
+            canvas_height: 18,
+            zones: vec![test_zone("late-paused-zone", &layout_device_id)],
+            default_sampling_mode: SamplingMode::Bilinear,
+            default_edge_behavior: EdgeBehavior::Clamp,
+            spaces: None,
+            version: 1,
+        })
+        .expect("late-connect layout should be valid"),
+    );
     {
         let mut manager = state.backend_manager.lock().await;
         manager.register_backend(Arc::new(StaticHoldRecordingBackend {
@@ -3036,7 +3038,7 @@ async fn effect_error_fallback_worker_clears_active_groups_when_configured() {
 
     let group_id = {
         let layout = {
-            let spatial = state.spatial_engine.read().await;
+            let spatial = state.spatial_engine.snapshot();
             spatial.layout().as_ref().clone()
         };
         let api_state = AppState::from_daemon_state(&state);

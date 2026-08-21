@@ -26,6 +26,7 @@ use hypercolor_types::spatial::{
 
 use hypercolor_daemon::display_frames::{DisplayFrameRuntime, DisplayFrameSnapshot};
 use hypercolor_daemon::display_output::{DisplayOutputState, DisplayOutputThread};
+use hypercolor_daemon::domain::spatial::SpatialService;
 use hypercolor_daemon::logical_devices::{LogicalDevice, LogicalDeviceKind};
 use hypercolor_daemon::preview_runtime::PreviewRuntime;
 use hypercolor_daemon::session::OutputPowerState;
@@ -857,21 +858,18 @@ async fn scene_display_write_cadence_for_format(color_format: DeviceColorFormat)
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
-    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let spatial_engine = SpatialService::new(SpatialEngine::new(layout_with_zones(vec![])));
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let display_write_times = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    {
-        let mut spatial = spatial_engine.write().await;
-        spatial.update_layout(layout_with_zones(vec![display_zone(
-            logical_id.as_str(),
-            NormalizedPosition::new(0.5, 0.5),
-            NormalizedPosition::new(1.0, 1.0),
-        )]));
-    }
+    spatial_engine.update_layout(layout_with_zones(vec![display_zone(
+        logical_id.as_str(),
+        NormalizedPosition::new(0.5, 0.5),
+        NormalizedPosition::new(1.0, 1.0),
+    )]));
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(
@@ -904,7 +902,7 @@ async fn scene_display_write_cadence_for_format(color_format: DeviceColorFormat)
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: Arc::clone(&spatial_engine),
+        spatial_engine: spatial_engine.clone(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
@@ -1038,20 +1036,17 @@ async fn automatic_display_output_mirrors_canvas_to_layout_mapped_display_device
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
-    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let spatial_engine = SpatialService::new(SpatialEngine::new(layout_with_zones(vec![])));
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    {
-        let mut spatial = spatial_engine.write().await;
-        spatial.update_layout(layout_with_zones(vec![display_zone(
-            logical_id.as_str(),
-            NormalizedPosition::new(0.5, 0.5),
-            NormalizedPosition::new(1.0, 1.0),
-        )]));
-    }
+    spatial_engine.update_layout(layout_with_zones(vec![display_zone(
+        logical_id.as_str(),
+        NormalizedPosition::new(0.5, 0.5),
+        NormalizedPosition::new(1.0, 1.0),
+    )]));
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
@@ -1076,7 +1071,7 @@ async fn automatic_display_output_mirrors_canvas_to_layout_mapped_display_device
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: Arc::clone(&spatial_engine),
+        spatial_engine: spatial_engine.clone(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
@@ -1105,7 +1100,7 @@ async fn automatic_display_output_uses_device_display_sinks_without_cross_device
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
-    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let spatial_engine = SpatialService::new(SpatialEngine::new(layout_with_zones(vec![])));
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let slow_device_id = DeviceId::new();
     let fast_device_id = DeviceId::new();
@@ -1115,23 +1110,20 @@ async fn automatic_display_output_uses_device_display_sinks_without_cross_device
     let fast_sink = Arc::new(RecordingDisplaySink::new(Duration::ZERO));
     let fallback_write_count = Arc::new(AtomicUsize::new(0));
 
-    {
-        let mut spatial = spatial_engine.write().await;
-        spatial.update_layout(layout_with_zones(vec![
-            display_zone_with_id(
-                "zone-slow-display",
-                slow_logical_id.as_str(),
-                NormalizedPosition::new(0.25, 0.5),
-                NormalizedPosition::new(0.5, 1.0),
-            ),
-            display_zone_with_id(
-                "zone-fast-display",
-                fast_logical_id.as_str(),
-                NormalizedPosition::new(0.75, 0.5),
-                NormalizedPosition::new(0.5, 1.0),
-            ),
-        ]));
-    }
+    spatial_engine.update_layout(layout_with_zones(vec![
+        display_zone_with_id(
+            "zone-slow-display",
+            slow_logical_id.as_str(),
+            NormalizedPosition::new(0.25, 0.5),
+            NormalizedPosition::new(0.5, 1.0),
+        ),
+        display_zone_with_id(
+            "zone-fast-display",
+            fast_logical_id.as_str(),
+            NormalizedPosition::new(0.75, 0.5),
+            NormalizedPosition::new(0.5, 1.0),
+        ),
+    ]));
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(MultiDisplaySinkBackend::new(
@@ -1165,7 +1157,7 @@ async fn automatic_display_output_uses_device_display_sinks_without_cross_device
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: Arc::clone(&spatial_engine),
+        spatial_engine: spatial_engine.clone(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
@@ -1212,7 +1204,7 @@ async fn automatic_display_output_aborts_stale_blocked_worker_without_stalling_o
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
-    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let spatial_engine = SpatialService::new(SpatialEngine::new(layout_with_zones(vec![])));
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let slow_device_id = DeviceId::new();
     let fast_device_id = DeviceId::new();
@@ -1222,23 +1214,20 @@ async fn automatic_display_output_aborts_stale_blocked_worker_without_stalling_o
     let fast_sink = Arc::new(RecordingDisplaySink::new(Duration::ZERO));
     let fallback_write_count = Arc::new(AtomicUsize::new(0));
 
-    {
-        let mut spatial = spatial_engine.write().await;
-        spatial.update_layout(layout_with_zones(vec![
-            display_zone_with_id(
-                "zone-slow-display",
-                slow_logical_id.as_str(),
-                NormalizedPosition::new(0.25, 0.5),
-                NormalizedPosition::new(0.5, 1.0),
-            ),
-            display_zone_with_id(
-                "zone-fast-display",
-                fast_logical_id.as_str(),
-                NormalizedPosition::new(0.75, 0.5),
-                NormalizedPosition::new(0.5, 1.0),
-            ),
-        ]));
-    }
+    spatial_engine.update_layout(layout_with_zones(vec![
+        display_zone_with_id(
+            "zone-slow-display",
+            slow_logical_id.as_str(),
+            NormalizedPosition::new(0.25, 0.5),
+            NormalizedPosition::new(0.5, 1.0),
+        ),
+        display_zone_with_id(
+            "zone-fast-display",
+            fast_logical_id.as_str(),
+            NormalizedPosition::new(0.75, 0.5),
+            NormalizedPosition::new(0.5, 1.0),
+        ),
+    ]));
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(MultiDisplaySinkBackend::new(
@@ -1272,7 +1261,7 @@ async fn automatic_display_output_aborts_stale_blocked_worker_without_stalling_o
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: Arc::clone(&spatial_engine),
+        spatial_engine: spatial_engine.clone(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
@@ -1327,7 +1316,7 @@ async fn automatic_display_output_promotes_backend_writer_to_display_sink_after_
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
-    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let spatial_engine = SpatialService::new(SpatialEngine::new(layout_with_zones(vec![])));
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
@@ -1336,14 +1325,11 @@ async fn automatic_display_output_promotes_backend_writer_to_display_sink_after_
     let display_sink_lookup_count = Arc::new(AtomicUsize::new(0));
     let sinks_available = Arc::new(AtomicBool::new(false));
 
-    {
-        let mut spatial = spatial_engine.write().await;
-        spatial.update_layout(layout_with_zones(vec![display_zone(
-            logical_id.as_str(),
-            NormalizedPosition::new(0.5, 0.5),
-            NormalizedPosition::new(1.0, 1.0),
-        )]));
-    }
+    spatial_engine.update_layout(layout_with_zones(vec![display_zone(
+        logical_id.as_str(),
+        NormalizedPosition::new(0.5, 0.5),
+        NormalizedPosition::new(1.0, 1.0),
+    )]));
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(
@@ -1372,7 +1358,7 @@ async fn automatic_display_output_promotes_backend_writer_to_display_sink_after_
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: Arc::clone(&spatial_engine),
+        spatial_engine: spatial_engine.clone(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
@@ -1460,7 +1446,7 @@ async fn automatic_display_output_reacquires_display_sink_after_sink_error() {
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
-    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let spatial_engine = SpatialService::new(SpatialEngine::new(layout_with_zones(vec![])));
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
@@ -1468,14 +1454,11 @@ async fn automatic_display_output_reacquires_display_sink_after_sink_error() {
     let fallback_write_count = Arc::new(AtomicUsize::new(0));
     let display_sink_lookup_count = Arc::new(AtomicUsize::new(0));
 
-    {
-        let mut spatial = spatial_engine.write().await;
-        spatial.update_layout(layout_with_zones(vec![display_zone(
-            logical_id.as_str(),
-            NormalizedPosition::new(0.5, 0.5),
-            NormalizedPosition::new(1.0, 1.0),
-        )]));
-    }
+    spatial_engine.update_layout(layout_with_zones(vec![display_zone(
+        logical_id.as_str(),
+        NormalizedPosition::new(0.5, 0.5),
+        NormalizedPosition::new(1.0, 1.0),
+    )]));
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(
@@ -1503,7 +1486,7 @@ async fn automatic_display_output_reacquires_display_sink_after_sink_error() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: Arc::clone(&spatial_engine),
+        spatial_engine: spatial_engine.clone(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
@@ -1558,21 +1541,18 @@ async fn automatic_display_output_sends_raw_rgb_for_rgb_display_zones() {
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
-    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let spatial_engine = SpatialService::new(SpatialEngine::new(layout_with_zones(vec![])));
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let display_frames = Arc::new(RwLock::new(DisplayFrameRuntime::new()));
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    {
-        let mut spatial = spatial_engine.write().await;
-        spatial.update_layout(layout_with_zones(vec![display_zone(
-            logical_id.as_str(),
-            NormalizedPosition::new(0.5, 0.5),
-            NormalizedPosition::new(1.0, 1.0),
-        )]));
-    }
+    spatial_engine.update_layout(layout_with_zones(vec![display_zone(
+        logical_id.as_str(),
+        NormalizedPosition::new(0.5, 0.5),
+        NormalizedPosition::new(1.0, 1.0),
+    )]));
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
@@ -1602,7 +1582,7 @@ async fn automatic_display_output_sends_raw_rgb_for_rgb_display_zones() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: Arc::clone(&spatial_engine),
+        spatial_engine: spatial_engine.clone(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
@@ -1633,21 +1613,18 @@ async fn rgb_display_preview_subscriber_stays_attached_without_worker_restart() 
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
-    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let spatial_engine = SpatialService::new(SpatialEngine::new(layout_with_zones(vec![])));
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let display_frames = Arc::new(RwLock::new(DisplayFrameRuntime::new()));
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    {
-        let mut spatial = spatial_engine.write().await;
-        spatial.update_layout(layout_with_zones(vec![display_zone(
-            logical_id.as_str(),
-            NormalizedPosition::new(0.5, 0.5),
-            NormalizedPosition::new(1.0, 1.0),
-        )]));
-    }
+    spatial_engine.update_layout(layout_with_zones(vec![display_zone(
+        logical_id.as_str(),
+        NormalizedPosition::new(0.5, 0.5),
+        NormalizedPosition::new(1.0, 1.0),
+    )]));
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
@@ -1677,7 +1654,7 @@ async fn rgb_display_preview_subscriber_stays_attached_without_worker_restart() 
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: Arc::clone(&spatial_engine),
+        spatial_engine: spatial_engine.clone(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
@@ -1735,20 +1712,17 @@ async fn automatic_display_output_subscribes_to_authoritative_scene_canvas_not_p
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
-    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let spatial_engine = SpatialService::new(SpatialEngine::new(layout_with_zones(vec![])));
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    {
-        let mut spatial = spatial_engine.write().await;
-        spatial.update_layout(layout_with_zones(vec![display_zone(
-            logical_id.as_str(),
-            NormalizedPosition::new(0.5, 0.5),
-            NormalizedPosition::new(1.0, 1.0),
-        )]));
-    }
+    spatial_engine.update_layout(layout_with_zones(vec![display_zone(
+        logical_id.as_str(),
+        NormalizedPosition::new(0.5, 0.5),
+        NormalizedPosition::new(1.0, 1.0),
+    )]));
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
@@ -1774,7 +1748,7 @@ async fn automatic_display_output_subscribes_to_authoritative_scene_canvas_not_p
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: Arc::clone(&spatial_engine),
+        spatial_engine: spatial_engine.clone(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         preview_runtime: Arc::clone(&preview_runtime),
@@ -1807,21 +1781,18 @@ async fn automatic_display_output_skips_simulators_without_display_preview_subsc
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
-    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let spatial_engine = SpatialService::new(SpatialEngine::new(layout_with_zones(vec![])));
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let display_frames = Arc::new(RwLock::new(DisplayFrameRuntime::new()));
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    {
-        let mut spatial = spatial_engine.write().await;
-        spatial.update_layout(layout_with_zones(vec![display_zone(
-            logical_id.as_str(),
-            NormalizedPosition::new(0.5, 0.5),
-            NormalizedPosition::new(1.0, 1.0),
-        )]));
-    }
+    spatial_engine.update_layout(layout_with_zones(vec![display_zone(
+        logical_id.as_str(),
+        NormalizedPosition::new(0.5, 0.5),
+        NormalizedPosition::new(1.0, 1.0),
+    )]));
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(
@@ -1854,7 +1825,7 @@ async fn automatic_display_output_skips_simulators_without_display_preview_subsc
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: Arc::clone(&spatial_engine),
+        spatial_engine: spatial_engine.clone(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
@@ -1880,21 +1851,18 @@ async fn automatic_display_output_reacts_when_simulator_preview_subscriber_appea
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
-    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let spatial_engine = SpatialService::new(SpatialEngine::new(layout_with_zones(vec![])));
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let display_frames = Arc::new(RwLock::new(DisplayFrameRuntime::new()));
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    {
-        let mut spatial = spatial_engine.write().await;
-        spatial.update_layout(layout_with_zones(vec![display_zone(
-            logical_id.as_str(),
-            NormalizedPosition::new(0.5, 0.5),
-            NormalizedPosition::new(1.0, 1.0),
-        )]));
-    }
+    spatial_engine.update_layout(layout_with_zones(vec![display_zone(
+        logical_id.as_str(),
+        NormalizedPosition::new(0.5, 0.5),
+        NormalizedPosition::new(1.0, 1.0),
+    )]));
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(
@@ -1927,7 +1895,7 @@ async fn automatic_display_output_reacts_when_simulator_preview_subscriber_appea
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: Arc::clone(&spatial_engine),
+        spatial_engine: spatial_engine.clone(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
@@ -1969,7 +1937,7 @@ async fn automatic_display_output_skips_devices_without_display_capabilities() {
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
-    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let spatial_engine = SpatialService::new(SpatialEngine::new(layout_with_zones(vec![])));
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
@@ -1993,7 +1961,7 @@ async fn automatic_display_output_skips_devices_without_display_capabilities() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: Arc::clone(&spatial_engine),
+        spatial_engine: spatial_engine.clone(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
@@ -2019,7 +1987,7 @@ async fn automatic_display_output_skips_display_devices_that_are_not_in_layout()
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
-    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let spatial_engine = SpatialService::new(SpatialEngine::new(layout_with_zones(vec![])));
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
@@ -2047,7 +2015,7 @@ async fn automatic_display_output_skips_display_devices_that_are_not_in_layout()
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: Arc::clone(&spatial_engine),
+        spatial_engine: spatial_engine.clone(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
@@ -2073,20 +2041,17 @@ async fn automatic_display_output_uses_layout_zone_viewport() {
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
-    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let spatial_engine = SpatialService::new(SpatialEngine::new(layout_with_zones(vec![])));
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    {
-        let mut spatial = spatial_engine.write().await;
-        spatial.update_layout(layout_with_zones(vec![display_zone(
-            logical_id.as_str(),
-            NormalizedPosition::new(0.25, 0.5),
-            NormalizedPosition::new(0.5, 1.0),
-        )]));
-    }
+    spatial_engine.update_layout(layout_with_zones(vec![display_zone(
+        logical_id.as_str(),
+        NormalizedPosition::new(0.25, 0.5),
+        NormalizedPosition::new(0.5, 1.0),
+    )]));
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
@@ -2111,7 +2076,7 @@ async fn automatic_display_output_uses_layout_zone_viewport() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: Arc::clone(&spatial_engine),
+        spatial_engine: spatial_engine.clone(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
@@ -2149,7 +2114,7 @@ async fn automatic_display_output_uses_logical_device_viewport_alias() {
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
-    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let spatial_engine = SpatialService::new(SpatialEngine::new(layout_with_zones(vec![])));
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
@@ -2171,14 +2136,11 @@ async fn automatic_display_output_uses_logical_device_viewport_alias() {
         );
     }
 
-    {
-        let mut spatial = spatial_engine.write().await;
-        spatial.update_layout(layout_with_zones(vec![display_zone(
-            logical_id.as_str(),
-            NormalizedPosition::new(0.25, 0.5),
-            NormalizedPosition::new(0.5, 1.0),
-        )]));
-    }
+    spatial_engine.update_layout(layout_with_zones(vec![display_zone(
+        logical_id.as_str(),
+        NormalizedPosition::new(0.25, 0.5),
+        NormalizedPosition::new(0.5, 1.0),
+    )]));
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
@@ -2203,7 +2165,7 @@ async fn automatic_display_output_uses_logical_device_viewport_alias() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: Arc::clone(&spatial_engine),
+        spatial_engine: spatial_engine.clone(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
@@ -2239,21 +2201,18 @@ async fn automatic_display_output_defaults_mixed_devices_to_full_canvas_without_
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
-    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let spatial_engine = SpatialService::new(SpatialEngine::new(layout_with_zones(vec![])));
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    {
-        let mut spatial = spatial_engine.write().await;
-        spatial.update_layout(layout_with_zones(vec![led_zone(
-            logical_id.as_str(),
-            "Pads",
-            NormalizedPosition::new(0.25, 0.5),
-            NormalizedPosition::new(0.5, 1.0),
-        )]));
-    }
+    spatial_engine.update_layout(layout_with_zones(vec![led_zone(
+        logical_id.as_str(),
+        "Pads",
+        NormalizedPosition::new(0.25, 0.5),
+        NormalizedPosition::new(0.5, 1.0),
+    )]));
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
@@ -2278,7 +2237,7 @@ async fn automatic_display_output_defaults_mixed_devices_to_full_canvas_without_
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: Arc::clone(&spatial_engine),
+        spatial_engine: spatial_engine.clone(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
@@ -2315,7 +2274,7 @@ async fn display_group_canvas_routes_to_device_worker() {
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
-    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let spatial_engine = SpatialService::new(SpatialEngine::new(layout_with_zones(vec![])));
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
@@ -2346,7 +2305,7 @@ async fn display_group_canvas_routes_to_device_worker() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: Arc::clone(&spatial_engine),
+        spatial_engine: spatial_engine.clone(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
@@ -2392,7 +2351,7 @@ async fn automatic_display_output_updates_direct_faces_without_scene_canvas_tick
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
-    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let spatial_engine = SpatialService::new(SpatialEngine::new(layout_with_zones(vec![])));
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
@@ -2423,7 +2382,7 @@ async fn automatic_display_output_updates_direct_faces_without_scene_canvas_tick
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: Arc::clone(&spatial_engine),
+        spatial_engine: spatial_engine.clone(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
@@ -2473,7 +2432,7 @@ async fn display_preview_survives_display_face_worker_config_restart() {
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
-    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let spatial_engine = SpatialService::new(SpatialEngine::new(layout_with_zones(vec![])));
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let display_frames = Arc::new(RwLock::new(DisplayFrameRuntime::new()));
@@ -2505,7 +2464,7 @@ async fn display_preview_survives_display_face_worker_config_restart() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: Arc::clone(&spatial_engine),
+        spatial_engine: spatial_engine.clone(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
@@ -2571,7 +2530,7 @@ async fn display_group_alpha_blends_face_with_effect_canvas() {
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
-    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let spatial_engine = SpatialService::new(SpatialEngine::new(layout_with_zones(vec![])));
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
@@ -2610,7 +2569,7 @@ async fn display_group_alpha_blends_face_with_effect_canvas() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: Arc::clone(&spatial_engine),
+        spatial_engine: spatial_engine.clone(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
@@ -2660,7 +2619,7 @@ async fn display_group_alpha_composes_against_black_before_effect_frame() {
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
-    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let spatial_engine = SpatialService::new(SpatialEngine::new(layout_with_zones(vec![])));
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
@@ -2699,7 +2658,7 @@ async fn display_group_alpha_composes_against_black_before_effect_frame() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: Arc::clone(&spatial_engine),
+        spatial_engine: spatial_engine.clone(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
@@ -2756,7 +2715,7 @@ async fn display_output_uses_render_published_face_route_metadata() {
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
-    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let spatial_engine = SpatialService::new(SpatialEngine::new(layout_with_zones(vec![])));
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
@@ -2785,7 +2744,7 @@ async fn display_output_uses_render_published_face_route_metadata() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: Arc::clone(&spatial_engine),
+        spatial_engine: spatial_engine.clone(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
@@ -2843,7 +2802,7 @@ async fn display_group_replace_keeps_transparent_face_pixels_from_bleeding_effec
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
-    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let spatial_engine = SpatialService::new(SpatialEngine::new(layout_with_zones(vec![])));
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
@@ -2878,7 +2837,7 @@ async fn display_group_replace_keeps_transparent_face_pixels_from_bleeding_effec
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: Arc::clone(&spatial_engine),
+        spatial_engine: spatial_engine.clone(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
@@ -2922,7 +2881,7 @@ async fn alpha_display_faces_keep_default_30_fps_cadence_on_60_fps_devices() {
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
-    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let spatial_engine = SpatialService::new(SpatialEngine::new(layout_with_zones(vec![])));
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let display_write_times = Arc::new(Mutex::new(Vec::new()));
@@ -2964,7 +2923,7 @@ async fn alpha_display_faces_keep_default_30_fps_cadence_on_60_fps_devices() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: Arc::clone(&spatial_engine),
+        spatial_engine: spatial_engine.clone(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
@@ -3031,7 +2990,7 @@ async fn display_group_screen_blends_face_color_with_effect_canvas() {
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
-    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let spatial_engine = SpatialService::new(SpatialEngine::new(layout_with_zones(vec![])));
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
@@ -3070,7 +3029,7 @@ async fn display_group_screen_blends_face_color_with_effect_canvas() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: Arc::clone(&spatial_engine),
+        spatial_engine: spatial_engine.clone(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
@@ -3120,7 +3079,7 @@ async fn display_group_tint_turns_face_into_effect_tinted_material() {
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
-    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let spatial_engine = SpatialService::new(SpatialEngine::new(layout_with_zones(vec![])));
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
@@ -3159,7 +3118,7 @@ async fn display_group_tint_turns_face_into_effect_tinted_material() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: Arc::clone(&spatial_engine),
+        spatial_engine: spatial_engine.clone(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
@@ -3209,7 +3168,7 @@ async fn display_group_luma_reveal_lets_bright_face_regions_adopt_effect_color()
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
-    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let spatial_engine = SpatialService::new(SpatialEngine::new(layout_with_zones(vec![])));
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
@@ -3248,7 +3207,7 @@ async fn display_group_luma_reveal_lets_bright_face_regions_adopt_effect_color()
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: Arc::clone(&spatial_engine),
+        spatial_engine: spatial_engine.clone(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
@@ -3298,20 +3257,17 @@ async fn automatic_display_output_drops_stale_frames_for_slow_displays() {
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
-    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let spatial_engine = SpatialService::new(SpatialEngine::new(layout_with_zones(vec![])));
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    {
-        let mut spatial = spatial_engine.write().await;
-        spatial.update_layout(layout_with_zones(vec![display_zone(
-            logical_id.as_str(),
-            NormalizedPosition::new(0.5, 0.5),
-            NormalizedPosition::new(1.0, 1.0),
-        )]));
-    }
+    spatial_engine.update_layout(layout_with_zones(vec![display_zone(
+        logical_id.as_str(),
+        NormalizedPosition::new(0.5, 0.5),
+        NormalizedPosition::new(1.0, 1.0),
+    )]));
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(
@@ -3336,7 +3292,7 @@ async fn automatic_display_output_drops_stale_frames_for_slow_displays() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: Arc::clone(&spatial_engine),
+        spatial_engine: spatial_engine.clone(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
@@ -3397,20 +3353,17 @@ async fn automatic_display_output_uses_latest_pending_frame_for_paced_writes() {
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
-    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let spatial_engine = SpatialService::new(SpatialEngine::new(layout_with_zones(vec![])));
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    {
-        let mut spatial = spatial_engine.write().await;
-        spatial.update_layout(layout_with_zones(vec![display_zone(
-            logical_id.as_str(),
-            NormalizedPosition::new(0.5, 0.5),
-            NormalizedPosition::new(1.0, 1.0),
-        )]));
-    }
+    spatial_engine.update_layout(layout_with_zones(vec![display_zone(
+        logical_id.as_str(),
+        NormalizedPosition::new(0.5, 0.5),
+        NormalizedPosition::new(1.0, 1.0),
+    )]));
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
@@ -3435,7 +3388,7 @@ async fn automatic_display_output_uses_latest_pending_frame_for_paced_writes() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: Arc::clone(&spatial_engine),
+        spatial_engine: spatial_engine.clone(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
@@ -3492,20 +3445,17 @@ async fn automatic_display_output_keeps_paced_writes_moving_while_scene_keeps_ch
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
-    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let spatial_engine = SpatialService::new(SpatialEngine::new(layout_with_zones(vec![])));
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    {
-        let mut spatial = spatial_engine.write().await;
-        spatial.update_layout(layout_with_zones(vec![display_zone(
-            logical_id.as_str(),
-            NormalizedPosition::new(0.5, 0.5),
-            NormalizedPosition::new(1.0, 1.0),
-        )]));
-    }
+    spatial_engine.update_layout(layout_with_zones(vec![display_zone(
+        logical_id.as_str(),
+        NormalizedPosition::new(0.5, 0.5),
+        NormalizedPosition::new(1.0, 1.0),
+    )]));
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
@@ -3532,7 +3482,7 @@ async fn automatic_display_output_keeps_paced_writes_moving_while_scene_keeps_ch
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: Arc::clone(&spatial_engine),
+        spatial_engine: spatial_engine.clone(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
@@ -3577,20 +3527,17 @@ async fn automatic_display_output_keeps_preview_frame_when_backend_write_fails()
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
-    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let spatial_engine = SpatialService::new(SpatialEngine::new(layout_with_zones(vec![])));
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_frames = Arc::new(RwLock::new(DisplayFrameRuntime::new()));
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    {
-        let mut spatial = spatial_engine.write().await;
-        spatial.update_layout(layout_with_zones(vec![display_zone(
-            logical_id.as_str(),
-            NormalizedPosition::new(0.5, 0.5),
-            NormalizedPosition::new(1.0, 1.0),
-        )]));
-    }
+    spatial_engine.update_layout(layout_with_zones(vec![display_zone(
+        logical_id.as_str(),
+        NormalizedPosition::new(0.5, 0.5),
+        NormalizedPosition::new(1.0, 1.0),
+    )]));
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(FailingDisplayBackend::new(device_id)));
@@ -3612,7 +3559,7 @@ async fn automatic_display_output_keeps_preview_frame_when_backend_write_fails()
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: Arc::clone(&spatial_engine),
+        spatial_engine: spatial_engine.clone(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
@@ -3647,21 +3594,18 @@ async fn automatic_display_output_retries_unchanged_frame_after_transient_write_
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
-    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let spatial_engine = SpatialService::new(SpatialEngine::new(layout_with_zones(vec![])));
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let display_write_attempt_times = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    {
-        let mut spatial = spatial_engine.write().await;
-        spatial.update_layout(layout_with_zones(vec![display_zone(
-            logical_id.as_str(),
-            NormalizedPosition::new(0.5, 0.5),
-            NormalizedPosition::new(1.0, 1.0),
-        )]));
-    }
+    spatial_engine.update_layout(layout_with_zones(vec![display_zone(
+        logical_id.as_str(),
+        NormalizedPosition::new(0.5, 0.5),
+        NormalizedPosition::new(1.0, 1.0),
+    )]));
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(
@@ -3690,7 +3634,7 @@ async fn automatic_display_output_retries_unchanged_frame_after_transient_write_
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: Arc::clone(&spatial_engine),
+        spatial_engine: spatial_engine.clone(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
@@ -3738,21 +3682,18 @@ async fn static_hold_failure_retries_unchanged_payload_after_frame_refresh() {
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
-    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let spatial_engine = SpatialService::new(SpatialEngine::new(layout_with_zones(vec![])));
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
     let sink = Arc::new(RecordingDisplaySink::new(Duration::ZERO));
     let fallback_write_count = Arc::new(AtomicUsize::new(0));
 
-    {
-        let mut spatial = spatial_engine.write().await;
-        spatial.update_layout(layout_with_zones(vec![display_zone(
-            logical_id.as_str(),
-            NormalizedPosition::new(0.5, 0.5),
-            NormalizedPosition::new(1.0, 1.0),
-        )]));
-    }
+    spatial_engine.update_layout(layout_with_zones(vec![display_zone(
+        logical_id.as_str(),
+        NormalizedPosition::new(0.5, 0.5),
+        NormalizedPosition::new(1.0, 1.0),
+    )]));
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(MultiDisplaySinkBackend::new(
@@ -3784,7 +3725,7 @@ async fn static_hold_failure_retries_unchanged_payload_after_frame_refresh() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: Arc::clone(&spatial_engine),
+        spatial_engine: spatial_engine.clone(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
@@ -3831,20 +3772,17 @@ async fn automatic_display_output_skips_unchanged_frames() {
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
-    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let spatial_engine = SpatialService::new(SpatialEngine::new(layout_with_zones(vec![])));
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    {
-        let mut spatial = spatial_engine.write().await;
-        spatial.update_layout(layout_with_zones(vec![display_zone(
-            logical_id.as_str(),
-            NormalizedPosition::new(0.5, 0.5),
-            NormalizedPosition::new(1.0, 1.0),
-        )]));
-    }
+    spatial_engine.update_layout(layout_with_zones(vec![display_zone(
+        logical_id.as_str(),
+        NormalizedPosition::new(0.5, 0.5),
+        NormalizedPosition::new(1.0, 1.0),
+    )]));
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
@@ -3869,7 +3807,7 @@ async fn automatic_display_output_skips_unchanged_frames() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: Arc::clone(&spatial_engine),
+        spatial_engine: spatial_engine.clone(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
@@ -3921,20 +3859,17 @@ async fn automatic_display_output_skips_metadata_only_owned_surface_updates() {
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
-    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let spatial_engine = SpatialService::new(SpatialEngine::new(layout_with_zones(vec![])));
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    {
-        let mut spatial = spatial_engine.write().await;
-        spatial.update_layout(layout_with_zones(vec![display_zone(
-            logical_id.as_str(),
-            NormalizedPosition::new(0.5, 0.5),
-            NormalizedPosition::new(1.0, 1.0),
-        )]));
-    }
+    spatial_engine.update_layout(layout_with_zones(vec![display_zone(
+        logical_id.as_str(),
+        NormalizedPosition::new(0.5, 0.5),
+        NormalizedPosition::new(1.0, 1.0),
+    )]));
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
@@ -3959,7 +3894,7 @@ async fn automatic_display_output_skips_metadata_only_owned_surface_updates() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: Arc::clone(&spatial_engine),
+        spatial_engine: spatial_engine.clone(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
@@ -3999,20 +3934,17 @@ async fn automatic_display_output_applies_device_brightness_before_encoding() {
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
-    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let spatial_engine = SpatialService::new(SpatialEngine::new(layout_with_zones(vec![])));
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    {
-        let mut spatial = spatial_engine.write().await;
-        spatial.update_layout(layout_with_zones(vec![display_zone(
-            logical_id.as_str(),
-            NormalizedPosition::new(0.5, 0.5),
-            NormalizedPosition::new(1.0, 1.0),
-        )]));
-    }
+    spatial_engine.update_layout(layout_with_zones(vec![display_zone(
+        logical_id.as_str(),
+        NormalizedPosition::new(0.5, 0.5),
+        NormalizedPosition::new(1.0, 1.0),
+    )]));
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
@@ -4037,7 +3969,7 @@ async fn automatic_display_output_applies_device_brightness_before_encoding() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: Arc::clone(&spatial_engine),
+        spatial_engine: spatial_engine.clone(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
@@ -4095,20 +4027,17 @@ async fn automatic_display_output_skips_repeated_zero_brightness_frames() {
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
-    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let spatial_engine = SpatialService::new(SpatialEngine::new(layout_with_zones(vec![])));
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    {
-        let mut spatial = spatial_engine.write().await;
-        spatial.update_layout(layout_with_zones(vec![display_zone(
-            logical_id.as_str(),
-            NormalizedPosition::new(0.5, 0.5),
-            NormalizedPosition::new(1.0, 1.0),
-        )]));
-    }
+    spatial_engine.update_layout(layout_with_zones(vec![display_zone(
+        logical_id.as_str(),
+        NormalizedPosition::new(0.5, 0.5),
+        NormalizedPosition::new(1.0, 1.0),
+    )]));
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
@@ -4133,7 +4062,7 @@ async fn automatic_display_output_skips_repeated_zero_brightness_frames() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: Arc::clone(&spatial_engine),
+        spatial_engine: spatial_engine.clone(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
@@ -4173,20 +4102,17 @@ async fn automatic_display_output_refreshes_cached_targets_when_layout_changes()
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
-    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let spatial_engine = SpatialService::new(SpatialEngine::new(layout_with_zones(vec![])));
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    {
-        let mut spatial = spatial_engine.write().await;
-        spatial.update_layout(layout_with_zones(vec![display_zone(
-            logical_id.as_str(),
-            NormalizedPosition::new(0.25, 0.5),
-            NormalizedPosition::new(0.5, 1.0),
-        )]));
-    }
+    spatial_engine.update_layout(layout_with_zones(vec![display_zone(
+        logical_id.as_str(),
+        NormalizedPosition::new(0.25, 0.5),
+        NormalizedPosition::new(0.5, 1.0),
+    )]));
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
@@ -4211,7 +4137,7 @@ async fn automatic_display_output_refreshes_cached_targets_when_layout_changes()
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: Arc::clone(&spatial_engine),
+        spatial_engine: spatial_engine.clone(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
@@ -4233,14 +4159,11 @@ async fn automatic_display_output_refreshes_cached_targets_when_layout_changes()
         "expected initial viewport to be red, got {first_pixel:?}"
     );
 
-    {
-        let mut spatial = spatial_engine.write().await;
-        spatial.update_layout(layout_with_zones(vec![display_zone(
-            logical_id.as_str(),
-            NormalizedPosition::new(0.75, 0.5),
-            NormalizedPosition::new(0.5, 1.0),
-        )]));
-    }
+    spatial_engine.update_layout(layout_with_zones(vec![display_zone(
+        logical_id.as_str(),
+        NormalizedPosition::new(0.75, 0.5),
+        NormalizedPosition::new(0.5, 1.0),
+    )]));
 
     event_bus
         .scene_canvas_sender()
@@ -4261,21 +4184,18 @@ async fn automatic_display_output_refreshes_cached_targets_when_display_face_rou
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
-    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let spatial_engine = SpatialService::new(SpatialEngine::new(layout_with_zones(vec![])));
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
     let group_id = ZoneId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    {
-        let mut spatial = spatial_engine.write().await;
-        spatial.update_layout(layout_with_zones(vec![display_zone(
-            logical_id.as_str(),
-            NormalizedPosition::new(0.5, 0.5),
-            NormalizedPosition::new(1.0, 1.0),
-        )]));
-    }
+    spatial_engine.update_layout(layout_with_zones(vec![display_zone(
+        logical_id.as_str(),
+        NormalizedPosition::new(0.5, 0.5),
+        NormalizedPosition::new(1.0, 1.0),
+    )]));
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
@@ -4300,7 +4220,7 @@ async fn automatic_display_output_refreshes_cached_targets_when_display_face_rou
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: Arc::clone(&spatial_engine),
+        spatial_engine: spatial_engine.clone(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
@@ -4348,21 +4268,18 @@ async fn automatic_display_output_refreshes_static_hold_frames_while_sleeping() 
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
-    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let spatial_engine = SpatialService::new(SpatialEngine::new(layout_with_zones(vec![])));
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
     let (power_tx, power_state) = watch::channel(OutputPowerState::default());
 
-    {
-        let mut spatial = spatial_engine.write().await;
-        spatial.update_layout(layout_with_zones(vec![display_zone(
-            logical_id.as_str(),
-            NormalizedPosition::new(0.5, 0.5),
-            NormalizedPosition::new(1.0, 1.0),
-        )]));
-    }
+    spatial_engine.update_layout(layout_with_zones(vec![display_zone(
+        logical_id.as_str(),
+        NormalizedPosition::new(0.5, 0.5),
+        NormalizedPosition::new(1.0, 1.0),
+    )]));
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
@@ -4387,7 +4304,7 @@ async fn automatic_display_output_refreshes_static_hold_frames_while_sleeping() 
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
-        spatial_engine: Arc::clone(&spatial_engine),
+        spatial_engine: spatial_engine.clone(),
         logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
         preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),

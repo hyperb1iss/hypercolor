@@ -2160,7 +2160,7 @@ impl PipelineRuntime {
         #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
         macos_screen_parity_mailbox: MacosScreenParityDiagnosticMailbox,
     ) -> Result<Self> {
-        let initial_spatial_engine = state.spatial_engine.read().await.clone();
+        let initial_spatial_engine = state.spatial_engine.snapshot().as_ref().clone();
         let pipeline = Self::new_with_gpu_device(
             state.canvas_dims.width(),
             state.canvas_dims.height(),

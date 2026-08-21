@@ -27,7 +27,6 @@ use hypercolor_core::effect::EffectRegistry;
 use hypercolor_core::engine::RenderLoop;
 use hypercolor_core::input::screen::ScreenCapacityStatusHandle;
 use hypercolor_core::input::{InputManager, SourceStatusRegistry};
-use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_driver_api::CredentialStore;
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::HypercolorConfig;
@@ -42,6 +41,7 @@ use crate::discovery;
 use crate::display_output::DisplayOutputThread;
 use crate::display_preferences::DisplayPreferencesStore;
 use crate::domain::scene::SceneService;
+use crate::domain::spatial::SpatialService;
 use crate::extensions::{ApiExtension, DaemonLifecycleExtension, ExtensionRegistry};
 use crate::interaction_routing::InteractionRoutingControl;
 use crate::layout_auto_exclusions;
@@ -144,7 +144,7 @@ pub struct DaemonState {
     pub configured_max_fps_tier: ConfiguredFpsTier,
 
     /// Spatial sampling engine — maps canvas pixels to LED positions.
-    pub spatial_engine: Arc<RwLock<SpatialEngine>>,
+    pub spatial_engine: SpatialService,
 
     /// Device backend router — pushes colors to hardware.
     pub backend_manager: Arc<Mutex<BackendManager>>,

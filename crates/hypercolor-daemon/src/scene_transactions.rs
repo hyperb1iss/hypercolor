@@ -4,13 +4,14 @@ use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 
 use thiserror::Error;
-use tokio::sync::{Mutex, OwnedMutexGuard, RwLock, oneshot};
+use tokio::sync::{Mutex, OwnedMutexGuard, oneshot};
 
 use hypercolor_core::spatial::{SpatialEngine, SpatialPlanError};
 use hypercolor_types::scene::{SceneId, UnassignedBehavior, Zone};
 use hypercolor_types::spatial::SpatialLayout;
 
 use crate::domain::scene::SceneService;
+use crate::domain::spatial::SpatialService;
 
 #[derive(Debug, Clone, Error, PartialEq, Eq)]
 pub enum LayoutTransactionRejection {
@@ -164,7 +165,7 @@ impl PrepareLayoutTransaction {
     #[doc(hidden)]
     pub async fn accept_and_publish_for_test<F, Fut>(
         self,
-        spatial_engine: &Arc<RwLock<SpatialEngine>>,
+        spatial_engine: &SpatialService,
         scene_manager: &SceneService,
         before_publication: F,
     ) -> Result<(), LayoutTransactionRejection>
@@ -505,7 +506,7 @@ impl LayoutTransactionReceipt {
 }
 
 pub(crate) async fn publish_prepared_layout_activation<F>(
-    spatial_engine: &Arc<RwLock<SpatialEngine>>,
+    spatial_engine: &SpatialService,
     scene_manager: &SceneService,
     candidate_spatial_engine: SpatialEngine,
     expected_layout: &SpatialLayout,
@@ -534,7 +535,7 @@ where
 }
 
 pub async fn apply_prepared_layout_update_under_guard(
-    spatial_engine: Arc<RwLock<SpatialEngine>>,
+    spatial_engine: SpatialService,
     scene_manager: SceneService,
     scene_transactions: SceneTransactionQueue,
     guard: &LayoutUpdateGuard,
@@ -552,7 +553,7 @@ pub async fn apply_prepared_layout_update_under_guard(
 }
 
 pub(crate) async fn apply_prepared_layout_update_under_guard_with_persistence<F, Fut>(
-    spatial_engine: Arc<RwLock<SpatialEngine>>,
+    spatial_engine: SpatialService,
     scene_manager: SceneService,
     scene_transactions: SceneTransactionQueue,
     guard: &LayoutUpdateGuard,
@@ -576,7 +577,7 @@ where
             unassigned_behavior,
         ) = {
             let manager = scene_manager.snapshot().await;
-            let authoritative_spatial_engine = spatial_engine.read().await;
+            let authoritative_spatial_engine = spatial_engine.snapshot();
             let (active_render_groups, active_render_groups_revision) =
                 manager.active_render_groups_for_primary_layout(prepared_engine.layout().as_ref());
             (
@@ -651,7 +652,7 @@ where
 }
 
 pub async fn apply_layout_update(
-    spatial_engine: &Arc<RwLock<SpatialEngine>>,
+    spatial_engine: &SpatialService,
     scene_manager: &SceneService,
     scene_transactions: &SceneTransactionQueue,
     layout: SpatialLayout,
@@ -659,7 +660,7 @@ pub async fn apply_layout_update(
     let guard = scene_transactions.acquire_layout_update_guard().await;
     let prepared = PreparedLayoutUpdate::try_new(layout)?;
     apply_prepared_layout_update_under_guard(
-        Arc::clone(spatial_engine),
+        spatial_engine.clone(),
         scene_manager.clone(),
         scene_transactions.clone(),
         &guard,

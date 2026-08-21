@@ -69,7 +69,7 @@ fn blank_patch() -> ZoneMetaPatch {
 async fn seeded_scene(state: &AppState) -> SceneId {
     let mut scene = named_scene("studio");
     let layout = {
-        let spatial = state.spatial_engine.read().await;
+        let spatial = state.spatial_engine.snapshot();
         spatial.layout().as_ref().clone()
     };
     scene
@@ -261,7 +261,7 @@ async fn delete_zone_removes_it_and_announces_the_removal() {
     let created = create_zone(&state, create_command("Desk"), MutationContext::api())
         .await
         .expect("zone should be created");
-    let preview_layout = state.spatial_engine.read().await.layout().as_ref().clone();
+    let preview_layout = state.spatial_engine.snapshot().layout().as_ref().clone();
     state
         .zone_layout_previews
         .set(

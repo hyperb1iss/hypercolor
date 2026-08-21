@@ -370,7 +370,7 @@ async fn hello_handshake_names_the_scene_but_not_its_contents() {
     let effect = insert_test_effect(&state, "Aurora").await;
     let preset_id = PresetId::stable("calm");
     let layout = {
-        let spatial = state.spatial_engine.read().await;
+        let spatial = state.spatial_engine.snapshot();
         spatial.layout().as_ref().clone()
     };
     let mut mutation = state.scene_manager.begin_mutation().await;

@@ -194,7 +194,7 @@ pub async fn list_layouts(
     let offset = query.offset.unwrap_or(0);
 
     let active_layout_id = {
-        let spatial = state.spatial_engine.read().await;
+        let spatial = state.spatial_engine.snapshot();
         spatial.layout().id.clone()
     };
     let layouts = state.layouts.read().await;
@@ -248,7 +248,7 @@ pub async fn get_layout(State(state): State<Arc<AppState>>, Path(id): Path<Strin
 /// `GET /api/v1/layouts/active` — Get currently active layout.
 pub async fn get_active_layout(State(state): State<Arc<AppState>>) -> Response {
     let active = {
-        let spatial = state.spatial_engine.read().await;
+        let spatial = state.spatial_engine.snapshot();
         spatial.layout().as_ref().clone()
     };
     envelope::ok(active)
@@ -278,7 +278,7 @@ async fn create_layout_workflow(state: Arc<AppState>, body: CreateLayoutRequest)
         .await;
     let guard = state.scene_transactions.acquire_layout_update_guard().await;
     let (default_canvas_width, default_canvas_height) = {
-        let spatial = state.spatial_engine.read().await;
+        let spatial = state.spatial_engine.snapshot();
         let layout = spatial.layout();
         (layout.canvas_width, layout.canvas_height)
     };
@@ -379,7 +379,7 @@ async fn update_layout_workflow(
         .await;
     let guard = state.scene_transactions.acquire_layout_update_guard().await;
     let active_layout_id = {
-        let spatial = state.spatial_engine.read().await;
+        let spatial = state.spatial_engine.snapshot();
         spatial.layout().id.clone()
     };
     let mut layouts = state.layouts.write().await;
@@ -561,7 +561,7 @@ async fn preview_layout_workflow(state: Arc<AppState>, layout: SpatialLayout) ->
         Err(error) => return layout_update_error_response(error.into()),
     };
     if let Err(error) = crate::scene_transactions::apply_prepared_layout_update_under_guard(
-        Arc::clone(&state.spatial_engine),
+        state.spatial_engine.clone(),
         state.scene_manager.clone(),
         state.scene_transactions.clone(),
         &guard,
@@ -613,7 +613,7 @@ async fn delete_layout_workflow(state: Arc<AppState>, id: String) -> Response {
         .await;
     let guard = state.scene_transactions.acquire_layout_update_guard().await;
     let active_layout = {
-        let spatial = state.spatial_engine.read().await;
+        let spatial = state.spatial_engine.snapshot();
         spatial.layout().as_ref().clone()
     };
     let mut layouts = state.layouts.write().await;
@@ -748,7 +748,7 @@ async fn admit_persisted_layout_update_under_guard(
     let prepared = PreparedLayoutUpdate::try_new(layout)?;
     let persistence_context = LayoutPersistenceContext::from_state(state);
     apply_prepared_layout_update_under_guard_with_persistence(
-        Arc::clone(&state.spatial_engine),
+        state.spatial_engine.clone(),
         state.scene_manager.clone(),
         state.scene_transactions.clone(),
         guard,

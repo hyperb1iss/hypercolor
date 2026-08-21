@@ -24,7 +24,7 @@ use hypercolor_core::bus::{
     CanvasFrame, DisplayGroupFrame, DisplayGroupOutputRoute, DisplayGroupViewport, HypercolorBus,
 };
 use hypercolor_core::device::{BackendManager, DeviceRegistry};
-use hypercolor_core::spatial::{SpatialEngine, is_display_zone};
+use hypercolor_core::spatial::is_display_zone;
 use hypercolor_types::canvas::PublishedSurfaceStorageIdentity;
 use hypercolor_types::device::{DeviceId, DeviceTopologyHint, DisplayFrameFormat};
 use hypercolor_types::scene::{DisplayFaceBlendMode, DisplayFaceTarget, ZoneId};
@@ -32,6 +32,7 @@ use hypercolor_types::spatial::{EdgeBehavior, NormalizedPosition, SpatialLayout}
 
 use self::render::display_viewport_signature;
 use crate::display_frames::DisplayFrameRuntime;
+use crate::domain::spatial::SpatialService;
 use crate::logical_devices::LogicalDevice;
 use crate::preview_runtime::{PreviewFrameReceiver, PreviewRuntime};
 use crate::session::OutputPowerState;
@@ -61,7 +62,7 @@ pub struct DisplayOutputState {
     /// Live registry used to discover currently renderable display devices.
     pub device_registry: DeviceRegistry,
     /// Active spatial layout used to decide which LCDs should render and how.
-    pub spatial_engine: Arc<RwLock<SpatialEngine>>,
+    pub spatial_engine: SpatialService,
     /// Logical-device mappings used to match physical devices to layout zones.
     pub logical_devices: Arc<RwLock<HashMap<String, LogicalDevice>>>,
     /// Event bus canvas stream produced by the render thread.
@@ -675,17 +676,14 @@ fn retire_display_worker(
 
 async fn display_targets(
     registry: &DeviceRegistry,
-    spatial_engine: &Arc<RwLock<SpatialEngine>>,
+    spatial_engine: &SpatialService,
     logical_devices: &Arc<RwLock<HashMap<String, LogicalDevice>>>,
     event_bus: &Arc<HypercolorBus>,
     display_frames: &Arc<RwLock<DisplayFrameRuntime>>,
     cache: &mut DisplayTargetCache,
     face_fps_cap: u32,
 ) -> DisplayTargetsSnapshot {
-    let layout = {
-        let spatial = spatial_engine.read().await;
-        spatial.layout()
-    };
+    let layout = { spatial_engine.layout() };
     let (display_group_targets_revision, published_display_group_targets) =
         event_bus.display_group_targets_snapshot();
     let logical_store = logical_devices.read().await;

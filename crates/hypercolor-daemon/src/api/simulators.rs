@@ -308,7 +308,7 @@ async fn prune_simulator_layout_targets(state: &Arc<AppState>, device_id: Device
     target_ids.insert(format!("simulator:{physical_id}"));
 
     let active_layout_id = {
-        let spatial = state.spatial_engine.read().await;
+        let spatial = state.spatial_engine.snapshot();
         spatial.layout().id.clone()
     };
 
@@ -342,7 +342,7 @@ async fn prune_simulator_layout_targets(state: &Arc<AppState>, device_id: Device
         match PreparedLayoutUpdate::try_new(layout) {
             Ok(prepared) => {
                 if let Err(error) = apply_prepared_layout_update_under_guard(
-                    Arc::clone(&state.spatial_engine),
+                    state.spatial_engine.clone(),
                     state.scene_manager.clone(),
                     state.scene_transactions.clone(),
                     &guard,

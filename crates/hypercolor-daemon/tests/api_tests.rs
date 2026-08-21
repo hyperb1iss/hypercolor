@@ -1091,7 +1091,7 @@ where
                     match transaction {
                         SceneTransaction::PrepareLayout(transaction) => {
                             applied.push(transaction.spatial_engine().layout().as_ref().clone());
-                            let spatial_engine = Arc::clone(&state.spatial_engine);
+                            let spatial_engine = state.spatial_engine.clone();
                             let scene_manager = state.scene_manager.clone();
                             let before_publication = before_publication.clone();
                             publications.push(tokio::spawn(async move {
@@ -1281,7 +1281,7 @@ async fn seed_stale_auto_layout_zone(state: &AppState, device_id: &DeviceId) -> 
     let fingerprint = state.device_registry.fingerprint_for_id(device_id).await;
     let layout_device_id =
         DeviceLifecycleManager::canonical_layout_device_id(&tracked.info, fingerprint.as_ref());
-    let mut layout = state.spatial_engine.read().await.layout().as_ref().clone();
+    let mut layout = state.spatial_engine.snapshot().layout().as_ref().clone();
     assert_eq!(
         hypercolor_daemon::discovery::append_auto_layout_zones_for_device(
             &mut layout,
@@ -1306,7 +1306,7 @@ async fn seed_stale_auto_layout_zone(state: &AppState, device_id: &DeviceId) -> 
         1,
         "seeded auto-layout zone should require repair"
     );
-    state.spatial_engine.write().await.update_layout(layout);
+    state.spatial_engine.update_layout(layout);
     layout_device_id
 }
 
@@ -2556,10 +2556,7 @@ async fn config_set_render_canvas_updates_active_layout_dimensions() {
     state.config_manager = Some(config_manager);
 
     let active_layout = {
-        let spatial = state
-            .spatial_engine
-            .try_read()
-            .expect("spatial engine should not be contended");
+        let spatial = state.spatial_engine.snapshot();
         spatial.layout().as_ref().clone()
     };
     {
@@ -2593,7 +2590,7 @@ async fn config_set_render_canvas_updates_active_layout_dimensions() {
     }
 
     {
-        let spatial = state.spatial_engine.read().await;
+        let spatial = state.spatial_engine.snapshot();
         assert_eq!(spatial.layout().canvas_width, 1024);
         assert_eq!(spatial.layout().canvas_height, 768);
     }
@@ -4058,8 +4055,7 @@ async fn set_layout_targeting_device(state: &AppState, layout_device_id: &str, l
         spaces: None,
         version: 1,
     };
-    let mut spatial = state.spatial_engine.write().await;
-    spatial.update_layout(layout);
+    state.spatial_engine.update_layout(layout);
 }
 
 // ── Devices ──────────────────────────────────────────────────────────────
@@ -5992,8 +5988,7 @@ async fn pause_blacks_connected_device_outside_active_layout() {
     assert!(
         state
             .spatial_engine
-            .read()
-            .await
+            .snapshot()
             .layout()
             .zones
             .iter()
@@ -7753,7 +7748,7 @@ async fn layout_create_defaults_canvas_to_active_layout_dimensions() {
     let app = test_app_with_state(Arc::clone(&state));
 
     let active_layout = {
-        let spatial = state.spatial_engine.read().await;
+        let spatial = state.spatial_engine.snapshot();
         spatial.layout().as_ref().clone()
     };
 
@@ -7926,7 +7921,7 @@ async fn layout_apply_converges_a_concurrent_driver_runtime_update() {
     let candidate = SpatialLayout {
         id: "converged-layout".to_owned(),
         name: "Converged Layout".to_owned(),
-        ..state.spatial_engine.read().await.layout().as_ref().clone()
+        ..state.spatial_engine.snapshot().layout().as_ref().clone()
     };
     state
         .layouts
@@ -7975,7 +7970,7 @@ async fn layout_apply_converges_a_concurrent_driver_runtime_update() {
 #[tokio::test]
 async fn layout_apply_returns_conflict_when_precommit_is_superseded() {
     let (mut state, _tmp) = isolated_state_with_tempdir();
-    let initial_layout_id = state.spatial_engine.read().await.layout().id.clone();
+    let initial_layout_id = state.spatial_engine.snapshot().layout().id.clone();
     let entered = Arc::new(Notify::new());
     let release = Arc::new(Semaphore::new(0));
     let mut registry = DriverModuleRegistry::new();
@@ -7990,7 +7985,7 @@ async fn layout_apply_returns_conflict_when_precommit_is_superseded() {
     let candidate = SpatialLayout {
         id: "superseded-layout".to_owned(),
         name: "Superseded Layout".to_owned(),
-        ..state.spatial_engine.read().await.layout().as_ref().clone()
+        ..state.spatial_engine.snapshot().layout().as_ref().clone()
     };
     state
         .layouts
@@ -8029,7 +8024,7 @@ async fn layout_apply_returns_conflict_when_precommit_is_superseded() {
 
     assert_eq!(response.status(), StatusCode::CONFLICT);
     assert_eq!(
-        state.spatial_engine.read().await.layout().id,
+        state.spatial_engine.snapshot().layout().id,
         initial_layout_id
     );
 }
@@ -8056,7 +8051,7 @@ async fn layout_apply_maps_renderer_rejections_to_explicit_statuses() {
         let candidate = SpatialLayout {
             id: "rejected-apply".to_owned(),
             name: "Rejected Apply".to_owned(),
-            ..state.spatial_engine.read().await.layout().as_ref().clone()
+            ..state.spatial_engine.snapshot().layout().as_ref().clone()
         };
         state
             .layouts
@@ -8103,7 +8098,7 @@ async fn layout_preview_maps_renderer_rejections_to_explicit_statuses() {
         let preview = SpatialLayout {
             id: "rejected-preview".to_owned(),
             name: "Rejected Preview".to_owned(),
-            ..state.spatial_engine.read().await.layout().as_ref().clone()
+            ..state.spatial_engine.snapshot().layout().as_ref().clone()
         };
         let app = test_app_with_state(Arc::clone(&state));
 
@@ -8134,7 +8129,7 @@ async fn layout_apply_maps_persistence_failure_to_internal_error() {
     let candidate = SpatialLayout {
         id: "persistence-failure".to_owned(),
         name: "Persistence Failure".to_owned(),
-        ..state.spatial_engine.read().await.layout().as_ref().clone()
+        ..state.spatial_engine.snapshot().layout().as_ref().clone()
     };
     state
         .layouts
@@ -8164,7 +8159,7 @@ async fn layout_apply_returns_accepted_when_convergence_retry_is_armed() {
     let candidate = SpatialLayout {
         id: "pending-layout".to_owned(),
         name: "Pending Layout".to_owned(),
-        ..state.spatial_engine.read().await.layout().as_ref().clone()
+        ..state.spatial_engine.snapshot().layout().as_ref().clone()
     };
     state
         .layouts
@@ -8198,7 +8193,7 @@ async fn layout_apply_returns_accepted_when_convergence_retry_is_armed() {
     let json = body_json(response).await;
     assert_eq!(json["data"]["applied"], true);
     assert_eq!(json["data"]["persistence_pending"], true);
-    assert_eq!(state.spatial_engine.read().await.layout().id, candidate.id);
+    assert_eq!(state.spatial_engine.snapshot().layout().id, candidate.id);
     cleanup.reset_and_flush();
 }
 
@@ -8209,7 +8204,7 @@ async fn concurrent_apply_and_delete_cannot_activate_a_removed_layout() {
     let candidate = SpatialLayout {
         id: "concurrent-apply-delete".to_owned(),
         name: "Concurrent Apply Delete".to_owned(),
-        ..state.spatial_engine.read().await.layout().as_ref().clone()
+        ..state.spatial_engine.snapshot().layout().as_ref().clone()
     };
     state
         .layouts
@@ -8277,7 +8272,7 @@ async fn concurrent_apply_and_delete_cannot_activate_a_removed_layout() {
         .expect("layout publication worker should not panic");
 
     assert!(!state.layouts.read().await.contains_key(&candidate.id));
-    assert_ne!(state.spatial_engine.read().await.layout().id, candidate.id);
+    assert_ne!(state.spatial_engine.snapshot().layout().id, candidate.id);
     let persisted = runtime_state::load(&state.runtime_state_path)
         .expect("runtime state should load")
         .expect("runtime state should exist");
@@ -8363,7 +8358,7 @@ async fn layout_delete_active_falls_back_to_default_layout() {
 #[tokio::test]
 async fn concurrent_active_and_fallback_deletes_cannot_publish_removed_fallback() {
     let (state, _tmp) = test_state_with_temp_layout_and_runtime_store();
-    let active = state.spatial_engine.read().await.layout().as_ref().clone();
+    let active = state.spatial_engine.snapshot().layout().as_ref().clone();
     let fallback = SpatialLayout {
         id: "fallback-delete-race".to_owned(),
         name: "Fallback Delete Race".to_owned(),
@@ -8441,7 +8436,7 @@ async fn concurrent_active_and_fallback_deletes_cannot_publish_removed_fallback(
         .expect("layout publication worker should not panic");
 
     assert!(!state.layouts.read().await.contains_key(&fallback.id));
-    assert_ne!(state.spatial_engine.read().await.layout().id, fallback.id);
+    assert_ne!(state.spatial_engine.snapshot().layout().id, fallback.id);
     let persisted = runtime_state::load(&state.runtime_state_path)
         .expect("runtime state should load")
         .expect("runtime state should exist");
@@ -8457,7 +8452,7 @@ async fn layout_preview_never_persists_runtime_state() {
     let preview = SpatialLayout {
         id: "preview-only".to_owned(),
         name: "Preview Only".to_owned(),
-        ..state.spatial_engine.read().await.layout().as_ref().clone()
+        ..state.spatial_engine.snapshot().layout().as_ref().clone()
     };
     let app = test_app_with_state(Arc::clone(&state));
 
@@ -8476,7 +8471,7 @@ async fn layout_preview_never_persists_runtime_state() {
     .await;
 
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(state.spatial_engine.read().await.layout().id, preview.id);
+    assert_eq!(state.spatial_engine.snapshot().layout().id, preview.id);
     assert!(!state.runtime_state_path.exists());
 }
 
@@ -8519,7 +8514,7 @@ async fn layout_store_write_failure_rolls_back_update() {
     let stored = SpatialLayout {
         id: "failed-update".to_owned(),
         name: "Before Update".to_owned(),
-        ..state.spatial_engine.read().await.layout().as_ref().clone()
+        ..state.spatial_engine.snapshot().layout().as_ref().clone()
     };
     state
         .layouts
@@ -8560,7 +8555,7 @@ async fn layout_store_write_failure_rolls_back_inactive_delete() {
     let stored = SpatialLayout {
         id: "failed-inactive-delete".to_owned(),
         name: "Failed Inactive Delete".to_owned(),
-        ..state.spatial_engine.read().await.layout().as_ref().clone()
+        ..state.spatial_engine.snapshot().layout().as_ref().clone()
     };
     state
         .layouts
@@ -8597,7 +8592,7 @@ async fn layout_store_write_failure_rolls_back_inactive_delete() {
 #[tokio::test]
 async fn layout_store_write_failure_rolls_back_active_delete() {
     let (state, _tmp) = test_state_with_temp_layout_and_runtime_store();
-    let active = state.spatial_engine.read().await.layout().as_ref().clone();
+    let active = state.spatial_engine.snapshot().layout().as_ref().clone();
     let fallback = SpatialLayout {
         id: "failed-active-delete-fallback".to_owned(),
         name: "Failed Active Delete Fallback".to_owned(),
@@ -8628,7 +8623,7 @@ async fn layout_store_write_failure_rolls_back_active_delete() {
 
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(applied.len(), 2);
-    assert_eq!(state.spatial_engine.read().await.layout().id, active.id);
+    assert_eq!(state.spatial_engine.snapshot().layout().id, active.id);
     assert_eq!(state.layouts.read().await.get(&active.id), Some(&active));
     let persisted = hypercolor_daemon::layout_store::load(&state.layouts_path)
         .expect("layout store should load");
@@ -8706,7 +8701,7 @@ async fn layout_mutation_cancellation_finishes_update() {
     let stored = SpatialLayout {
         id: "cancellation-update".to_owned(),
         name: "Before Cancellation Update".to_owned(),
-        ..state.spatial_engine.read().await.layout().as_ref().clone()
+        ..state.spatial_engine.snapshot().layout().as_ref().clone()
     };
     state
         .layouts
@@ -8771,7 +8766,7 @@ async fn layout_mutation_cancellation_finishes_apply_convergence() {
     let candidate = SpatialLayout {
         id: "cancellation-apply".to_owned(),
         name: "Cancellation Apply".to_owned(),
-        ..state.spatial_engine.read().await.layout().as_ref().clone()
+        ..state.spatial_engine.snapshot().layout().as_ref().clone()
     };
     state
         .layouts
@@ -8817,7 +8812,7 @@ async fn layout_mutation_cancellation_finishes_apply_convergence() {
         let state = Arc::clone(&durable_state);
         let durable_id = durable_id.clone();
         async move {
-            if state.spatial_engine.read().await.layout().id != durable_id {
+            if state.spatial_engine.snapshot().layout().id != durable_id {
                 return false;
             }
             runtime_state::load(&state.runtime_state_path)
@@ -8835,7 +8830,7 @@ async fn layout_mutation_cancellation_finishes_apply_convergence() {
 #[tokio::test]
 async fn layout_mutation_cancellation_finishes_delete() {
     let (state, _tmp) = test_state_with_temp_layout_and_runtime_store();
-    let active = state.spatial_engine.read().await.layout().as_ref().clone();
+    let active = state.spatial_engine.snapshot().layout().as_ref().clone();
     let fallback = SpatialLayout {
         id: "cancellation-delete-fallback".to_owned(),
         name: "Cancellation Delete Fallback".to_owned(),
@@ -8889,7 +8884,7 @@ async fn layout_mutation_cancellation_finishes_delete() {
         let durable_id = durable_id.clone();
         async move {
             if state.layouts.read().await.contains_key(&removed_id)
-                || state.spatial_engine.read().await.layout().id != durable_id
+                || state.spatial_engine.snapshot().layout().id != durable_id
             {
                 return false;
             }
@@ -8923,7 +8918,7 @@ async fn layout_mutation_cancellation_finishes_preview_connectivity_sync() {
     let preview = SpatialLayout {
         id: "cancellation-preview".to_owned(),
         name: "Cancellation Preview".to_owned(),
-        ..state.spatial_engine.read().await.layout().as_ref().clone()
+        ..state.spatial_engine.snapshot().layout().as_ref().clone()
     };
     let after_renderer = state.layout_mutation_test_hooks.install(
         LayoutMutationTestPoint::AfterRendererMutation,
@@ -8963,7 +8958,7 @@ async fn layout_mutation_cancellation_finishes_preview_connectivity_sync() {
     after_renderer.release();
     after_workflow.wait_until_entered().await;
     assert_eq!(
-        state.spatial_engine.read().await.layout().id,
+        state.spatial_engine.snapshot().layout().id,
         "cancellation-preview"
     );
     assert!(
@@ -8998,7 +8993,7 @@ async fn assert_auto_layout_store_failure_rolls_back(saved_layout_present: bool)
         .set_state(&device_id, DeviceState::Connected)
         .await;
     seed_stale_auto_layout_zone(&state, &device_id).await;
-    let active = state.spatial_engine.read().await.layout().as_ref().clone();
+    let active = state.spatial_engine.snapshot().layout().as_ref().clone();
     if saved_layout_present {
         state
             .layouts
@@ -9023,7 +9018,7 @@ async fn assert_auto_layout_store_failure_rolls_back(saved_layout_present: bool)
     assert_eq!(applied.len(), 2);
     assert!(!applied[0].zones.is_empty());
     assert_eq!(applied[1], active);
-    assert_eq!(state.spatial_engine.read().await.layout().as_ref(), &active);
+    assert_eq!(state.spatial_engine.snapshot().layout().as_ref(), &active);
     let layouts = state.layouts.read().await;
     assert_eq!(
         layouts.get(&active.id),
@@ -9062,7 +9057,7 @@ async fn layout_auto_repair_store_failure_preserves_absent_saved_layout() {
 #[tokio::test]
 async fn layout_mutation_cancellation_finishes_config_canvas_resize() {
     let (state, _tmp) = test_state_with_temp_layout_config_and_simulator_stores();
-    let active = state.spatial_engine.read().await.layout().as_ref().clone();
+    let active = state.spatial_engine.snapshot().layout().as_ref().clone();
     state
         .layouts
         .write()
@@ -9136,7 +9131,7 @@ async fn layout_mutation_cancellation_finishes_simulator_pruning() {
             circular: false,
             enabled: true,
         });
-    let mut stored = state.spatial_engine.read().await.layout().as_ref().clone();
+    let mut stored = state.spatial_engine.snapshot().layout().as_ref().clone();
     stored.id = "cancellation-simulator-prune".to_owned();
     stored.name = "Cancellation Simulator Prune".to_owned();
     stored.zones = vec![simulator_target_output(device_id)];
@@ -9201,7 +9196,7 @@ async fn layout_mutation_cancellation_finishes_simulator_pruning() {
 #[tokio::test]
 async fn layout_update_compensation_cannot_erase_config_canvas_resize() {
     let (state, _tmp) = test_state_with_temp_layout_config_and_simulator_stores();
-    let active = state.spatial_engine.read().await.layout().as_ref().clone();
+    let active = state.spatial_engine.snapshot().layout().as_ref().clone();
     state
         .layouts
         .write()
@@ -9304,7 +9299,7 @@ async fn layout_update_compensation_cannot_erase_simulator_pruning() {
             circular: false,
             enabled: true,
         });
-    let mut stored = state.spatial_engine.read().await.layout().as_ref().clone();
+    let mut stored = state.spatial_engine.snapshot().layout().as_ref().clone();
     stored.id = "simulator-prune-collision".to_owned();
     stored.name = "Simulator Prune Collision".to_owned();
     stored.zones = vec![simulator_target_output(device_id)];
@@ -9392,7 +9387,7 @@ async fn layout_update_compensation_cannot_erase_simulator_pruning() {
 #[tokio::test]
 async fn layout_delete_rolls_back_when_the_fallback_plan_is_rejected() {
     let state = Arc::new(isolated_state());
-    let active = state.spatial_engine.read().await.layout().as_ref().clone();
+    let active = state.spatial_engine.snapshot().layout().as_ref().clone();
     let mut invalid = layout_with_sampling_modes(
         SamplingMode::Bilinear,
         SamplingMode::GaussianArea {
@@ -9421,7 +9416,7 @@ async fn layout_delete_rolls_back_when_the_fallback_plan_is_rejected() {
         .expect("failed to execute request");
 
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
-    assert_eq!(state.spatial_engine.read().await.layout().as_ref(), &active);
+    assert_eq!(state.spatial_engine.snapshot().layout().as_ref(), &active);
     let layouts = state.layouts.read().await;
     assert_eq!(layouts.get(&active.id), Some(&active));
     assert_eq!(layouts.get(&invalid.id), Some(&invalid));
@@ -9580,7 +9575,7 @@ async fn layout_update_rejects_invalid_geometry_without_mutating() {
 #[tokio::test]
 async fn layout_preview_rejects_invalid_sampling_radii_without_mutating() {
     let state = Arc::new(isolated_state());
-    let original_layout_id = state.spatial_engine.read().await.layout().id.clone();
+    let original_layout_id = state.spatial_engine.snapshot().layout().id.clone();
     let app = test_app_with_state(Arc::clone(&state));
     let negative = SamplingMode::AreaAverage {
         radius_x: -1.0,
@@ -9639,7 +9634,7 @@ async fn layout_preview_rejects_invalid_sampling_radii_without_mutating() {
     }
 
     assert_eq!(
-        state.spatial_engine.read().await.layout().id,
+        state.spatial_engine.snapshot().layout().id,
         original_layout_id
     );
 }
@@ -9647,7 +9642,7 @@ async fn layout_preview_rejects_invalid_sampling_radii_without_mutating() {
 #[tokio::test]
 async fn layout_preview_rejects_invalid_geometry_without_mutating() {
     let state = Arc::new(isolated_state());
-    let original = state.spatial_engine.read().await.layout().as_ref().clone();
+    let original = state.spatial_engine.snapshot().layout().as_ref().clone();
 
     for (width, height) in [(0, original.canvas_height), (u32::MAX, u32::MAX)] {
         let mut invalid = original.clone();
@@ -9662,10 +9657,7 @@ async fn layout_preview_rejects_invalid_geometry_without_mutating() {
         .await;
 
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
-        assert_eq!(
-            state.spatial_engine.read().await.layout().as_ref(),
-            &original
-        );
+        assert_eq!(state.spatial_engine.snapshot().layout().as_ref(), &original);
     }
 }
 

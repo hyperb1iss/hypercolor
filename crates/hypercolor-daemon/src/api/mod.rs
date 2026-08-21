@@ -88,6 +88,7 @@ use crate::device_settings::DeviceSettingsStore;
 use crate::display_frames::DisplayFrameRuntime;
 use crate::display_preferences::DisplayPreferencesStore;
 use crate::domain::scene::SceneService;
+use crate::domain::spatial::SpatialService;
 use crate::driver_inventory::{DRIVER_INVENTORY_FILENAME, DriverInventoryStore};
 use crate::extensions::{ApiExtension, ExtensionRegistry};
 use crate::layout_auto_exclusions;
@@ -157,7 +158,7 @@ pub struct AppState {
     pub configured_max_fps_tier: ConfiguredFpsTier,
 
     /// Spatial sampling engine — maps canvas pixels to LED positions.
-    pub spatial_engine: Arc<RwLock<SpatialEngine>>,
+    pub spatial_engine: SpatialService,
 
     /// Device backend router — pushes colors to hardware.
     pub backend_manager: Arc<Mutex<BackendManager>>,
@@ -312,7 +313,7 @@ pub struct AppState {
 #[derive(Clone)]
 pub(crate) struct RuntimeSessionSnapshotReader {
     scene_manager: SceneService,
-    spatial_engine: Arc<RwLock<SpatialEngine>>,
+    spatial_engine: SpatialService,
     power_state: watch::Sender<OutputPowerState>,
     driver_host: Arc<DaemonDriverHost>,
     driver_registry: Arc<DriverModuleRegistry>,
@@ -325,7 +326,7 @@ impl RuntimeSessionSnapshotReader {
             runtime_state::snapshot_from_scene_manager(&manager)
         };
         {
-            let spatial = self.spatial_engine.read().await;
+            let spatial = self.spatial_engine.snapshot();
             snapshot.active_layout_id = Some(spatial.layout().id.clone());
         }
         snapshot.global_brightness = current_global_brightness(&self.power_state);
@@ -379,7 +380,7 @@ impl AppState {
     pub(crate) fn runtime_session_snapshot_reader(&self) -> RuntimeSessionSnapshotReader {
         RuntimeSessionSnapshotReader {
             scene_manager: self.scene_manager.clone(),
-            spatial_engine: Arc::clone(&self.spatial_engine),
+            spatial_engine: self.spatial_engine.clone(),
             power_state: self.power_state.clone(),
             driver_host: Arc::clone(&self.driver_host),
             driver_registry: Arc::clone(&self.driver_registry),
@@ -503,10 +504,10 @@ impl AppState {
         let zone_layout_previews = Arc::new(ZoneLayoutPreviewStore::default());
         let render_loop = Arc::new(RwLock::new(RenderLoop::new(60)));
         let configured_max_fps_tier = ConfiguredFpsTier::new(FpsTier::Full);
-        let spatial_engine = Arc::new(RwLock::new(
+        let spatial_engine = SpatialService::new(
             SpatialEngine::try_new(default_layout)
                 .expect("empty default spatial layout should always be addressable"),
-        ));
+        );
         let backend_manager = Arc::new(Mutex::new(BackendManager::new()));
         let usb_protocol_configs = UsbProtocolConfigStore::new();
         let performance = Arc::new(RwLock::new(PerformanceTracker::default()));
@@ -566,7 +567,7 @@ impl AppState {
             Arc::clone(&lifecycle_manager),
             Arc::clone(&reconnect_tasks),
             Arc::clone(&event_bus),
-            Arc::clone(&spatial_engine),
+            spatial_engine.clone(),
             scene_manager.clone(),
             Arc::clone(&layouts),
             layouts_path.clone(),
@@ -695,7 +696,7 @@ impl AppState {
             zone_layout_previews: Arc::clone(&daemon.zone_layout_previews),
             render_loop: Arc::clone(&daemon.render_loop),
             configured_max_fps_tier: daemon.configured_max_fps_tier.clone(),
-            spatial_engine: Arc::clone(&daemon.spatial_engine),
+            spatial_engine: daemon.spatial_engine.clone(),
             backend_manager: Arc::clone(&daemon.backend_manager),
             usb_protocol_configs: daemon.usb_protocol_configs.clone(),
             performance: Arc::clone(&daemon.performance),

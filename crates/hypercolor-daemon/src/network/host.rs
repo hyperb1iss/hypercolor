@@ -12,7 +12,6 @@ use hypercolor_core::config::ConfigManager;
 use hypercolor_core::device::{
     BackendManager, DeviceLifecycleManager, DeviceRegistry, UsbProtocolConfigStore,
 };
-use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_driver_api::CredentialStore;
 use hypercolor_driver_api::{
     BackendRebindActions, DeviceControlStore, DriverConfigView, DriverControlHost,
@@ -34,6 +33,7 @@ use crate::attachment_profiles::ComponentProfileStore;
 use crate::device_settings::DeviceSettingsStore;
 use crate::discovery::{self, DiscoveryRuntime};
 use crate::domain::scene::SceneService;
+use crate::domain::spatial::SpatialService;
 use crate::driver_inventory::DriverInventoryStore;
 use crate::layout_auto_exclusions;
 use crate::logical_devices::LogicalDevice;
@@ -47,7 +47,7 @@ pub struct DaemonDriverHost {
     lifecycle_manager: Arc<Mutex<DeviceLifecycleManager>>,
     reconnect_tasks: Arc<StdMutex<HashMap<DeviceId, JoinHandle<()>>>>,
     event_bus: Arc<HypercolorBus>,
-    spatial_engine: Arc<RwLock<SpatialEngine>>,
+    spatial_engine: SpatialService,
     scene_manager: SceneService,
     layouts: Arc<RwLock<HashMap<String, SpatialLayout>>>,
     layouts_path: PathBuf,
@@ -77,7 +77,7 @@ impl DaemonDriverHost {
         lifecycle_manager: Arc<Mutex<DeviceLifecycleManager>>,
         reconnect_tasks: Arc<StdMutex<HashMap<DeviceId, JoinHandle<()>>>>,
         event_bus: Arc<HypercolorBus>,
-        spatial_engine: Arc<RwLock<SpatialEngine>>,
+        spatial_engine: SpatialService,
         scene_manager: SceneService,
         layouts: Arc<RwLock<HashMap<String, SpatialLayout>>>,
         layouts_path: PathBuf,
@@ -146,7 +146,7 @@ impl DaemonDriverHost {
             lifecycle_manager: Arc::clone(&self.lifecycle_manager),
             reconnect_tasks: Arc::clone(&self.reconnect_tasks),
             event_bus: Arc::clone(&self.event_bus),
-            spatial_engine: Arc::clone(&self.spatial_engine),
+            spatial_engine: self.spatial_engine.clone(),
             scene_manager: self.scene_manager.clone(),
             layouts: Arc::clone(&self.layouts),
             layouts_path: self.layouts_path.clone(),

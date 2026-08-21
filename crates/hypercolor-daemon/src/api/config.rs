@@ -1465,7 +1465,7 @@ async fn sync_active_layout_canvas_size_workflow(
         .await;
     let guard = state.scene_transactions.acquire_layout_update_guard().await;
     let updated_layout = {
-        let spatial = state.spatial_engine.read().await;
+        let spatial = state.spatial_engine.snapshot();
         let current = spatial.layout().as_ref().clone();
         if canvas_dimensions_differ(current.canvas_width, current.canvas_height, width, height) {
             let mut updated = current;
@@ -1489,7 +1489,7 @@ async fn sync_active_layout_canvas_size_workflow(
         }
     };
     if let Err(error) = apply_prepared_layout_update_under_guard(
-        Arc::clone(&state.spatial_engine),
+        state.spatial_engine.clone(),
         state.scene_manager.clone(),
         state.scene_transactions.clone(),
         &guard,

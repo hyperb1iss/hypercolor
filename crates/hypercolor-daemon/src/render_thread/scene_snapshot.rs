@@ -868,7 +868,9 @@ mod tests {
             asset_library: Arc::new(RwLock::new(
                 AssetLibrary::open(asset_dir).expect("test asset library should open"),
             )),
-            spatial_engine: Arc::new(RwLock::new(SpatialEngine::new(sample_layout()))),
+            spatial_engine: crate::domain::spatial::SpatialService::new(SpatialEngine::new(
+                sample_layout(),
+            )),
             backend_manager: Arc::new(Mutex::new(BackendManager::new())),
             device_registry: DeviceRegistry::new(),
             performance: Arc::new(RwLock::new(PerformanceTracker::default())),

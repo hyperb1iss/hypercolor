@@ -17,7 +17,6 @@ use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::device::{
     BackendManager, DeviceLifecycleManager, DeviceRegistry, UsbProtocolConfigStore,
 };
-use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_driver_api::CredentialStore;
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::HypercolorConfig;
@@ -30,6 +29,7 @@ use tokio::task::JoinHandle;
 use crate::attachment_profiles::ComponentProfileStore;
 use crate::device_settings::DeviceSettingsStore;
 use crate::domain::scene::SceneService;
+use crate::domain::spatial::SpatialService;
 use crate::layout_auto_exclusions;
 use crate::logical_devices::LogicalDevice;
 use crate::scene_transactions::SceneTransactionQueue;
@@ -75,7 +75,7 @@ pub struct DiscoveryRuntime {
     pub event_bus: Arc<HypercolorBus>,
 
     /// Active spatial layout used by the render loop.
-    pub spatial_engine: Arc<RwLock<SpatialEngine>>,
+    pub spatial_engine: SpatialService,
 
     /// Scene manager used to keep primary-group layouts aligned with the
     /// active spatial layout.

@@ -137,7 +137,7 @@ pub async fn create_zone(
     };
 
     let canvas = {
-        let spatial = state.spatial_engine.read().await;
+        let spatial = state.spatial_engine.snapshot();
         let layout = spatial.layout();
         (layout.canvas_width, layout.canvas_height)
     };

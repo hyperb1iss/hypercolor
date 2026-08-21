@@ -13,6 +13,7 @@ use hypercolor_core::scene::{SceneManager, make_scene};
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_daemon::device_settings::DeviceSettingsStore;
 use hypercolor_daemon::domain::scene::SceneService;
+use hypercolor_daemon::domain::spatial::SpatialService;
 use hypercolor_daemon::performance::PerformanceTracker;
 use hypercolor_daemon::preview_runtime::PreviewRuntime;
 use hypercolor_daemon::render_thread::{CanvasDims, RenderThread, RenderThreadState};
@@ -148,7 +149,7 @@ fn render_state() -> RenderThreadState {
         asset_library: Arc::new(RwLock::new(
             AssetLibrary::open(asset_dir).expect("test asset library should open"),
         )),
-        spatial_engine: Arc::new(RwLock::new(SpatialEngine::new(test_layout(Vec::new())))),
+        spatial_engine: SpatialService::new(SpatialEngine::new(test_layout(Vec::new()))),
         backend_manager: Arc::new(Mutex::new(BackendManager::new())),
         device_registry: DeviceRegistry::new(),
         performance: Arc::new(RwLock::new(PerformanceTracker::default())),

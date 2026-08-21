@@ -331,10 +331,10 @@ impl DaemonState {
         info!("Device metrics snapshot store created");
 
         // ── Spatial Engine ──────────────────────────────────────────────
-        let spatial_engine = Arc::new(RwLock::new(
+        let spatial_engine = crate::domain::spatial::SpatialService::new(
             SpatialEngine::try_new(default_layout.clone())
                 .context("failed to prepare the default spatial layout")?,
-        ));
+        );
         info!("Spatial engine created (empty default layout)");
 
         let driver_inventory_path = state_dir.join(DRIVER_INVENTORY_FILENAME);
@@ -628,7 +628,7 @@ impl DaemonState {
             Arc::clone(&lifecycle_manager),
             Arc::clone(&reconnect_tasks),
             Arc::clone(&event_bus),
-            Arc::clone(&spatial_engine),
+            spatial_engine.clone(),
             scene_manager.clone(),
             Arc::clone(&layouts),
             layouts_path.clone(),
