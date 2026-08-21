@@ -703,6 +703,10 @@ fn proprietary_macos_release_tools_use_the_manifest_signing_actor() {
     assert!(!BUILD_MAC_INSTALLER_SH.contains("dmg,app"));
     assert!(BUILD_MAC_INSTALLER_SH.contains(r#""${SIGNING_ACTOR}" app"#));
     assert!(DIST_SH.contains(r#""${MACOS_SIGNING_ACTOR}" standalone"#));
+    assert!(SIGN_MACOS_ARTIFACTS_SH.contains("codesign_arch_for_target"));
+    assert!(SIGN_MACOS_ARTIFACTS_SH.contains(r#"codesign -d --arch "${arch}" --verbose=4"#));
+    assert!(SIGN_MACOS_ARTIFACTS_SH.contains("^[0-9a-f]{40}$"));
+    assert!(SIGN_MACOS_ARTIFACTS_SH.contains("cdhash: $cdhash"));
 }
 
 #[test]
