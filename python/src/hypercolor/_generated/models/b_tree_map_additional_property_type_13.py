@@ -11,7 +11,7 @@ from ..models.b_tree_map_additional_property_type_13_kind import (
 )
 
 if TYPE_CHECKING:
-    from ..models.driver_control_value import DriverControlValue
+    from ..models.normalized_rect import NormalizedRect
 
 
 T = TypeVar("T", bound="BTreeMapAdditionalPropertyType13")
@@ -19,24 +19,22 @@ T = TypeVar("T", bound="BTreeMapAdditionalPropertyType13")
 
 @_attrs_define
 class BTreeMapAdditionalPropertyType13:
-    """Homogeneous list.
-
+    """
     Attributes:
         kind (BTreeMapAdditionalPropertyType13Kind):
-        value (list[DriverControlValue]): Homogeneous list.
+        value (NormalizedRect): Normalized rectangle in `[0.0, 1.0]` canvas space.
+
+            Used for space regions in multi-room layouts.
     """
 
     kind: BTreeMapAdditionalPropertyType13Kind
-    value: list[DriverControlValue]
+    value: NormalizedRect
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         kind = self.kind.value
 
-        value = []
-        for value_item_data in self.value:
-            value_item = value_item_data.to_dict()
-            value.append(value_item)
+        value = self.value.to_dict()
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -51,17 +49,12 @@ class BTreeMapAdditionalPropertyType13:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.driver_control_value import DriverControlValue
+        from ..models.normalized_rect import NormalizedRect
 
         d = dict(src_dict)
         kind = BTreeMapAdditionalPropertyType13Kind(d.pop("kind"))
 
-        value = []
-        _value = d.pop("value")
-        for value_item_data in _value:
-            value_item = DriverControlValue.from_dict(value_item_data)
-
-            value.append(value_item)
+        value = NormalizedRect.from_dict(d.pop("value"))
 
         b_tree_map_additional_property_type_13 = cls(
             kind=kind,

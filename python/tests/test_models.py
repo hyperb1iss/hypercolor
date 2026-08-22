@@ -144,14 +144,14 @@ def test_effect_model_decodes() -> None:
                 "min": 0,
                 "max": 100,
                 "step": 1,
-                "default_value": {"integer": 40},
+                "default_value": {"kind": "int", "value": 40},
             }
         ],
         "presets": [
             {
                 "id": "default",
                 "name": "Default",
-                "controls": {"effectSpeed": {"integer": 40}},
+                "controls": {"effectSpeed": {"kind": "int", "value": 40}},
             }
         ],
     }

@@ -1,34 +1,41 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
-from ..models.b_tree_map_additional_property_type_7_kind import (
-    BTreeMapAdditionalPropertyType7Kind,
+from ..models.b_tree_map_additional_property_type_16_kind import (
+    BTreeMapAdditionalPropertyType16Kind,
 )
 
-T = TypeVar("T", bound="BTreeMapAdditionalPropertyType7")
+if TYPE_CHECKING:
+    from ..models.control_value import ControlValue
+
+
+T = TypeVar("T", bound="BTreeMapAdditionalPropertyType16")
 
 
 @_attrs_define
-class BTreeMapAdditionalPropertyType7:
+class BTreeMapAdditionalPropertyType16:
     """
     Attributes:
-        kind (BTreeMapAdditionalPropertyType7Kind):
-        value (str):
+        kind (BTreeMapAdditionalPropertyType16Kind):
+        value (list[ControlValue]):
     """
 
-    kind: BTreeMapAdditionalPropertyType7Kind
-    value: str
+    kind: BTreeMapAdditionalPropertyType16Kind
+    value: list[ControlValue]
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         kind = self.kind.value
 
-        value = self.value
+        value = []
+        for value_item_data in self.value:
+            value_item = value_item_data.to_dict()
+            value.append(value_item)
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -43,18 +50,25 @@ class BTreeMapAdditionalPropertyType7:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.control_value import ControlValue
+
         d = dict(src_dict)
-        kind = BTreeMapAdditionalPropertyType7Kind(d.pop("kind"))
+        kind = BTreeMapAdditionalPropertyType16Kind(d.pop("kind"))
 
-        value = d.pop("value")
+        value = []
+        _value = d.pop("value")
+        for value_item_data in _value:
+            value_item = ControlValue.from_dict(value_item_data)
 
-        b_tree_map_additional_property_type_7 = cls(
+            value.append(value_item)
+
+        b_tree_map_additional_property_type_16 = cls(
             kind=kind,
             value=value,
         )
 
-        b_tree_map_additional_property_type_7.additional_properties = d
-        return b_tree_map_additional_property_type_7
+        b_tree_map_additional_property_type_16.additional_properties = d
+        return b_tree_map_additional_property_type_16
 
     @property
     def additional_keys(self) -> list[str]:

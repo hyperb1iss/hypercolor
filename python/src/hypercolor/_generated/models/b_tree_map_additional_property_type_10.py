@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
@@ -10,26 +10,29 @@ from ..models.b_tree_map_additional_property_type_10_kind import (
     BTreeMapAdditionalPropertyType10Kind,
 )
 
+if TYPE_CHECKING:
+    from ..models.rgba import Rgba
+
+
 T = TypeVar("T", bound="BTreeMapAdditionalPropertyType10")
 
 
 @_attrs_define
 class BTreeMapAdditionalPropertyType10:
-    """Duration in milliseconds.
-
+    """
     Attributes:
         kind (BTreeMapAdditionalPropertyType10Kind):
-        value (int): Duration in milliseconds.
+        value (Rgba): Encoded sRGB color with straight (non-premultiplied) alpha.
     """
 
     kind: BTreeMapAdditionalPropertyType10Kind
-    value: int
+    value: Rgba
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         kind = self.kind.value
 
-        value = self.value
+        value = self.value.to_dict()
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -44,10 +47,12 @@ class BTreeMapAdditionalPropertyType10:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.rgba import Rgba
+
         d = dict(src_dict)
         kind = BTreeMapAdditionalPropertyType10Kind(d.pop("kind"))
 
-        value = d.pop("value")
+        value = Rgba.from_dict(d.pop("value"))
 
         b_tree_map_additional_property_type_10 = cls(
             kind=kind,

@@ -2,7 +2,7 @@ from enum import Enum
 
 
 class BTreeMapAdditionalPropertyType6Kind(str, Enum):
-    COLOR_RGB = "color_rgb"
+    IP = "ip"
 
     def __str__(self) -> str:
         return str(self.value)

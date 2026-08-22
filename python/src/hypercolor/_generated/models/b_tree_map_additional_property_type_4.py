@@ -15,11 +15,10 @@ T = TypeVar("T", bound="BTreeMapAdditionalPropertyType4")
 
 @_attrs_define
 class BTreeMapAdditionalPropertyType4:
-    """UTF-8 string value.
-
+    """
     Attributes:
         kind (BTreeMapAdditionalPropertyType4Kind):
-        value (str): UTF-8 string value.
+        value (str):
     """
 
     kind: BTreeMapAdditionalPropertyType4Kind

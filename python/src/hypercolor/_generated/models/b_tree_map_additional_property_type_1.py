@@ -15,11 +15,10 @@ T = TypeVar("T", bound="BTreeMapAdditionalPropertyType1")
 
 @_attrs_define
 class BTreeMapAdditionalPropertyType1:
-    """Boolean value.
-
+    """
     Attributes:
         kind (BTreeMapAdditionalPropertyType1Kind):
-        value (bool): Boolean value.
+        value (bool):
     """
 
     kind: BTreeMapAdditionalPropertyType1Kind

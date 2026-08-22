@@ -92,7 +92,7 @@ def _applied_zone(effect_id: str = "aurora") -> dict[str, object]:
                 "source": {
                     "type": "effect",
                     "effect_id": effect_id,
-                    "controls": {"effectSpeed": {"integer": 70}},
+                    "controls": {"effectSpeed": {"kind": "int", "value": 70}},
                     "control_bindings": {},
                     "preset_id": None,
                 },
@@ -527,7 +527,7 @@ async def test_effect_preset_stack_lists_and_applies_both_origins(
                             "name": "Calm",
                             "description": None,
                             "effect_id": "aurora/main",
-                            "controls": {"speed": {"float": 0.4}},
+                            "controls": {"speed": {"kind": "float", "value": 0.4}},
                             "tags": [],
                             "origin": "bundled",
                             "editable": False,
@@ -537,7 +537,7 @@ async def test_effect_preset_stack_lists_and_applies_both_origins(
                             "name": "Bright",
                             "description": "Custom",
                             "effect_id": "aurora/main",
-                            "controls": {"speed": {"float": 0.8}},
+                            "controls": {"speed": {"kind": "float", "value": 0.8}},
                             "tags": ["custom"],
                             "origin": "saved",
                             "editable": True,
@@ -1403,7 +1403,7 @@ async def test_scene_display_and_diagnostics_helpers(
     assert displays[0].id == "streamdeck"
     assert json.loads(face_route.calls[0].request.content) == {
         "effect_id": "clock",
-        "controls": {"speed": {"float": 0.8}},
+        "controls": {"speed": {"kind": "float", "value": 0.8}},
         "opacity": 0.8,
     }
     assert face.effect["id"] == "clock"
@@ -1440,14 +1440,14 @@ async def test_get_effect_decodes_full_model(client: HypercolorClient) -> None:
                             "min": 0,
                             "max": 100,
                             "step": 1,
-                            "default_value": {"integer": 40},
+                            "default_value": {"kind": "int", "value": 40},
                         }
                     ],
                     "presets": [
                         {
                             "id": "default",
                             "name": "Default",
-                            "controls": {"effectSpeed": {"integer": 40}},
+                            "controls": {"effectSpeed": {"kind": "int", "value": 40}},
                         }
                     ],
                 }
@@ -1463,7 +1463,7 @@ async def test_get_effect_decodes_full_model(client: HypercolorClient) -> None:
     assert not isinstance(effect.presets, Unset)
     assert effect.presets[0].name == "Default"
     assert not isinstance(effect.presets[0].controls, Unset)
-    assert effect.presets[0].controls.to_dict() == {"effectSpeed": {"integer": 40}}
+    assert effect.presets[0].controls.to_dict() == {"effectSpeed": {"kind": "int", "value": 40}}
 
 
 @respx.mock

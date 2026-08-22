@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Callable, Mapping
 from typing import Any, Self, TypeVar
 from urllib.parse import quote
@@ -1013,7 +1012,7 @@ class HypercolorClient:
             {
                 "effect_id": effect_id,
                 "controls": (
-                    {str(key): _display_control_value(value) for key, value in controls.items()}
+                    {str(key): _canonical_control_value(value) for key, value in controls.items()}
                     if controls is not None
                     else None
                 ),
@@ -1414,25 +1413,6 @@ def _control_api_value(value: Any) -> dict[str, Any]:
         result = {"kind": "float", "value": value}
     else:
         result = {"kind": "string", "value": str(value)}
-    return result
-
-
-def _display_control_value(value: Any) -> dict[str, Any]:
-    if isinstance(value, Mapping):
-        if set(value) & {"float", "integer", "boolean", "color", "text", "enum", "rect"}:
-            result = {str(key): item for key, item in value.items()}
-        else:
-            result = {"text": json.dumps({str(key): item for key, item in value.items()})}
-    elif isinstance(value, bool):
-        result = {"boolean": value}
-    elif isinstance(value, int):
-        result = {"integer": value}
-    elif isinstance(value, float):
-        result = {"float": value}
-    elif isinstance(value, str):
-        result = {"color": color} if (color := _hex_color_value(value)) else {"text": value}
-    else:
-        result = {"text": str(value)}
     return result
 
 

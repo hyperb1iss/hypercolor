@@ -7,17 +7,17 @@ from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
 if TYPE_CHECKING:
-    from ..models.driver_control_value import DriverControlValue
+    from ..models.control_value import ControlValue
 
 
-T = TypeVar("T", bound="BTreeMapAdditionalPropertyType14Value")
+T = TypeVar("T", bound="BTreeMapAdditionalPropertyType17Value")
 
 
 @_attrs_define
-class BTreeMapAdditionalPropertyType14Value:
-    """Structured object."""
+class BTreeMapAdditionalPropertyType17Value:
+    """ """
 
-    additional_properties: dict[str, DriverControlValue] = _attrs_field(
+    additional_properties: dict[str, ControlValue] = _attrs_field(
         init=False, factory=dict
     )
 
@@ -31,30 +31,30 @@ class BTreeMapAdditionalPropertyType14Value:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.driver_control_value import DriverControlValue
+        from ..models.control_value import ControlValue
 
         d = dict(src_dict)
-        b_tree_map_additional_property_type_14_value = cls()
+        b_tree_map_additional_property_type_17_value = cls()
 
         additional_properties = {}
         for prop_name, prop_dict in d.items():
-            additional_property = DriverControlValue.from_dict(prop_dict)
+            additional_property = ControlValue.from_dict(prop_dict)
 
             additional_properties[prop_name] = additional_property
 
-        b_tree_map_additional_property_type_14_value.additional_properties = (
+        b_tree_map_additional_property_type_17_value.additional_properties = (
             additional_properties
         )
-        return b_tree_map_additional_property_type_14_value
+        return b_tree_map_additional_property_type_17_value
 
     @property
     def additional_keys(self) -> list[str]:
         return list(self.additional_properties.keys())
 
-    def __getitem__(self, key: str) -> DriverControlValue:
+    def __getitem__(self, key: str) -> ControlValue:
         return self.additional_properties[key]
 
-    def __setitem__(self, key: str, value: DriverControlValue) -> None:
+    def __setitem__(self, key: str, value: ControlValue) -> None:
         self.additional_properties[key] = value
 
     def __delitem__(self, key: str) -> None:

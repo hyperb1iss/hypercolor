@@ -15,11 +15,10 @@ T = TypeVar("T", bound="BTreeMapAdditionalPropertyType2")
 
 @_attrs_define
 class BTreeMapAdditionalPropertyType2:
-    """Signed integer value.
-
+    """
     Attributes:
         kind (BTreeMapAdditionalPropertyType2Kind):
-        value (int): Signed integer value.
+        value (int):
     """
 
     kind: BTreeMapAdditionalPropertyType2Kind

@@ -15,11 +15,10 @@ T = TypeVar("T", bound="BTreeMapAdditionalPropertyType3")
 
 @_attrs_define
 class BTreeMapAdditionalPropertyType3:
-    """Floating point value.
-
+    """
     Attributes:
         kind (BTreeMapAdditionalPropertyType3Kind):
-        value (float): Floating point value.
+        value (float):
     """
 
     kind: BTreeMapAdditionalPropertyType3Kind
