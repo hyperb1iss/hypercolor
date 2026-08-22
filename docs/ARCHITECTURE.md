@@ -103,6 +103,7 @@ graph TD
 
     subgraph Drivers
         DAPI[hypercolor-driver-api]
+        DS[hypercolor-driver-support]
         DBI[hypercolor-driver-builtin]
         HUE[hypercolor-driver-hue]
         NL[hypercolor-driver-nanoleaf]
@@ -130,14 +131,15 @@ graph TD
     T --> CORE
     HAL --> CORE
     T & CORE --> DAPI
-    DAPI --> HUE
-    DAPI --> NL
-    DAPI --> WLED
-    DAPI --> GOV
+    DAPI --> DS
+    DAPI & DS --> HUE
+    DAPI & DS --> NL
+    DAPI & DS --> WLED
+    DAPI & DS --> GOV
     ORS & DAPI --> ORD
-    DAPI & CORE --> DBI
+    DAPI & DS & CORE --> DBI
     DAPI --> NET
-    CORE & HAL & DAPI & NET & PFS --> D
+    CORE & HAL & DAPI & DS & NET & PFS --> D
     LEXT --> D
     LEXT --> TUI
     DBI -.->|optional| D
@@ -153,7 +155,9 @@ Key rules:
 
 - `hypercolor-types` is pure shared vocabulary; it has no other internal deps.
 - `hypercolor-hal` depends on `hypercolor-types`, not on `hypercolor-core`.
-- Network and hardware drivers depend on `hypercolor-driver-api`.
+- Network and hardware drivers depend on the traits and types in
+  `hypercolor-driver-api`. Native network drivers use
+  `hypercolor-driver-support` for concrete host services.
 - `hypercolor-driver-builtin` aggregates the optional driver crates behind
   feature flags.
 - `hypercolor-leptos-ext` depends on no other internal crate.

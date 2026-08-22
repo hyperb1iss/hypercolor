@@ -12,8 +12,8 @@ rejected by the registry.
 
 ## Position in the Workspace
 
-- Depends on: `hypercolor-types`, `serde`, `serde_json`, `tracing`, `anyhow`,
-  `async-trait`, `thiserror`, `tokio`
+- Depends on: `hypercolor-types`, `serde`, `serde_json`, `anyhow`,
+  `async-trait`, `thiserror`
 - Consumed by: every network driver crate (`hypercolor-driver-hue`,
   `hypercolor-driver-nanoleaf`, `hypercolor-driver-wled`, `hypercolor-driver-govee`),
   HAL catalog wrappers in `hypercolor-driver-builtin`, `hypercolor-network`, and
@@ -41,12 +41,6 @@ rejected by the registry.
   `PairDeviceOutcome`, `ClearPairingOutcome`
 - `DiscoveredDevice`, `DiscoveryRequest`
 - `ValidatedControlChanges`, `DriverConfigProvider`, `DriverConfigView`
-
-**Support utilities**
-
-- `support` module: `activate_if_requested`, `disconnect_after_unpair`,
-  `metadata_value`, `network_ip_from_metadata`, `network_port_from_metadata`
-- `validation` module: IP and port sanitization helpers
 
 ## Cargo Features
 

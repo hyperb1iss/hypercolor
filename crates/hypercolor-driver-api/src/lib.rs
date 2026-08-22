@@ -7,8 +7,6 @@
 
 pub mod backend;
 pub mod config;
-pub mod control_apply;
-pub mod control_surface;
 pub mod controls;
 pub mod descriptor;
 pub mod discovery;
@@ -17,8 +15,6 @@ pub mod error;
 pub mod host;
 pub mod module;
 pub mod pairing;
-pub mod support;
-pub mod validation;
 
 pub use backend::{
     BackendInfo, ConnectExecution, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId,

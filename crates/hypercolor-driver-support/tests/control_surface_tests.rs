@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use hypercolor_driver_api::control_surface;
+use hypercolor_driver_support::control_surface;
 use hypercolor_types::controls::{
     ApplyImpact, ControlAccess, ControlGroupKind, ControlPersistence, ControlSurfaceScope,
     ControlValue, ControlValueType, ControlVisibility,

@@ -20,13 +20,6 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use hypercolor_driver_api::DeviceBackend;
-use hypercolor_driver_api::control_apply;
-use hypercolor_driver_api::control_surface;
-use hypercolor_driver_api::support::{
-    activate_if_requested, disconnect_after_unpair, metadata_value, network_port_from_metadata,
-    push_lookup_key,
-};
-use hypercolor_driver_api::validation::validate_ip;
 use hypercolor_driver_api::{
     ClearPairingOutcome, ControlApplyTarget, DeviceAuthState, DeviceAuthSummary,
     DeviceBackendFactory, DiscoveredDevice, DiscoveryCapability, DiscoveryRequest,
@@ -36,7 +29,11 @@ use hypercolor_driver_api::{
     PairingCapability, PairingDescriptor, PairingFlowKind, TrackedDeviceCtx,
     ValidatedControlChanges,
 };
-use hypercolor_driver_support::CredentialStore;
+use hypercolor_driver_support::network::{
+    metadata_value, network_port_from_metadata, push_lookup_key, validate_ip,
+};
+use hypercolor_driver_support::pairing::{activate_if_requested, disconnect_after_unpair};
+use hypercolor_driver_support::{CredentialStore, control_apply, control_surface};
 use hypercolor_types::config::DriverConfigEntry;
 use hypercolor_types::controls::{
     ActionConfirmation, ActionConfirmationLevel, ApplyControlChangesResponse, ApplyImpact,

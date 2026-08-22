@@ -7,7 +7,7 @@ use hypercolor_driver_api::{
     DriverCredentialStore, DriverDescriptor, DriverDiscoveryState, DriverHost, DriverModule,
     DriverPresentationProvider, DriverProtocolCatalog, DriverRuntimeActions, OutputCadence,
     PairDeviceRequest, PairDeviceStatus, PairingDescriptor, PairingFieldDescriptor,
-    PairingFlowKind, ValidatedControlChanges, support,
+    PairingFlowKind, ValidatedControlChanges,
 };
 use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior};
 use hypercolor_types::config::DriverConfigEntry;
@@ -621,32 +621,4 @@ fn pair_device_status_serde_uses_snake_case() {
     let auth_state =
         serde_json::to_value(DeviceAuthState::Configured).expect("state should serialize");
     assert_eq!(auth_state, serde_json::json!("configured"));
-}
-
-#[test]
-fn support_helpers_parse_metadata_and_dedupe_keys() {
-    let metadata = std::collections::HashMap::from([
-        ("ip".to_owned(), "10.0.0.42".to_owned()),
-        ("name".to_owned(), " Desk Strip ".to_owned()),
-    ]);
-    let mut keys = vec!["fixture:ip:10.0.0.42".to_owned()];
-
-    assert_eq!(
-        support::network_ip_from_metadata(Some(&metadata))
-            .expect("ip should parse")
-            .to_string(),
-        "10.0.0.42"
-    );
-    assert_eq!(
-        support::metadata_value(Some(&metadata), "name"),
-        Some("Desk Strip")
-    );
-
-    support::push_lookup_key(&mut keys, "fixture:ip:10.0.0.42".to_owned());
-    support::push_lookup_key(&mut keys, "fixture:desk".to_owned());
-
-    assert_eq!(
-        keys,
-        vec!["fixture:ip:10.0.0.42".to_owned(), "fixture:desk".to_owned()]
-    );
 }

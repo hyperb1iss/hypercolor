@@ -1,33 +1,10 @@
+use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-use hypercolor_driver_api::validation::{ValidationError, validate_ip, validate_port};
-use hypercolor_driver_api::{DRIVER_API_SCHEMA_VERSION, DriverDescriptor};
-use hypercolor_types::device::DriverTransportKind;
-
-#[test]
-fn schema_version_constant_is_stamped_onto_new_descriptors() {
-    let descriptor = DriverDescriptor::new(
-        "fixture-network",
-        "Fixture Network",
-        DriverTransportKind::Network,
-        true,
-        true,
-    );
-    assert_eq!(descriptor.schema_version, DRIVER_API_SCHEMA_VERSION);
-}
-
-#[test]
-fn with_schema_version_accepts_explicit_value() {
-    let descriptor = DriverDescriptor::with_schema_version(
-        "legacy",
-        "Legacy",
-        DriverTransportKind::Network,
-        true,
-        false,
-        0,
-    );
-    assert_eq!(descriptor.schema_version, 0);
-}
+use hypercolor_driver_support::network::{
+    ValidationError, metadata_value, network_ip_from_metadata, push_lookup_key, validate_ip,
+    validate_port,
+};
 
 #[test]
 fn validate_port_rejects_zero_and_privileged_ports() {
@@ -53,21 +30,14 @@ fn validate_port_accepts_registered_and_dynamic_ports() {
 }
 
 #[test]
-fn validate_ip_rejects_loopback_multicast_and_unspecified() {
-    let loopback = IpAddr::V4(Ipv4Addr::LOCALHOST);
-    let unspecified = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
-    let broadcast = IpAddr::V4(Ipv4Addr::BROADCAST);
-    let multicast = IpAddr::V4(Ipv4Addr::new(224, 0, 0, 1));
-    let link_local = IpAddr::V4(Ipv4Addr::new(169, 254, 1, 2));
-    let ipv6_loopback = IpAddr::V6(Ipv6Addr::LOCALHOST);
-
+fn validate_ip_rejects_non_routable_addresses() {
     for ip in [
-        loopback,
-        unspecified,
-        broadcast,
-        multicast,
-        link_local,
-        ipv6_loopback,
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+        IpAddr::V4(Ipv4Addr::BROADCAST),
+        IpAddr::V4(Ipv4Addr::new(224, 0, 0, 1)),
+        IpAddr::V4(Ipv4Addr::new(169, 254, 1, 2)),
+        IpAddr::V6(Ipv6Addr::LOCALHOST),
     ] {
         assert!(
             matches!(validate_ip(ip), Err(ValidationError::InvalidIp(_))),
@@ -98,4 +68,28 @@ fn validation_error_display_is_human_readable() {
 
     let ip_message = ValidationError::InvalidIp(IpAddr::V4(Ipv4Addr::LOCALHOST)).to_string();
     assert!(ip_message.contains("127.0.0.1"));
+}
+
+#[test]
+fn network_metadata_helpers_parse_and_dedupe() {
+    let metadata = HashMap::from([
+        ("ip".to_owned(), "10.0.0.42".to_owned()),
+        ("name".to_owned(), " Desk Strip ".to_owned()),
+    ]);
+    let mut keys = vec!["fixture:ip:10.0.0.42".to_owned()];
+
+    assert_eq!(
+        network_ip_from_metadata(Some(&metadata))
+            .expect("ip should parse")
+            .to_string(),
+        "10.0.0.42"
+    );
+    assert_eq!(metadata_value(Some(&metadata), "name"), Some("Desk Strip"));
+
+    push_lookup_key(&mut keys, "fixture:ip:10.0.0.42".to_owned());
+    push_lookup_key(&mut keys, "fixture:desk".to_owned());
+    assert_eq!(
+        keys,
+        vec!["fixture:ip:10.0.0.42".to_owned(), "fixture:desk".to_owned()]
+    );
 }

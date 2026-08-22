@@ -1,4 +1,5 @@
-use hypercolor_driver_api::{ValidatedControlChanges, control_apply, control_surface};
+use hypercolor_driver_api::ValidatedControlChanges;
+use hypercolor_driver_support::{control_apply, control_surface};
 use hypercolor_types::controls::{ApplyImpact, ControlChange, ControlValue, ControlValueMap};
 
 #[test]

@@ -4,11 +4,14 @@ description = "How to implement a Hypercolor network driver: the driver-api boun
 weight = 40
 +++
 
-Network drivers live in their own crates behind the stable `hypercolor-driver-api` boundary.
-They depend on `hypercolor-driver-api` and `hypercolor-types`, never on `hypercolor-core`
-directly. The `hypercolor-network` crate holds only the registry and capability-dispatch
-shell; protocol logic stays in each driver crate. This page walks through the full lifecycle
-of adding a new one, using WLED and Govee as concrete reference implementations.
+Network drivers live in their own crates behind the stable
+`hypercolor-driver-api` boundary. They depend on `hypercolor-driver-api` and
+`hypercolor-types`, never on `hypercolor-core` directly. Native drivers can
+also use `hypercolor-driver-support` for credentials, mDNS, control documents,
+pairing lifecycle, and endpoint validation. The `hypercolor-network` crate
+holds only the registry and capability-dispatch shell; protocol logic stays in
+each driver crate. This page walks through the full lifecycle of adding a new
+one, using WLED and Govee as concrete reference implementations.
 
 ---
 
@@ -18,14 +21,24 @@ of adding a new one, using WLED and Govee as concrete reference implementations.
 dependency rule is strict:
 
 ```
-hypercolor-types ──▶ hypercolor-driver-api ──▶ your-driver-crate
-                                              ╰──▶ hypercolor-network (registry)
-                                              ╰──▶ hypercolor-driver-builtin (bundle)
+hypercolor-types ──▶ hypercolor-driver-api ──▶ hypercolor-driver-support
+                              │                         │
+                              ╰───────────┬─────────────╯
+                                          ▼
+                                  your-driver-crate
+                                          │
+                         ╭────────────────┴────────────────╮
+                         ▼                                 ▼
+             hypercolor-network (registry)   hypercolor-driver-builtin (bundle)
 ```
 
 Never reach into `hypercolor-core` from a driver crate. Core depends on `driver-api`, not
 the reverse. The `hypercolor-network` crate is only the `DriverModuleRegistry` orchestration
 layer; it does not own any protocol logic.
+
+The API crate contains only capability contracts and shared wire values. The
+support crate owns concrete native behavior, so crypto, mDNS, filesystem I/O,
+and reusable driver policy never leak into the stable trait boundary.
 
 ### Key types at a glance
 

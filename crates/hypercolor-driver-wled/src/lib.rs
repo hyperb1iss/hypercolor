@@ -18,9 +18,6 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use hypercolor_driver_api::DeviceBackend;
-use hypercolor_driver_api::control_apply;
-use hypercolor_driver_api::control_surface;
-use hypercolor_driver_api::validation::validate_ip;
 use hypercolor_driver_api::{
     ControlApplyTarget, DeviceBackendFactory, DiscoveredDevice, DiscoveryCapability,
     DiscoveryRequest, DriverConfigProvider, DriverConfigView, DriverControlProvider,
@@ -28,6 +25,8 @@ use hypercolor_driver_api::{
     DriverRuntimeCacheProvider, DriverTrackedDevice, OutputBinding, TrackedDeviceCtx,
     ValidatedControlChanges,
 };
+use hypercolor_driver_support::network::validate_ip;
+use hypercolor_driver_support::{control_apply, control_surface};
 use hypercolor_types::config::DriverConfigEntry;
 use hypercolor_types::controls::{
     ApplyControlChangesResponse, ApplyImpact, ControlChange, ControlEnumOption,

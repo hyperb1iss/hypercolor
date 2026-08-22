@@ -4957,7 +4957,6 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -5059,6 +5058,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "hypercolor-driver-api",
+ "hypercolor-types",
  "mdns-sd",
  "rand 0.10.1",
  "serde_json",

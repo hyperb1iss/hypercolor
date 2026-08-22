@@ -8,7 +8,9 @@ use hypercolor_types::controls::{
     ControlFieldDescriptor, ControlValue, ControlValueMap,
 };
 
-use crate::{DriverHost, ValidatedControlChanges, control_surface};
+use hypercolor_driver_api::{DriverHost, ValidatedControlChanges};
+
+use crate::control_surface;
 
 /// Validate a batch of control changes against field descriptors.
 ///
