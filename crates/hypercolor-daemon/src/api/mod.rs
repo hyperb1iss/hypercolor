@@ -19,8 +19,6 @@ pub mod envelope;
 pub mod layouts;
 pub mod library;
 pub mod local;
-#[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
-mod macos_screen_parity;
 pub mod openapi;
 pub mod output;
 mod routes;

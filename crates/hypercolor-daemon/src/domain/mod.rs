@@ -31,11 +31,14 @@
 
 pub mod commit;
 pub mod context;
+pub mod diagnostics;
 pub mod display;
 pub mod effect;
 pub mod input_status;
 pub mod layer;
 pub mod layout;
+#[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
+mod macos_screen_parity;
 pub mod output;
 pub mod scene;
 pub mod scene_tree;

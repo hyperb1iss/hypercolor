@@ -97,7 +97,7 @@ pub(super) fn build_diagnose() -> ToolDefinition {
             "properties": {},
             "additionalProperties": false
         }),
-        output_schema: output_schema::<crate::api::diagnose::DiagnoseResponse>(),
+        output_schema: output_schema::<crate::domain::diagnostics::DiagnoseResponse>(),
         read_only: true,
         destructive: false,
         idempotent: true,
@@ -244,5 +244,5 @@ pub(super) async fn handle_diagnose_with_state(
     _params: &Value,
     state: &AppState,
 ) -> Result<Value, ToolError> {
-    serialize_result(crate::api::diagnose::collect_default_diagnostics(state).await)
+    serialize_result(crate::domain::diagnostics::collect_default_diagnostics(state).await)
 }

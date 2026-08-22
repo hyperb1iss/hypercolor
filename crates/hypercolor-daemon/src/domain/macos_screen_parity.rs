@@ -16,7 +16,7 @@ use hypercolor_types::event::ZoneColors;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-use super::AppState;
+use crate::app_state::AppState;
 use crate::render_thread::sparkleflinger::{CompositionLayer, CompositionPlan, SparkleFlinger};
 use crate::render_thread::{
     MacosScreenParityDiagnosticHandle, MacosScreenParityLiveSnapshot,

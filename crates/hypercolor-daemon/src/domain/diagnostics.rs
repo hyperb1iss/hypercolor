@@ -1,0 +1,904 @@
+//! Transport-independent daemon diagnostics.
+
+use hypercolor_core::device::{UsbActorMetricsSnapshot, usb_actor_metrics_snapshot};
+use hypercolor_types::api::system::InputStatus;
+use hypercolor_types::device::USB_OUTPUT_BACKEND_ID;
+use serde::Serialize;
+use utoipa::ToSchema;
+
+use crate::app_state::AppState;
+use crate::device_metrics::{DeviceMetrics, DeviceMetricsSnapshot};
+use crate::display_frames::DisplayOutputMetricsSnapshot;
+use crate::domain::input_status::{actionable_input_diagnostics, input_status_snapshot};
+use crate::performance::{LatestFrameMetrics, PerformanceSnapshot};
+
+const RENDER_FRAME_STALE_WARNING_MS: f64 = 2_000.0;
+const RENDER_FRAME_STALE_FAIL_MS: f64 = 10_000.0;
+const DEFAULT_SAFE_CHECKS: [&str; 6] = ["daemon", "render", "devices", "config", "input", "memory"];
+
+#[derive(Debug, Serialize, ToSchema)]
+pub(crate) struct DiagnoseResponse {
+    checks: Vec<DiagnoseCheck>,
+    summary: DiagnoseSummary,
+    snapshot: DiagnoseSnapshot,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+struct DiagnoseCheck {
+    category: String,
+    name: String,
+    status: String,
+    detail: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+struct DiagnoseSummary {
+    passed: usize,
+    warnings: usize,
+    failed: usize,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+struct DiagnoseSnapshot {
+    input: InputStatus,
+    render: DiagnoseRenderSnapshot,
+    usb: DiagnoseUsbActorSnapshot,
+    display_output: DiagnoseDisplayOutputSnapshot,
+    device_output: DiagnoseDeviceOutputSnapshot,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    macos_screen_parity: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+struct DiagnoseRenderSnapshot {
+    latest_frame: Option<DiagnoseLatestFrameSnapshot>,
+    recent_window: DiagnoseRenderWindowSnapshot,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "diagnostics snapshot mirrors independent frame freshness flags"
+)]
+struct DiagnoseLatestFrameSnapshot {
+    frame_token: u64,
+    frame_age_ms: f64,
+    compositor_backend: String,
+    output_frame_source: String,
+    output_reuses_published_frame: bool,
+    output_brightness_bits: u32,
+    output_brightness_generation: u64,
+    output_routing_signature: u64,
+    output_zone_shape_signature: u64,
+    output_unassigned_behavior_generation: u64,
+    devices_written: u32,
+    total_leds: u32,
+    gpu_zone_sampling: bool,
+    gpu_sample_deferred: bool,
+    gpu_sample_stale: bool,
+    gpu_sample_retry_hit: bool,
+    gpu_sample_queue_saturated: bool,
+    gpu_sample_wait_blocked: bool,
+    gpu_sample_cpu_fallback: bool,
+    cpu_readback_skipped: bool,
+    gpu_readback_failed: bool,
+    input_us: u32,
+    render_us: u32,
+    producer_us: u32,
+    composition_us: u32,
+    sample_us: u32,
+    push_us: u32,
+    publish_us: u32,
+    overhead_us: u32,
+    total_us: u32,
+    output_errors: u32,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+struct DiagnoseRenderWindowSnapshot {
+    frames: u32,
+    gpu_sample_deferred: u32,
+    gpu_sample_stale: u32,
+    gpu_sample_retry_hit: u32,
+    gpu_sample_queue_saturated: u32,
+    gpu_sample_wait_blocked: u32,
+    gpu_sample_cpu_fallback: u32,
+    output_current_frame: u32,
+    output_published_frame: u32,
+    output_routed_reuse: u32,
+    output_reused_published_frame: u32,
+    output_error_frames: u32,
+    push_avg_ms: f64,
+    push_p95_ms: f64,
+    publish_avg_ms: f64,
+    publish_p95_ms: f64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "JSON names mirror the USB actor metrics exported elsewhere"
+)]
+struct DiagnoseUsbActorSnapshot {
+    display_frames_total: u64,
+    display_frames_delayed_for_led_total: u64,
+    display_led_priority_wait_total_ms: f64,
+    display_led_priority_wait_avg_ms: f64,
+    display_led_priority_wait_max_ms: f64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+struct DiagnoseDisplayOutputSnapshot {
+    captured_devices: usize,
+    preview_subscribers: usize,
+    encode_attempts_total: u64,
+    encode_successes_total: u64,
+    encode_failures_total: u64,
+    encode_avg_ms: f64,
+    encode_max_ms: f64,
+    encode_last_ms: Option<f64>,
+    encoded_bytes_total: u64,
+    encoded_last_bytes: u64,
+    write_attempts_total: u64,
+    write_successes_total: u64,
+    write_failures_total: u64,
+    retry_attempts_total: u64,
+    last_failure_age_ms: Option<u64>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+struct DiagnoseDeviceOutputSnapshot {
+    queues: usize,
+    usb_queues: usize,
+    lagging_queues: usize,
+    worker_finished_queues: usize,
+    dropped_frames_total: u64,
+    errors_total: u64,
+    items: Vec<DiagnoseDeviceOutputItem>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+struct DiagnoseDeviceOutputItem {
+    id: String,
+    backend_id: String,
+    mapped_layout_ids: Vec<String>,
+    uses_frame_sink: bool,
+    worker_finished: bool,
+    delivered_fps: f32,
+    accepted_fps: f32,
+    fps_sent: f32,
+    fps_queued: f32,
+    fps_target: u32,
+    frames_received: u64,
+    accepted: u64,
+    frames_sent: u64,
+    transport_started: u64,
+    transport_completed: u64,
+    transport_failed: u64,
+    completed_payload_bytes: u64,
+    frames_dropped: u64,
+    coalesced: u64,
+    coalesced_target_cadence: u64,
+    coalesced_backend_overrun: u64,
+    errors_total: u64,
+    avg_latency_ms: u32,
+    avg_queue_wait_ms: u32,
+    avg_write_ms: u32,
+    avg_transport_latency_ms: u32,
+    last_sent_ago_ms: Option<u64>,
+    last_error: Option<String>,
+    last_sequence: u64,
+    queue_generation: u64,
+    last_transport_started_sequence: u64,
+    last_transport_completed_sequence: u64,
+    last_transport_failed_sequence: u64,
+    display_queue_generation: Option<u64>,
+    display_transport_started: u64,
+    display_transport_completed: u64,
+    display_transport_failed: u64,
+}
+
+pub(crate) async fn collect_default_diagnostics(state: &AppState) -> DiagnoseResponse {
+    let checks = default_safe_checks();
+    collect_diagnostics(state, &checks, false).await
+}
+
+pub(crate) fn default_safe_checks() -> Vec<String> {
+    DEFAULT_SAFE_CHECKS.into_iter().map(str::to_owned).collect()
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "diagnostics response assembly keeps checks and snapshot state together"
+)]
+pub(crate) async fn collect_diagnostics(
+    state: &AppState,
+    requested: &[String],
+    include_system: bool,
+) -> DiagnoseResponse {
+    let render_elapsed_ms = state.start_time.elapsed().as_secs_f64() * 1000.0;
+    let performance = state.performance.read().await.snapshot();
+    let usb_actor_metrics = usb_actor_metrics_snapshot();
+    let display_output_metrics = state.display_frames.read().await.metrics_snapshot();
+    let device_metrics = state.device_metrics.load_full();
+    let input = input_status_snapshot(&state);
+    #[allow(
+        unused_mut,
+        reason = "macOS parity attaches its report only in the feature-gated build"
+    )]
+    let mut snapshot = build_diagnose_snapshot(
+        input,
+        &performance,
+        render_elapsed_ms,
+        usb_actor_metrics,
+        display_output_metrics,
+        device_metrics.as_ref(),
+    );
+
+    let mut checks = Vec::new();
+
+    for check in requested {
+        match check.as_str() {
+            "daemon" => {
+                checks.push(DiagnoseCheck {
+                    category: "system".to_owned(),
+                    name: "daemon_running".to_owned(),
+                    status: "pass".to_owned(),
+                    detail: env!("CARGO_PKG_VERSION").to_owned(),
+                });
+            }
+            "render" => {
+                let loop_guard = state.render_loop.read().await;
+                let running = loop_guard.is_running();
+                let render_loop_stats = loop_guard.stats();
+                checks.push(DiagnoseCheck {
+                    category: "render".to_owned(),
+                    name: "render_loop".to_owned(),
+                    status: if running { "pass" } else { "warning" }.to_owned(),
+                    detail: format!(
+                        "state={}, tier={}",
+                        render_loop_stats.state, render_loop_stats.tier
+                    ),
+                });
+                if running {
+                    let (status, detail) = render_frame_liveness_status(
+                        performance.latest_frame.as_ref(),
+                        render_elapsed_ms,
+                    );
+                    checks.push(DiagnoseCheck {
+                        category: "render".to_owned(),
+                        name: "frame_liveness".to_owned(),
+                        status: status.to_owned(),
+                        detail,
+                    });
+
+                    let (status, detail) =
+                        render_led_freshness_status(performance.latest_frame.as_ref());
+                    checks.push(DiagnoseCheck {
+                        category: "render".to_owned(),
+                        name: "led_freshness".to_owned(),
+                        status: status.to_owned(),
+                        detail,
+                    });
+
+                    checks.push(DiagnoseCheck {
+                        category: "render".to_owned(),
+                        name: "recent_output_sources".to_owned(),
+                        status: "pass".to_owned(),
+                        detail: format!(
+                            "frames={}, current_frame={}, published_frame={}, routed_reuse={}, reused_published_frame={}, gpu_sample_stale={}",
+                            performance.frame_count,
+                            performance.pacing.output_current_frame,
+                            performance.pacing.output_published_frame,
+                            performance.pacing.output_routed_reuse,
+                            performance.pacing.output_reused_published_frame,
+                            performance.pacing.gpu_sample_stale
+                        ),
+                    });
+                }
+            }
+            "devices" => {
+                let count = state.device_registry.len().await;
+                checks.push(DiagnoseCheck {
+                    category: "devices".to_owned(),
+                    name: "registry".to_owned(),
+                    status: "pass".to_owned(),
+                    detail: format!("{count} tracked"),
+                });
+
+                let output_status = if snapshot.device_output.worker_finished_queues > 0
+                    || snapshot.device_output.errors_total > 0
+                {
+                    "fail"
+                } else if snapshot.device_output.lagging_queues > 0
+                    || snapshot.device_output.dropped_frames_total > 0
+                {
+                    "warning"
+                } else {
+                    "pass"
+                };
+                checks.push(DiagnoseCheck {
+                    category: "devices".to_owned(),
+                    name: "output_queues".to_owned(),
+                    status: output_status.to_owned(),
+                    detail: format!(
+                        "queues={}, usb_queues={}, lagging={}, worker_finished={}, dropped_total={}, errors_total={}",
+                        snapshot.device_output.queues,
+                        snapshot.device_output.usb_queues,
+                        snapshot.device_output.lagging_queues,
+                        snapshot.device_output.worker_finished_queues,
+                        snapshot.device_output.dropped_frames_total,
+                        snapshot.device_output.errors_total
+                    ),
+                });
+                checks.push(DiagnoseCheck {
+                    category: "devices".to_owned(),
+                    name: "usb_actor_display_lane".to_owned(),
+                    status: if snapshot.usb.display_led_priority_wait_max_ms >= 2.0 {
+                        "warning"
+                    } else {
+                        "pass"
+                    }
+                    .to_owned(),
+                    detail: format!(
+                        "display_frames={}, delayed_for_led={}, wait_avg_ms={:.2}, wait_max_ms={:.2}",
+                        snapshot.usb.display_frames_total,
+                        snapshot.usb.display_frames_delayed_for_led_total,
+                        snapshot.usb.display_led_priority_wait_avg_ms,
+                        snapshot.usb.display_led_priority_wait_max_ms
+                    ),
+                });
+                checks.push(DiagnoseCheck {
+                    category: "devices".to_owned(),
+                    name: "display_output_encoder".to_owned(),
+                    status: if snapshot.display_output.encode_failures_total > 0 {
+                        "warning"
+                    } else {
+                        "pass"
+                    }
+                    .to_owned(),
+                    detail: format!(
+                        "attempts={}, successes={}, failures={}, avg_ms={:.2}, max_ms={:.2}, last_ms={}, last_bytes={}",
+                        snapshot.display_output.encode_attempts_total,
+                        snapshot.display_output.encode_successes_total,
+                        snapshot.display_output.encode_failures_total,
+                        snapshot.display_output.encode_avg_ms,
+                        snapshot.display_output.encode_max_ms,
+                        snapshot
+                            .display_output
+                            .encode_last_ms
+                            .map_or_else(|| "none".to_owned(), |value| format!("{value:.2}")),
+                        snapshot.display_output.encoded_last_bytes
+                    ),
+                });
+            }
+            "config" => {
+                let has_manager = state.config_manager.is_some();
+                checks.push(DiagnoseCheck {
+                    category: "config".to_owned(),
+                    name: "config_manager".to_owned(),
+                    status: if has_manager { "pass" } else { "warning" }.to_owned(),
+                    detail: if has_manager {
+                        "available".to_owned()
+                    } else {
+                        "using defaults/test state".to_owned()
+                    },
+                });
+            }
+            "input" => {
+                let diagnostics = actionable_input_diagnostics(&snapshot.input);
+                if diagnostics.is_empty() {
+                    checks.push(DiagnoseCheck {
+                        category: "input".to_owned(),
+                        name: "source_health".to_owned(),
+                        status: "pass".to_owned(),
+                        detail: format!(
+                            "{} source(s), graph generation {}",
+                            snapshot.input.sources.len(),
+                            snapshot.input.source_graph_generation
+                        ),
+                    });
+                } else {
+                    checks.extend(diagnostics.into_iter().map(|diagnostic| DiagnoseCheck {
+                        category: "input".to_owned(),
+                        name: diagnostic.source_id,
+                        status: diagnostic.status.to_owned(),
+                        detail: diagnostic.detail,
+                    }));
+                }
+            }
+            "memory" => checks.push(servo_memory_check().await),
+            "macos_screen_parity" => {
+                #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
+                match super::macos_screen_parity::run_macos_screen_parity(state).await {
+                    Ok(report) => {
+                        let detail = report.detail();
+                        match serde_json::to_value(report) {
+                            Ok(report) => {
+                                snapshot.macos_screen_parity = Some(report);
+                                checks.push(DiagnoseCheck {
+                                    category: "input".to_owned(),
+                                    name: "macos_screen_parity".to_owned(),
+                                    status: "pass".to_owned(),
+                                    detail,
+                                });
+                            }
+                            Err(_) => checks.push(DiagnoseCheck {
+                                category: "input".to_owned(),
+                                name: "macos_screen_parity".to_owned(),
+                                status: "fail".to_owned(),
+                                detail: "the parity report could not be serialized".to_owned(),
+                            }),
+                        }
+                    }
+                    Err(error) => checks.push(DiagnoseCheck {
+                        category: "input".to_owned(),
+                        name: "macos_screen_parity".to_owned(),
+                        status: error.status().to_owned(),
+                        detail: error.detail().to_owned(),
+                    }),
+                }
+
+                #[cfg(not(all(
+                    target_os = "macos",
+                    feature = "wgpu",
+                    feature = "screen-capture"
+                )))]
+                checks.push(DiagnoseCheck {
+                    category: "input".to_owned(),
+                    name: "macos_screen_parity".to_owned(),
+                    status: "warning".to_owned(),
+                    detail: "macOS screen parity is unavailable in this build".to_owned(),
+                });
+            }
+            other => {
+                checks.push(DiagnoseCheck {
+                    category: "custom".to_owned(),
+                    name: other.to_owned(),
+                    status: "warning".to_owned(),
+                    detail: "unknown check".to_owned(),
+                });
+            }
+        }
+    }
+
+    if include_system {
+        checks.push(DiagnoseCheck {
+            category: "system".to_owned(),
+            name: "uptime_seconds".to_owned(),
+            status: "pass".to_owned(),
+            detail: state.start_time.elapsed().as_secs().to_string(),
+        });
+    }
+
+    let mut passed = 0usize;
+    let mut warnings = 0usize;
+    let mut failed = 0usize;
+
+    for check in &checks {
+        match check.status.as_str() {
+            "pass" => passed += 1,
+            "fail" => failed += 1,
+            _ => warnings += 1,
+        }
+    }
+
+    DiagnoseResponse {
+        checks,
+        summary: DiagnoseSummary {
+            passed,
+            warnings,
+            failed,
+        },
+        snapshot,
+    }
+}
+
+fn render_frame_liveness_status(
+    latest_frame: Option<&LatestFrameMetrics>,
+    render_elapsed_ms: f64,
+) -> (&'static str, String) {
+    let Some(frame) = latest_frame else {
+        return ("warning", "no completed frame recorded".to_owned());
+    };
+
+    let frame_age_ms = if frame.timestamp_ms > 0 {
+        (render_elapsed_ms - f64::from(frame.timestamp_ms)).max(0.0)
+    } else {
+        0.0
+    };
+    let status = if frame_age_ms >= RENDER_FRAME_STALE_FAIL_MS {
+        "fail"
+    } else if frame_age_ms >= RENDER_FRAME_STALE_WARNING_MS {
+        "warning"
+    } else {
+        "pass"
+    };
+
+    (
+        status,
+        format!(
+            "frame_token={}, frame_age_ms={frame_age_ms:.2}",
+            frame.timeline.frame_token
+        ),
+    )
+}
+
+fn render_led_freshness_status(
+    latest_frame: Option<&LatestFrameMetrics>,
+) -> (&'static str, String) {
+    let Some(frame) = latest_frame else {
+        return ("warning", "no completed frame recorded".to_owned());
+    };
+
+    let status = if frame.output_errors > 0 {
+        "fail"
+    } else if frame.gpu_sample_stale
+        || frame.gpu_sample_wait_blocked
+        || frame.gpu_sample_queue_saturated
+        || frame.gpu_readback_failed
+    {
+        "warning"
+    } else {
+        "pass"
+    };
+
+    (
+        status,
+        format!(
+            "output_source={}, reused_published_frame={}, gpu_sample_stale={}, gpu_sample_wait_blocked={}, gpu_sample_queue_saturated={}, devices_written={}, total_leds={}, sample_us={}, push_us={}",
+            frame.output_frame_source.as_str(),
+            frame.output_reuses_published_frame,
+            frame.gpu_sample_stale,
+            frame.gpu_sample_wait_blocked,
+            frame.gpu_sample_queue_saturated,
+            frame.devices_written,
+            frame.total_leds,
+            frame.sample_us,
+            frame.push_us
+        ),
+    )
+}
+
+fn build_diagnose_snapshot(
+    input: InputStatus,
+    performance: &PerformanceSnapshot,
+    render_elapsed_ms: f64,
+    usb_actor_metrics: UsbActorMetricsSnapshot,
+    display_output_metrics: DisplayOutputMetricsSnapshot,
+    device_metrics: &DeviceMetricsSnapshot,
+) -> DiagnoseSnapshot {
+    DiagnoseSnapshot {
+        input,
+        render: build_render_snapshot(performance, render_elapsed_ms),
+        usb: build_usb_actor_snapshot(usb_actor_metrics),
+        display_output: build_display_output_snapshot(display_output_metrics),
+        device_output: build_device_output_snapshot(device_metrics),
+        macos_screen_parity: None,
+    }
+}
+
+fn build_render_snapshot(
+    performance: &PerformanceSnapshot,
+    render_elapsed_ms: f64,
+) -> DiagnoseRenderSnapshot {
+    let pacing = performance.pacing;
+    DiagnoseRenderSnapshot {
+        latest_frame: performance
+            .latest_frame
+            .as_ref()
+            .map(|frame| DiagnoseLatestFrameSnapshot {
+                frame_token: frame.timeline.frame_token,
+                frame_age_ms: round_2(frame_age_ms(frame, render_elapsed_ms)),
+                compositor_backend: frame.compositor_backend.as_str().to_owned(),
+                output_frame_source: frame.output_frame_source.as_str().to_owned(),
+                output_reuses_published_frame: frame.output_reuses_published_frame,
+                output_brightness_bits: frame.output_brightness_bits,
+                output_brightness_generation: frame.output_brightness_generation,
+                output_routing_signature: frame.output_routing_signature,
+                output_zone_shape_signature: frame.output_zone_shape_signature,
+                output_unassigned_behavior_generation: frame.output_unassigned_behavior_generation,
+                devices_written: frame.devices_written,
+                total_leds: frame.total_leds,
+                gpu_zone_sampling: frame.gpu_zone_sampling,
+                gpu_sample_deferred: frame.gpu_sample_deferred,
+                gpu_sample_stale: frame.gpu_sample_stale,
+                gpu_sample_retry_hit: frame.gpu_sample_retry_hit,
+                gpu_sample_queue_saturated: frame.gpu_sample_queue_saturated,
+                gpu_sample_wait_blocked: frame.gpu_sample_wait_blocked,
+                gpu_sample_cpu_fallback: frame.gpu_sample_cpu_fallback,
+                cpu_readback_skipped: frame.cpu_readback_skipped,
+                gpu_readback_failed: frame.gpu_readback_failed,
+                input_us: frame.input_us,
+                render_us: frame.render_us,
+                producer_us: frame.producer_us,
+                composition_us: frame.composition_us,
+                sample_us: frame.sample_us,
+                push_us: frame.push_us,
+                publish_us: frame.publish_us,
+                overhead_us: frame.overhead_us,
+                total_us: frame.total_us,
+                output_errors: frame.output_errors,
+            }),
+        recent_window: DiagnoseRenderWindowSnapshot {
+            frames: performance.frame_count,
+            gpu_sample_deferred: pacing.gpu_sample_deferred,
+            gpu_sample_stale: pacing.gpu_sample_stale,
+            gpu_sample_retry_hit: pacing.gpu_sample_retry_hit,
+            gpu_sample_queue_saturated: pacing.gpu_sample_queue_saturated,
+            gpu_sample_wait_blocked: pacing.gpu_sample_wait_blocked,
+            gpu_sample_cpu_fallback: pacing.gpu_sample_cpu_fallback,
+            output_current_frame: pacing.output_current_frame,
+            output_published_frame: pacing.output_published_frame,
+            output_routed_reuse: pacing.output_routed_reuse,
+            output_reused_published_frame: pacing.output_reused_published_frame,
+            output_error_frames: pacing.output_error_frames,
+            push_avg_ms: round_2(pacing.push_avg_ms),
+            push_p95_ms: round_2(pacing.push_p95_ms),
+            publish_avg_ms: round_2(pacing.publish_avg_ms),
+            publish_p95_ms: round_2(pacing.publish_p95_ms),
+        },
+    }
+}
+
+fn build_usb_actor_snapshot(metrics: UsbActorMetricsSnapshot) -> DiagnoseUsbActorSnapshot {
+    let avg_wait_ms = metrics
+        .display_led_priority_wait_total_us
+        .checked_div(metrics.display_frames_delayed_for_led_total)
+        .map_or(0.0, us_to_ms_f64);
+
+    DiagnoseUsbActorSnapshot {
+        display_frames_total: metrics.display_frames_total,
+        display_frames_delayed_for_led_total: metrics.display_frames_delayed_for_led_total,
+        display_led_priority_wait_total_ms: us_to_ms_f64(
+            metrics.display_led_priority_wait_total_us,
+        ),
+        display_led_priority_wait_avg_ms: round_2(avg_wait_ms),
+        display_led_priority_wait_max_ms: us_to_ms_f64(metrics.display_led_priority_wait_max_us),
+    }
+}
+
+fn build_display_output_snapshot(
+    metrics: DisplayOutputMetricsSnapshot,
+) -> DiagnoseDisplayOutputSnapshot {
+    DiagnoseDisplayOutputSnapshot {
+        captured_devices: metrics.captured_devices,
+        preview_subscribers: metrics.preview_subscribers,
+        encode_attempts_total: metrics.encode_attempts_total,
+        encode_successes_total: metrics.encode_successes_total,
+        encode_failures_total: metrics.encode_failures_total,
+        encode_avg_ms: round_2(us_to_ms_f64(metrics.encode_avg_us)),
+        encode_max_ms: round_2(us_to_ms_f64(metrics.encode_max_us)),
+        encode_last_ms: metrics.encode_last_us.map(us_to_ms_f64).map(round_2),
+        encoded_bytes_total: metrics.encoded_bytes_total,
+        encoded_last_bytes: metrics.encoded_last_bytes,
+        write_attempts_total: metrics.write_attempts_total,
+        write_successes_total: metrics.write_successes_total,
+        write_failures_total: metrics.write_failures_total,
+        retry_attempts_total: metrics.retry_attempts_total,
+        last_failure_age_ms: metrics.last_failure_age_ms,
+    }
+}
+
+fn build_device_output_snapshot(metrics: &DeviceMetricsSnapshot) -> DiagnoseDeviceOutputSnapshot {
+    let lagging_queues = metrics
+        .items
+        .iter()
+        .filter(|item| device_output_lagging(item))
+        .count();
+    let worker_finished_queues = metrics
+        .items
+        .iter()
+        .filter(|item| item.worker_finished)
+        .count();
+    let usb_queues = metrics
+        .items
+        .iter()
+        .filter(|item| item.backend_id == USB_OUTPUT_BACKEND_ID)
+        .count();
+    let dropped_frames_total = metrics
+        .items
+        .iter()
+        .fold(0_u64, |acc, item| acc.saturating_add(item.frames_dropped));
+    let errors_total = metrics
+        .items
+        .iter()
+        .fold(0_u64, |acc, item| acc.saturating_add(item.errors_total));
+    let items = metrics
+        .items
+        .iter()
+        .map(|item| DiagnoseDeviceOutputItem {
+            id: item.id.to_string(),
+            backend_id: item.backend_id.clone(),
+            mapped_layout_ids: item.mapped_layout_ids.clone(),
+            uses_frame_sink: item.uses_frame_sink,
+            worker_finished: item.worker_finished,
+            delivered_fps: item.delivered_fps,
+            accepted_fps: item.accepted_fps,
+            fps_sent: item.fps_sent,
+            fps_queued: item.fps_queued,
+            fps_target: item.fps_target,
+            frames_received: item.frames_received,
+            accepted: item.accepted,
+            frames_sent: item.frames_sent,
+            transport_started: item.transport_started,
+            transport_completed: item.transport_completed,
+            transport_failed: item.transport_failed,
+            completed_payload_bytes: item.completed_payload_bytes,
+            frames_dropped: item.frames_dropped,
+            coalesced: item.coalesced,
+            coalesced_target_cadence: item.coalesced_target_cadence,
+            coalesced_backend_overrun: item.coalesced_backend_overrun,
+            errors_total: item.errors_total,
+            avg_latency_ms: item.avg_latency_ms,
+            avg_queue_wait_ms: item.avg_queue_wait_ms,
+            avg_write_ms: item.avg_write_ms,
+            avg_transport_latency_ms: item.avg_transport_latency_ms,
+            last_sent_ago_ms: item.last_sent_ago_ms,
+            last_error: item.last_error.clone(),
+            last_sequence: item.last_sequence,
+            queue_generation: item.queue_generation,
+            last_transport_started_sequence: item.last_transport_started_sequence,
+            last_transport_completed_sequence: item.last_transport_completed_sequence,
+            last_transport_failed_sequence: item.last_transport_failed_sequence,
+            display_queue_generation: item.display_queue_generation,
+            display_transport_started: item.display_transport_started,
+            display_transport_completed: item.display_transport_completed,
+            display_transport_failed: item.display_transport_failed,
+        })
+        .collect();
+
+    DiagnoseDeviceOutputSnapshot {
+        queues: metrics.items.len(),
+        usb_queues,
+        lagging_queues,
+        worker_finished_queues,
+        dropped_frames_total,
+        errors_total,
+        items,
+    }
+}
+
+fn device_output_lagging(item: &DeviceMetrics) -> bool {
+    item.fps_queued > 1.0 && item.fps_sent + 1.0 < item.fps_queued * 0.75
+}
+
+fn frame_age_ms(frame: &LatestFrameMetrics, render_elapsed_ms: f64) -> f64 {
+    if frame.timestamp_ms > 0 {
+        (render_elapsed_ms - f64::from(frame.timestamp_ms)).max(0.0)
+    } else {
+        0.0
+    }
+}
+
+fn us_to_ms_f64(micros: u64) -> f64 {
+    let clamped = u32::try_from(micros).unwrap_or(u32::MAX);
+    round_2(f64::from(clamped) / 1000.0)
+}
+
+fn round_2(value: f64) -> f64 {
+    (value * 100.0).round() / 100.0
+}
+
+#[cfg(all(feature = "servo", not(target_os = "windows")))]
+async fn servo_memory_check() -> DiagnoseCheck {
+    match tokio::task::spawn_blocking(hypercolor_core::effect::servo_memory_report_snapshot).await {
+        Ok(Ok(snapshot)) => DiagnoseCheck {
+            category: "memory".to_owned(),
+            name: "servo_memory".to_owned(),
+            status: "pass".to_owned(),
+            detail: format!(
+                "processes={}, reports={}, explicit_bytes={}, non_explicit_bytes={}",
+                snapshot.processes.len(),
+                snapshot.totals.report_count,
+                snapshot.totals.explicit_bytes,
+                snapshot.totals.non_explicit_bytes
+            ),
+        },
+        Ok(Err(error)) => servo_memory_failure(error.to_string()),
+        Err(error) => servo_memory_failure(format!("worker task failed: {error}")),
+    }
+}
+
+#[cfg(not(all(feature = "servo", not(target_os = "windows"))))]
+fn servo_memory_check() -> std::future::Ready<DiagnoseCheck> {
+    let detail = if cfg!(all(feature = "servo", target_os = "windows")) {
+        "Servo memory reporting is disabled on Windows"
+    } else {
+        "Servo memory reporting is unavailable in this build"
+    };
+
+    std::future::ready(DiagnoseCheck {
+        category: "memory".to_owned(),
+        name: "servo_memory".to_owned(),
+        status: "warning".to_owned(),
+        detail: detail.to_owned(),
+    })
+}
+
+#[cfg(all(feature = "servo", not(target_os = "windows")))]
+fn servo_memory_failure(detail: String) -> DiagnoseCheck {
+    let unavailable = detail.contains("Servo worker is not running");
+    DiagnoseCheck {
+        category: "memory".to_owned(),
+        name: "servo_memory".to_owned(),
+        status: if unavailable { "warning" } else { "fail" }.to_owned(),
+        detail,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::performance::{FrameTimeline, LatestFrameMetrics, OutputFrameSourceKind};
+
+    use super::{render_frame_liveness_status, render_led_freshness_status};
+
+    #[cfg(all(feature = "servo", not(target_os = "windows")))]
+    use super::servo_memory_failure;
+
+    #[cfg(all(feature = "servo", not(target_os = "windows")))]
+    #[test]
+    fn servo_memory_failure_is_a_named_diagnostic_finding() {
+        let finding = servo_memory_failure("memory callback failed".to_owned());
+
+        assert_eq!(finding.category, "memory");
+        assert_eq!(finding.name, "servo_memory");
+        assert_eq!(finding.status, "fail");
+        assert_eq!(finding.detail, "memory callback failed");
+    }
+
+    #[test]
+    fn render_frame_liveness_fails_stale_running_frame() {
+        let (status, detail) = render_frame_liveness_status(
+            Some(&LatestFrameMetrics {
+                timestamp_ms: 1_000,
+                timeline: FrameTimeline {
+                    frame_token: 42,
+                    ..FrameTimeline::default()
+                },
+                ..LatestFrameMetrics::default()
+            }),
+            12_500.0,
+        );
+
+        assert_eq!(status, "fail");
+        assert_eq!(detail, "frame_token=42, frame_age_ms=11500.00");
+    }
+
+    #[test]
+    fn render_frame_liveness_passes_fresh_running_frame() {
+        let (status, detail) = render_frame_liveness_status(
+            Some(&LatestFrameMetrics {
+                timestamp_ms: 9_900,
+                timeline: FrameTimeline {
+                    frame_token: 43,
+                    ..FrameTimeline::default()
+                },
+                ..LatestFrameMetrics::default()
+            }),
+            10_000.0,
+        );
+
+        assert_eq!(status, "pass");
+        assert_eq!(detail, "frame_token=43, frame_age_ms=100.00");
+    }
+
+    #[test]
+    fn render_led_freshness_warns_on_stale_gpu_sample() {
+        let (status, detail) = render_led_freshness_status(Some(&LatestFrameMetrics {
+            output_frame_source: OutputFrameSourceKind::PublishedFrame,
+            output_reuses_published_frame: true,
+            gpu_sample_stale: true,
+            devices_written: 2,
+            total_leds: 128,
+            sample_us: 111,
+            push_us: 222,
+            ..LatestFrameMetrics::default()
+        }));
+
+        assert_eq!(status, "warning");
+        assert!(detail.contains("output_source=published_frame"));
+        assert!(detail.contains("gpu_sample_stale=true"));
+        assert!(detail.contains("devices_written=2"));
+    }
+}
