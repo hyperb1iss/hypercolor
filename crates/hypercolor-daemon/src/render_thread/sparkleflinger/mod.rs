@@ -47,10 +47,11 @@ use hypercolor_types::canvas::{
 use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::device::{DeviceId, DisplayFrameFormat};
 use hypercolor_types::event::ZoneColors;
+use hypercolor_types::layer::BlendMode;
 #[cfg(feature = "wgpu")]
 use hypercolor_types::layer::SceneLayerId;
 use hypercolor_types::layer::{LayerAdjust, LayerTransform};
-use hypercolor_types::scene::{DisplayFaceBlendMode, ZoneId};
+use hypercolor_types::scene::ZoneId;
 use hypercolor_types::spatial::{EdgeBehavior, NormalizedPosition};
 use hypercolor_types::viewport::FitMode;
 
@@ -501,7 +502,7 @@ pub(crate) struct DisplayFinalizeParams {
     pub(crate) viewport_rotation: f32,
     pub(crate) viewport_scale: f32,
     pub(crate) viewport_edge_behavior: EdgeBehavior,
-    pub(crate) blend_mode: DisplayFaceBlendMode,
+    pub(crate) blend_mode: BlendMode,
     pub(crate) opacity: f32,
 }
 
@@ -1297,7 +1298,7 @@ impl SparkleFlinger {
         &mut self,
         scene: &PublishedSurface,
         face: &PublishedSurface,
-        blend_mode: DisplayFaceBlendMode,
+        blend_mode: BlendMode,
         opacity: f32,
     ) -> PublishedSurface {
         face_overlay::compose_face_overlay(
@@ -1312,7 +1313,7 @@ impl SparkleFlinger {
     pub(crate) fn blend_face_overlay_rgba(
         scene_rgba: &mut [u8],
         face_rgba: &[u8],
-        blend_mode: DisplayFaceBlendMode,
+        blend_mode: BlendMode,
         opacity: f32,
     ) {
         face_overlay::blend_face_overlay_rgba(scene_rgba, face_rgba, blend_mode, opacity);

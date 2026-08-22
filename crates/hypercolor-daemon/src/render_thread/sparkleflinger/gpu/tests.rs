@@ -41,7 +41,8 @@ use hypercolor_types::canvas::{
 use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::device::{DeviceId, DisplayFrameFormat};
 use hypercolor_types::event::ZoneColors;
-use hypercolor_types::scene::{DisplayFaceBlendMode, ZoneId};
+use hypercolor_types::layer::BlendMode;
+use hypercolor_types::scene::ZoneId;
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection,
@@ -1225,7 +1226,7 @@ fn solid_canvas_with_size(width: u32, height: u32, color: Rgba) -> Canvas {
 fn display_finalize_params(
     width: u32,
     height: u32,
-    blend_mode: DisplayFaceBlendMode,
+    blend_mode: BlendMode,
 ) -> DisplayFinalizeParams {
     display_finalize_params_for_format(width, height, blend_mode, DisplayFrameFormat::Rgb)
 }
@@ -1233,7 +1234,7 @@ fn display_finalize_params(
 fn display_finalize_params_for_format(
     width: u32,
     height: u32,
-    blend_mode: DisplayFaceBlendMode,
+    blend_mode: BlendMode,
     frame_format: DisplayFrameFormat,
 ) -> DisplayFinalizeParams {
     DisplayFinalizeParams {

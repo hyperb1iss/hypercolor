@@ -1,18 +1,14 @@
+use hypercolor_color::PixelBlendMode;
 use hypercolor_core::blend_math::{
     RgbaBlendMode, blend_rgba_pixel, blend_rgba_pixels_in_place, decode_srgb_channel,
     encode_srgb_channel,
 };
-use hypercolor_types::canvas::{BlendMode, LinearRgba, Rgba};
+use hypercolor_types::canvas::Rgba;
 
-fn expected_blend(dst: Rgba, src: Rgba, mode: BlendMode, opacity: f32) -> [u8; 4] {
+fn expected_blend(dst: Rgba, src: Rgba, mode: PixelBlendMode, opacity: f32) -> [u8; 4] {
     let dst = dst.to_linear();
     let src = src.to_linear();
-    let blended = mode.blend(
-        [dst.r, dst.g, dst.b, dst.a],
-        [src.r, src.g, src.b, src.a],
-        opacity,
-    );
-    let pixel = LinearRgba::new(blended[0], blended[1], blended[2], blended[3]).to_encoded();
+    let pixel = src.blend_over(dst, mode, opacity).to_encoded();
     [pixel.r, pixel.g, pixel.b, pixel.a]
 }
 
@@ -22,14 +18,14 @@ fn single_pixel_blend_matches_canvas_reference() {
     let src = [0, 0, 255, 255];
 
     for (rgba_mode, canvas_mode, opacity) in [
-        (RgbaBlendMode::Normal, BlendMode::Normal, 0.25),
-        (RgbaBlendMode::Add, BlendMode::Add, 1.0),
-        (RgbaBlendMode::Screen, BlendMode::Screen, 1.0),
-        (RgbaBlendMode::Multiply, BlendMode::Multiply, 1.0),
-        (RgbaBlendMode::Overlay, BlendMode::Overlay, 1.0),
-        (RgbaBlendMode::SoftLight, BlendMode::SoftLight, 1.0),
-        (RgbaBlendMode::ColorDodge, BlendMode::ColorDodge, 1.0),
-        (RgbaBlendMode::Difference, BlendMode::Difference, 1.0),
+        (RgbaBlendMode::Normal, PixelBlendMode::Normal, 0.25),
+        (RgbaBlendMode::Add, PixelBlendMode::Add, 1.0),
+        (RgbaBlendMode::Screen, PixelBlendMode::Screen, 1.0),
+        (RgbaBlendMode::Multiply, PixelBlendMode::Multiply, 1.0),
+        (RgbaBlendMode::Overlay, PixelBlendMode::Overlay, 1.0),
+        (RgbaBlendMode::SoftLight, PixelBlendMode::SoftLight, 1.0),
+        (RgbaBlendMode::ColorDodge, PixelBlendMode::ColorDodge, 1.0),
+        (RgbaBlendMode::Difference, PixelBlendMode::Difference, 1.0),
     ] {
         assert_eq!(
             blend_rgba_pixel(dst, src, rgba_mode, opacity),
@@ -55,7 +51,7 @@ fn slice_blend_updates_pixels_in_place() {
         &expected_blend(
             Rgba::new(255, 0, 0, 255),
             Rgba::new(0, 0, 255, 255),
-            BlendMode::Normal,
+            PixelBlendMode::Normal,
             0.5,
         )
     );
@@ -64,7 +60,7 @@ fn slice_blend_updates_pixels_in_place() {
         &expected_blend(
             Rgba::new(0, 255, 0, 255),
             Rgba::new(255, 255, 255, 128),
-            BlendMode::Normal,
+            PixelBlendMode::Normal,
             0.5,
         )
     );

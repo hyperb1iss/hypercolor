@@ -8,7 +8,7 @@ use hypercolor_core::bus::DisplayYuv420Frame;
 use hypercolor_types::canvas::{
     PublishedSurface, RenderSurfacePool, SurfaceDescriptor, SurfaceStateCounts,
 };
-use hypercolor_types::scene::DisplayFaceBlendMode;
+use hypercolor_types::layer::BlendMode;
 use hypercolor_types::scene::ZoneId;
 use hypercolor_types::spatial::EdgeBehavior;
 
@@ -940,19 +940,19 @@ enum DisplayFinalizeShaderMode {
     Difference = 10,
 }
 
-fn display_finalize_mode(mode: DisplayFaceBlendMode) -> DisplayFinalizeShaderMode {
+fn display_finalize_mode(mode: BlendMode) -> DisplayFinalizeShaderMode {
     match mode {
-        DisplayFaceBlendMode::Replace => DisplayFinalizeShaderMode::Replace,
-        DisplayFaceBlendMode::Alpha => DisplayFinalizeShaderMode::Alpha,
-        DisplayFaceBlendMode::Tint => DisplayFinalizeShaderMode::Tint,
-        DisplayFaceBlendMode::LumaReveal => DisplayFinalizeShaderMode::LumaReveal,
-        DisplayFaceBlendMode::Add => DisplayFinalizeShaderMode::Add,
-        DisplayFaceBlendMode::Screen => DisplayFinalizeShaderMode::Screen,
-        DisplayFaceBlendMode::Multiply => DisplayFinalizeShaderMode::Multiply,
-        DisplayFaceBlendMode::Overlay => DisplayFinalizeShaderMode::Overlay,
-        DisplayFaceBlendMode::SoftLight => DisplayFinalizeShaderMode::SoftLight,
-        DisplayFaceBlendMode::ColorDodge => DisplayFinalizeShaderMode::ColorDodge,
-        DisplayFaceBlendMode::Difference => DisplayFinalizeShaderMode::Difference,
+        BlendMode::Replace => DisplayFinalizeShaderMode::Replace,
+        BlendMode::Alpha => DisplayFinalizeShaderMode::Alpha,
+        BlendMode::Tint => DisplayFinalizeShaderMode::Tint,
+        BlendMode::LumaReveal => DisplayFinalizeShaderMode::LumaReveal,
+        BlendMode::Add => DisplayFinalizeShaderMode::Add,
+        BlendMode::Screen => DisplayFinalizeShaderMode::Screen,
+        BlendMode::Multiply => DisplayFinalizeShaderMode::Multiply,
+        BlendMode::Overlay => DisplayFinalizeShaderMode::Overlay,
+        BlendMode::SoftLight => DisplayFinalizeShaderMode::SoftLight,
+        BlendMode::ColorDodge => DisplayFinalizeShaderMode::ColorDodge,
+        BlendMode::Difference => DisplayFinalizeShaderMode::Difference,
     }
 }
 

@@ -12,7 +12,7 @@ use hypercolor_types::canvas::LinearRgba;
 use hypercolor_types::control::ControlValue;
 use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
 use hypercolor_types::layer::{
-    LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
+    BlendMode, LayerAdjust, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
 };
 use hypercolor_types::scene::{
     ActionKind, AutomationRule, ColorInterpolation, EasingFunction, SceneId, ScenePriority,
@@ -116,7 +116,7 @@ fn color_layer(rgba: [f32; 4]) -> SceneLayer {
         id: SceneLayerId::new(),
         name: None,
         source: LayerSource::ColorFill { rgba },
-        blend: LayerBlendMode::Alpha,
+        blend: BlendMode::Alpha,
         opacity: 1.0,
         transform: LayerTransform::default(),
         adjust: LayerAdjust::default(),

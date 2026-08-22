@@ -9,8 +9,7 @@ use crate::api::envelope::ListResponse;
 use crate::api::scene::{SceneDocument, SideEffectOutcome, ZoneLayoutResource, ZoneMember};
 use crate::identity::LayoutId;
 use crate::layer::{
-    LayerAdjust, LayerBinding, LayerBlendMode, LayerSource, LayerTransform, SceneLayer,
-    SceneLayerId,
+    BlendMode, LayerAdjust, LayerBinding, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
 };
 use crate::scene::{
     DisplayFaceTarget, SceneId, SceneKind, SceneMutationMode, ScenePriority, TransitionSpec,
@@ -175,7 +174,7 @@ pub struct ReplaceSceneLayerRequest {
     pub name: Option<String>,
     pub source: LayerSource,
     #[serde(default)]
-    pub blend: LayerBlendMode,
+    pub blend: BlendMode,
     #[serde(default = "default_layer_opacity")]
     pub opacity: f32,
     #[serde(default)]

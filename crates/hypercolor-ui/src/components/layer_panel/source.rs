@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 use hypercolor_types::asset::AssetId;
 use hypercolor_types::effect::{EffectCategory, EffectId};
-use hypercolor_types::layer::{LayerBlendMode, LayerSource, MediaPlayback};
+use hypercolor_types::layer::{BlendMode, LayerSource, MediaPlayback};
 use hypercolor_types::scene::ZoneRole;
 
 use crate::api::ZoneResource;
@@ -241,11 +241,11 @@ pub fn media_layer_source_for(asset_id: AssetId) -> LayerSource {
 pub fn default_blend_for_added_layer(
     source: &LayerSource,
     existing_layer_count: usize,
-) -> LayerBlendMode {
+) -> BlendMode {
     if existing_layer_count > 0 && matches!(source, LayerSource::Effect { .. }) {
-        LayerBlendMode::Screen
+        BlendMode::Screen
     } else {
-        LayerBlendMode::Alpha
+        BlendMode::Alpha
     }
 }
 
@@ -288,37 +288,37 @@ pub fn layer_source_label(
 
 /// Snake-case wire token for a blend mode.
 #[must_use]
-pub fn blend_value(mode: LayerBlendMode) -> &'static str {
+pub fn blend_value(mode: BlendMode) -> &'static str {
     match mode {
-        LayerBlendMode::Replace => "replace",
-        LayerBlendMode::Alpha => "alpha",
-        LayerBlendMode::Add => "add",
-        LayerBlendMode::Screen => "screen",
-        LayerBlendMode::Multiply => "multiply",
-        LayerBlendMode::Overlay => "overlay",
-        LayerBlendMode::SoftLight => "soft_light",
-        LayerBlendMode::ColorDodge => "color_dodge",
-        LayerBlendMode::Difference => "difference",
-        LayerBlendMode::Tint => "tint",
-        LayerBlendMode::LumaReveal => "luma_reveal",
+        BlendMode::Replace => "replace",
+        BlendMode::Alpha => "alpha",
+        BlendMode::Add => "add",
+        BlendMode::Screen => "screen",
+        BlendMode::Multiply => "multiply",
+        BlendMode::Overlay => "overlay",
+        BlendMode::SoftLight => "soft_light",
+        BlendMode::ColorDodge => "color_dodge",
+        BlendMode::Difference => "difference",
+        BlendMode::Tint => "tint",
+        BlendMode::LumaReveal => "luma_reveal",
     }
 }
 
 /// Parse a blend-mode token, defaulting to `Alpha` for an unknown value.
 #[must_use]
-pub fn parse_blend(value: &str) -> LayerBlendMode {
+pub fn parse_blend(value: &str) -> BlendMode {
     match value {
-        "replace" => LayerBlendMode::Replace,
-        "add" => LayerBlendMode::Add,
-        "screen" => LayerBlendMode::Screen,
-        "multiply" => LayerBlendMode::Multiply,
-        "overlay" => LayerBlendMode::Overlay,
-        "soft_light" => LayerBlendMode::SoftLight,
-        "color_dodge" => LayerBlendMode::ColorDodge,
-        "difference" => LayerBlendMode::Difference,
-        "tint" => LayerBlendMode::Tint,
-        "luma_reveal" => LayerBlendMode::LumaReveal,
-        _ => LayerBlendMode::Alpha,
+        "replace" => BlendMode::Replace,
+        "add" => BlendMode::Add,
+        "screen" => BlendMode::Screen,
+        "multiply" => BlendMode::Multiply,
+        "overlay" => BlendMode::Overlay,
+        "soft_light" => BlendMode::SoftLight,
+        "color_dodge" => BlendMode::ColorDodge,
+        "difference" => BlendMode::Difference,
+        "tint" => BlendMode::Tint,
+        "luma_reveal" => BlendMode::LumaReveal,
+        _ => BlendMode::Alpha,
     }
 }
 

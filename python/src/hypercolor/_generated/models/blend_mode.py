@@ -1,7 +1,7 @@
 from enum import Enum
 
 
-class LayerBlendMode(str, Enum):
+class BlendMode(str, Enum):
     ADD = "add"
     ALPHA = "alpha"
     COLOR_DODGE = "color_dodge"

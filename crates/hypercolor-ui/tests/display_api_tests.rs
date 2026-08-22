@@ -171,7 +171,7 @@ fn set_display_face_request_skips_empty_controls() {
     let payload = serde_json::to_value(SetDisplayFaceRequest {
         effect_id: "face-1".to_owned(),
         controls: std::collections::HashMap::new(),
-        blend_mode: Some(hypercolor_types::scene::DisplayFaceBlendMode::Replace),
+        blend_mode: Some(hypercolor_types::layer::BlendMode::Replace),
         opacity: Some(1.0),
         scope: hypercolor_ui::api::DisplayFaceScope::Default,
     })
@@ -196,7 +196,7 @@ fn set_display_face_request_serializes_present_controls() {
             "accent".to_owned(),
             ControlValue::Float(0.75),
         )]),
-        blend_mode: Some(hypercolor_types::scene::DisplayFaceBlendMode::Replace),
+        blend_mode: Some(hypercolor_types::layer::BlendMode::Replace),
         opacity: Some(1.0),
         scope: hypercolor_ui::api::DisplayFaceScope::Scene,
     })

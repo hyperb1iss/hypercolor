@@ -18,7 +18,8 @@ use hypercolor_types::control::ControlValue;
 use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceTopologyHint};
 use hypercolor_types::effect::{EffectCategory, EffectMetadata, EffectSource};
 use hypercolor_types::event::ZoneChangeKind;
-use hypercolor_types::scene::{DisplayFaceBlendMode, DisplayFaceTarget, SceneId, Zone, ZoneId};
+use hypercolor_types::layer::BlendMode;
+use hypercolor_types::scene::{DisplayFaceTarget, SceneId, Zone, ZoneId};
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 
 use crate::domain::DomainError;
@@ -121,7 +122,7 @@ pub struct PatchDisplayComposition {
     /// Which display zone to patch.
     pub zone_id: ZoneId,
     /// The new blend mode, when the caller named one.
-    pub blend_mode: Option<DisplayFaceBlendMode>,
+    pub blend_mode: Option<BlendMode>,
     /// The new opacity, when the caller named one.
     pub opacity: Option<f32>,
 }

@@ -11,7 +11,7 @@ use hypercolor_daemon::domain::zone::{
     CreateZone, DeleteZone, UpdateZone, create_zone, delete_zone, update_zone,
 };
 use hypercolor_types::layer::{
-    LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
+    BlendMode, LayerAdjust, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
 };
 use hypercolor_types::scene::{
     ColorInterpolation, EasingFunction, Scene, SceneId, SceneKind, SceneMutationMode,
@@ -32,7 +32,7 @@ fn color_layer(id: SceneLayerId, channel: usize) -> SceneLayer {
         id,
         name: None,
         source: LayerSource::ColorFill { rgba },
-        blend: LayerBlendMode::Replace,
+        blend: BlendMode::Replace,
         opacity: 1.0,
         transform: LayerTransform::default(),
         adjust: LayerAdjust::default(),

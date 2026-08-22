@@ -71,6 +71,7 @@ from ._generated.models.activate_scene_response import ActivateSceneResponse
 from ._generated.models.apply_effect_request import ApplyEffectRequest
 from ._generated.models.apply_effect_response import ApplyEffectResponse
 from ._generated.models.assign_members_request import AssignMembersRequest
+from ._generated.models.blend_mode import BlendMode
 from ._generated.models.clear_scene_request import ClearSceneRequest
 from ._generated.models.create_scene_request import CreateSceneRequest
 from ._generated.models.create_zone_request import CreateZoneRequest
@@ -1018,7 +1019,7 @@ class HypercolorClient:
         effect_id: str,
         *,
         controls: Mapping[str, Any] | None = None,
-        blend_mode: str | None = None,
+        blend_mode: BlendMode | str | None = None,
         opacity: float | None = None,
     ) -> DisplayFaceAssignment:
         """Assign an effect to a display face."""
@@ -1030,7 +1031,9 @@ class HypercolorClient:
                     if controls is not None
                     else None
                 ),
-                "blend_mode": blend_mode,
+                "blend_mode": blend_mode.value
+                if isinstance(blend_mode, BlendMode)
+                else blend_mode,
                 "opacity": opacity,
             }
         )

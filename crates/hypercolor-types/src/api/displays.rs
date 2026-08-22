@@ -8,7 +8,8 @@ use utoipa::ToSchema;
 use crate::control::ControlValue;
 use crate::display::DisplayDescriptor;
 use crate::effect::EffectMetadata;
-use crate::scene::{DisplayFaceBlendMode, Zone};
+use crate::layer::BlendMode;
+use crate::scene::Zone;
 
 /// Which assignment layer a face operation targets (spec 69 §3.6).
 ///
@@ -77,8 +78,7 @@ pub struct SetDisplayFaceRequest {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub controls: HashMap<String, ControlValue>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schema(value_type = Option<String>)]
-    pub blend_mode: Option<DisplayFaceBlendMode>,
+    pub blend_mode: Option<BlendMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opacity: Option<f32>,
     #[serde(default)]
@@ -109,8 +109,7 @@ pub struct DeleteDisplayFaceResponse {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct UpdateDisplayFaceCompositionRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schema(value_type = Option<String>)]
-    pub blend_mode: Option<DisplayFaceBlendMode>,
+    pub blend_mode: Option<BlendMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opacity: Option<f32>,
 }

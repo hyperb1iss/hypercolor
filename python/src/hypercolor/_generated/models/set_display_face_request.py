@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
+from ..models.blend_mode import BlendMode
 from ..models.display_face_scope import DisplayFaceScope
 from ..types import UNSET, Unset
 
@@ -22,7 +23,7 @@ class SetDisplayFaceRequest:
 
     Attributes:
         effect_id (str):
-        blend_mode (None | str | Unset):
+        blend_mode (BlendMode | None | Unset):
         controls (SetDisplayFaceRequestControls | Unset):
         opacity (float | None | Unset):
         scope (DisplayFaceScope | Unset): Which assignment layer a face operation targets (spec 69 §3.6).
@@ -33,7 +34,7 @@ class SetDisplayFaceRequest:
     """
 
     effect_id: str
-    blend_mode: None | str | Unset = UNSET
+    blend_mode: BlendMode | None | Unset = UNSET
     controls: SetDisplayFaceRequestControls | Unset = UNSET
     opacity: float | None | Unset = UNSET
     scope: DisplayFaceScope | Unset = UNSET
@@ -45,6 +46,8 @@ class SetDisplayFaceRequest:
         blend_mode: None | str | Unset
         if isinstance(self.blend_mode, Unset):
             blend_mode = UNSET
+        elif isinstance(self.blend_mode, BlendMode):
+            blend_mode = self.blend_mode.value
         else:
             blend_mode = self.blend_mode
 
@@ -89,12 +92,20 @@ class SetDisplayFaceRequest:
         d = dict(src_dict)
         effect_id = d.pop("effect_id")
 
-        def _parse_blend_mode(data: object) -> None | str | Unset:
+        def _parse_blend_mode(data: object) -> BlendMode | None | Unset:
             if data is None:
                 return data
             if isinstance(data, Unset):
                 return data
-            return cast(None | str | Unset, data)
+            try:
+                if not isinstance(data, str):
+                    raise TypeError()
+                blend_mode_type_1 = BlendMode(data)
+
+                return blend_mode_type_1
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(BlendMode | None | Unset, data)
 
         blend_mode = _parse_blend_mode(d.pop("blend_mode", UNSET))
 

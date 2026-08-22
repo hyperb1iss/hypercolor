@@ -6,7 +6,7 @@ from uuid import UUID
 
 from attrs import define as _attrs_define
 
-from ..models.layer_blend_mode import LayerBlendMode
+from ..models.blend_mode import BlendMode
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
@@ -26,7 +26,7 @@ class ReplaceSceneLayerRequest:
         source (LayerSource): Source that feeds one authored layer.
         adjust (LayerAdjust | Unset): Per-layer color adjustment settings.
         bindings (list[LayerBinding] | Unset):
-        blend (LayerBlendMode | Unset): Layer blend mode used by authored stacks.
+        blend (BlendMode | Unset): Blend mode used by authored layers and display faces.
         enabled (bool | Unset):
         id (None | Unset | UUID):
         name (None | str | Unset):
@@ -37,7 +37,7 @@ class ReplaceSceneLayerRequest:
     source: LayerSource
     adjust: LayerAdjust | Unset = UNSET
     bindings: list[LayerBinding] | Unset = UNSET
-    blend: LayerBlendMode | Unset = UNSET
+    blend: BlendMode | Unset = UNSET
     enabled: bool | Unset = UNSET
     id: None | Unset | UUID = UNSET
     name: None | str | Unset = UNSET
@@ -137,11 +137,11 @@ class ReplaceSceneLayerRequest:
                 bindings.append(bindings_item)
 
         _blend = d.pop("blend", UNSET)
-        blend: LayerBlendMode | Unset
+        blend: BlendMode | Unset
         if isinstance(_blend, Unset):
             blend = UNSET
         else:
-            blend = LayerBlendMode(_blend)
+            blend = BlendMode(_blend)
 
         enabled = d.pop("enabled", UNSET)
 

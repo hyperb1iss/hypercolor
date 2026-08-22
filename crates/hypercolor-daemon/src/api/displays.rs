@@ -13,8 +13,9 @@ use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceTopologyHint, Display
 use hypercolor_types::display::{DisplayDescriptor, DisplayPixelFormat};
 use hypercolor_types::effect::{EffectCategory, EffectSource};
 use hypercolor_types::event::ZoneChangeKind;
+use hypercolor_types::layer::BlendMode;
 use hypercolor_types::layer::{SceneLayer, SceneLayerId};
-use hypercolor_types::scene::{DisplayFaceBlendMode, DisplayFaceTarget, Zone};
+use hypercolor_types::scene::{DisplayFaceTarget, Zone};
 use hypercolor_types::spatial::SpatialLayout;
 use tracing::warn;
 
@@ -201,7 +202,7 @@ pub async fn set_display_face(
     let composition_explicit = body.blend_mode.is_some() || body.opacity.is_some();
     let mut display_target = if composition_explicit {
         DisplayFaceTarget {
-            blend_mode: body.blend_mode.unwrap_or(DisplayFaceBlendMode::Alpha),
+            blend_mode: body.blend_mode.unwrap_or(BlendMode::Alpha),
             device_id,
             opacity: body.opacity.unwrap_or(1.0),
         }
@@ -209,7 +210,7 @@ pub async fn set_display_face(
         // No explicit composition: default to a blended overlay so the face
         // layers over the live effect instead of replacing it.
         DisplayFaceTarget {
-            blend_mode: DisplayFaceBlendMode::Alpha,
+            blend_mode: BlendMode::Alpha,
             device_id,
             opacity: 1.0,
         }
@@ -1011,10 +1012,10 @@ async fn current_default_face_assignment(
 
 fn compact_display_face_assignment_zone(mut group: Zone) -> Zone {
     if let Some(target) = group.display_target.as_mut()
-        && target.blend_mode == DisplayFaceBlendMode::Replace
+        && target.blend_mode == BlendMode::Replace
         && (target.opacity - 1.0).abs() <= f32::EPSILON
     {
-        target.blend_mode = DisplayFaceBlendMode::Alpha;
+        target.blend_mode = BlendMode::Alpha;
     }
     group
 }

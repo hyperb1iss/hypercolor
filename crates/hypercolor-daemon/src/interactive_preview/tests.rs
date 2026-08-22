@@ -10,7 +10,7 @@ use hypercolor_core::input::{
 use hypercolor_core::scene::{SceneManager, make_scene};
 use hypercolor_types::config::InteractionRoutePolicy;
 use hypercolor_types::layer::{
-    LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
+    BlendMode, LayerAdjust, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
 };
 use hypercolor_types::scene::{UnassignedBehavior, Zone, ZoneId, ZoneRole};
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
@@ -129,7 +129,7 @@ fn color_group(color: [f32; 4]) -> Zone {
             id: SceneLayerId::new(),
             name: None,
             source: LayerSource::ColorFill { rgba: color },
-            blend: LayerBlendMode::Replace,
+            blend: BlendMode::Replace,
             opacity: 1.0,
             transform: LayerTransform::default(),
             adjust: LayerAdjust::default(),

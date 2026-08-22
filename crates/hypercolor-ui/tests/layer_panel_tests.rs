@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use hypercolor_types::effect::EffectCategory;
 use hypercolor_types::layer::WebViewportRender;
 use hypercolor_types::layer::{
-    LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
+    LayerAdjust, BlendMode, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
 };
 use hypercolor_types::scene::{ZoneId, ZoneRole};
 use hypercolor_types::viewport::{FitMode, ViewportRect};
@@ -32,7 +32,7 @@ fn layer_replacement_uses_the_canonical_creation_shape() {
         source: LayerSource::ColorFill {
             rgba: [0.2, 0.4, 0.6, 1.0],
         },
-        blend: LayerBlendMode::Screen,
+        blend: BlendMode::Screen,
         opacity: 0.75,
         transform: LayerTransform::default(),
         adjust: LayerAdjust::default(),
@@ -161,17 +161,17 @@ fn effect_picker_query_matches_display_by_face_label() {
 #[test]
 fn blend_modes_round_trip_through_their_wire_tokens() {
     let modes = [
-        LayerBlendMode::Replace,
-        LayerBlendMode::Alpha,
-        LayerBlendMode::Add,
-        LayerBlendMode::Screen,
-        LayerBlendMode::Multiply,
-        LayerBlendMode::Overlay,
-        LayerBlendMode::SoftLight,
-        LayerBlendMode::ColorDodge,
-        LayerBlendMode::Difference,
-        LayerBlendMode::Tint,
-        LayerBlendMode::LumaReveal,
+        BlendMode::Replace,
+        BlendMode::Alpha,
+        BlendMode::Add,
+        BlendMode::Screen,
+        BlendMode::Multiply,
+        BlendMode::Overlay,
+        BlendMode::SoftLight,
+        BlendMode::ColorDodge,
+        BlendMode::Difference,
+        BlendMode::Tint,
+        BlendMode::LumaReveal,
     ];
     for mode in modes {
         assert_eq!(parse_blend(blend_value(mode)), mode);
@@ -186,7 +186,7 @@ fn blend_modes_round_trip_through_their_wire_tokens() {
 
 #[test]
 fn unknown_blend_token_falls_back_to_alpha() {
-    assert_eq!(parse_blend("not-a-blend"), LayerBlendMode::Alpha);
+    assert_eq!(parse_blend("not-a-blend"), BlendMode::Alpha);
 }
 
 #[test]
@@ -251,15 +251,15 @@ fn added_effect_layers_screen_over_existing_content_by_default() {
 
     assert_eq!(
         default_blend_for_added_layer(&effect, 0),
-        LayerBlendMode::Alpha
+        BlendMode::Alpha
     );
     assert_eq!(
         default_blend_for_added_layer(&effect, 1),
-        LayerBlendMode::Screen
+        BlendMode::Screen
     );
     assert_eq!(
         default_blend_for_added_layer(&media, 1),
-        LayerBlendMode::Alpha
+        BlendMode::Alpha
     );
 }
 

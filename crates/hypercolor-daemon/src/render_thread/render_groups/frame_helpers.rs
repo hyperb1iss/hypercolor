@@ -7,7 +7,7 @@ use hypercolor_types::canvas::{
     SurfaceResourceError,
 };
 use hypercolor_types::layer::{
-    LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
+    BlendMode, LayerAdjust, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
 };
 use hypercolor_types::scene::Zone;
 use hypercolor_types::viewport::{FitMode, ViewportRect};
@@ -91,7 +91,7 @@ pub(super) fn passthrough_effect_layer(group: &Zone) -> Option<SceneLayer> {
     if !matches!(&layer.source, LayerSource::Effect { .. }) {
         return None;
     }
-    if layer.blend != LayerBlendMode::Replace {
+    if layer.blend != BlendMode::Replace {
         return None;
     }
     if (layer.opacity - 1.0).abs() > f32::EPSILON {
@@ -124,19 +124,19 @@ pub(super) fn composition_layer_for_scene_layer(
     .with_adjust(CompositionAdjust::from(layer.adjust))
 }
 
-fn composition_mode_for_layer(blend: LayerBlendMode) -> CompositionMode {
+fn composition_mode_for_layer(blend: BlendMode) -> CompositionMode {
     match blend {
-        LayerBlendMode::Replace => CompositionMode::Replace,
-        LayerBlendMode::Alpha => CompositionMode::Alpha,
-        LayerBlendMode::Tint => CompositionMode::Tint,
-        LayerBlendMode::LumaReveal => CompositionMode::LumaReveal,
-        LayerBlendMode::Add => CompositionMode::Add,
-        LayerBlendMode::Screen => CompositionMode::Screen,
-        LayerBlendMode::Multiply => CompositionMode::Multiply,
-        LayerBlendMode::Overlay => CompositionMode::Overlay,
-        LayerBlendMode::SoftLight => CompositionMode::SoftLight,
-        LayerBlendMode::ColorDodge => CompositionMode::ColorDodge,
-        LayerBlendMode::Difference => CompositionMode::Difference,
+        BlendMode::Replace => CompositionMode::Replace,
+        BlendMode::Alpha => CompositionMode::Alpha,
+        BlendMode::Tint => CompositionMode::Tint,
+        BlendMode::LumaReveal => CompositionMode::LumaReveal,
+        BlendMode::Add => CompositionMode::Add,
+        BlendMode::Screen => CompositionMode::Screen,
+        BlendMode::Multiply => CompositionMode::Multiply,
+        BlendMode::Overlay => CompositionMode::Overlay,
+        BlendMode::SoftLight => CompositionMode::SoftLight,
+        BlendMode::ColorDodge => CompositionMode::ColorDodge,
+        BlendMode::Difference => CompositionMode::Difference,
     }
 }
 

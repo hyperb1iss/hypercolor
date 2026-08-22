@@ -77,12 +77,11 @@ use hypercolor_types::effect::{
 use hypercolor_types::event::InputButtonState;
 use hypercolor_types::event::{HypercolorEvent, ZoneChangeKind};
 use hypercolor_types::layer::{
-    LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
+    BlendMode, LayerAdjust, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
 };
 use hypercolor_types::scene::{
-    ColorInterpolation, DisplayFaceBlendMode, DisplayFaceTarget, EasingFunction, Scene, SceneId,
-    SceneKind, SceneMutationMode, ScenePriority, TransitionSpec, UnassignedBehavior, Zone, ZoneId,
-    ZoneRole,
+    ColorInterpolation, DisplayFaceTarget, EasingFunction, Scene, SceneId, SceneKind,
+    SceneMutationMode, ScenePriority, TransitionSpec, UnassignedBehavior, Zone, ZoneId, ZoneRole,
 };
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
@@ -6142,7 +6141,7 @@ async fn pausing_output_darkens_display_groups_without_an_active_effect() {
         group_id,
         DisplayGroupTarget {
             device_id: DeviceId::new(),
-            blend_mode: DisplayFaceBlendMode::Alpha,
+            blend_mode: BlendMode::Alpha,
             opacity: 1.0,
             finalized: false,
         },
@@ -7608,7 +7607,7 @@ async fn stored_scene_replace_is_whole_document_versioned_and_identity_safe() {
         source: LayerSource::ColorFill {
             rgba: [0.1, 0.2, 0.3, 1.0],
         },
-        blend: LayerBlendMode::Replace,
+        blend: BlendMode::Replace,
         opacity: 0.75,
         transform: LayerTransform::default(),
         adjust: LayerAdjust::default(),
@@ -11457,7 +11456,7 @@ async fn patch_face_composition_updates_material_blend_mode_and_normalizes_repla
         .clone()
         .expect("display target should remain present");
     assert_eq!(target.device_id, display_id);
-    assert_eq!(target.blend_mode, DisplayFaceBlendMode::Replace);
+    assert_eq!(target.blend_mode, BlendMode::Replace);
     assert!((target.opacity - 1.0).abs() < f32::EPSILON);
 }
 
@@ -11537,7 +11536,7 @@ async fn reassigning_display_face_resets_composition_to_blended_default() {
         .display_target
         .clone()
         .expect("display target should remain present");
-    assert_eq!(target.blend_mode, DisplayFaceBlendMode::Alpha);
+    assert_eq!(target.blend_mode, BlendMode::Alpha);
     assert!((target.opacity - 1.0).abs() < f32::EPSILON);
 }
 

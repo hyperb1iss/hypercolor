@@ -29,12 +29,11 @@ use anyhow::{Result, bail};
 use hypercolor_types::control::ControlValue;
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::{ControlBinding, EffectId, EffectMetadata};
-use hypercolor_types::layer::{LayerSource, SceneLayer, SceneLayerId};
+use hypercolor_types::layer::{BlendMode, LayerSource, SceneLayer, SceneLayerId};
 use hypercolor_types::library::PresetId;
 use hypercolor_types::scene::{
-    ColorInterpolation, DisplayFaceBlendMode, DisplayFaceTarget, EasingFunction, Scene, SceneId,
-    SceneKind, SceneMutationMode, ScenePriority, TransitionSpec, UnassignedBehavior, Zone, ZoneId,
-    ZoneRole,
+    ColorInterpolation, DisplayFaceTarget, EasingFunction, Scene, SceneId, SceneKind,
+    SceneMutationMode, ScenePriority, TransitionSpec, UnassignedBehavior, Zone, ZoneId, ZoneRole,
 };
 use hypercolor_types::spatial::{NormalizedPosition, Output, SpatialLayout};
 
@@ -666,9 +665,9 @@ impl SceneManager {
             // default is always safe here.
             if !display_group_has_face(group)
                 && let Some(target) = group.display_target.as_mut()
-                && target.blend_mode == DisplayFaceBlendMode::Replace
+                && target.blend_mode == BlendMode::Replace
             {
-                target.blend_mode = DisplayFaceBlendMode::default();
+                target.blend_mode = BlendMode::default();
                 structural_changed = true;
             }
             if group.layout != layout {
@@ -1143,7 +1142,7 @@ impl SceneManager {
     pub fn patch_display_group_target(
         &mut self,
         group_id: ZoneId,
-        blend_mode: Option<DisplayFaceBlendMode>,
+        blend_mode: Option<BlendMode>,
         opacity: Option<f32>,
     ) -> Option<&Zone> {
         let scene = self.active_scene_mut()?;

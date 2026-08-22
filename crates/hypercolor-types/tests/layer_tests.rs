@@ -1,16 +1,45 @@
 use std::collections::HashMap;
 use std::str::FromStr;
 
+use hypercolor_color::PixelBlendMode;
 use hypercolor_types::asset::AssetId;
 use hypercolor_types::control::ControlValue;
 use hypercolor_types::effect::{ControlBinding, EffectId};
 use hypercolor_types::layer::{
-    AudioBand, BindingMap, BindingSource, LayerAdjust, LayerBinding, LayerBlendMode,
-    LayerParameter, LayerSource, LayerTransform, LoopMode, MediaPlayback, SceneLayer, SceneLayerId,
-    TimeWave, WebViewportRender,
+    AudioBand, BindingMap, BindingSource, BlendMode, LayerAdjust, LayerBinding, LayerParameter,
+    LayerSource, LayerTransform, LoopMode, MediaPlayback, SceneLayer, SceneLayerId, TimeWave,
+    WebViewportRender,
 };
 use hypercolor_types::viewport::FitMode;
 use uuid::Uuid;
+
+#[test]
+fn authored_blend_modes_have_one_wire_vocabulary() {
+    let modes = [
+        BlendMode::Replace,
+        BlendMode::Alpha,
+        BlendMode::Tint,
+        BlendMode::LumaReveal,
+        BlendMode::Add,
+        BlendMode::Screen,
+        BlendMode::Multiply,
+        BlendMode::Overlay,
+        BlendMode::SoftLight,
+        BlendMode::ColorDodge,
+        BlendMode::Difference,
+    ];
+
+    for mode in modes {
+        let json = serde_json::to_string(&mode).expect("serialize blend mode");
+        let restored = serde_json::from_str(&json).expect("deserialize blend mode");
+        assert_eq!(mode, restored);
+    }
+
+    assert_eq!(BlendMode::default(), BlendMode::Alpha);
+    assert!(!BlendMode::Replace.blends_with_base());
+    assert_eq!(BlendMode::Alpha.pixel_mode(), Some(PixelBlendMode::Normal));
+    assert_eq!(BlendMode::Tint.pixel_mode(), None);
+}
 
 #[test]
 fn scene_layer_id_round_trips_through_uuid_and_display() {
@@ -51,7 +80,7 @@ fn effect_layer_round_trips_through_json() {
     let restored: SceneLayer = serde_json::from_str(&json).expect("deserialize layer");
 
     assert_eq!(restored, layer);
-    assert_eq!(restored.blend, LayerBlendMode::Replace);
+    assert_eq!(restored.blend, BlendMode::Replace);
 }
 
 #[test]
@@ -68,7 +97,7 @@ fn media_layer_defaults_playback_transform_and_adjust() {
 
     assert!(layer.enabled);
     assert_eq!(layer.opacity, 1.0);
-    assert_eq!(layer.blend, LayerBlendMode::Alpha);
+    assert_eq!(layer.blend, BlendMode::Alpha);
     assert_eq!(layer.transform.fit, FitMode::Cover);
     assert_eq!(layer.adjust, LayerAdjust::default());
     let LayerSource::Media { playback, .. } = layer.source else {
@@ -108,7 +137,7 @@ fn layer_normalization_clamps_runtime_safe_scalars() {
         source: LayerSource::ColorFill {
             rgba: [1.0, 1.0, 1.0, 1.0],
         },
-        blend: LayerBlendMode::Alpha,
+        blend: BlendMode::Alpha,
         opacity: 12.0,
         transform: LayerTransform {
             scale: [0.0, 99.0],
@@ -145,7 +174,7 @@ fn layer_validation_rejects_non_finite_values_and_empty_binding_ranges() {
         source: LayerSource::ColorFill {
             rgba: [1.0, 1.0, 1.0, 1.0],
         },
-        blend: LayerBlendMode::Alpha,
+        blend: BlendMode::Alpha,
         opacity: f32::NAN,
         transform: LayerTransform::default(),
         adjust: LayerAdjust::default(),
@@ -183,7 +212,7 @@ fn layer_validation_rejects_out_of_range_scalars() {
         source: LayerSource::ColorFill {
             rgba: [1.5, 1.0, 1.0, 1.0],
         },
-        blend: LayerBlendMode::Alpha,
+        blend: BlendMode::Alpha,
         opacity: 1.0,
         transform: LayerTransform {
             scale: [0.001, 20.0],

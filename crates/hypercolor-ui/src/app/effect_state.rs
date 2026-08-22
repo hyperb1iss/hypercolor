@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use hypercolor_types::control::ControlValue;
 use hypercolor_types::effect::{ControlDefinition, EffectId};
-use hypercolor_types::layer::{LayerAdjust, LayerBlendMode, LayerSource, LayerTransform};
+use hypercolor_types::layer::{LayerAdjust, BlendMode, LayerSource, LayerTransform};
 use hypercolor_types::scene::ZoneRole;
 use leptos::prelude::*;
 
@@ -92,7 +92,7 @@ async fn apply_effect_layer(zone_id: &str, source: &LayerSource) -> Result<(), S
         let request = api::CreateLayerRequest {
             name: None,
             source: source.clone(),
-            blend: Some(LayerBlendMode::Alpha),
+            blend: Some(BlendMode::Alpha),
             opacity: Some(1.0),
             transform: Some(LayerTransform::default()),
             adjust: Some(LayerAdjust::default()),

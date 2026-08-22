@@ -2,6 +2,7 @@
 
 from .._generated.models.activate_scene_response import ActivateSceneResponse
 from .._generated.models.apply_effect_response import ApplyEffectResponse
+from .._generated.models.blend_mode import BlendMode
 from .._generated.models.control_definition import ControlDefinition
 from .._generated.models.effect_detail_response import EffectDetailResponse
 from .._generated.models.effect_preset import EffectPreset
@@ -78,6 +79,7 @@ __all__ = [
     "AudioDevices",
     "AudioInput",
     "AudioLevels",
+    "BlendMode",
     "ConfigMutationResult",
     "ControlActionResult",
     "ControlApplyResult",

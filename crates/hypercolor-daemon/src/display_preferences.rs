@@ -13,7 +13,7 @@ use anyhow::Context;
 use hypercolor_types::control::ControlValue;
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::EffectId;
-use hypercolor_types::scene::DisplayFaceBlendMode;
+use hypercolor_types::layer::BlendMode;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{OwnedRwLockWriteGuard, RwLock};
 
@@ -39,7 +39,7 @@ pub struct DisplayPreference {
     #[serde(default)]
     pub controls: HashMap<String, ControlValue>,
     #[serde(default)]
-    pub blend_mode: DisplayFaceBlendMode,
+    pub blend_mode: BlendMode,
     #[serde(default = "default_opacity")]
     pub opacity: f32,
 }
@@ -450,7 +450,7 @@ mod tests {
     use hypercolor_types::control::ControlValue;
     use hypercolor_types::device::DeviceId;
     use hypercolor_types::effect::EffectId;
-    use hypercolor_types::scene::DisplayFaceBlendMode;
+    use hypercolor_types::layer::BlendMode;
     use tempfile::TempDir;
 
     use super::{DisplayPreference, DisplayPreferencesStore};
@@ -459,7 +459,7 @@ mod tests {
         DisplayPreference {
             effect_id,
             controls: HashMap::new(),
-            blend_mode: DisplayFaceBlendMode::Alpha,
+            blend_mode: BlendMode::Alpha,
             opacity: 1.0,
         }
     }
@@ -518,7 +518,7 @@ mod tests {
                 DisplayPreference {
                     effect_id: legacy_id,
                     controls: HashMap::new(),
-                    blend_mode: DisplayFaceBlendMode::Alpha,
+                    blend_mode: BlendMode::Alpha,
                     opacity: 1.0,
                 },
             )

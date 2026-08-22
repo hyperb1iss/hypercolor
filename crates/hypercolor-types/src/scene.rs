@@ -10,9 +10,8 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use uuid::{Uuid, uuid};
 
-use crate::canvas::BlendMode;
 use crate::device::DeviceId;
-use crate::layer::{LayerSource, SceneLayer};
+use crate::layer::{BlendMode, LayerSource, SceneLayer};
 use crate::spatial::SpatialLayout;
 
 // ── Scene Identity ───────────────────────────────────────────────────────
@@ -147,48 +146,9 @@ pub enum ZoneRole {
     Display,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DisplayFaceBlendMode {
-    Replace,
-    #[default]
-    Alpha,
-    Tint,
-    LumaReveal,
-    Add,
-    Screen,
-    Multiply,
-    Overlay,
-    SoftLight,
-    ColorDodge,
-    Difference,
-}
-
-impl DisplayFaceBlendMode {
-    #[must_use]
-    pub fn blends_with_effect(self) -> bool {
-        !matches!(self, Self::Replace)
-    }
-
-    #[must_use]
-    pub fn standard_canvas_blend_mode(self) -> Option<BlendMode> {
-        match self {
-            Self::Replace | Self::Tint | Self::LumaReveal => None,
-            Self::Alpha => Some(BlendMode::Normal),
-            Self::Add => Some(BlendMode::Add),
-            Self::Screen => Some(BlendMode::Screen),
-            Self::Multiply => Some(BlendMode::Multiply),
-            Self::Overlay => Some(BlendMode::Overlay),
-            Self::SoftLight => Some(BlendMode::SoftLight),
-            Self::ColorDodge => Some(BlendMode::ColorDodge),
-            Self::Difference => Some(BlendMode::Difference),
-        }
-    }
-}
-
 #[allow(clippy::trivially_copy_pass_by_ref)]
-fn is_default_display_face_blend_mode(value: &DisplayFaceBlendMode) -> bool {
-    matches!(value, DisplayFaceBlendMode::Alpha)
+fn is_default_display_face_blend_mode(value: &BlendMode) -> bool {
+    matches!(value, BlendMode::Alpha)
 }
 
 fn default_display_face_opacity() -> f32 {
@@ -208,7 +168,7 @@ pub struct DisplayFaceTarget {
     pub device_id: DeviceId,
     /// How the face layer should compose with the effect layer beneath it.
     #[serde(default, skip_serializing_if = "is_default_display_face_blend_mode")]
-    pub blend_mode: DisplayFaceBlendMode,
+    pub blend_mode: BlendMode,
     /// Face-layer opacity used when compositing with the effect layer.
     #[serde(
         default = "default_display_face_opacity",
@@ -226,7 +186,7 @@ impl DisplayFaceTarget {
         // target (the Studio add-layer flow).
         Self {
             device_id,
-            blend_mode: DisplayFaceBlendMode::default(),
+            blend_mode: BlendMode::default(),
             opacity: default_display_face_opacity(),
         }
     }
@@ -239,7 +199,7 @@ impl DisplayFaceTarget {
 
     #[must_use]
     pub fn blends_with_effect(&self) -> bool {
-        self.blend_mode.blends_with_effect()
+        self.blend_mode.blends_with_base()
     }
 }
 

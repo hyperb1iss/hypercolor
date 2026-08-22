@@ -359,7 +359,7 @@ fn store_round_trips_preferences_to_disk() {
     let preference = DisplayPreference {
         effect_id: EffectId::from(Uuid::now_v7()),
         controls: std::collections::HashMap::new(),
-        blend_mode: hypercolor_types::scene::DisplayFaceBlendMode::Alpha,
+        blend_mode: hypercolor_types::layer::BlendMode::Alpha,
         opacity: 0.8,
     };
 
@@ -383,7 +383,7 @@ fn store_moves_to_state_with_a_durable_legacy_backup() {
     let preference = DisplayPreference {
         effect_id: EffectId::from(Uuid::now_v7()),
         controls: std::collections::HashMap::new(),
-        blend_mode: hypercolor_types::scene::DisplayFaceBlendMode::Alpha,
+        blend_mode: hypercolor_types::layer::BlendMode::Alpha,
         opacity: 0.75,
     };
     let mut legacy_store =

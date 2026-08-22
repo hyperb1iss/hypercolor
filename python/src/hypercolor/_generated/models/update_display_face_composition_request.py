@@ -6,6 +6,7 @@ from typing import Any, TypeVar, cast
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
+from ..models.blend_mode import BlendMode
 from ..types import UNSET, Unset
 
 T = TypeVar("T", bound="UpdateDisplayFaceCompositionRequest")
@@ -16,11 +17,11 @@ class UpdateDisplayFaceCompositionRequest:
     """Request body for `PATCH /api/v1/displays/{id}/face/composition`.
 
     Attributes:
-        blend_mode (None | str | Unset):
+        blend_mode (BlendMode | None | Unset):
         opacity (float | None | Unset):
     """
 
-    blend_mode: None | str | Unset = UNSET
+    blend_mode: BlendMode | None | Unset = UNSET
     opacity: float | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -28,6 +29,8 @@ class UpdateDisplayFaceCompositionRequest:
         blend_mode: None | str | Unset
         if isinstance(self.blend_mode, Unset):
             blend_mode = UNSET
+        elif isinstance(self.blend_mode, BlendMode):
+            blend_mode = self.blend_mode.value
         else:
             blend_mode = self.blend_mode
 
@@ -51,12 +54,20 @@ class UpdateDisplayFaceCompositionRequest:
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
 
-        def _parse_blend_mode(data: object) -> None | str | Unset:
+        def _parse_blend_mode(data: object) -> BlendMode | None | Unset:
             if data is None:
                 return data
             if isinstance(data, Unset):
                 return data
-            return cast(None | str | Unset, data)
+            try:
+                if not isinstance(data, str):
+                    raise TypeError()
+                blend_mode_type_1 = BlendMode(data)
+
+                return blend_mode_type_1
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(BlendMode | None | Unset, data)
 
         blend_mode = _parse_blend_mode(d.pop("blend_mode", UNSET))
 

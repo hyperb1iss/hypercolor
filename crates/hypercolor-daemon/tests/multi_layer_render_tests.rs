@@ -22,7 +22,7 @@ use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::control::ControlValue;
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::EffectId;
-use hypercolor_types::layer::{LayerBlendMode, SceneLayer, SceneLayerId};
+use hypercolor_types::layer::{BlendMode, SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{DisplayFaceTarget, UnassignedBehavior, Zone, ZoneId, ZoneRole};
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
@@ -87,12 +87,7 @@ fn full_zone(id: &str) -> Output {
     }
 }
 
-fn solid_layer(
-    effect_id: EffectId,
-    color: [f32; 4],
-    blend: LayerBlendMode,
-    opacity: f32,
-) -> SceneLayer {
+fn solid_layer(effect_id: EffectId, color: [f32; 4], blend: BlendMode, opacity: f32) -> SceneLayer {
     let mut layer = SceneLayer::from_effect(
         SceneLayerId::new(),
         effect_id,
@@ -221,8 +216,8 @@ async fn duplicate_effect_layers_compose_bottom_to_top() {
         "Layered",
         solid_id,
         vec![
-            solid_layer(solid_id, [1.0, 0.0, 0.0, 1.0], LayerBlendMode::Replace, 1.0),
-            solid_layer(solid_id, [0.0, 0.0, 1.0, 1.0], LayerBlendMode::Alpha, 0.5),
+            solid_layer(solid_id, [1.0, 0.0, 0.0, 1.0], BlendMode::Replace, 1.0),
+            solid_layer(solid_id, [0.0, 0.0, 1.0, 1.0], BlendMode::Alpha, 0.5),
         ],
     );
     install_scene(&mut state, vec![group]).await;
@@ -243,13 +238,13 @@ async fn disabled_effect_layers_do_not_contribute_to_output() {
         let registry = state.effect_registry.read().await;
         builtin_effect_id(&registry, "solid_color")
     };
-    let mut disabled = solid_layer(solid_id, [0.0, 0.0, 1.0, 1.0], LayerBlendMode::Replace, 1.0);
+    let mut disabled = solid_layer(solid_id, [0.0, 0.0, 1.0, 1.0], BlendMode::Replace, 1.0);
     disabled.enabled = false;
     let group = render_group(
         "Disabled Overlay",
         solid_id,
         vec![
-            solid_layer(solid_id, [1.0, 0.0, 0.0, 1.0], LayerBlendMode::Replace, 1.0),
+            solid_layer(solid_id, [1.0, 0.0, 0.0, 1.0], BlendMode::Replace, 1.0),
             disabled,
         ],
     );
@@ -280,7 +275,7 @@ async fn display_layer_stack_publishes_separately_from_scene_canvas() {
         vec![solid_layer(
             solid_id,
             [1.0, 0.0, 0.0, 1.0],
-            LayerBlendMode::Replace,
+            BlendMode::Replace,
             1.0,
         )],
     );
@@ -291,7 +286,7 @@ async fn display_layer_stack_publishes_separately_from_scene_canvas() {
         vec![solid_layer(
             solid_id,
             [0.0, 0.0, 1.0, 1.0],
-            LayerBlendMode::Replace,
+            BlendMode::Replace,
             1.0,
         )],
     );

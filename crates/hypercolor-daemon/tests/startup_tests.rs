@@ -44,8 +44,8 @@ use hypercolor_types::device::{
 use hypercolor_types::effect::{EffectId, EffectSource};
 use hypercolor_types::event::{EffectStopReason, HypercolorEvent};
 use hypercolor_types::identity::LayoutId;
-use hypercolor_types::layer::{LayerSource, SceneLayer, SceneLayerId};
-use hypercolor_types::scene::{DisplayFaceBlendMode, SceneId, Zone, ZoneId, ZoneRole};
+use hypercolor_types::layer::{BlendMode, LayerSource, SceneLayer, SceneLayerId};
+use hypercolor_types::scene::{SceneId, Zone, ZoneId, ZoneRole};
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection, ZoneShape,
@@ -168,7 +168,7 @@ async fn seed_effect_identity_stores(
             DisplayPreference {
                 effect_id: legacy_id,
                 controls: HashMap::new(),
-                blend_mode: DisplayFaceBlendMode::Alpha,
+                blend_mode: BlendMode::Alpha,
                 opacity: 1.0,
             },
         )

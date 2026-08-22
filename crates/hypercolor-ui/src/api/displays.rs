@@ -3,7 +3,7 @@
 //! Covers display discovery, face assignment, face control updates, and the
 //! preview JPEG URL.
 
-use hypercolor_types::scene::DisplayFaceBlendMode;
+use hypercolor_types::layer::BlendMode;
 use std::collections::{BTreeMap, HashMap};
 
 use super::client;
@@ -44,7 +44,7 @@ pub async fn set_display_face(
         // over the live effect — transparent regions reveal it — instead of
         // blacking the effect out. Replace stays available in the
         // composition panel for face-only looks.
-        blend_mode: Some(DisplayFaceBlendMode::Alpha),
+        blend_mode: Some(BlendMode::Alpha),
         opacity: Some(1.0),
         scope,
     };
@@ -80,7 +80,7 @@ pub async fn update_display_face_controls(
 /// `PATCH /api/v1/displays/{id}/face/composition` — update face/effect composition.
 pub async fn update_display_face_composition(
     display_id: &str,
-    blend_mode: Option<DisplayFaceBlendMode>,
+    blend_mode: Option<BlendMode>,
     opacity: Option<f32>,
 ) -> Result<DisplayFaceResponse, String> {
     let url = format!("/api/v1/displays/{display_id}/face/composition");

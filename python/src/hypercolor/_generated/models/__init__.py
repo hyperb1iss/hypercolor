@@ -151,6 +151,7 @@ from .binding_source_type_2 import BindingSourceType2
 from .binding_source_type_2_kind import BindingSourceType2Kind
 from .binding_source_type_3 import BindingSourceType3
 from .binding_source_type_3_kind import BindingSourceType3Kind
+from .blend_mode import BlendMode
 from .capture_authorization_response import CaptureAuthorizationResponse
 from .capture_monitor import CaptureMonitor
 from .capture_monitor_list_item import CaptureMonitorListItem
@@ -403,7 +404,6 @@ from .latency_percentiles_status import LatencyPercentilesStatus
 from .latest_frame_status import LatestFrameStatus
 from .layer_adjust import LayerAdjust
 from .layer_binding import LayerBinding
-from .layer_blend_mode import LayerBlendMode
 from .layer_parameter import LayerParameter
 from .layer_source import LayerSource
 from .layer_transform import LayerTransform
@@ -709,6 +709,7 @@ __all__ = (
     "BindingSourceType2Kind",
     "BindingSourceType3",
     "BindingSourceType3Kind",
+    "BlendMode",
     "BTreeMap",
     "BTreeMapAdditionalPropertyType0",
     "BTreeMapAdditionalPropertyType0Kind",
@@ -993,7 +994,6 @@ __all__ = (
     "LatestFrameStatus",
     "LayerAdjust",
     "LayerBinding",
-    "LayerBlendMode",
     "LayerParameter",
     "LayerSource",
     "LayerTransform",

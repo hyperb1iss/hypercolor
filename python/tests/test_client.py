@@ -20,7 +20,7 @@ from hypercolor.exceptions import (
     HypercolorConnectionError,
     HypercolorNotFoundError,
 )
-from hypercolor.models import EffectDetailResponse, EffectPresetOrigin
+from hypercolor.models import BlendMode, EffectDetailResponse, EffectPresetOrigin
 from hypercolor.models.control import ControlSurface
 from hypercolor.models.driver import Driver
 
@@ -1518,6 +1518,7 @@ async def test_scene_display_and_diagnostics_helpers(
         "streamdeck",
         "clock",
         controls={"speed": 0.8},
+        blend_mode=BlendMode.SCREEN,
         opacity=0.8,
     )
     diagnostics = await client.run_diagnostics(checks=["daemon"], system=True)
@@ -1538,6 +1539,7 @@ async def test_scene_display_and_diagnostics_helpers(
     assert json.loads(face_route.calls[0].request.content) == {
         "effect_id": "clock",
         "controls": {"speed": {"kind": "float", "value": 0.8}},
+        "blend_mode": "screen",
         "opacity": 0.8,
     }
     assert face.effect["id"] == "clock"

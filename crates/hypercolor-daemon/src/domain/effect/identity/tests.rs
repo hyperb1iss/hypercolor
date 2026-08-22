@@ -14,14 +14,12 @@ use hypercolor_types::device::{
     DeviceInfo, DeviceOrigin, DeviceTopologyHint, SegmentInfo,
 };
 use hypercolor_types::effect::{EffectCategory, EffectId};
-use hypercolor_types::layer::{LayerSource, SceneLayer, SceneLayerId};
+use hypercolor_types::layer::{BlendMode, LayerSource, SceneLayer, SceneLayerId};
 use hypercolor_types::library::{
     EffectPlaylist, EffectPreset, PlaylistId, PlaylistItem, PlaylistItemId, PlaylistItemTarget,
     PresetId,
 };
-use hypercolor_types::scene::{
-    DisplayFaceBlendMode, DisplayFaceTarget, SceneId, SceneKind, SceneMutationMode, ZoneRole,
-};
+use hypercolor_types::scene::{DisplayFaceTarget, SceneId, SceneKind, SceneMutationMode, ZoneRole};
 use tempfile::TempDir;
 
 use super::{install_registry_file, reload_registry_file, remap_zones, rescan_registry};
@@ -168,7 +166,7 @@ async fn late_migration_fixture(temp: &TempDir) -> LateMigrationFixture {
             DisplayPreference {
                 effect_id: legacy_id,
                 controls: HashMap::new(),
-                blend_mode: DisplayFaceBlendMode::Alpha,
+                blend_mode: BlendMode::Alpha,
                 opacity: 1.0,
             },
         )
@@ -860,7 +858,7 @@ async fn publication_conflict_reprepares_inside_the_same_rescan() {
             DisplayPreference {
                 effect_id: fixture.legacy_id,
                 controls: HashMap::new(),
-                blend_mode: DisplayFaceBlendMode::Replace,
+                blend_mode: BlendMode::Replace,
                 opacity: 1.0,
             },
         )
