@@ -775,7 +775,6 @@ version = "0.3.2"
 dependencies = [
  "serde",
  "thiserror 2.0.18",
- "utoipa",
 ]
 
 [[package]]
@@ -803,7 +802,6 @@ dependencies = [
  "serde_json",
  "strum",
  "thiserror 2.0.18",
- "utoipa",
  "uuid",
 ]
 
@@ -2152,31 +2150,6 @@ name = "utf8_iter"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6c140620e7ffbb22c2dee59cafe6084a59b5ffc27a8859a5f0d494b5d52b6be"
-
-[[package]]
-name = "utoipa"
-version = "5.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8bde15df68e80b16c7d16b9616e80770ad158988daa56a27dccd1e55558b0160"
-dependencies = [
- "indexmap",
- "serde",
- "serde_json",
- "utoipa-gen",
-]
-
-[[package]]
-name = "utoipa-gen"
-version = "5.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6ba0b99ee52df3028635d93840c797102da61f8a7bb3cf751032455895b52ef8"
-dependencies = [
- "proc-macro2",
- "quote",
- "regex",
- "syn",
- "uuid",
-]
 
 [[package]]
 name = "uuid"
