@@ -392,10 +392,11 @@ async fn effect_id_migration_supersedes_queued_layout_publication() {
         .expect("scene migration should prepare")
         .persist()
         .expect("in-memory scene migration should persist");
-    scene_manager
-        .install_effect_id_migration(migration)
+    let publication = scene_manager
+        .prepare_effect_id_migration_publication(migration)
         .await
-        .expect("scene migration should publish");
+        .expect("scene migration should prepare publication");
+    scene_manager.publish_effect_id_migration(publication);
 
     assert_eq!(
         publish_commit(accepted, &spatial_engine, &scene_manager).await,

@@ -270,7 +270,7 @@ pub async fn apply_effect(
 
     // Validate before the scene commit or output wake so a refusal leaves
     // the rig unchanged.
-    let Some(metadata) = state.domains.effects.resolve_metadata(&id).await else {
+    let Some(metadata) = state.domains.effects.resolve_for_mutation(&id).await else {
         return DomainError::not_found(ResourceKind::Effect, &id).into_response();
     };
 

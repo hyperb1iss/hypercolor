@@ -61,6 +61,7 @@ pub async fn add_favorite(
     State(state): State<Arc<AppState>>,
     Json(body): Json<AddFavoriteRequest>,
 ) -> Response {
+    let _admission = state.domains.effects.admit_current().await;
     let Some(effect) = state.domains.effects.resolve_metadata(&body.effect).await else {
         return DomainError::not_found(ResourceKind::Effect, &body.effect).into_response();
     };
@@ -102,6 +103,7 @@ pub async fn remove_favorite(
     State(state): State<Arc<AppState>>,
     Path(effect): Path<String>,
 ) -> Response {
+    let _admission = state.domains.effects.admit_current().await;
     let Some(effect) = state.domains.effects.resolve_metadata(&effect).await else {
         return DomainError::not_found(ResourceKind::Favorite, &effect).into_response();
     };

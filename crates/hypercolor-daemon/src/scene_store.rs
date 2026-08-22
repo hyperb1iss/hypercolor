@@ -248,12 +248,17 @@ impl SceneStore {
     pub(crate) fn install_effect_id_migration(
         &mut self,
         migration: PersistedSceneStoreEffectIdMigration,
-    ) -> anyhow::Result<usize> {
-        if self.scenes != migration.source {
-            bail!("effect ID migration was superseded by newer scene state");
-        }
+    ) -> usize {
+        debug_assert_eq!(self.scenes, migration.source);
         self.scenes = migration.candidate;
-        Ok(migration.migrated)
+        migration.migrated
+    }
+
+    pub(crate) fn effect_id_migration_is_current(
+        &self,
+        migration: &PersistedSceneStoreEffectIdMigration,
+    ) -> bool {
+        self.scenes == migration.source
     }
 
     pub fn sync_from_manager(&mut self, manager: &SceneManager) {

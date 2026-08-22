@@ -6,10 +6,11 @@
 use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use tokio::sync::RwLock;
+use tokio::sync::{OwnedRwLockWriteGuard, RwLock};
 use tracing::warn;
 
 use hypercolor_types::effect::EffectId;
@@ -130,14 +131,22 @@ pub trait LibraryStore: Send + Sync {
     async fn prepare_effect_id_migration(
         &self,
         migrations: &HashMap<EffectId, EffectId>,
-    ) -> Result<Option<Box<dyn LibraryEffectIdMigration + '_>>, LibraryStoreError>;
+    ) -> Result<Option<Box<dyn LibraryEffectIdMigration>>, LibraryStoreError>;
 }
 
 #[async_trait]
 #[doc(hidden)]
 pub trait LibraryEffectIdMigration: Send {
     fn persist(&mut self) -> Result<(), LibraryStoreError>;
-    async fn install(self: Box<Self>) -> Result<usize, LibraryStoreError>;
+    async fn prepare_publication(
+        self: Box<Self>,
+    ) -> Result<Box<dyn LibraryEffectIdMigrationPublication>, LibraryStoreError>;
+}
+
+#[async_trait]
+#[doc(hidden)]
+pub trait LibraryEffectIdMigrationPublication: Send {
+    async fn publish(self: Box<Self>) -> usize;
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -358,7 +367,8 @@ impl LibrarySnapshot {
 /// In-memory storage backend for library entities.
 #[derive(Debug, Default)]
 pub struct InMemoryLibraryStore {
-    data: RwLock<InMemoryLibraryData>,
+    data: Arc<RwLock<InMemoryLibraryData>>,
+    mutation_gate: Arc<RwLock<()>>,
 }
 
 impl InMemoryLibraryStore {
@@ -385,15 +395,18 @@ struct PendingLibrarySnapshot {
     write: AdmittedAtomicWrite,
 }
 
-struct InMemoryLibraryEffectIdMigration<'a> {
-    store: &'a InMemoryLibraryStore,
+struct InMemoryLibraryEffectIdMigration {
+    data: Arc<RwLock<InMemoryLibraryData>>,
+    mutation_gate: Arc<RwLock<()>>,
     source: InMemoryLibraryData,
     candidate: InMemoryLibraryData,
     migrated: usize,
 }
 
-struct JsonLibraryEffectIdMigration<'a> {
-    store: &'a JsonLibraryStore,
+struct JsonLibraryEffectIdMigration {
+    data: Arc<RwLock<InMemoryLibraryData>>,
+    uncertain_favorites: Arc<std::sync::Mutex<HashMap<EffectId, UncertainFavoriteChange>>>,
+    mutation_gate: Arc<RwLock<()>>,
     source: InMemoryLibraryData,
     candidate: InMemoryLibraryData,
     source_uncertain: HashMap<EffectId, UncertainFavoriteChange>,
@@ -401,6 +414,22 @@ struct JsonLibraryEffectIdMigration<'a> {
     pending: Option<PendingLibrarySnapshot>,
     migrated: usize,
     persisted: bool,
+}
+
+struct InMemoryLibraryEffectIdMigrationPublication {
+    data: Arc<RwLock<InMemoryLibraryData>>,
+    _mutation_guard: OwnedRwLockWriteGuard<()>,
+    candidate: InMemoryLibraryData,
+    migrated: usize,
+}
+
+struct JsonLibraryEffectIdMigrationPublication {
+    data: Arc<RwLock<InMemoryLibraryData>>,
+    uncertain_favorites: Arc<std::sync::Mutex<HashMap<EffectId, UncertainFavoriteChange>>>,
+    _mutation_guard: OwnedRwLockWriteGuard<()>,
+    candidate: InMemoryLibraryData,
+    candidate_uncertain: HashMap<EffectId, UncertainFavoriteChange>,
+    migrated: usize,
 }
 
 /// JSON-backed persistence for library entities.
@@ -411,8 +440,9 @@ struct JsonLibraryEffectIdMigration<'a> {
 pub struct JsonLibraryStore {
     path: PathBuf,
     writer: AtomicFileWriter,
-    data: RwLock<InMemoryLibraryData>,
-    uncertain_favorites: std::sync::Mutex<HashMap<EffectId, UncertainFavoriteChange>>,
+    data: Arc<RwLock<InMemoryLibraryData>>,
+    mutation_gate: Arc<RwLock<()>>,
+    uncertain_favorites: Arc<std::sync::Mutex<HashMap<EffectId, UncertainFavoriteChange>>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -538,8 +568,9 @@ impl JsonLibraryStore {
         Ok(Self {
             path,
             writer,
-            data: RwLock::new(data),
-            uncertain_favorites: std::sync::Mutex::new(HashMap::new()),
+            data: Arc::new(RwLock::new(data)),
+            mutation_gate: Arc::new(RwLock::new(())),
+            uncertain_favorites: Arc::new(std::sync::Mutex::new(HashMap::new())),
         })
     }
 
@@ -751,25 +782,31 @@ impl JsonLibraryStore {
 }
 
 #[async_trait]
-impl LibraryEffectIdMigration for InMemoryLibraryEffectIdMigration<'_> {
+impl LibraryEffectIdMigration for InMemoryLibraryEffectIdMigration {
     fn persist(&mut self) -> Result<(), LibraryStoreError> {
         Ok(())
     }
 
-    async fn install(self: Box<Self>) -> Result<usize, LibraryStoreError> {
-        let mut data = self.store.data.write().await;
-        if *data != self.source {
+    async fn prepare_publication(
+        self: Box<Self>,
+    ) -> Result<Box<dyn LibraryEffectIdMigrationPublication>, LibraryStoreError> {
+        let guard = Arc::clone(&self.mutation_gate).write_owned().await;
+        if *self.data.read().await != self.source {
             return Err(LibraryStoreError::Persistence(
                 "effect ID migration was superseded by newer library state".to_owned(),
             ));
         }
-        *data = self.candidate;
-        Ok(self.migrated)
+        Ok(Box::new(InMemoryLibraryEffectIdMigrationPublication {
+            data: self.data,
+            _mutation_guard: guard,
+            candidate: self.candidate,
+            migrated: self.migrated,
+        }))
     }
 }
 
 #[async_trait]
-impl LibraryEffectIdMigration for JsonLibraryEffectIdMigration<'_> {
+impl LibraryEffectIdMigration for JsonLibraryEffectIdMigration {
     fn persist(&mut self) -> Result<(), LibraryStoreError> {
         let pending = self.pending.take().ok_or_else(|| {
             LibraryStoreError::Persistence(
@@ -791,15 +828,17 @@ impl LibraryEffectIdMigration for JsonLibraryEffectIdMigration<'_> {
         }
     }
 
-    async fn install(self: Box<Self>) -> Result<usize, LibraryStoreError> {
+    async fn prepare_publication(
+        self: Box<Self>,
+    ) -> Result<Box<dyn LibraryEffectIdMigrationPublication>, LibraryStoreError> {
         if !self.persisted {
             return Err(LibraryStoreError::Persistence(
                 "library effect ID migration was not durably persisted".to_owned(),
             ));
         }
-        let mut data = self.store.data.write().await;
-        let mut uncertain = self
-            .store
+        let guard = Arc::clone(&self.mutation_gate).write_owned().await;
+        let data = self.data.read().await;
+        let uncertain = self
             .uncertain_favorites
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -808,9 +847,36 @@ impl LibraryEffectIdMigration for JsonLibraryEffectIdMigration<'_> {
                 "effect ID migration was superseded by newer library state".to_owned(),
             ));
         }
-        *data = self.candidate;
-        *uncertain = self.candidate_uncertain;
-        Ok(self.migrated)
+        drop(uncertain);
+        drop(data);
+        Ok(Box::new(JsonLibraryEffectIdMigrationPublication {
+            data: self.data,
+            uncertain_favorites: self.uncertain_favorites,
+            _mutation_guard: guard,
+            candidate: self.candidate,
+            candidate_uncertain: self.candidate_uncertain,
+            migrated: self.migrated,
+        }))
+    }
+}
+
+#[async_trait]
+impl LibraryEffectIdMigrationPublication for InMemoryLibraryEffectIdMigrationPublication {
+    async fn publish(self: Box<Self>) -> usize {
+        *self.data.write().await = self.candidate;
+        self.migrated
+    }
+}
+
+#[async_trait]
+impl LibraryEffectIdMigrationPublication for JsonLibraryEffectIdMigrationPublication {
+    async fn publish(self: Box<Self>) -> usize {
+        *self.data.write().await = self.candidate;
+        *self
+            .uncertain_favorites
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = self.candidate_uncertain;
+        self.migrated
     }
 }
 
@@ -832,6 +898,7 @@ impl LibraryStore for InMemoryLibraryStore {
         effect_id: EffectId,
         added_at_ms: u64,
     ) -> Result<FavoriteEffect, LibraryStoreError> {
+        let _mutation_guard = self.mutation_gate.read().await;
         let mut data = self.data.write().await;
         let favorite = FavoriteEffect {
             effect_id,
@@ -842,6 +909,7 @@ impl LibraryStore for InMemoryLibraryStore {
     }
 
     async fn remove_favorite(&self, effect_id: EffectId) -> Result<bool, LibraryStoreError> {
+        let _mutation_guard = self.mutation_gate.read().await;
         let mut data = self.data.write().await;
         Ok(data
             .apply_favorite_change(effect_id, &FavoriteChange::Remove)?
@@ -855,6 +923,7 @@ impl LibraryStore for InMemoryLibraryStore {
         expected_revision: u64,
         mutation: ConditionalFavoriteMutation,
     ) -> Result<ConditionalFavoriteMutationOutcome, LibraryStoreError> {
+        let _mutation_guard = self.mutation_gate.read().await;
         let mut data = self.data.write().await;
         let current = data.favorite_state(effect_id);
         if current != expected_added_at_ms || data.favorite_revision(effect_id) != expected_revision
@@ -900,6 +969,7 @@ impl LibraryStore for InMemoryLibraryStore {
     }
 
     async fn insert_preset(&self, preset: EffectPreset) -> Result<(), LibraryStoreError> {
+        let _mutation_guard = self.mutation_gate.read().await;
         let mut data = self.data.write().await;
         if data.presets.contains_key(&preset.id) {
             return Err(LibraryStoreError::PresetConflict(preset.id));
@@ -909,6 +979,7 @@ impl LibraryStore for InMemoryLibraryStore {
     }
 
     async fn update_preset(&self, preset: EffectPreset) -> Result<(), LibraryStoreError> {
+        let _mutation_guard = self.mutation_gate.read().await;
         let mut data = self.data.write().await;
         if !data.presets.contains_key(&preset.id) {
             return Err(LibraryStoreError::PresetNotFound(preset.id));
@@ -918,6 +989,7 @@ impl LibraryStore for InMemoryLibraryStore {
     }
 
     async fn remove_preset(&self, id: PresetId) -> Result<bool, LibraryStoreError> {
+        let _mutation_guard = self.mutation_gate.read().await;
         let mut data = self.data.write().await;
         Ok(data.presets.remove(&id).is_some())
     }
@@ -940,6 +1012,7 @@ impl LibraryStore for InMemoryLibraryStore {
     }
 
     async fn insert_playlist(&self, playlist: EffectPlaylist) -> Result<(), LibraryStoreError> {
+        let _mutation_guard = self.mutation_gate.read().await;
         let mut data = self.data.write().await;
         if data.playlists.contains_key(&playlist.id) {
             return Err(LibraryStoreError::PlaylistConflict(playlist.id));
@@ -949,6 +1022,7 @@ impl LibraryStore for InMemoryLibraryStore {
     }
 
     async fn update_playlist(&self, playlist: EffectPlaylist) -> Result<(), LibraryStoreError> {
+        let _mutation_guard = self.mutation_gate.read().await;
         let mut data = self.data.write().await;
         if !data.playlists.contains_key(&playlist.id) {
             return Err(LibraryStoreError::PlaylistNotFound(playlist.id));
@@ -958,6 +1032,7 @@ impl LibraryStore for InMemoryLibraryStore {
     }
 
     async fn remove_playlist(&self, id: PlaylistId) -> Result<bool, LibraryStoreError> {
+        let _mutation_guard = self.mutation_gate.read().await;
         let mut data = self.data.write().await;
         Ok(data.playlists.remove(&id).is_some())
     }
@@ -965,7 +1040,7 @@ impl LibraryStore for InMemoryLibraryStore {
     async fn prepare_effect_id_migration(
         &self,
         migrations: &EffectIdMigrations,
-    ) -> Result<Option<Box<dyn LibraryEffectIdMigration + '_>>, LibraryStoreError> {
+    ) -> Result<Option<Box<dyn LibraryEffectIdMigration>>, LibraryStoreError> {
         let source = self.data.read().await.clone();
         let mut candidate = source.clone();
         let migrated = candidate.migrate_effect_ids(migrations);
@@ -973,7 +1048,8 @@ impl LibraryStore for InMemoryLibraryStore {
             return Ok(None);
         }
         Ok(Some(Box::new(InMemoryLibraryEffectIdMigration {
-            store: self,
+            data: Arc::clone(&self.data),
+            mutation_gate: Arc::clone(&self.mutation_gate),
             source,
             candidate,
             migrated,
@@ -999,6 +1075,7 @@ impl LibraryStore for JsonLibraryStore {
         effect_id: EffectId,
         added_at_ms: u64,
     ) -> Result<FavoriteEffect, LibraryStoreError> {
+        let _mutation_guard = self.mutation_gate.read().await;
         let mut data = self.data.write().await;
         let favorite = FavoriteEffect {
             effect_id,
@@ -1010,6 +1087,7 @@ impl LibraryStore for JsonLibraryStore {
     }
 
     async fn remove_favorite(&self, effect_id: EffectId) -> Result<bool, LibraryStoreError> {
+        let _mutation_guard = self.mutation_gate.read().await;
         let mut data = self.data.write().await;
         let change = FavoriteChange::Remove;
         self.apply_favorite_change(&mut data, effect_id, change)
@@ -1023,6 +1101,7 @@ impl LibraryStore for JsonLibraryStore {
         expected_revision: u64,
         mutation: ConditionalFavoriteMutation,
     ) -> Result<ConditionalFavoriteMutationOutcome, LibraryStoreError> {
+        let _mutation_guard = self.mutation_gate.read().await;
         let mut data = self.data.write().await;
         let change = match mutation {
             ConditionalFavoriteMutation::Upsert { added_at_ms } => {
@@ -1081,6 +1160,7 @@ impl LibraryStore for JsonLibraryStore {
     }
 
     async fn insert_preset(&self, preset: EffectPreset) -> Result<(), LibraryStoreError> {
+        let _mutation_guard = self.mutation_gate.read().await;
         let pending = {
             let mut data = self.data.write().await;
             if data.presets.contains_key(&preset.id) {
@@ -1100,6 +1180,7 @@ impl LibraryStore for JsonLibraryStore {
     }
 
     async fn update_preset(&self, preset: EffectPreset) -> Result<(), LibraryStoreError> {
+        let _mutation_guard = self.mutation_gate.read().await;
         let pending = {
             let mut data = self.data.write().await;
             if !data.presets.contains_key(&preset.id) {
@@ -1119,6 +1200,7 @@ impl LibraryStore for JsonLibraryStore {
     }
 
     async fn remove_preset(&self, id: PresetId) -> Result<bool, LibraryStoreError> {
+        let _mutation_guard = self.mutation_gate.read().await;
         let (removed, pending) = {
             let mut data = self.data.write().await;
             let mut candidate = data.clone();
@@ -1160,6 +1242,7 @@ impl LibraryStore for JsonLibraryStore {
     }
 
     async fn insert_playlist(&self, playlist: EffectPlaylist) -> Result<(), LibraryStoreError> {
+        let _mutation_guard = self.mutation_gate.read().await;
         let pending = {
             let mut data = self.data.write().await;
             if data.playlists.contains_key(&playlist.id) {
@@ -1179,6 +1262,7 @@ impl LibraryStore for JsonLibraryStore {
     }
 
     async fn update_playlist(&self, playlist: EffectPlaylist) -> Result<(), LibraryStoreError> {
+        let _mutation_guard = self.mutation_gate.read().await;
         let pending = {
             let mut data = self.data.write().await;
             if !data.playlists.contains_key(&playlist.id) {
@@ -1198,6 +1282,7 @@ impl LibraryStore for JsonLibraryStore {
     }
 
     async fn remove_playlist(&self, id: PlaylistId) -> Result<bool, LibraryStoreError> {
+        let _mutation_guard = self.mutation_gate.read().await;
         let (removed, pending) = {
             let mut data = self.data.write().await;
             let mut candidate = data.clone();
@@ -1224,7 +1309,7 @@ impl LibraryStore for JsonLibraryStore {
     async fn prepare_effect_id_migration(
         &self,
         migrations: &EffectIdMigrations,
-    ) -> Result<Option<Box<dyn LibraryEffectIdMigration + '_>>, LibraryStoreError> {
+    ) -> Result<Option<Box<dyn LibraryEffectIdMigration>>, LibraryStoreError> {
         let source = self.data.read().await.clone();
         let source_uncertain = self
             .uncertain_favorites
@@ -1243,7 +1328,9 @@ impl LibraryStore for JsonLibraryStore {
             .pending_snapshot(&candidate)
             .map_err(|error| LibraryStoreError::Persistence(error.to_string()))?;
         Ok(Some(Box::new(JsonLibraryEffectIdMigration {
-            store: self,
+            data: Arc::clone(&self.data),
+            uncertain_favorites: Arc::clone(&self.uncertain_favorites),
+            mutation_gate: Arc::clone(&self.mutation_gate),
             source,
             candidate,
             source_uncertain,
@@ -1448,7 +1535,11 @@ mod tests {
             .expect("migration should prepare")
             .expect("uncertain favorite should require migration");
         migration.persist().expect("migration should persist");
-        migration.install().await.expect("migration should install");
+        let publication = migration
+            .prepare_publication()
+            .await
+            .expect("migration should prepare publication");
+        publication.publish().await;
 
         let uncertain = store
             .uncertain_favorites

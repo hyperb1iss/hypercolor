@@ -137,7 +137,7 @@ pub(super) async fn handle_set_display_face_with_state(
     // The face blends over the live effect by default; Replace is opt-in
     // through the REST composition endpoint for face-only looks.
     let written = set_display_face(
-        &state.domains.scene,
+        &state.domains.effects,
         SetDisplayFace {
             device_id,
             device_name: info.name.clone(),
@@ -263,6 +263,8 @@ async fn handle_default_scope(
         }
         effect
     };
+
+    let _admission = state.domains.effects.admit(&effect).await?;
 
     {
         let mut store = state.display_preferences.write().await;

@@ -112,11 +112,20 @@ fn named_scene(name: &str) -> Scene {
     }
 }
 
-fn assign_command(device_id: DeviceId, effect: &EffectMetadata) -> SetDisplayFace {
+async fn assign_command(
+    state: &AppState,
+    device_id: DeviceId,
+    effect: &EffectMetadata,
+) -> SetDisplayFace {
     SetDisplayFace {
         device_id,
         device_name: "Kraken".to_owned(),
-        effect: effect.clone(),
+        effect: state
+            .domains
+            .effects
+            .metadata_for_mutation(effect.id)
+            .await
+            .expect("registered effect should resolve"),
         controls: HashMap::new(),
         layout: face_layout(device_id),
         target: DisplayFaceTarget {
@@ -173,16 +182,22 @@ async fn set_display_face_creates_the_zone_then_updates_it() {
     insert_effect(&state, &second).await;
     let mut events = state.event_bus.subscribe_all();
 
-    let created = set_display_face(&state.domains.scene, assign_command(device_id, &first))
-        .await
-        .expect("the face should be assigned");
+    let created = set_display_face(
+        &state.domains.effects,
+        assign_command(&state, device_id, &first).await,
+    )
+    .await
+    .expect("the face should be assigned");
     assert_eq!(created.change, ZoneChangeKind::Created);
     assert_eq!(created.zone.effect_ids().next(), Some(first.id));
     assert_eq!(created.zone.role, ZoneRole::Display);
 
-    let updated = set_display_face(&state.domains.scene, assign_command(device_id, &second))
-        .await
-        .expect("the face should be replaced");
+    let updated = set_display_face(
+        &state.domains.effects,
+        assign_command(&state, device_id, &second).await,
+    )
+    .await
+    .expect("the face should be replaced");
     assert_eq!(updated.change, ZoneChangeKind::Updated);
     assert_eq!(updated.zone.effect_ids().next(), Some(second.id));
     assert_eq!(updated.zone.id, created.zone.id, "the zone is reused");
@@ -211,13 +226,13 @@ async fn set_display_face_applies_the_requested_composition() {
     let effect = face_effect("clock");
     insert_effect(&state, &effect).await;
 
-    let mut command = assign_command(device_id, &effect);
+    let mut command = assign_command(&state, device_id, &effect).await;
     command.target = DisplayFaceTarget {
         blend_mode: DisplayFaceBlendMode::Alpha,
         device_id,
         opacity: 0.4,
     };
-    let written = set_display_face(&state.domains.scene, command)
+    let written = set_display_face(&state.domains.effects, command)
         .await
         .expect("the face should be assigned");
 
@@ -235,9 +250,12 @@ async fn clear_display_face_keeps_the_zone_and_drops_the_effect() {
     let device_id = DeviceId::new();
     let effect = face_effect("clock");
     insert_effect(&state, &effect).await;
-    let created = set_display_face(&state.domains.scene, assign_command(device_id, &effect))
-        .await
-        .expect("the face should be assigned");
+    let created = set_display_face(
+        &state.domains.effects,
+        assign_command(&state, device_id, &effect).await,
+    )
+    .await
+    .expect("the face should be assigned");
 
     let cleared = clear_display_face(
         &state.domains.scene,
@@ -280,9 +298,12 @@ async fn display_face_mutations_conflict_on_a_snapshot_locked_scene() {
         .await
         .expect("scene should commit");
 
-    let error = set_display_face(&state.domains.scene, assign_command(device_id, &effect))
-        .await
-        .expect_err("a snapshot scene refuses runtime rewriting");
+    let error = set_display_face(
+        &state.domains.effects,
+        assign_command(&state, device_id, &effect).await,
+    )
+    .await
+    .expect_err("a snapshot scene refuses runtime rewriting");
     assert!(
         matches!(
             error,
@@ -330,9 +351,12 @@ async fn patch_display_face_controls_merges_onto_the_zone() {
     let device_id = DeviceId::new();
     let effect = face_effect("clock");
     insert_effect(&state, &effect).await;
-    let created = set_display_face(&state.domains.scene, assign_command(device_id, &effect))
-        .await
-        .expect("the face should be assigned");
+    let created = set_display_face(
+        &state.domains.effects,
+        assign_command(&state, device_id, &effect).await,
+    )
+    .await
+    .expect("the face should be assigned");
 
     let written = patch_display_face_controls(
         &state.domains.scene,
@@ -414,9 +438,12 @@ async fn prune_display_zones_removes_both_layers_for_a_deleted_device() {
     let device_id = DeviceId::new();
     let effect = face_effect("clock");
     insert_effect(&state, &effect).await;
-    set_display_face(&state.domains.scene, assign_command(device_id, &effect))
-        .await
-        .expect("the face should be assigned");
+    set_display_face(
+        &state.domains.effects,
+        assign_command(&state, device_id, &effect).await,
+    )
+    .await
+    .expect("the face should be assigned");
     set_default_display_overlay(
         &state.domains.scene,
         device_id,

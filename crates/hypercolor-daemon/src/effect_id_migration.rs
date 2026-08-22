@@ -1,17 +1,48 @@
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 
 use hypercolor_core::effect::RescanReport;
 use hypercolor_types::effect::EffectId;
 use hypercolor_types::layer::LayerSource;
 use hypercolor_types::library::{EffectPlaylist, PlaylistItemTarget};
 use hypercolor_types::scene::Zone;
+use tokio::sync::{OwnedMutexGuard, OwnedRwLockWriteGuard};
 
 use crate::app_state::AppState;
+use crate::display_preferences::{
+    DisplayPreferencesEffectIdMigrationPublication, PersistedDisplayPreferencesEffectIdMigration,
+};
 use crate::domain::DomainError;
-use crate::domain::effect::EffectRegistryUpdate;
+use crate::domain::effect::{EffectRegistryPublication, EffectRegistryUpdate};
+use crate::domain::scene::SceneEffectIdMigrationPublication;
+use crate::library::{LibraryEffectIdMigration, LibraryEffectIdMigrationPublication};
+use crate::playlist_runtime::PlaylistRuntimeState;
 
 pub(crate) type EffectIdMigrations = HashMap<EffectId, EffectId>;
+
+struct ActivePlaylistEffectIdMigration {
+    generation: Option<u64>,
+    playlist: Option<Arc<tokio::sync::RwLock<EffectPlaylist>>>,
+    source: Option<EffectPlaylist>,
+    candidate: Option<EffectPlaylist>,
+    migrated: usize,
+}
+
+struct ActivePlaylistEffectIdMigrationPublication {
+    _runtime: OwnedMutexGuard<PlaylistRuntimeState>,
+    playlist: Option<OwnedRwLockWriteGuard<EffectPlaylist>>,
+    candidate: Option<EffectPlaylist>,
+    migrated: usize,
+}
+
+struct EffectIdMigrationPublication<'a> {
+    registry: EffectRegistryPublication<'a>,
+    scene: SceneEffectIdMigrationPublication,
+    display: Option<DisplayPreferencesEffectIdMigrationPublication>,
+    library: Option<Box<dyn LibraryEffectIdMigrationPublication>>,
+    active_playlist: ActivePlaylistEffectIdMigrationPublication,
+}
 
 pub(crate) fn remap_effect_id(effect_id: &mut EffectId, migrations: &EffectIdMigrations) -> bool {
     let Some(canonical_id) = migrations.get(effect_id).copied() else {
@@ -98,6 +129,7 @@ async fn apply_registry_update(
         .prepare_effect_id_migration(&migrations)
         .await
         .map_err(|error| DomainError::Internal(error.into()))?;
+    let active_playlist = ActivePlaylistEffectIdMigration::prepare(state, &migrations).await;
 
     let scene_migrated = scene.migrated();
     let persisted_scene = scene.persist().map_err(DomainError::Internal)?;
@@ -112,42 +144,17 @@ async fn apply_registry_update(
             .map_err(|error| DomainError::Internal(error.into()))?;
     }
 
-    let publication = update.prepare_publication().await?;
-    let scene_commit = state
-        .scene_manager
-        .install_effect_id_migration(persisted_scene)
-        .await?;
-    if let Some(migration) = persisted_display {
-        state
-            .display_preferences
-            .write()
-            .await
-            .install_effect_id_migration(migration)
-            .map_err(DomainError::Internal)?;
-    }
-    let library_migrated = match library {
-        Some(migration) => migration
-            .install()
-            .await
-            .map_err(|error| DomainError::Internal(error.into()))?,
-        None => 0,
-    };
-
-    let active_playlist = {
-        let runtime = state.playlist_runtime.lock().await;
-        runtime
-            .active
-            .as_ref()
-            .map(|active| std::sync::Arc::clone(&active.playlist))
-    };
-    let active_playlist_migrated = if let Some(playlist) = active_playlist {
-        let mut playlist = playlist.write().await;
-        remap_playlist(&mut playlist, &migrations)
-    } else {
-        0
-    };
-
-    let report = publication.publish();
+    let publication = EffectIdMigrationPublication::prepare(
+        state,
+        update,
+        persisted_scene,
+        persisted_display,
+        library,
+        active_playlist,
+    )
+    .await?;
+    let (report, scene_commit, library_migrated, active_playlist_migrated) =
+        publication.publish(state).await;
     tracing::info!(
         mappings = migrations.len(),
         scene_references = scene_migrated,
@@ -157,6 +164,157 @@ async fn apply_registry_update(
         "Migrated late path-derived effect identities"
     );
     Ok(report)
+}
+
+impl ActivePlaylistEffectIdMigration {
+    async fn prepare(state: &AppState, migrations: &EffectIdMigrations) -> Self {
+        let active = {
+            let runtime = state.playlist_runtime.lock().await;
+            runtime
+                .active
+                .as_ref()
+                .map(|active| (active.generation, Arc::clone(&active.playlist)))
+        };
+        let Some((generation, playlist)) = active else {
+            return Self {
+                generation: None,
+                playlist: None,
+                source: None,
+                candidate: None,
+                migrated: 0,
+            };
+        };
+        let source = playlist.read().await.clone();
+        let mut candidate = source.clone();
+        let migrated = remap_playlist(&mut candidate, migrations);
+        Self {
+            generation: Some(generation),
+            playlist: Some(playlist),
+            source: Some(source),
+            candidate: Some(candidate),
+            migrated,
+        }
+    }
+
+    async fn prepare_publication(
+        self,
+        state: &AppState,
+    ) -> Result<ActivePlaylistEffectIdMigrationPublication, DomainError> {
+        let runtime = Arc::clone(&state.playlist_runtime).lock_owned().await;
+        let current = runtime.active.as_ref();
+        let identity_matches = match (self.generation, self.playlist.as_ref(), current) {
+            (None, None, None) => true,
+            (Some(generation), Some(playlist), Some(active)) => {
+                active.generation == generation && Arc::ptr_eq(&active.playlist, playlist)
+            }
+            _ => false,
+        };
+        if !identity_matches {
+            return Err(DomainError::conflict(
+                "effect ID migration was superseded by newer playlist runtime state",
+            ));
+        }
+
+        let playlist = match self.playlist {
+            Some(playlist) => {
+                let playlist = playlist.write_owned().await;
+                if Some(&*playlist) != self.source.as_ref() {
+                    return Err(DomainError::conflict(
+                        "effect ID migration was superseded by a newer active playlist",
+                    ));
+                }
+                Some(playlist)
+            }
+            None => None,
+        };
+        Ok(ActivePlaylistEffectIdMigrationPublication {
+            _runtime: runtime,
+            playlist,
+            candidate: self.candidate,
+            migrated: self.migrated,
+        })
+    }
+}
+
+impl ActivePlaylistEffectIdMigrationPublication {
+    fn publish(mut self) -> usize {
+        if let (Some(playlist), Some(candidate)) = (self.playlist.as_mut(), self.candidate) {
+            **playlist = candidate;
+        }
+        self.migrated
+    }
+}
+
+impl<'a> EffectIdMigrationPublication<'a> {
+    async fn prepare(
+        state: &AppState,
+        update: EffectRegistryUpdate<'a>,
+        scene: crate::domain::scene::PersistedSceneEffectIdMigration,
+        display: Option<PersistedDisplayPreferencesEffectIdMigration>,
+        library: Option<Box<dyn LibraryEffectIdMigration>>,
+        active_playlist: ActivePlaylistEffectIdMigration,
+    ) -> Result<Self, DomainError> {
+        let registry = update.prepare_publication().await?;
+        let scene = state
+            .scene_manager
+            .prepare_effect_id_migration_publication(scene)
+            .await?;
+        let display = match display {
+            Some(display) => Some(
+                DisplayPreferencesEffectIdMigrationPublication::prepare(
+                    Arc::clone(&state.display_preferences),
+                    display,
+                )
+                .await
+                .map_err(DomainError::Internal)?,
+            ),
+            None => None,
+        };
+        let library = match library {
+            Some(library) => Some(
+                library
+                    .prepare_publication()
+                    .await
+                    .map_err(|error| DomainError::Internal(error.into()))?,
+            ),
+            None => None,
+        };
+        let active_playlist = active_playlist.prepare_publication(state).await?;
+        Ok(Self {
+            registry,
+            scene,
+            display,
+            library,
+            active_playlist,
+        })
+    }
+
+    async fn publish(
+        self,
+        state: &AppState,
+    ) -> (
+        RescanReport,
+        crate::domain::commit::SceneCommit,
+        usize,
+        usize,
+    ) {
+        let library_migrated = match self.library {
+            Some(library) => library.publish().await,
+            None => 0,
+        };
+        if let Some(display) = self.display {
+            display.publish();
+        }
+        let active_playlist_migrated = self.active_playlist.publish();
+        let scene_commit = state.scene_manager.publish_effect_id_migration(self.scene);
+        let report = self.registry.publish();
+        (
+            report,
+            scene_commit,
+            library_migrated,
+            active_playlist_migrated,
+        )
+    }
 }
 
 #[cfg(test)]
@@ -178,7 +336,10 @@ mod tests {
     };
     use tempfile::TempDir;
 
-    use super::{reload_registry_file, remap_zones, rescan_registry};
+    use super::{
+        ActivePlaylistEffectIdMigration, EffectIdMigrationPublication, reload_registry_file,
+        remap_zones, rescan_registry,
+    };
     use crate::app_state::AppState;
     use crate::display_preferences::DisplayPreference;
     use crate::library::JsonLibraryStore;
@@ -230,6 +391,11 @@ mod tests {
         let legacy_id =
             deterministic_html_effect_id(&format!("hypercolor:html:{}", source_path.display()));
         let canonical_id = deterministic_html_effect_id("hypercolor:html-bundled:late-arrival");
+        let mut legacy_entry = hypercolor_core::effect::load_html_effect_file(&effect_path)
+            .expect("legacy effect should load")
+            .expect("legacy effect should be runnable");
+        legacy_entry.metadata.id = legacy_id;
+        state.domains.effects.register(legacy_entry).await;
 
         let device_id = DeviceId::new();
         let mut mutation = state.scene_manager.begin_mutation().await;
@@ -558,6 +724,211 @@ mod tests {
         assert_eq!(favorites.len(), 1);
         assert_eq!(favorites[0].effect_id, fixture.canonical_id);
         assert_eq!(favorites[0].added_at_ms, 20);
+    }
+
+    #[tokio::test]
+    async fn later_authority_conflict_rejects_publication_before_scene_changes() {
+        let temp = TempDir::new().expect("tempdir");
+        let fixture = late_migration_fixture(&temp).await;
+        let revision_before = fixture.state.scene_manager.revision();
+        let update = fixture.state.domains.effects.prepare_rescan().await;
+        let migrations = update.report().legacy_effect_ids.clone();
+        let scene = fixture
+            .state
+            .scene_manager
+            .prepare_effect_id_migration(&migrations)
+            .await
+            .expect("scene migration should prepare");
+        let runtime = fixture
+            .state
+            .domains
+            .runtime_session
+            .prepare_effect_id_migration(scene.candidate())
+            .expect("runtime migration should prepare");
+        let display = fixture
+            .state
+            .display_preferences
+            .read()
+            .await
+            .prepare_effect_id_migration(&migrations)
+            .expect("display migration should prepare")
+            .expect("legacy preference should migrate");
+        let mut library = fixture
+            .state
+            .library_store
+            .prepare_effect_id_migration(&migrations)
+            .await
+            .expect("library migration should prepare")
+            .expect("legacy library should migrate");
+        let active = ActivePlaylistEffectIdMigration::prepare(&fixture.state, &migrations).await;
+
+        let persisted_scene = scene.persist().expect("scene migration should persist");
+        runtime.persist().expect("runtime migration should persist");
+        let persisted_display = display.persist().expect("display migration should persist");
+        library.persist().expect("library migration should persist");
+
+        fixture
+            .state
+            .display_preferences
+            .write()
+            .await
+            .set(
+                fixture.device_id,
+                DisplayPreference {
+                    effect_id: fixture.legacy_id,
+                    controls: HashMap::new(),
+                    blend_mode: DisplayFaceBlendMode::Replace,
+                    opacity: 1.0,
+                },
+            )
+            .expect("concurrent preference should publish");
+
+        let result = EffectIdMigrationPublication::prepare(
+            &fixture.state,
+            update,
+            persisted_scene,
+            Some(persisted_display),
+            Some(library),
+            active,
+        )
+        .await;
+        assert!(result.is_err());
+        assert_eq!(fixture.state.scene_manager.revision(), revision_before);
+        assert!(
+            fixture
+                .state
+                .scene_manager
+                .snapshot()
+                .await
+                .list()
+                .into_iter()
+                .flat_map(|scene| &scene.zones)
+                .flat_map(hypercolor_types::scene::Zone::effect_ids)
+                .any(|effect_id| effect_id == fixture.legacy_id)
+        );
+        let registry = fixture.state.domains.effects.registry_handle();
+        assert!(registry.read().await.get(&fixture.canonical_id).is_none());
+    }
+
+    #[tokio::test]
+    async fn rest_apply_resolved_before_migration_is_rejected_after_publication() {
+        let temp = TempDir::new().expect("tempdir");
+        let fixture = late_migration_fixture(&temp).await;
+        let legacy_id = fixture.legacy_id;
+        let canonical_id = fixture.canonical_id;
+        let state = Arc::new(fixture.state);
+        let barrier = state.domains.effects.pause_next_resolution_for_test();
+        let apply_state = Arc::clone(&state);
+        let apply = tokio::spawn(async move {
+            crate::api::effects::apply_effect(
+                axum::extract::State(apply_state),
+                axum::extract::Path(legacy_id.to_string()),
+                axum::http::HeaderMap::new(),
+                None,
+            )
+            .await
+        });
+
+        barrier.wait_until_entered().await;
+        rescan_registry(state.as_ref())
+            .await
+            .expect("migration should publish while REST resolution is paused");
+        barrier.release();
+
+        let response = apply.await.expect("REST apply should not panic");
+        assert_eq!(response.status(), axum::http::StatusCode::CONFLICT);
+        let manager = state.scene_manager.snapshot().await;
+        assert!(
+            manager
+                .list()
+                .into_iter()
+                .flat_map(|scene| &scene.zones)
+                .flat_map(hypercolor_types::scene::Zone::effect_ids)
+                .all(|effect_id| effect_id == canonical_id)
+        );
+    }
+
+    #[tokio::test]
+    async fn display_assignment_resolved_before_migration_is_rejected() {
+        let temp = TempDir::new().expect("tempdir");
+        let fixture = late_migration_fixture(&temp).await;
+        let resolved = fixture
+            .state
+            .domains
+            .effects
+            .metadata_for_mutation(fixture.legacy_id)
+            .await
+            .expect("legacy effect should resolve before migration");
+        rescan_registry(&fixture.state)
+            .await
+            .expect("migration should publish");
+        let revision = fixture.state.scene_manager.revision();
+        let result = crate::domain::display::set_display_face(
+            &fixture.state.domains.effects,
+            crate::domain::display::SetDisplayFace {
+                device_id: fixture.device_id,
+                device_name: "Race Display".to_owned(),
+                effect: resolved,
+                controls: HashMap::new(),
+                layout: crate::domain::display::display_face_layout(
+                    fixture.device_id,
+                    "Race Display",
+                    crate::domain::display::DisplaySurfaceInfo {
+                        width: 320,
+                        height: 320,
+                        circular: false,
+                    },
+                ),
+                target: DisplayFaceTarget::new(fixture.device_id),
+            },
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert_eq!(fixture.state.scene_manager.revision(), revision);
+    }
+
+    #[tokio::test]
+    async fn cloned_playlist_item_resolved_before_migration_cannot_commit() {
+        let temp = TempDir::new().expect("tempdir");
+        let fixture = late_migration_fixture(&temp).await;
+        let canonical_id = fixture.canonical_id;
+        let state = Arc::new(fixture.state);
+        let item = {
+            let runtime = state.playlist_runtime.lock().await;
+            let playlist = Arc::clone(
+                &runtime
+                    .active
+                    .as_ref()
+                    .expect("playlist should be active")
+                    .playlist,
+            );
+            drop(runtime);
+            playlist.read().await.items[0].clone()
+        };
+        let barrier = state.domains.effects.pause_next_resolution_for_test();
+        let worker_state = Arc::clone(&state);
+        let worker = tokio::spawn(async move {
+            crate::api::library::activate_playlist_item(&worker_state, &item).await
+        });
+
+        barrier.wait_until_entered().await;
+        rescan_registry(state.as_ref())
+            .await
+            .expect("migration should publish while playlist resolution is paused");
+        barrier.release();
+
+        let result = worker.await.expect("playlist worker should not panic");
+        assert!(result.is_err());
+        let manager = state.scene_manager.snapshot().await;
+        assert!(
+            manager
+                .list()
+                .into_iter()
+                .flat_map(|scene| &scene.zones)
+                .flat_map(hypercolor_types::scene::Zone::effect_ids)
+                .all(|effect_id| effect_id == canonical_id)
+        );
     }
 
     #[cfg(feature = "persistence-test-hooks")]

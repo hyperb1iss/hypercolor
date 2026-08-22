@@ -14,6 +14,7 @@ use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::{ControlValue, EffectId};
 use hypercolor_types::scene::DisplayFaceBlendMode;
 use serde::{Deserialize, Serialize};
+use tokio::sync::{OwnedRwLockWriteGuard, RwLock};
 
 use crate::effect_id_migration::{EffectIdMigrations, remap_effect_id};
 use crate::path_migration::{
@@ -63,6 +64,11 @@ pub(crate) struct PersistedDisplayPreferencesEffectIdMigration {
     source: HashMap<DeviceId, DisplayPreference>,
     candidate: HashMap<DeviceId, DisplayPreference>,
     migrated: usize,
+}
+
+pub(crate) struct DisplayPreferencesEffectIdMigrationPublication {
+    store: OwnedRwLockWriteGuard<DisplayPreferencesStore>,
+    migration: PersistedDisplayPreferencesEffectIdMigration,
 }
 
 impl DisplayPreferencesStore {
@@ -271,15 +277,11 @@ impl DisplayPreferencesStore {
         }))
     }
 
-    pub(crate) fn install_effect_id_migration(
-        &mut self,
-        migration: PersistedDisplayPreferencesEffectIdMigration,
-    ) -> anyhow::Result<usize> {
-        if self.preferences != migration.source {
-            anyhow::bail!("effect ID migration was superseded by newer display preferences");
-        }
-        self.preferences = migration.candidate;
-        Ok(migration.migrated)
+    fn effect_id_migration_is_current(
+        &self,
+        migration: &PersistedDisplayPreferencesEffectIdMigration,
+    ) -> bool {
+        self.preferences == migration.source
     }
 
     fn install_candidate(
@@ -319,6 +321,25 @@ impl DisplayPreferencesEffectIdMigration {
                 Err(error).context("failed to persist migrated display preferences")
             }
         }
+    }
+}
+
+impl DisplayPreferencesEffectIdMigrationPublication {
+    pub(crate) async fn prepare(
+        store: std::sync::Arc<RwLock<DisplayPreferencesStore>>,
+        migration: PersistedDisplayPreferencesEffectIdMigration,
+    ) -> anyhow::Result<Self> {
+        let store = store.write_owned().await;
+        if !store.effect_id_migration_is_current(&migration) {
+            anyhow::bail!("effect ID migration was superseded by newer display preferences");
+        }
+        Ok(Self { store, migration })
+    }
+
+    pub(crate) fn publish(mut self) -> usize {
+        debug_assert!(self.store.effect_id_migration_is_current(&self.migration));
+        self.store.preferences = self.migration.candidate;
+        self.migration.migrated
     }
 }
 

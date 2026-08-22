@@ -68,6 +68,7 @@ pub async fn create_playlist(
         return DomainError::validation("Playlist name must not be empty").into_response();
     }
 
+    let _admission = state.domains.effects.admit_current().await;
     let items = match build_playlist_items(&state, body.items.as_deref()).await {
         Ok(items) => items,
         Err(error) => return DomainError::validation(error).into_response(),
@@ -113,6 +114,7 @@ pub async fn update_playlist(
     let Some(existing) = state.library_store.get_playlist(playlist_id).await else {
         return DomainError::not_found(ResourceKind::Playlist, &id).into_response();
     };
+    let _admission = state.domains.effects.admit_current().await;
     let items = match build_playlist_items(&state, body.items.as_deref()).await {
         Ok(items) => items,
         Err(error) => return DomainError::validation(error).into_response(),
@@ -208,7 +210,7 @@ pub async fn activate_playlist(
     let Some(playlist_id) = resolve_playlist_id(&state, &id).await else {
         return DomainError::not_found(ResourceKind::Playlist, &id).into_response();
     };
-    let Some(playlist) = state.library_store.get_playlist(playlist_id).await else {
+    let Some(mut playlist) = state.library_store.get_playlist(playlist_id).await else {
         return DomainError::not_found(ResourceKind::Playlist, &id).into_response();
     };
     if playlist.items.is_empty() {
@@ -230,6 +232,12 @@ pub async fn activate_playlist(
         ))
         .into_response();
     }
+
+    let _admission = state.domains.effects.admit_current().await;
+    let Some(current_playlist) = state.library_store.get_playlist(playlist_id).await else {
+        return DomainError::not_found(ResourceKind::Playlist, &id).into_response();
+    };
+    playlist = current_playlist;
 
     let generation;
     let started_at_ms = unix_epoch_ms();
@@ -440,7 +448,10 @@ async fn clear_runtime_if_generation_matches(state: &Arc<AppState>, generation: 
     }
 }
 
-async fn activate_playlist_item(state: &Arc<AppState>, item: &PlaylistItem) -> Result<(), String> {
+pub(crate) async fn activate_playlist_item(
+    state: &Arc<AppState>,
+    item: &PlaylistItem,
+) -> Result<(), String> {
     let (metadata, requested_controls, preset_id) = match &item.target {
         PlaylistItemTarget::Effect { effect_id } => {
             let metadata = metadata_for_effect_id(state, *effect_id).await?;

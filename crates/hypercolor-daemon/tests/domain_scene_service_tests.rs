@@ -357,9 +357,14 @@ fn media_layer(asset_id: AssetId) -> SceneLayer {
     }
 }
 
-fn apply_command(effect: &EffectMetadata) -> ApplyEffect {
+async fn apply_command(state: &AppState, effect: &EffectMetadata) -> ApplyEffect {
     ApplyEffect {
-        effect: effect.clone(),
+        effect: state
+            .domains
+            .effects
+            .metadata_for_mutation(effect.id)
+            .await
+            .expect("registered effect should resolve"),
         controls: HashMap::new(),
         preset_id: None,
         target_zone: None,
@@ -379,7 +384,7 @@ async fn apply_effect_loads_the_primary_zone_and_commits_durably() {
 
     let applied = apply_effect(
         &state.domains.effects,
-        apply_command(&metadata),
+        apply_command(&state, &metadata).await,
         MutationContext::api(),
     )
     .await
@@ -411,14 +416,14 @@ async fn apply_effect_reports_the_outgoing_effect_of_the_target_zone() {
 
     apply_effect(
         &state.domains.effects,
-        apply_command(&first),
+        apply_command(&state, &first).await,
         MutationContext::api(),
     )
     .await
     .expect("first apply should succeed");
     let applied = apply_effect(
         &state.domains.effects,
-        apply_command(&second),
+        apply_command(&state, &second).await,
         MutationContext::api(),
     )
     .await
@@ -440,7 +445,7 @@ async fn apply_effect_refuses_a_display_face() {
 
     let error = apply_effect(
         &state.domains.effects,
-        apply_command(&metadata),
+        apply_command(&state, &metadata).await,
         MutationContext::api(),
     )
     .await
@@ -460,7 +465,7 @@ async fn apply_effect_refuses_an_unimplemented_transition_from_either_transport(
     // This is the divergence the unified surface closes: MCP used to
     // accept a duration here, echo it back, and never apply it.
     for trigger in [MutationContext::api(), MutationContext::mcp()] {
-        let mut command = apply_command(&metadata);
+        let mut command = apply_command(&state, &metadata).await;
         command.transition = RequestedTransition::of_duration(500);
         let error = apply_effect(&state.domains.effects, command, trigger)
             .await
@@ -479,7 +484,7 @@ async fn apply_effect_refuses_an_unimplemented_transition_from_either_transport(
         &state.domains.effects,
         ApplyEffect {
             transition: RequestedTransition::of_duration(0),
-            ..apply_command(&metadata)
+            ..apply_command(&state, &metadata).await
         },
         MutationContext::mcp(),
     )
@@ -500,7 +505,7 @@ async fn apply_effect_conflicts_when_the_active_scene_is_snapshot_locked() {
 
     let error = apply_effect(
         &state.domains.effects,
-        apply_command(&metadata),
+        apply_command(&state, &metadata).await,
         MutationContext::mcp(),
     )
     .await
@@ -984,7 +989,7 @@ async fn a_rejected_candidate_leaves_the_live_state_untouched() {
 
     apply_effect(
         &state.domains.effects,
-        apply_command(&metadata),
+        apply_command(&state, &metadata).await,
         MutationContext::api(),
     )
     .await
@@ -1071,7 +1076,7 @@ async fn a_non_durable_write_reports_retrying_and_publishes_nothing() {
     let mut events = state.event_bus.subscribe_all();
     let applied = apply_effect(
         &state.domains.effects,
-        apply_command(&metadata),
+        apply_command(&state, &metadata).await,
         MutationContext::api(),
     )
     .await
@@ -1098,7 +1103,7 @@ async fn commit_generations_advance_the_scene_revision_in_order() {
     for _ in 0..3 {
         let applied = apply_effect(
             &state.domains.effects,
-            apply_command(&metadata),
+            apply_command(&state, &metadata).await,
             MutationContext::api(),
         )
         .await
@@ -1162,7 +1167,7 @@ async fn snapshot_scene_preserves_the_live_tree_and_captures_the_active_layout()
     insert_effect(&state, &metadata).await;
     apply_effect(
         &state.domains.effects,
-        apply_command(&metadata),
+        apply_command(&state, &metadata).await,
         MutationContext::api(),
     )
     .await

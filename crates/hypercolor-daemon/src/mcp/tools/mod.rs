@@ -495,11 +495,11 @@ pub(super) async fn find_effect_metadata(
     state: &AppState,
     primary_name: &str,
     fallback_name: &str,
-) -> Option<hypercolor_types::effect::EffectMetadata> {
+) -> Option<crate::domain::effect::ResolvedEffect> {
     state
         .domains
         .effects
-        .all_metadata()
+        .all_for_mutation()
         .await
         .into_iter()
         .find(|metadata| {
@@ -512,11 +512,11 @@ pub(super) async fn resolve_effect_selector(
     state: &AppState,
     parameter: &str,
     query: &str,
-) -> Result<hypercolor_types::effect::EffectMetadata, ToolError> {
+) -> Result<crate::domain::effect::ResolvedEffect, ToolError> {
     let candidates = state
         .domains
         .effects
-        .all_metadata()
+        .all_for_mutation()
         .await
         .into_iter()
         .map(|metadata| {

@@ -16,7 +16,7 @@
 use std::collections::HashMap;
 
 use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceTopologyHint};
-use hypercolor_types::effect::{ControlValue, EffectMetadata};
+use hypercolor_types::effect::ControlValue;
 use hypercolor_types::event::ZoneChangeKind;
 use hypercolor_types::scene::{DisplayFaceBlendMode, DisplayFaceTarget, SceneId, Zone, ZoneId};
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
@@ -24,6 +24,7 @@ use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 use crate::domain::DomainError;
 use crate::domain::commit::SceneCommit;
 use crate::domain::context::SceneContext;
+use crate::domain::effect::{EffectContext, ResolvedEffect};
 
 /// Native display surface geometry resolved from one tracked device.
 #[derive(Debug, Clone, Copy)]
@@ -92,7 +93,7 @@ pub struct SetDisplayFace {
     /// The display's name, for the zone the assignment creates.
     pub device_name: String,
     /// The face, already validated as an HTML display effect.
-    pub effect: EffectMetadata,
+    pub effect: ResolvedEffect,
     /// Control overrides to store on the zone.
     pub controls: HashMap<String, ControlValue>,
     /// The display's native-resolution face canvas.
@@ -158,10 +159,12 @@ pub struct DisplayZoneWritten {
 /// and [`DomainError::Conflict`] when a concurrent scene
 /// mutation lands first.
 pub async fn set_display_face(
-    ctx: &SceneContext,
+    ctx: &EffectContext,
     command: SetDisplayFace,
 ) -> Result<DisplayZoneWritten, DomainError> {
-    let mut mutation = ctx.begin_mutation().await;
+    let _admission = ctx.admit(&command.effect).await?;
+    let scene = ctx.scene_context();
+    let mut mutation = scene.begin_mutation().await;
     let scene_id = mutation.active_scene_for_runtime_mutation("assigning a display face")?;
     let change = if scene_display_zone(&mutation, command.device_id).is_some() {
         ZoneChangeKind::Updated
@@ -177,8 +180,8 @@ pub async fn set_display_face(
         command.layout,
         command.target,
     )?;
-    let commit = ctx.commit(mutation).await?;
-    ctx.save_runtime_session().await;
+    let commit = scene.commit(mutation).await?;
+    scene.save_runtime_session().await;
 
     Ok(DisplayZoneWritten {
         scene_id,

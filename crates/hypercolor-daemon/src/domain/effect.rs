@@ -23,7 +23,7 @@ use hypercolor_types::event::{EffectRef, ZoneChangeKind};
 use hypercolor_types::library::PresetId;
 use hypercolor_types::scene::{SceneId, Zone, ZoneId};
 use hypercolor_types::spatial::SpatialLayout;
-use tokio::sync::{Mutex, OwnedMutexGuard, RwLock, RwLockWriteGuard};
+use tokio::sync::{OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock, RwLockWriteGuard};
 
 use crate::domain::commit::SceneCommit;
 use crate::domain::context::SceneContext;
@@ -38,11 +38,19 @@ pub struct EffectContext {
     scene: SceneContext,
     spatial: SpatialService,
     output: OutputContext,
-    update_gate: Arc<Mutex<()>>,
+    update_gate: Arc<RwLock<()>>,
+    #[cfg(test)]
+    resolution_test_barrier: Arc<std::sync::Mutex<Option<Arc<EffectResolutionTestBarrier>>>>,
+}
+
+#[cfg(test)]
+pub(crate) struct EffectResolutionTestBarrier {
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
 }
 
 pub(crate) struct EffectRegistryUpdate<'a> {
-    update_guard: OwnedMutexGuard<()>,
+    update_guard: OwnedRwLockWriteGuard<()>,
     registry: &'a RwLock<EffectRegistry>,
     base_generation: u64,
     candidate: EffectRegistry,
@@ -50,10 +58,37 @@ pub(crate) struct EffectRegistryUpdate<'a> {
 }
 
 pub(crate) struct EffectRegistryPublication<'a> {
-    update_guard: OwnedMutexGuard<()>,
+    update_guard: OwnedRwLockWriteGuard<()>,
     registry: RwLockWriteGuard<'a, EffectRegistry>,
     candidate: EffectRegistry,
     report: RescanReport,
+}
+
+/// Effect metadata qualified by the catalog generation that resolved it.
+#[derive(Debug, Clone)]
+pub struct ResolvedEffect {
+    metadata: EffectMetadata,
+    registry_generation: u64,
+}
+
+impl std::ops::Deref for ResolvedEffect {
+    type Target = EffectMetadata;
+
+    fn deref(&self) -> &Self::Target {
+        &self.metadata
+    }
+}
+
+impl ResolvedEffect {
+    #[must_use]
+    pub fn into_metadata(self) -> EffectMetadata {
+        self.metadata
+    }
+}
+
+/// Shared read admission that excludes catalog identity publication.
+pub struct EffectMutationAdmission {
+    _guard: OwnedRwLockReadGuard<()>,
 }
 
 impl EffectContext {
@@ -68,7 +103,9 @@ impl EffectContext {
             scene,
             spatial,
             output,
-            update_gate: Arc::new(Mutex::new(())),
+            update_gate: Arc::new(RwLock::new(())),
+            #[cfg(test)]
+            resolution_test_barrier: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -96,6 +133,95 @@ impl EffectContext {
             .iter()
             .find(|(_, entry)| entry.metadata.matches_lookup(id_or_name))
             .map(|(_, entry)| entry.metadata.clone())
+    }
+
+    /// Resolve one mutation target and bind it to the current catalog generation.
+    pub async fn resolve_for_mutation(&self, id_or_name: &str) -> Option<ResolvedEffect> {
+        let registry = self.registry.read().await;
+        let metadata = if let Ok(uuid) = id_or_name.parse::<uuid::Uuid>() {
+            registry
+                .get(&EffectId::new(uuid))
+                .map(|entry| entry.metadata.clone())
+        } else {
+            registry
+                .iter()
+                .find(|(_, entry)| entry.metadata.matches_lookup(id_or_name))
+                .map(|(_, entry)| entry.metadata.clone())
+        }?;
+        let resolved = ResolvedEffect {
+            metadata,
+            registry_generation: registry.generation(),
+        };
+        drop(registry);
+        #[cfg(test)]
+        self.pause_after_resolution_for_test().await;
+        Some(resolved)
+    }
+
+    /// Resolve one exact mutation target at the current catalog generation.
+    pub async fn metadata_for_mutation(&self, effect_id: EffectId) -> Option<ResolvedEffect> {
+        let registry = self.registry.read().await;
+        let metadata = registry.get(&effect_id)?.metadata.clone();
+        let resolved = ResolvedEffect {
+            metadata,
+            registry_generation: registry.generation(),
+        };
+        drop(registry);
+        #[cfg(test)]
+        self.pause_after_resolution_for_test().await;
+        Some(resolved)
+    }
+
+    /// Capture the catalog as generation-qualified mutation targets.
+    pub(crate) async fn all_for_mutation(&self) -> Vec<ResolvedEffect> {
+        let registry = self.registry.read().await;
+        let generation = registry.generation();
+        registry
+            .iter()
+            .map(|(_, entry)| ResolvedEffect {
+                metadata: entry.metadata.clone(),
+                registry_generation: generation,
+            })
+            .collect()
+    }
+
+    /// Admit a previously resolved effect while excluding registry publication.
+    pub(crate) async fn admit(
+        &self,
+        effect: &ResolvedEffect,
+    ) -> Result<EffectMutationAdmission, DomainError> {
+        self.admit_generation(effect.registry_generation).await
+    }
+
+    /// Admit work resolved against one catalog generation.
+    async fn admit_generation(
+        &self,
+        expected_generation: u64,
+    ) -> Result<EffectMutationAdmission, DomainError> {
+        let guard = Arc::clone(&self.update_gate).read_owned().await;
+        let current_generation = self.registry.read().await.generation();
+        if current_generation != expected_generation {
+            return Err(DomainError::conflict_details(
+                "effect catalog changed after resolving this request",
+                serde_json::json!({
+                    "kind": "effect_resolution_superseded",
+                    "expected_generation": expected_generation,
+                    "current_generation": current_generation,
+                }),
+            ));
+        }
+        Ok(EffectMutationAdmission { _guard: guard })
+    }
+
+    /// Admit a mutation that will resolve its effects while the guard is held.
+    pub(crate) async fn admit_current(&self) -> EffectMutationAdmission {
+        EffectMutationAdmission {
+            _guard: Arc::clone(&self.update_gate).read_owned().await,
+        }
+    }
+
+    pub(crate) const fn scene_context(&self) -> &SceneContext {
+        &self.scene
     }
 
     /// Capture every catalog entry as owned metadata.
@@ -129,12 +255,13 @@ impl EffectContext {
     }
 
     pub(crate) async fn prepare_rescan(&self) -> EffectRegistryUpdate<'_> {
-        let gate = Arc::clone(&self.update_gate).lock_owned().await;
+        let gate = Arc::clone(&self.update_gate).write_owned().await;
         let registry = self.registry.read().await;
         let base_generation = registry.generation();
         let mut candidate = registry.clone();
         drop(registry);
-        let report = candidate.rescan();
+        let mut report = candidate.rescan();
+        retire_legacy_registry_entries(&mut candidate, &mut report);
         EffectRegistryUpdate {
             update_guard: gate,
             registry: self.registry.as_ref(),
@@ -145,12 +272,13 @@ impl EffectContext {
     }
 
     pub(crate) async fn prepare_reload(&self, path: &Path) -> EffectRegistryUpdate<'_> {
-        let gate = Arc::clone(&self.update_gate).lock_owned().await;
+        let gate = Arc::clone(&self.update_gate).write_owned().await;
         let registry = self.registry.read().await;
         let base_generation = registry.generation();
         let mut candidate = registry.clone();
         drop(registry);
-        let report = candidate.reload_single(path);
+        let mut report = candidate.reload_single(path);
+        retire_legacy_registry_entries(&mut candidate, &mut report);
         EffectRegistryUpdate {
             update_guard: gate,
             registry: self.registry.as_ref(),
@@ -162,13 +290,58 @@ impl EffectContext {
 
     /// Register one already canonical entry and report whether it replaced one.
     pub async fn register(&self, entry: EffectEntry) -> bool {
-        let _update_guard = self.update_gate.lock().await;
+        let _update_guard = self.update_gate.write().await;
         self.registry.write().await.register(entry).is_some()
     }
 
     #[cfg(test)]
     pub(crate) fn registry_handle(&self) -> Arc<RwLock<EffectRegistry>> {
         Arc::clone(&self.registry)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pause_next_resolution_for_test(&self) -> Arc<EffectResolutionTestBarrier> {
+        let barrier = Arc::new(EffectResolutionTestBarrier {
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+        });
+        *self
+            .resolution_test_barrier
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&barrier));
+        barrier
+    }
+
+    #[cfg(test)]
+    async fn pause_after_resolution_for_test(&self) {
+        let barrier = self
+            .resolution_test_barrier
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(barrier) = barrier {
+            barrier.entered.notify_one();
+            barrier.release.notified().await;
+        }
+    }
+}
+
+fn retire_legacy_registry_entries(registry: &mut EffectRegistry, report: &mut RescanReport) {
+    report.removed += report
+        .legacy_effect_ids
+        .keys()
+        .filter(|legacy_id| registry.remove(legacy_id).is_some())
+        .count();
+}
+
+#[cfg(test)]
+impl EffectResolutionTestBarrier {
+    pub(crate) async fn wait_until_entered(&self) {
+        self.entered.notified().await;
+    }
+
+    pub(crate) fn release(&self) {
+        self.release.notify_one();
     }
 }
 
@@ -291,17 +464,8 @@ impl AppliedTransition {
 /// Load an effect into a zone of the active scene.
 #[derive(Debug, Clone)]
 pub struct ApplyEffect {
-    /// The effect to load, already resolved.
-    ///
-    /// Adapters own identity resolution and hand over what they found.
-    /// REST resolves its path segment while MCP applies the deterministic
-    /// selector policy. The service
-    /// does not look it up again: re-resolving would reintroduce a
-    /// window where a rescan between the adapter's lookup and the
-    /// service's turns a request the adapter already accepted into a
-    /// not-found, and it would give the domain a second opinion about
-    /// identity that the adapter contract deliberately owns.
-    pub effect: EffectMetadata,
+    /// The effect to load, bound to the catalog generation that resolved it.
+    pub effect: ResolvedEffect,
     /// Control values, already normalized against the effect's schema.
     pub controls: HashMap<String, ControlValue>,
     /// Preset provenance to record on the zone.
@@ -355,7 +519,8 @@ pub async fn apply_effect(
     meta: MutationContext,
 ) -> Result<EffectApplied, DomainError> {
     let transition = command.transition.resolve()?;
-    let metadata = command.effect;
+    let _admission = ctx.admit(&command.effect).await?;
+    let metadata = command.effect.into_metadata();
 
     // Resolving the outgoing effect's name needs the registry, and the
     // outgoing effect is not known until the scene snapshot is in hand.

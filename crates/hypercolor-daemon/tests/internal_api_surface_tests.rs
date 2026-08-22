@@ -180,3 +180,30 @@ fn registry_refreshes_share_the_migration_coordinator_and_playlist_runtime() {
     let startup = source("startup/mod.rs");
     assert!(startup.contains("pub playlist_runtime: Arc<Mutex<PlaylistRuntimeState>>"));
 }
+
+#[test]
+fn effect_mutations_require_generation_qualified_admission() {
+    let sources = daemon_sources();
+    let source = |suffix: &str| {
+        sources
+            .iter()
+            .find(|(path, _)| path.ends_with(suffix))
+            .map(|(_, source)| source.as_str())
+            .unwrap_or_else(|| panic!("missing daemon source {suffix}"))
+    };
+    let effect_domain = source("domain/effect.rs");
+    assert!(effect_domain.contains("pub effect: ResolvedEffect"));
+    assert!(effect_domain.contains("ctx.admit(&command.effect).await?"));
+    assert!(!effect_domain.contains("pub async fn admit_generation"));
+
+    let display_domain = source("domain/display.rs");
+    assert!(display_domain.contains("pub effect: ResolvedEffect"));
+    assert!(display_domain.contains("ctx.admit(&command.effect).await?"));
+
+    let effect_api = source("api/effects.rs");
+    assert!(effect_api.contains("resolve_for_mutation(&id)"));
+    let display_api = source("api/displays.rs");
+    assert!(display_api.contains("resolve_for_mutation(&body.effect_id)"));
+    let mcp_tools = source("mcp/tools/mod.rs");
+    assert!(mcp_tools.contains("all_for_mutation()"));
+}

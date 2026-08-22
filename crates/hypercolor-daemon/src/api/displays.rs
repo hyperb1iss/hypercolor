@@ -175,7 +175,7 @@ pub async fn set_display_face(
         let Some(effect) = state
             .domains
             .effects
-            .resolve_metadata(&body.effect_id)
+            .resolve_for_mutation(&body.effect_id)
             .await
         else {
             return DomainError::not_found(ResourceKind::Effect, &body.effect_id).into_response();
@@ -219,6 +219,10 @@ pub async fn set_display_face(
     }
 
     if body.scope == DisplayFaceScope::Default {
+        let _admission = match state.domains.effects.admit(&effect).await {
+            Ok(admission) => admission,
+            Err(error) => return error.into_response(),
+        };
         let preference = crate::display_preferences::DisplayPreference {
             blend_mode: display_target.blend_mode,
             controls: body.controls,
@@ -256,7 +260,7 @@ pub async fn set_display_face(
         return envelope::ok(DisplayFaceResponse {
             default_assigned: true,
             device_id: device_id.to_string(),
-            effect,
+            effect: effect.into_metadata(),
             zone,
             live_scope: if scene_assigned {
                 DisplayFaceScope::Scene
@@ -274,7 +278,7 @@ pub async fn set_display_face(
     };
 
     let written = match crate::domain::display::set_display_face(
-        &state.domains.scene,
+        &state.domains.effects,
         crate::domain::display::SetDisplayFace {
             device_id,
             device_name: tracked.info.name.clone(),
@@ -293,7 +297,7 @@ pub async fn set_display_face(
     envelope::ok(DisplayFaceResponse {
         default_assigned,
         device_id: device_id.to_string(),
-        effect,
+        effect: effect.into_metadata(),
         zone: if composition_explicit {
             written.zone
         } else {

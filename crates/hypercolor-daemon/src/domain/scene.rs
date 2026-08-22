@@ -49,6 +49,7 @@ use hypercolor_types::scene::{
     SceneKind, SceneMutationMode, ScenePriority, TransitionSpec, UnassignedBehavior, Zone, ZoneId,
 };
 use hypercolor_types::spatial::{EdgeBehavior, Output, SamplingMode, SpatialLayout};
+use tokio::sync::{OwnedRwLockWriteGuard, RwLock};
 
 use crate::domain::commit::SceneCommitSequencer;
 use crate::domain::commit::{CommitDurability, SceneCommit, SceneRevision};
@@ -82,9 +83,15 @@ pub(crate) struct PersistedSceneEffectIdMigration {
     store: Option<PersistedSceneStoreEffectIdMigration>,
 }
 
+pub(crate) struct SceneEffectIdMigrationPublication {
+    manager: OwnedRwLockWriteGuard<SceneManager>,
+    store: Option<OwnedRwLockWriteGuard<SceneStore>>,
+    migration: PersistedSceneEffectIdMigration,
+}
+
 struct SceneServiceInner {
-    manager: tokio::sync::RwLock<SceneManager>,
-    store: Option<Arc<tokio::sync::RwLock<SceneStore>>>,
+    manager: Arc<RwLock<SceneManager>>,
+    store: Option<Arc<RwLock<SceneStore>>>,
     zone_layout_previews: Arc<ZoneLayoutPreviewStore>,
     commits: Arc<SceneCommitSequencer>,
     event_bus: Arc<HypercolorBus>,
@@ -160,7 +167,7 @@ impl SceneService {
         let commits = Arc::new(SceneCommitSequencer::new());
         let plan = ArcSwap::from_pointee(manager.plan_snapshot(commits.revision()));
         Self(Arc::new(SceneServiceInner {
-            manager: tokio::sync::RwLock::new(manager),
+            manager: Arc::new(RwLock::new(manager)),
             store,
             zone_layout_previews,
             commits,
@@ -239,11 +246,11 @@ impl SceneService {
         })
     }
 
-    pub(crate) async fn install_effect_id_migration(
+    pub(crate) async fn prepare_effect_id_migration_publication(
         &self,
         migration: PersistedSceneEffectIdMigration,
-    ) -> Result<SceneCommit, DomainError> {
-        let mut manager = self.0.manager.write().await;
+    ) -> Result<SceneEffectIdMigrationPublication, DomainError> {
+        let manager = Arc::clone(&self.0.manager).write_owned().await;
         let current_revision = self.0.commits.revision();
         if current_revision != migration.base_revision {
             return Err(DomainError::conflict_details(
@@ -256,17 +263,42 @@ impl SceneService {
             ));
         }
 
-        if let Some(store_migration) = migration.store {
+        let store = if let Some(store_migration) = migration.store.as_ref() {
             let store = self
                 .0
                 .store
                 .as_ref()
                 .expect("persisted scene migration must retain its owning store");
-            store
-                .write()
-                .await
-                .install_effect_id_migration(store_migration)
-                .map_err(DomainError::Internal)?;
+            let store = Arc::clone(store).write_owned().await;
+            if !store.effect_id_migration_is_current(store_migration) {
+                return Err(DomainError::conflict(
+                    "effect ID migration was superseded by newer scene storage",
+                ));
+            }
+            Some(store)
+        } else {
+            None
+        };
+
+        Ok(SceneEffectIdMigrationPublication {
+            manager,
+            store,
+            migration,
+        })
+    }
+
+    pub(crate) fn publish_effect_id_migration(
+        &self,
+        publication: SceneEffectIdMigrationPublication,
+    ) -> SceneCommit {
+        let SceneEffectIdMigrationPublication {
+            mut manager,
+            mut store,
+            migration,
+        } = publication;
+
+        if let (Some(store), Some(store_migration)) = (store.as_mut(), migration.store) {
+            store.install_effect_id_migration(store_migration);
         }
 
         *manager = migration.candidate;
@@ -276,12 +308,7 @@ impl SceneService {
             .store(Arc::new(manager.plan_snapshot(ticket.generation())));
         let generation = ticket.generation();
         ticket.release(Vec::new());
-        Ok(SceneCommit::new(
-            generation,
-            generation,
-            CommitDurability::Written,
-            None,
-        ))
+        SceneCommit::new(generation, generation, CommitDurability::Written, None)
     }
 
     pub(crate) async fn stage_zone_layout_preview<E, F>(
