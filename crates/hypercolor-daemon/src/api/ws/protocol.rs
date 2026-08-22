@@ -1563,11 +1563,10 @@ impl WsProtocolError {
 impl From<DomainError> for WsProtocolError {
     fn from(error: DomainError) -> Self {
         let code = error.code();
-        let detail = error.detail();
         Self {
             code,
-            message: detail.message,
-            details: detail.details,
+            message: error.client_message(),
+            details: error.client_details(),
         }
     }
 }

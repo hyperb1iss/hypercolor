@@ -129,6 +129,21 @@ fn websocket_native_errors_project_canonical_domain_codes() {
         validation.code,
         crate::domain::DomainError::validation("bad config").code()
     );
+
+    let projected = WsProtocolError::from(crate::domain::DomainError::validation_details(
+        "invalid speed",
+        serde_json::json!({ "field": "speed" }),
+    ));
+    assert_eq!(projected.message, "invalid speed");
+    assert_eq!(
+        projected.details,
+        Some(serde_json::json!({ "field": "speed" }))
+    );
+
+    let internal = WsProtocolError::from(crate::domain::DomainError::Internal(anyhow::anyhow!(
+        "secret path /home/user leaked"
+    )));
+    assert_eq!(internal.message, "internal error");
 }
 use super::relays::{
     PreviewOutboundItem, PreviewOutboundLimits, PreviewOutboundReceiver, PreviewOutboundSender,

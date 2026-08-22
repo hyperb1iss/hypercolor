@@ -159,6 +159,43 @@ fn domain_modules_do_not_depend_on_transport_modules() {
 }
 
 #[test]
+fn domain_errors_do_not_render_transport_responses() {
+    let banned = [
+        "use axum",
+        "axum::",
+        "IntoResponse for DomainError",
+        "ApiErrorBody",
+        "ResponseMeta",
+        "StatusCode",
+    ];
+    let offenders = daemon_sources()
+        .into_iter()
+        .filter(|(path, _)| {
+            path.components()
+                .any(|component| component.as_os_str() == "domain")
+        })
+        .flat_map(|(path, source)| {
+            let code = source
+                .lines()
+                .filter(|line| !line.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            banned
+                .into_iter()
+                .filter(|pattern| code.contains(pattern))
+                .map(|pattern| format!("{} contains {pattern}", path.display()))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        offenders.is_empty(),
+        "domain modules render transport responses:\n{}",
+        offenders.join("\n")
+    );
+}
+
+#[test]
 fn output_has_one_brightness_percentage_projection() {
     let definitions = daemon_sources()
         .into_iter()

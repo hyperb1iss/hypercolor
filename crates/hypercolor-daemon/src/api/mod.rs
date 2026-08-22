@@ -16,6 +16,7 @@ pub mod displays;
 pub mod drivers;
 pub mod effects;
 pub mod envelope;
+mod error;
 pub mod layouts;
 pub mod library;
 pub mod local;

@@ -6,7 +6,7 @@
 //!
 //! - **REST**: parse → service → envelope. The route handler converts
 //!   wire input, calls one service function, and wraps the typed
-//!   outcome. `DomainError` owns the shared error projection.
+//!   outcome. The REST adapter projects `DomainError` into HTTP.
 //! - **MCP**: schema validation, deterministic selector resolution, and
 //!   one service call. The adapter projects `DomainError` into its tool
 //!   error vocabulary.
@@ -14,20 +14,19 @@
 //! - **CLI**: speaks the REST wire and deserializes
 //!   `hypercolor_types::api::envelope::ApiResponse<Outcome>`.
 //!
-//! Domain signatures never mention Axum, `serde_json::Value`, or
-//! `Response`. Mutations whose canonical events carry provenance accept
-//! [`MutationContext`] beside the command, never inside it. Commands
-//! that cannot publish the trigger carry no ceremonial context.
+//! Domain signatures never mention Axum or `Response`. Structured JSON
+//! remains only in error details and media admission diagnostics until
+//! their typed replacements land. Mutations whose canonical events carry
+//! provenance accept [`MutationContext`] beside the command, never inside
+//! it. Commands that cannot publish the trigger carry no ceremonial context.
 //!
 //! MCP selector failures are an adapter concern. The adapter returns a
 //! JSON-RPC invalid-params error with the normalized query, failure kind,
 //! and deterministic candidates instead of asking the domain to resolve
 //! transport-facing identity.
 //!
-//! [`DomainError`]'s `IntoResponse` is the ONLY error rendering in the
-//! daemon. There is no second factory, no per-family projection, and no
-//! route that hand-builds an error body: an error either is a
-//! `DomainError` or it does not reach the wire.
+//! Each transport owns exactly one `DomainError` projection. Domain code
+//! never selects an HTTP status, builds an envelope, or emits a header.
 
 pub mod commit;
 pub mod context;
@@ -45,12 +44,6 @@ pub mod scene_tree;
 pub mod spatial;
 pub mod zone;
 
-use axum::Json;
-use axum::http::{HeaderValue, StatusCode, header};
-use axum::response::{IntoResponse, Response};
-use serde_json::json;
-
-use hypercolor_types::api::envelope::{ApiErrorBody, ApiErrorDetail, ResponseMeta};
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::event::ChangeTrigger;
 
@@ -371,66 +364,45 @@ impl DomainError {
         }
     }
 
-    /// HTTP status for the canonical rendering.
+    /// Client-safe message shared by every transport projection.
     #[must_use]
-    pub const fn status(&self) -> StatusCode {
+    pub(crate) fn client_message(&self) -> String {
         match self {
-            Self::NotFound { .. } => StatusCode::NOT_FOUND,
-            Self::Validation { .. } => StatusCode::UNPROCESSABLE_ENTITY,
-            Self::Malformed { .. } => StatusCode::BAD_REQUEST,
-            Self::Conflict { .. } | Self::ControlBound { .. } => StatusCode::CONFLICT,
-            Self::Unauthorized { .. } => StatusCode::UNAUTHORIZED,
-            Self::Forbidden { .. } => StatusCode::FORBIDDEN,
-            Self::PayloadTooLarge { .. } => StatusCode::PAYLOAD_TOO_LARGE,
-            Self::UnsupportedMediaType { .. } => StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            Self::RateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
-            Self::PreconditionFailed { .. } => StatusCode::PRECONDITION_FAILED,
-            Self::DeviceUnavailable { .. } => StatusCode::SERVICE_UNAVAILABLE,
-            Self::ServiceUnavailable { .. } => StatusCode::SERVICE_UNAVAILABLE,
-            Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::Internal(_) => "internal error".to_owned(),
+            other => other.to_string(),
         }
     }
 
-    pub(crate) fn detail(&self) -> ApiErrorDetail {
-        let details = match self {
+    /// Structured recovery context shared by every transport projection.
+    #[must_use]
+    pub(crate) fn client_details(&self) -> Option<serde_json::Value> {
+        match self {
             Self::Validation { field, details, .. } => merge_field(details.clone(), field.as_ref()),
             Self::Conflict { details, .. }
             | Self::Forbidden { details, .. }
             | Self::ServiceUnavailable { details, .. } => details.clone(),
-            Self::ControlBound { keys } => Some(json!({ "bound": keys })),
+            Self::ControlBound { keys } => Some(serde_json::json!({ "bound": keys })),
             Self::PreconditionFailed {
                 expected, current, ..
-            } => Some(json!({ "expected": expected, "current": current })),
-            Self::PayloadTooLarge { limit_bytes } => Some(json!({ "limit_bytes": limit_bytes })),
+            } => Some(serde_json::json!({ "expected": expected, "current": current })),
+            Self::PayloadTooLarge { limit_bytes } => {
+                Some(serde_json::json!({ "limit_bytes": limit_bytes }))
+            }
             Self::RateLimited {
                 limit,
                 window_seconds,
                 retry_after_secs,
                 ..
-            } => Some(json!({
+            } => Some(serde_json::json!({
                 "limit": limit,
                 "window_seconds": window_seconds,
                 "retry_after": retry_after_secs,
             })),
             _ => None,
-        };
-        let message = match self {
-            // Internal chains carry paths, addresses, and other
-            // internals that don't belong on the wire.
-            Self::Internal(_) => "internal error".to_owned(),
-            other => other.to_string(),
-        };
-        ApiErrorDetail {
-            code: self.code().to_owned(),
-            message,
-            details,
         }
     }
 }
 
-/// Fold a validation error's offending field into its structured
-/// details, so a caller reads one `details` object rather than two
-/// competing context channels.
 fn merge_field(
     details: Option<serde_json::Value>,
     field: Option<&String>,
@@ -440,35 +412,11 @@ fn merge_field(
     };
     match details {
         Some(serde_json::Value::Object(mut map)) => {
-            map.insert("field".to_owned(), json!(field));
+            map.insert("field".to_owned(), serde_json::json!(field));
             Some(serde_json::Value::Object(map))
         }
-        Some(other) => Some(json!({ "field": field, "context": other })),
-        None => Some(json!({ "field": field })),
-    }
-}
-
-impl IntoResponse for DomainError {
-    /// Canonical envelope rendering: `{ error: { code, message,
-    /// details }, meta }` with the variant's status code. A 412 also
-    /// carries the current version as its `ETag` so clients can
-    /// re-sync without a second read.
-    fn into_response(self) -> Response {
-        if let Self::Internal(error) = &self {
-            tracing::error!(chain = format!("{error:#}"), "domain internal error");
-        }
-        let status = self.status();
-        let body = ApiErrorBody {
-            error: self.detail(),
-            meta: response_meta(),
-        };
-        let mut response = (status, Json(body)).into_response();
-        if let Self::PreconditionFailed { current, .. } = &self
-            && let Ok(etag) = HeaderValue::from_str(&format!("\"{current}\""))
-        {
-            response.headers_mut().insert(header::ETAG, etag);
-        }
-        response
+        Some(other) => Some(serde_json::json!({ "field": field, "context": other })),
+        None => Some(serde_json::json!({ "field": field })),
     }
 }
 
@@ -501,226 +449,9 @@ impl MutationContext {
     }
 }
 
-/// Fresh canonical metadata under the same emission policy as the v1
-/// envelope (version string, `req_` UUIDv7 correlation id, ISO 8601
-/// timestamp).
-#[must_use]
-pub fn response_meta() -> ResponseMeta {
-    ResponseMeta {
-        api_version: "1.0".to_owned(),
-        request_id: format!("req_{}", uuid::Uuid::now_v7()),
-        timestamp: iso8601_system_time(std::time::SystemTime::now()),
-    }
-}
-
-fn iso8601_system_time(now: std::time::SystemTime) -> String {
-    let duration = now
-        .duration_since(std::time::SystemTime::UNIX_EPOCH)
-        .unwrap_or_default();
-
-    let total_secs = duration.as_secs();
-    let millis = duration.subsec_millis();
-    let (year, month, day, hour, minute, second) = epoch_to_utc(total_secs);
-
-    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{millis:03}Z")
-}
-
-#[expect(clippy::cast_possible_truncation, clippy::as_conversions)]
-fn epoch_to_utc(epoch_secs: u64) -> (u32, u32, u32, u32, u32, u32) {
-    let secs_per_day: u64 = 86_400;
-    let days = epoch_secs / secs_per_day;
-    let day_secs = epoch_secs % secs_per_day;
-
-    let hour = (day_secs / 3_600) as u32;
-    let minute = ((day_secs % 3_600) / 60) as u32;
-    let second = (day_secs % 60) as u32;
-
-    let z = days + 719_468;
-    let era = z / 146_097;
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
-
-    (y as u32, m as u32, d as u32, hour, minute, second)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::body::to_bytes;
-
-    async fn body_json(response: Response) -> serde_json::Value {
-        let bytes = to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("body reads");
-        serde_json::from_slice(&bytes).expect("body is JSON")
-    }
-
-    #[tokio::test]
-    async fn canonical_error_envelope_carries_code_message_meta() {
-        let error = DomainError::NotFound {
-            kind: ResourceKind::Scene,
-            id: "sc_123".to_owned(),
-        };
-        let response = error.into_response();
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
-        let json = body_json(response).await;
-        assert_eq!(json["error"]["code"], "not_found");
-        assert_eq!(json["error"]["message"], "scene not found: sc_123");
-        for key in ["api_version", "request_id", "timestamp"] {
-            assert!(json["meta"][key].is_string(), "meta.{key} must be present");
-        }
-    }
-
-    #[tokio::test]
-    async fn precondition_failure_renders_412_with_etag_and_details() {
-        let error = DomainError::PreconditionFailed {
-            resource: ResourceKind::Zone,
-            expected: 4,
-            current: 7,
-        };
-        let response = error.into_response();
-        assert_eq!(response.status(), StatusCode::PRECONDITION_FAILED);
-        assert_eq!(
-            response
-                .headers()
-                .get(header::ETAG)
-                .and_then(|value| value.to_str().ok()),
-            Some("\"7\"")
-        );
-        let json = body_json(response).await;
-        assert_eq!(json["error"]["code"], "precondition_failed");
-        assert_eq!(json["error"]["details"]["expected"], 4);
-        assert_eq!(json["error"]["details"]["current"], 7);
-    }
-
-    #[tokio::test]
-    async fn internal_errors_render_generically() {
-        let error = DomainError::Internal(anyhow::anyhow!("secret path /home/user leaked"));
-        let response = error.into_response();
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-        let json = body_json(response).await;
-        assert_eq!(json["error"]["message"], "internal error");
-        assert_eq!(json["error"]["code"], "internal_error");
-    }
-
-    #[tokio::test]
-    async fn absent_details_are_omitted_rather_than_serialized_as_null() {
-        let response = DomainError::validation("nope").into_response();
-        let bytes = to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("body reads");
-        let text = std::str::from_utf8(&bytes).expect("utf8");
-        assert!(
-            !text.contains("\"details\""),
-            "the canonical envelope skips the key entirely when there is no context: {text}"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_validation_field_rides_the_details_object() {
-        let response = DomainError::validation_field("name", "must not be blank").into_response();
-        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
-        let json = body_json(response).await;
-        assert_eq!(json["error"]["code"], "validation_error");
-        assert_eq!(json["error"]["details"]["field"], "name");
-    }
-
-    #[tokio::test]
-    async fn structured_validation_details_survive_beside_the_field() {
-        let error = DomainError::Validation {
-            message: "no valid controls to apply".to_owned(),
-            field: Some("controls".to_owned()),
-            details: Some(json!({ "rejected": ["speed"] })),
-        };
-        let json = body_json(error.into_response()).await;
-        assert_eq!(json["error"]["details"]["field"], "controls");
-        assert_eq!(json["error"]["details"]["rejected"][0], "speed");
-    }
-
-    #[tokio::test]
-    async fn malformed_input_is_a_400_distinct_from_validation() {
-        let response =
-            DomainError::malformed("If-Match must be a non-negative integer").into_response();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let json = body_json(response).await;
-        assert_eq!(json["error"]["code"], "malformed_request");
-        assert_eq!(
-            json["error"]["message"],
-            "If-Match must be a non-negative integer"
-        );
-    }
-
-    #[tokio::test]
-    async fn unauthorized_and_forbidden_keep_their_own_statuses() {
-        let response = DomainError::unauthorized("Missing API key").into_response();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-        assert_eq!(body_json(response).await["error"]["code"], "unauthorized");
-
-        let response = DomainError::forbidden_details(
-            "Read-only API key cannot perform write operations",
-            json!({ "required_tier": "control" }),
-        )
-        .into_response();
-        assert_eq!(response.status(), StatusCode::FORBIDDEN);
-        let json = body_json(response).await;
-        assert_eq!(json["error"]["code"], "forbidden");
-        assert_eq!(json["error"]["details"]["required_tier"], "control");
-    }
-
-    #[tokio::test]
-    async fn payload_too_large_names_the_limit_it_enforced() {
-        let response = DomainError::PayloadTooLarge {
-            limit_bytes: 64 * 1024 * 1024,
-        }
-        .into_response();
-        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
-        let json = body_json(response).await;
-        assert_eq!(json["error"]["code"], "payload_too_large");
-        assert_eq!(json["error"]["details"]["limit_bytes"], 64 * 1024 * 1024);
-    }
-
-    #[tokio::test]
-    async fn unsupported_media_type_and_rate_limits_render_canonically() {
-        let response =
-            DomainError::unsupported_media_type("audio/flac is not decodable").into_response();
-        assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
-        assert_eq!(
-            body_json(response).await["error"]["code"],
-            "unsupported_media_type"
-        );
-
-        let response = DomainError::RateLimited {
-            message: "Too many mutations".to_owned(),
-            limit: 60,
-            window_seconds: 60,
-            retry_after_secs: 12,
-        }
-        .into_response();
-        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
-        let json = body_json(response).await;
-        assert_eq!(json["error"]["code"], "rate_limited");
-        assert_eq!(json["error"]["details"]["limit"], 60);
-        assert_eq!(json["error"]["details"]["retry_after"], 12);
-    }
-
-    #[tokio::test]
-    async fn conflict_details_reach_the_envelope() {
-        let response = DomainError::conflict_details(
-            "Control surface revision conflict",
-            json!({ "kind": "control_surface_revision_conflict", "current_revision": 4 }),
-        )
-        .into_response();
-        assert_eq!(response.status(), StatusCode::CONFLICT);
-        let json = body_json(response).await;
-        assert_eq!(json["error"]["code"], "conflict");
-        assert_eq!(json["error"]["details"]["current_revision"], 4);
-    }
 
     #[test]
     fn every_resource_kind_renders_a_distinct_label() {
