@@ -855,10 +855,11 @@ mod tests {
     fn minimal_render_thread_state(registry: EffectRegistry) -> RenderThreadState {
         let (_, power_state) = watch::channel(OutputPowerState::default());
         let event_bus = Arc::new(HypercolorBus::new());
-        let scene_manager = crate::domain::scene::SceneService::in_memory(
+        let scene_manager = crate::domain::scene::SceneService::with_temporary_store(
             SceneManager::with_default(),
             Arc::clone(&event_bus),
-        );
+        )
+        .expect("temporary scene store should open");
         let scene_plan = scene_manager.plan_reader();
         let asset_tempdir = tempfile::tempdir().expect("test asset tempdir should be created");
         let asset_dir = asset_tempdir.path().join("assets");

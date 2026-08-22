@@ -1167,7 +1167,8 @@ fn make_render_state(
             )
             .expect("test render state should seed a default primary group");
     }
-    let scene_manager = SceneService::in_memory(scene_manager, Arc::clone(&event_bus));
+    let scene_manager = SceneService::with_temporary_store(scene_manager, Arc::clone(&event_bus))
+        .expect("temporary scene store should open");
     let scene_plan = scene_manager.plan_reader();
     RenderThreadState {
         effect_registry: Arc::new(RwLock::new(builtin_effect_registry())),
@@ -2799,10 +2800,11 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
         reconnect_tasks: Arc::new(StdMutex::new(HashMap::new())),
         event_bus: Arc::clone(&event_bus),
         spatial_engine: spatial_engine.clone(),
-        scene_manager: SceneService::in_memory(
+        scene_manager: SceneService::with_temporary_store(
             SceneManager::with_default(),
             Arc::clone(&event_bus),
-        ),
+        )
+        .expect("temporary scene store should open"),
         layouts: Arc::new(RwLock::new(HashMap::new())),
         layouts_path: PathBuf::from("layouts.json"),
         layout_auto_exclusions: Arc::new(RwLock::new(HashMap::new())),
@@ -2842,7 +2844,8 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
             layout.clone(),
         )
         .expect("failing-device test should seed a primary group");
-    let scene_manager = SceneService::in_memory(scene_manager, Arc::clone(&event_bus));
+    let scene_manager = SceneService::with_temporary_store(scene_manager, Arc::clone(&event_bus))
+        .expect("temporary scene store should open");
     let scene_plan = scene_manager.plan_reader();
 
     let (_, power_state) = watch::channel(OutputPowerState::default());
@@ -2991,10 +2994,11 @@ async fn newer_success_fences_deferred_async_failure_recovery() {
         reconnect_tasks: Arc::new(StdMutex::new(HashMap::new())),
         event_bus: Arc::clone(&event_bus),
         spatial_engine: state.spatial_engine.clone(),
-        scene_manager: SceneService::in_memory(
+        scene_manager: SceneService::with_temporary_store(
             SceneManager::with_default(),
             Arc::clone(&event_bus),
-        ),
+        )
+        .expect("temporary scene store should open"),
         layouts: Arc::new(RwLock::new(HashMap::new())),
         layouts_path: PathBuf::from("layouts.json"),
         layout_auto_exclusions: Arc::new(RwLock::new(HashMap::new())),
@@ -3182,10 +3186,11 @@ async fn pipeline_keeps_rendering_while_async_write_failure_disconnects() {
         reconnect_tasks: Arc::new(StdMutex::new(HashMap::new())),
         event_bus: Arc::clone(&event_bus),
         spatial_engine,
-        scene_manager: SceneService::in_memory(
+        scene_manager: SceneService::with_temporary_store(
             SceneManager::with_default(),
             Arc::clone(&event_bus),
-        ),
+        )
+        .expect("temporary scene store should open"),
         layouts: Arc::new(RwLock::new(HashMap::new())),
         layouts_path: PathBuf::from("layouts.json"),
         layout_auto_exclusions: Arc::new(RwLock::new(HashMap::new())),
@@ -4760,7 +4765,8 @@ async fn release_sleep_clears_published_frame_and_canvas_once() {
 
     let (power_tx, power_state) = watch::channel(OutputPowerState::default());
     let event_bus = Arc::new(HypercolorBus::new());
-    let scene_manager = SceneService::in_memory(scene_manager, Arc::clone(&event_bus));
+    let scene_manager = SceneService::with_temporary_store(scene_manager, Arc::clone(&event_bus))
+        .expect("temporary scene store should open");
     let scene_plan = scene_manager.plan_reader();
     let state = RenderThreadState {
         effect_registry: Arc::new(RwLock::new(builtin_effect_registry())),

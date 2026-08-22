@@ -66,6 +66,12 @@ pub(crate) struct SceneStore {
 }
 
 impl SceneStore {
+    pub(crate) fn temporary() -> anyhow::Result<(Self, tempfile::TempDir)> {
+        let root = tempfile::tempdir()?;
+        let store = Self::load(&root.path().join("scenes.json"))?;
+        Ok((store, root))
+    }
+
     /// Create an empty store rooted at `path`.
     #[cfg(test)]
     fn new(path: PathBuf) -> Result<Self, PersistenceError> {

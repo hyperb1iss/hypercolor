@@ -101,6 +101,7 @@ pub(crate) struct SceneEffectIdMigrationPublication {
 struct SceneServiceInner {
     manager: Arc<RwLock<SceneManager>>,
     store: Option<Arc<RwLock<SceneStore>>>,
+    _temporary_store_root: Option<tempfile::TempDir>,
     snapshot_save_gate: Arc<RwLock<()>>,
     zone_layout_previews: Arc<ZoneLayoutPreviewStore>,
     commits: Arc<SceneCommitSequencer>,
@@ -164,8 +165,29 @@ impl SceneService {
             manager,
             event_bus,
             None,
+            None,
             Arc::new(ZoneLayoutPreviewStore::default()),
         )
+    }
+
+    /// Own a temporary scene store for isolated persistence harnesses.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the temporary store cannot be prepared.
+    #[doc(hidden)]
+    pub fn with_temporary_store(
+        manager: SceneManager,
+        event_bus: Arc<HypercolorBus>,
+    ) -> anyhow::Result<Self> {
+        let (store, root) = SceneStore::temporary()?;
+        Ok(Self::build(
+            manager,
+            event_bus,
+            Some(Arc::new(tokio::sync::RwLock::new(store))),
+            Some(root),
+            Arc::new(ZoneLayoutPreviewStore::default()),
+        ))
     }
 
     /// Own a scene manager together with its durable and transient stores.
@@ -180,6 +202,7 @@ impl SceneService {
             manager,
             event_bus,
             Some(Arc::new(tokio::sync::RwLock::new(store))),
+            None,
             zone_layout_previews,
         )
     }
@@ -188,6 +211,7 @@ impl SceneService {
         manager: SceneManager,
         event_bus: Arc<HypercolorBus>,
         store: Option<Arc<tokio::sync::RwLock<SceneStore>>>,
+        temporary_store_root: Option<tempfile::TempDir>,
         zone_layout_previews: Arc<ZoneLayoutPreviewStore>,
     ) -> Self {
         let commits = Arc::new(SceneCommitSequencer::new());
@@ -195,6 +219,7 @@ impl SceneService {
         Self(Arc::new(SceneServiceInner {
             manager: Arc::new(RwLock::new(manager)),
             store,
+            _temporary_store_root: temporary_store_root,
             snapshot_save_gate: Arc::new(RwLock::new(())),
             zone_layout_previews,
             commits,
