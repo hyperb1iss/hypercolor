@@ -786,16 +786,18 @@ async def test_patch_layer_controls_addresses_real_layer(client: HypercolorClien
     )
 
     assert route.called
-    assert json.loads(route.calls[0].request.content) == {
-        "values": {
-            "speed": {"kind": "int", "value": 80},
-            "tint": {
-                "kind": "color_linear",
-                "value": {"r": 128 / 255, "g": 64 / 255, "b": 1.0, "a": 1.0},
-            },
-        },
-        "clear_bindings": ["speed"],
-    }
+    request = json.loads(route.calls[0].request.content)
+    assert request["values"]["speed"] == {"kind": "int", "value": 80}
+    assert request["clear_bindings"] == ["speed"]
+    assert request["values"]["tint"]["kind"] == "color_linear"
+    assert request["values"]["tint"]["value"] == pytest.approx(
+        {
+            "r": 0.21586050011389926,
+            "g": 0.05126945837404324,
+            "b": 1.0,
+            "a": 1.0,
+        }
+    )
     assert str(result.layers[0].id) == layer
 
 
@@ -918,6 +920,14 @@ async def test_invoke_control_action_converts_input(client: HypercolorClient) ->
             "label": "keyboard",
             "options": {"force": True},
             "color": {"kind": "color_rgb", "value": [128, 255, 234]},
+            "mac": {"kind": "mac", "value": "aabb.ccdd.eeff"},
+            "nested": {
+                "kind": "map",
+                "value": {
+                    "attempt": 3,
+                    "flags": {"kind": "list", "value": [True, "safe"]},
+                },
+            },
         },
     )
 
@@ -935,10 +945,80 @@ async def test_invoke_control_action_converts_input(client: HypercolorClient) ->
                 "kind": "color_rgb",
                 "value": {"r": 128, "g": 255, "b": 234},
             },
+            "mac": {"kind": "mac", "value": "aabb.ccdd.eeff"},
+            "nested": {
+                "kind": "map",
+                "value": {
+                    "attempt": {"kind": "int", "value": 3},
+                    "flags": {
+                        "kind": "list",
+                        "value": [
+                            {"kind": "bool", "value": True},
+                            {"kind": "text", "value": "safe"},
+                        ],
+                    },
+                },
+            },
         }
     }
     assert result.status == "completed"
     assert result.result == {"kind": "text", "value": "Identifying keyboard"}
+
+
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        {"kind": "bool"},
+        {"kind": "null", "value": None},
+        {"kind": "text", "value": "ok", "extra": True},
+        {"kind": "future", "value": 1},
+        {"kind": "color_rgb", "value": {"r": 1, "g": 2}},
+        {"kind": "map", "value": {"nested": {"kind": "int"}}},
+    ],
+)
+@pytest.mark.asyncio
+async def test_set_control_values_rejects_malformed_canonical_envelopes(
+    client: HypercolorClient,
+    malformed: object,
+) -> None:
+    with pytest.raises((TypeError, ValueError)):
+        await client.set_control_values("device:keyboard", {"bad": malformed})
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_bare_lists_remain_lists_in_action_input(client: HypercolorClient) -> None:
+    route = respx.post(
+        "http://hyperia.test:9420/api/v1/control-surfaces/device%3Akeyboard/actions/test"
+    ).mock(
+        return_value=httpx.Response(
+            200,
+            content=_envelope(
+                {
+                    "surface_id": "device:keyboard",
+                    "action_id": "test",
+                    "status": "completed",
+                    "revision": 5,
+                }
+            ),
+        )
+    )
+
+    await client.invoke_control_action(
+        "device:keyboard",
+        "test",
+        {"channels": [0.1, 0.2, 0.3, 1.0]},
+    )
+
+    assert json.loads(route.calls[0].request.content)["input"]["channels"] == {
+        "kind": "list",
+        "value": [
+            {"kind": "float", "value": 0.1},
+            {"kind": "float", "value": 0.2},
+            {"kind": "float", "value": 0.3},
+            {"kind": "float", "value": 1.0},
+        ],
+    }
 
 
 @respx.mock

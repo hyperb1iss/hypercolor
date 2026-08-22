@@ -348,6 +348,37 @@ fn retired_value_block_tags(path: &str, source: &str) -> Vec<String> {
     findings
 }
 
+fn python_mapper_violations(source: &str) -> Vec<&'static str> {
+    let compact_source = compact(source);
+    let mut violations = Vec::new();
+    for (name, marker) in [
+        (
+            "exact tagged envelope keys",
+            "_require_exact_keys(value,expected_keys,kind)",
+        ),
+        (
+            "recursive explicit list admission",
+            "[_canonical_control_value(item)foriteminpayload]",
+        ),
+        (
+            "recursive explicit map admission",
+            "{key:_canonical_control_value(item)forkey,iteminpayload.items()}",
+        ),
+        ("linear sRGB conversion", "_srgb_to_linear(int(color"),
+    ] {
+        if !compact_source.contains(marker) {
+            violations.push(name);
+        }
+    }
+    if compact_source.contains("result={str(key):itemforkey,iteminvalue.items()}") {
+        violations.push("permissive tagged envelope copying");
+    }
+    if compact_source.contains("len(value)==4andall(isinstance(channel,int|float)") {
+        violations.push("bare four-number color guessing");
+    }
+    violations
+}
+
 #[test]
 fn control_value_has_one_definition_and_no_legacy_projection_paths() {
     let sources = rust_sources();
@@ -411,6 +442,9 @@ fn control_value_has_one_definition_and_no_legacy_projection_paths() {
             findings
         })
         .collect::<Vec<_>>();
+    let python_client =
+        std::fs::read_to_string(workspace_root().join("python/src/hypercolor/client.py"))
+            .expect("Python client source reads");
     let retired_typescript_tags = typescript_sources()
         .into_iter()
         .filter_map(|(path, source)| {
@@ -449,6 +483,11 @@ fn control_value_has_one_definition_and_no_legacy_projection_paths() {
     assert!(
         retired_python_tags.is_empty(),
         "retired Python control-value tags remain in {retired_python_tags:#?}"
+    );
+    let python_mapper_violations = python_mapper_violations(&python_client);
+    assert!(
+        python_mapper_violations.is_empty(),
+        "Python control mapper lost canonical authority fences: {python_mapper_violations:#?}"
     );
     assert!(
         retired_typescript_tags.is_empty(),
@@ -524,4 +563,13 @@ fn authority_fence_detects_renamed_mirrors_and_manual_parsers() {
         ),
         ["fixture.rs: values uses string"]
     );
+
+    let permissive_python_mapper = r#"
+        result = {str(key): item for key, item in value.items()}
+        if len(value) == 4 and all(isinstance(channel, int | float) for channel in value):
+            return {"kind": "color_linear", "value": value}
+    "#;
+    let mapper_violations = python_mapper_violations(permissive_python_mapper);
+    assert!(mapper_violations.contains(&"permissive tagged envelope copying"));
+    assert!(mapper_violations.contains(&"bare four-number color guessing"));
 }
