@@ -248,9 +248,14 @@ cleanup_locks() {
 prune_stale_turbojpeg_cmake_cache() {
   [ -d "$TARGET_DIR" ] || return 0
 
-  local cache_path stale_root
+  local cache_path cached_compiler expected_compiler stale_root
+  expected_compiler="${CC:-}"
   while IFS= read -r -d '' cache_path; do
-    if grep -Eq '^(CMAKE_INSTALL_PREFIX:PATH=/opt/libjpeg-turbo|ENABLE_SHARED:BOOL=ON|REQUIRE_SIMD:BOOL=OFF)$' "$cache_path"; then
+    cached_compiler="$(sed -nE 's/^CMAKE_C_COMPILER:[^=]+=(.*)$/\1/p' "$cache_path" | head -n 1)"
+    if grep -Eq '^(CMAKE_INSTALL_PREFIX:PATH=/opt/libjpeg-turbo|ENABLE_SHARED:BOOL=ON|REQUIRE_SIMD:BOOL=OFF)$' "$cache_path" \
+      || { [ -n "$expected_compiler" ] \
+        && [ "$cached_compiler" != "$expected_compiler" ] \
+        && [[ "$cached_compiler" =~ ^/usr/bin/(cc|gcc|clang)$ ]]; }; then
       stale_root="${cache_path%/out/build/CMakeCache.txt}"
       echo "[cargo-cache] pruning stale turbojpeg CMake cache: $stale_root"
       rm -rf "$stale_root"
@@ -602,6 +607,8 @@ EOF
   export CXX="${CXX:-$TOOLCHAIN_DIR/cxx}"
   echo "[cargo-cache] CC/CXX routed through $COMPILER_CACHE_NAME wrappers"
 fi
+
+prune_stale_turbojpeg_cmake_cache
 
 # Patch glslopt's bundled C11 thread emulation to be compatible with newer glibc.
 # glibc 2.39+ with _GNU_SOURCE exposes once_flag/call_once in <stdlib.h>,
