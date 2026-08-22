@@ -1463,6 +1463,45 @@ fn adjust_controls_schema_matches_canonical_value_boundaries() {
     }
 }
 
+#[test]
+fn gradient_order_remains_a_semantic_admission_invariant() {
+    let tools = build_tool_definitions();
+    let adjust = tools
+        .iter()
+        .find(|tool| tool.name == "adjust_controls")
+        .expect("adjust_controls should be registered");
+    let validator = jsonschema::options()
+        .should_validate_formats(true)
+        .build(&adjust.input_schema)
+        .expect("adjust_controls schema should compile");
+    let descending = json!({
+        "kind": "gradient",
+        "value": [
+            { "position": 0.8, "color": [1.0, 0.0, 0.0, 1.0] },
+            { "position": 0.2, "color": [0.0, 0.0, 1.0, 1.0] }
+        ]
+    });
+    let input = json!({
+        "zone": "primary",
+        "layer": "layer-1",
+        "values": { "palette": descending.clone() }
+    });
+
+    assert!(
+        validator.is_valid(&input),
+        "JSON Schema cannot express ordering across adjacent array items"
+    );
+    let error = serde_json::from_value::<ControlValue>(descending)
+        .expect_err("canonical admission must reject descending gradient stops");
+    assert!(error.to_string().contains("nondecreasing order"));
+    assert!(
+        adjust.input_schema.to_string().contains(
+            "JSON Schema validates each stop shape and range; canonical value admission enforces ordering"
+        ),
+        "the published schema must identify the semantic ordering boundary"
+    );
+}
+
 /// A deleted parameter is refused, not quietly dropped.
 ///
 /// `additionalProperties: false` is enforced in the dispatch path

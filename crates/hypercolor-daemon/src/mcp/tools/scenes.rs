@@ -16,6 +16,7 @@ use crate::mcp::results::{
 use crate::mcp::selector::SelectorCandidate;
 use hypercolor_types::api::scene::{PatchControlsRequest, SceneDocument};
 use hypercolor_types::api::scenes::ActivatedSceneRef;
+use hypercolor_types::control::control_value_json_schema;
 use hypercolor_types::scene::TransitionSpec;
 use hypercolor_types::scene::ZoneRole;
 use hypercolor_types::scene::{SceneKind, SceneMutationMode};
@@ -136,7 +137,7 @@ pub(super) fn build_clear_zone() -> ToolDefinition {
 }
 
 pub(super) fn build_adjust_controls() -> ToolDefinition {
-    let control_value_schema = canonical_control_value_schema();
+    let control_value_schema = control_value_json_schema();
     ToolDefinition {
         name: "adjust_controls".into(),
         title: "Adjust Layer Controls".into(),
@@ -176,132 +177,6 @@ pub(super) fn build_adjust_controls() -> ToolDefinition {
         destructive: false,
         idempotent: true,
     }
-}
-
-fn canonical_control_value_schema() -> Value {
-    fn unit(kind: &str) -> Value {
-        json!({
-            "type": "object",
-            "properties": { "kind": { "const": kind } },
-            "required": ["kind"],
-            "additionalProperties": false
-        })
-    }
-
-    fn tagged(kind: &str, value: Value) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "kind": { "const": kind },
-                "value": value
-            },
-            "required": ["kind", "value"],
-            "additionalProperties": false
-        })
-    }
-
-    fn channels(names: &[&str], channel: Value) -> Value {
-        let properties = names
-            .iter()
-            .map(|name| ((*name).to_owned(), channel.clone()))
-            .collect::<serde_json::Map<_, _>>();
-        json!({
-            "type": "object",
-            "properties": properties,
-            "required": names,
-            "additionalProperties": false
-        })
-    }
-
-    let recursive = json!({ "$ref": "#/$defs/controlValue" });
-    let byte = json!({ "type": "integer", "minimum": 0, "maximum": 255 });
-    let number = json!({ "type": "number" });
-    let f32_number = json!({
-        "type": "number",
-        "minimum": -f64::from(f32::MAX),
-        "maximum": f64::from(f32::MAX)
-    });
-    let normalized_channel = json!({ "type": "number", "minimum": 0.0, "maximum": 1.0 });
-    let variants = vec![
-        unit("null"),
-        tagged("bool", json!({ "type": "boolean" })),
-        tagged(
-            "int",
-            json!({
-                "type": "integer",
-                "minimum": i64::MIN,
-                "maximum": i64::MAX
-            }),
-        ),
-        tagged("float", number.clone()),
-        tagged("text", json!({ "type": "string" })),
-        tagged("secret_ref", json!({ "type": "string" })),
-        tagged(
-            "ip",
-            json!({
-                "type": "string",
-                "anyOf": [
-                    { "format": "ipv4" },
-                    { "format": "ipv6" }
-                ]
-            }),
-        ),
-        tagged(
-            "mac",
-            json!({
-                "type": "string",
-                "pattern": "^(?:[0-9A-Fa-f]{12}|(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}|(?:[0-9A-Fa-f]{2}-){5}[0-9A-Fa-f]{2}|(?:[0-9A-Fa-f]{4}\\.){2}[0-9A-Fa-f]{4})$"
-            }),
-        ),
-        tagged(
-            "duration",
-            json!({ "type": "integer", "minimum": 0, "maximum": u64::MAX }),
-        ),
-        tagged("color_rgb", channels(&["r", "g", "b"], byte.clone())),
-        tagged("color_rgba", channels(&["r", "g", "b", "a"], byte)),
-        tagged(
-            "color_linear",
-            channels(&["r", "g", "b", "a"], f32_number.clone()),
-        ),
-        tagged(
-            "gradient",
-            json!({
-                "type": "array",
-                "minItems": 2,
-                "maxItems": 8,
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "position": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
-                        "color": {
-                            "type": "array",
-                            "items": normalized_channel,
-                            "minItems": 4,
-                            "maxItems": 4
-                        }
-                    },
-                    "required": ["position", "color"],
-                    "additionalProperties": false
-                }
-            }),
-        ),
-        tagged("rect", channels(&["x", "y", "width", "height"], f32_number)),
-        tagged("enum", json!({ "type": "string" })),
-        tagged(
-            "flags",
-            json!({ "type": "array", "items": { "type": "string" } }),
-        ),
-        tagged(
-            "list",
-            json!({ "type": "array", "items": recursive.clone() }),
-        ),
-        tagged(
-            "map",
-            json!({ "type": "object", "additionalProperties": recursive }),
-        ),
-        unit("unknown"),
-    ];
-    json!({ "oneOf": variants })
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────
