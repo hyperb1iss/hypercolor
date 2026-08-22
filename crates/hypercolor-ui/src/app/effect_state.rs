@@ -188,13 +188,15 @@ pub(super) fn apply_active_effect_snapshot(ctx: &EffectsContext, active: api::Pr
     // restore, or it's a follow-up after user modification. In both
     // cases, capture whatever the daemon just confirmed so switching
     // away and coming back lands us in the same place.
-    store.save(
+    if let Err(error) = store.save(
         id,
         EffectPreferences {
             preset_id: active_preset_id,
             control_values,
         },
-    );
+    ) {
+        log::error!("failed to persist active effect preferences: {error}");
+    }
 }
 
 /// Restores a remembered preset and its exact derived control snapshot.
@@ -227,14 +229,16 @@ fn restore_effect_preferences(ctx: EffectsContext, effect_id: String, prefs: Eff
             }
         }
 
-        if prefs.preset_id != resolved_preset_id {
-            ctx.preferences.save(
+        if prefs.preset_id != resolved_preset_id
+            && let Err(error) = ctx.preferences.save(
                 effect_id.clone(),
                 EffectPreferences {
                     preset_id: resolved_preset_id,
                     control_values: prefs.control_values,
                 },
-            );
+            )
+        {
+            log::error!("failed to persist repaired effect preferences: {error}");
         }
 
         // Surface the restored daemon state in the UI. This re-enters

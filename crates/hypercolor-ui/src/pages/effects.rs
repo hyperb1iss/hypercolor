@@ -208,14 +208,17 @@ pub fn EffectsPage() -> impl IntoView {
                             && same_effect
                             && let Some(store) = preferences_store
                             && let Some(effect_id) = active_effect_id
-                        {
-                            store.save(
+                            && let Err(error) = store.save(
                                 effect_id,
                                 crate::preferences::EffectPreferences {
                                     preset_id: fx.active_preset_id.get_untracked(),
                                     control_values: fx.active_control_values.get_untracked(),
                                 },
-                            );
+                            )
+                        {
+                            toasts::toast_error(&format!(
+                                "Controls applied, but preferences were not saved: {error}"
+                            ));
                         }
                     }
                     Err(error) => {

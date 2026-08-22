@@ -9,10 +9,9 @@
 //!
 //! The store is provided as a Leptos context in [`crate::app`] and
 //! persisted to `localStorage` as a single JSON blob under
-//! [`STORAGE_KEY`] on every mutation. We pay a whole-map serialize on
-//! each write to keep the moving parts minimal — presets are rarely
-//! flipped and control values are already debounced in
-//! `effects::flush_control_updates`, so the write rate is not a concern.
+//! [`STORAGE_KEY`] on every mutation. Invalid persisted values block
+//! writes and surface their effect and control identifiers so a later
+//! save can never erase data that failed to load.
 
 use std::collections::HashMap;
 
@@ -43,17 +42,29 @@ pub struct EffectPreferences {
 #[derive(Clone, Copy)]
 pub struct PreferencesStore {
     entries: RwSignal<HashMap<String, EffectPreferences>>,
+    load_error: RwSignal<Option<String>>,
 }
 
 impl PreferencesStore {
-    /// Creates a new store seeded from `localStorage`. Corrupt or missing
-    /// data is silently treated as "no prior preferences" — we'd rather
-    /// the UI start clean than crash on malformed state from an older
-    /// build.
+    /// Creates a new store seeded from `localStorage`.
+    ///
+    /// Missing state starts empty. Malformed state remains untouched and
+    /// blocks later writes so a valid subset never replaces data that failed
+    /// canonical admission.
     pub fn new() -> Self {
-        let initial = load_from_storage().unwrap_or_default();
+        let (initial, load_error) = match load_from_storage() {
+            Ok(initial) => (initial, None),
+            Err(error) => {
+                log::error!("refusing malformed effect preferences: {error}");
+                crate::toasts::toast_error(&format!(
+                    "Saved effect preferences are invalid at {error}. Storage was left untouched."
+                ));
+                (HashMap::new(), Some(error))
+            }
+        };
         Self {
             entries: RwSignal::new(initial),
+            load_error: RwSignal::new(load_error),
         }
     }
 
@@ -68,20 +79,30 @@ impl PreferencesStore {
     /// Overwrite the stored preferences for an effect. Used by the
     /// snapshot save path after the daemon confirms either a preset
     /// apply or a control-value change.
-    pub fn save(&self, effect_id: String, prefs: EffectPreferences) {
-        self.entries.update(|map| {
-            map.insert(effect_id, prefs);
-        });
-        self.persist();
+    ///
+    /// # Errors
+    ///
+    /// Returns the original load failure while malformed persisted data is
+    /// present, or the serialization/storage error for this write.
+    pub fn save(&self, effect_id: String, prefs: EffectPreferences) -> Result<(), String> {
+        if let Some(error) = self.load_error.get_untracked() {
+            return Err(format!("persisted preferences are invalid at {error}"));
+        }
+
+        let mut next = self.entries.get_untracked();
+        next.insert(effect_id, prefs);
+        let json = serde_json::to_string(&next)
+            .map_err(|error| format!("preferences serialization failed: {error}"))?;
+        storage::try_set(STORAGE_KEY, &json)
+            .map_err(|error| format!("localStorage write failed: {error:?}"))?;
+        self.entries.set(next);
+        Ok(())
     }
 
-    fn persist(&self) {
-        let json = self
-            .entries
-            .with_untracked(|map| serde_json::to_string(map).ok());
-        if let Some(json) = json {
-            storage::set(STORAGE_KEY, &json);
-        }
+    /// Return the persisted-data error that disabled this store.
+    #[must_use]
+    pub fn load_error(&self) -> Option<String> {
+        self.load_error.get_untracked()
     }
 }
 
@@ -91,7 +112,124 @@ impl Default for PreferencesStore {
     }
 }
 
-fn load_from_storage() -> Option<HashMap<String, EffectPreferences>> {
-    let raw = storage::get(STORAGE_KEY)?;
-    serde_json::from_str(&raw).ok()
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawEffectPreferences {
+    #[serde(default)]
+    preset_id: Option<String>,
+    #[serde(default)]
+    control_values: serde_json::Map<String, serde_json::Value>,
+}
+
+fn load_from_storage() -> Result<HashMap<String, EffectPreferences>, String> {
+    let Some(raw) = storage::get(STORAGE_KEY) else {
+        return Ok(HashMap::new());
+    };
+    decode_preferences(&raw)
+}
+
+fn decode_preferences(raw: &str) -> Result<HashMap<String, EffectPreferences>, String> {
+    let document: serde_json::Value =
+        serde_json::from_str(raw).map_err(|error| format!("preferences document: {error}"))?;
+    let entries = document
+        .as_object()
+        .ok_or_else(|| "preferences document: expected an object".to_owned())?;
+
+    entries
+        .iter()
+        .map(|(effect_id, value)| {
+            let raw: RawEffectPreferences = serde_json::from_value(value.clone())
+                .map_err(|error| format!("effect '{effect_id}': {error}"))?;
+            let control_values = raw
+                .control_values
+                .into_iter()
+                .map(|(control_id, value)| {
+                    serde_json::from_value(value)
+                        .map_err(|error| {
+                            format!("effect '{effect_id}' control '{control_id}': {error}")
+                        })
+                        .map(|value| (control_id, value))
+                })
+                .collect::<Result<_, _>>()?;
+            Ok((
+                effect_id.clone(),
+                EffectPreferences {
+                    preset_id: raw.preset_id,
+                    control_values,
+                },
+            ))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use hypercolor_types::control::ControlValue;
+    use leptos::prelude::Owner;
+
+    use super::{EffectPreferences, PreferencesStore, STORAGE_KEY, decode_preferences};
+    use crate::storage;
+
+    #[test]
+    fn persisted_preferences_name_the_invalid_effect_and_control() {
+        let error = decode_preferences(
+            r#"{
+                "rain": {
+                    "control_values": {
+                        "speed": {"kind": "null", "value": null}
+                    }
+                }
+            }"#,
+        )
+        .expect_err("invalid canonical values must refuse the document");
+
+        assert!(error.contains("effect 'rain' control 'speed'"));
+        assert!(error.contains("null must not contain a value"));
+    }
+
+    #[test]
+    fn persisted_preferences_restore_valid_canonical_values() {
+        let preferences = decode_preferences(
+            r#"{
+                "rain": {
+                    "preset_id": "preset",
+                    "control_values": {
+                        "speed": {"kind": "float", "value": 0.75}
+                    }
+                }
+            }"#,
+        )
+        .expect("valid preferences should load");
+
+        assert_eq!(preferences["rain"].preset_id.as_deref(), Some("preset"));
+        assert_eq!(
+            preferences["rain"].control_values["speed"],
+            ControlValue::Float(0.75)
+        );
+    }
+
+    #[test]
+    fn malformed_preferences_block_writes_without_erasing_storage() {
+        let raw = r#"{
+            "rain": {
+                "control_values": {
+                    "speed": {"kind": "null", "value": null}
+                }
+            }
+        }"#;
+        assert!(storage::set(STORAGE_KEY, raw));
+
+        Owner::new().with(|| {
+            let store = PreferencesStore::new();
+            assert!(store.load_error().is_some());
+            assert!(
+                store
+                    .save("rain".to_owned(), EffectPreferences::default())
+                    .is_err()
+            );
+            assert_eq!(storage::get(STORAGE_KEY).as_deref(), Some(raw));
+        });
+
+        assert!(storage::remove(STORAGE_KEY));
+    }
 }
