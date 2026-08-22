@@ -714,10 +714,10 @@ async fn activation_applies_a_named_layout_without_reentering_its_guard() {
     .expect("layout activation should succeed");
 
     assert!(activated.layout.applied);
-    assert_eq!(activated.layout.layout_id, Some(layout_id));
+    assert_eq!(activated.layout.layout_id, Some(layout_id.clone()));
     assert_eq!(
         state.spatial_engine.snapshot().layout().id,
-        "activation-layout"
+        layout_id.as_str()
     );
 }
 

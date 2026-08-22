@@ -187,10 +187,31 @@ fn layout_transport_uses_the_layout_domain_authority() {
     let layout_domain = source("domain/layout.rs");
     assert!(!layout_domain.contains("catalog_for_test"));
     assert!(!layout_domain.contains("catalog_path_for_test"));
+    assert!(!layout_domain.contains("OnceLock"));
+    assert!(!layout_domain.contains("Weak<DaemonDriverHost>"));
+    assert!(!layout_domain.contains("clippy::too_many_lines"));
     assert!(
         layout_domain
             .contains("#[cfg(feature = \"persistence-test-hooks\")]\npub struct LayoutTestFixture")
     );
+
+    let auto_layout = source("domain/layout/auto_layout.rs");
+    assert!(auto_layout.contains("pub(super) fn append_auto_layout_zones_for_device"));
+    assert!(auto_layout.contains("pub(super) fn reconcile_auto_layout_zones_for_device"));
+    assert!(!auto_layout.contains("\npub fn append_auto_layout_zones_for_device"));
+    assert!(!auto_layout.contains("\npub fn reconcile_auto_layout_zones_for_device"));
+
+    let scene_transactions = source("scene_transactions.rs");
+    assert!(!scene_transactions.contains("pub async fn apply_layout_update"));
+    assert!(!scene_transactions.contains("pub async fn apply_prepared_layout_update_under_guard"));
+
+    let scene = source("domain/scene.rs");
+    let activation = scene
+        .split_once("pub async fn activate_scene")
+        .and_then(|(_, tail)| tail.split_once("async fn apply_activation_layout"))
+        .map(|(workflow, _)| workflow)
+        .expect("scene activation workflow should exist");
+    assert_eq!(activation.matches("sync_runtime_connectivity").count(), 1);
 
     let adapter = source("api/layouts.rs");
     for bypass in [

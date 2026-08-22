@@ -574,7 +574,9 @@ pub async fn assign_members(
 
     let zone = zone_in_candidate(&mutation, command.zone_id)?;
     let written = finish_zone_mutation(ctx, mutation, scene_id, zone).await?;
-    ctx.layout.sync_connectivity().await;
+    ctx.layout
+        .sync_runtime_connectivity(ctx.scene.layout_runtime())
+        .await;
     reconcile_member_exclusions(ctx, scene_id, &previous_zones).await;
     Ok(written)
 }
@@ -614,7 +616,9 @@ pub async fn unassign_member(
 
     let zone = zone_in_candidate(&mutation, zone_id)?;
     let written = finish_zone_mutation(ctx, mutation, scene_id, zone).await?;
-    ctx.layout.sync_connectivity().await;
+    ctx.layout
+        .sync_runtime_connectivity(ctx.scene.layout_runtime())
+        .await;
     reconcile_member_exclusions(ctx, scene_id, &previous_zones).await;
     Ok(written)
 }
@@ -941,7 +945,10 @@ async fn mint_missing_outputs(
     ctx: &SceneTreeContext,
     request: &AssignMembersRequest,
 ) -> Result<Vec<Output>, DomainError> {
-    Ok(ctx.layout.layout_outputs_for(&request.device_id).await)
+    Ok(ctx
+        .layout
+        .layout_outputs_for(ctx.scene.layout_runtime(), &request.device_id)
+        .await)
 }
 
 /// Rebuild a zone's stored layout from the compact placement contract.

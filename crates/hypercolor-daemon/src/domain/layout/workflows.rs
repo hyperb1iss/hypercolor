@@ -10,13 +10,11 @@ use hypercolor_types::identity::LayoutId;
 use hypercolor_types::spatial::{SamplingMode, SpatialLayout};
 
 use crate::domain::DomainError;
-use crate::scene_transactions::{
-    LayoutUpdateError, PreparedLayoutUpdate, apply_prepared_layout_update_under_guard,
-};
+use crate::scene_transactions::{LayoutUpdateError, PreparedLayoutUpdate};
 
 use super::{
     LayoutContext, LayoutMutationResult, LayoutMutationTestOperation, LayoutMutationTestPoint,
-    LayoutPersistenceStatus, await_layout_workflow, empty_default_layout,
+    LayoutPersistenceStatus, LayoutRuntime, await_layout_workflow, empty_default_layout,
     layout_store_persistence_error, layout_summary, layout_update_domain_error,
     normalize_layout_name, resolve_layout_key, validate_canvas_dimensions,
     validate_layout_sampling_radii, validate_output_sampling_radii,
@@ -26,7 +24,7 @@ impl LayoutContext {
     /// List stored layouts in stable display order with bounded pagination.
     pub async fn list(&self, limit: usize, offset: usize, active_only: bool) -> LayoutListResponse {
         let active_layout_id = self.current().id;
-        let layouts = self.layouts.read().await;
+        let layouts = self.catalog.entries().read().await;
         let mut items: Vec<LayoutSummary> = layouts
             .values()
             .map(|layout| layout_summary(layout, layout.id == active_layout_id))
@@ -55,7 +53,7 @@ impl LayoutContext {
     ///
     /// Returns not-found or conflict when the selector has no unique match.
     pub async fn resolve(&self, id_or_name: &str) -> Result<SpatialLayout, DomainError> {
-        let layouts = self.layouts.read().await;
+        let layouts = self.catalog.entries().read().await;
         let key = resolve_layout_key(&layouts, id_or_name)?;
         Ok(layouts
             .get(&key)
@@ -64,13 +62,18 @@ impl LayoutContext {
     }
 
     pub(crate) async fn get(&self, layout_id: &LayoutId) -> Option<SpatialLayout> {
-        self.layouts.read().await.get(layout_id.as_str()).cloned()
+        self.catalog
+            .entries()
+            .read()
+            .await
+            .get(layout_id.as_str())
+            .cloned()
     }
 
     /// Capture the currently published layout.
     #[must_use]
     pub fn current(&self) -> SpatialLayout {
-        self.spatial.layout().as_ref().clone()
+        self.publication.current()
     }
 
     pub(crate) fn active_layout_id(&self) -> Result<LayoutId, DomainError> {
@@ -110,7 +113,7 @@ impl LayoutContext {
         let canvas_height = body.canvas_height.unwrap_or(current.canvas_height);
         validate_canvas_dimensions(canvas_width, canvas_height)?;
 
-        let mut layouts = self.layouts.write().await;
+        let mut layouts = self.catalog.entries().write().await;
         if layouts
             .values()
             .any(|layout| layout.name.eq_ignore_ascii_case(&normalized_name))
@@ -144,10 +147,11 @@ impl LayoutContext {
         )
         .await;
 
-        if let Err(error) = self.persist_catalog().await {
-            self.layouts.write().await.remove(&id);
+        if let Err(error) = self.catalog.persist().await {
+            self.catalog.entries().write().await.remove(&id);
             let rollback = self
-                .persist_catalog()
+                .catalog
+                .persist()
                 .await
                 .err()
                 .map(|error| format!("layout store rollback failed: {error}"));
@@ -194,7 +198,7 @@ impl LayoutContext {
         .await;
         let guard = self.acquire_update_guard().await;
         let active_layout_id = self.current().id;
-        let mut layouts = self.layouts.write().await;
+        let mut layouts = self.catalog.entries().write().await;
         let key = resolve_layout_key(&layouts, selector)?;
         let existing = layouts
             .get(&key)
@@ -240,13 +244,15 @@ impl LayoutContext {
         )
         .await;
 
-        if let Err(error) = self.persist_catalog().await {
-            self.layouts
+        if let Err(error) = self.catalog.persist().await {
+            self.catalog
+                .entries()
                 .write()
                 .await
                 .insert(layout_id.clone(), previous_layout);
             let rollback = self
-                .persist_catalog()
+                .catalog
+                .persist()
                 .await
                 .err()
                 .map(|error| format!("layout store rollback failed: {error}"));
@@ -267,10 +273,11 @@ impl LayoutContext {
     pub(crate) async fn apply(
         &self,
         selector: String,
+        runtime: LayoutRuntime,
     ) -> Result<LayoutMutationResult<ApplyLayoutResponse>, DomainError> {
         let context = self.clone();
         await_layout_workflow(tokio::spawn(async move {
-            context.apply_workflow(&selector).await
+            context.apply_workflow(&selector, &runtime).await
         }))
         .await
     }
@@ -278,6 +285,7 @@ impl LayoutContext {
     async fn apply_workflow(
         &self,
         selector: &str,
+        runtime: &LayoutRuntime,
     ) -> Result<LayoutMutationResult<ApplyLayoutResponse>, DomainError> {
         self.wait_test_hook(
             LayoutMutationTestPoint::BeforeGuard,
@@ -287,11 +295,11 @@ impl LayoutContext {
         .await;
         let guard = self.acquire_update_guard().await;
         let layout = self.resolve(selector).await?;
-        self.admit_persisted_update_under_guard(&guard, layout.clone())
+        self.admit_persisted_update_under_guard(&guard, layout.clone(), runtime)
             .await
             .map_err(layout_update_domain_error)?;
         drop(guard);
-        let persistence = self.converge_persisted_update().await;
+        let persistence = self.converge_persisted_update(runtime).await;
         Ok(LayoutMutationResult {
             data: ApplyLayoutResponse {
                 layout,
@@ -302,13 +310,14 @@ impl LayoutContext {
         })
     }
 
-    pub async fn preview(
+    pub(crate) async fn preview(
         &self,
         layout: SpatialLayout,
+        runtime: LayoutRuntime,
     ) -> Result<PreviewLayoutResponse, DomainError> {
         let context = self.clone();
         await_layout_workflow(tokio::spawn(async move {
-            context.preview_workflow(layout).await
+            context.preview_workflow(layout, &runtime).await
         }))
         .await
     }
@@ -316,6 +325,7 @@ impl LayoutContext {
     async fn preview_workflow(
         &self,
         layout: SpatialLayout,
+        runtime: &LayoutRuntime,
     ) -> Result<PreviewLayoutResponse, DomainError> {
         validate_canvas_dimensions(layout.canvas_width, layout.canvas_height)?;
         validate_layout_sampling_radii(&layout).map_err(DomainError::validation)?;
@@ -330,15 +340,10 @@ impl LayoutContext {
         let prepared = PreparedLayoutUpdate::try_new(layout)
             .map_err(LayoutUpdateError::from)
             .map_err(layout_update_domain_error)?;
-        apply_prepared_layout_update_under_guard(
-            self.spatial.clone(),
-            self.scenes.clone(),
-            self.transactions.clone(),
-            &guard,
-            prepared,
-        )
-        .await
-        .map_err(layout_update_domain_error)?;
+        self.publication
+            .apply_prepared_under_guard(&guard, prepared)
+            .await
+            .map_err(layout_update_domain_error)?;
         drop(guard);
         self.wait_test_hook(
             LayoutMutationTestPoint::AfterRendererMutation,
@@ -346,7 +351,8 @@ impl LayoutContext {
             &reference,
         )
         .await;
-        self.sync_connectivity().await;
+        self.sync_connectivity(runtime.discovery().clone(), None)
+            .await;
         self.wait_test_hook(
             LayoutMutationTestPoint::AfterWorkflow,
             LayoutMutationTestOperation::Preview,
@@ -359,10 +365,11 @@ impl LayoutContext {
     pub(crate) async fn delete(
         &self,
         selector: String,
+        runtime: LayoutRuntime,
     ) -> Result<LayoutMutationResult<DeleteLayoutResponse>, DomainError> {
         let context = self.clone();
         await_layout_workflow(tokio::spawn(async move {
-            context.delete_workflow(&selector).await
+            context.delete_workflow(&selector, &runtime).await
         }))
         .await
     }
@@ -370,6 +377,7 @@ impl LayoutContext {
     async fn delete_workflow(
         &self,
         selector: &str,
+        runtime: &LayoutRuntime,
     ) -> Result<LayoutMutationResult<DeleteLayoutResponse>, DomainError> {
         self.wait_test_hook(
             LayoutMutationTestPoint::BeforeGuard,
@@ -379,7 +387,7 @@ impl LayoutContext {
         .await;
         let guard = self.acquire_update_guard().await;
         let active_layout = self.current();
-        let mut layouts = self.layouts.write().await;
+        let mut layouts = self.catalog.entries().write().await;
         let key = resolve_layout_key(&layouts, selector)?;
         let removed_layout = layouts
             .remove(&key)
@@ -408,10 +416,11 @@ impl LayoutContext {
         let active_layout_changed = next_active_layout.is_some();
         if let Some(layout) = next_active_layout
             && let Err(error) = self
-                .admit_persisted_update_under_guard(&guard, layout)
+                .admit_persisted_update_under_guard(&guard, layout, runtime)
                 .await
         {
-            self.layouts
+            self.catalog
+                .entries()
                 .write()
                 .await
                 .insert(key.clone(), removed_layout);
@@ -419,25 +428,26 @@ impl LayoutContext {
             return Err(layout_update_domain_error(error));
         }
 
-        if let Err(error) = self.persist_catalog().await {
-            self.layouts
+        if let Err(error) = self.catalog.persist().await {
+            self.catalog
+                .entries()
                 .write()
                 .await
                 .insert(key.clone(), removed_layout);
             let mut rollback_errors = Vec::new();
-            if let Err(rollback_error) = self.persist_catalog().await {
+            if let Err(rollback_error) = self.catalog.persist().await {
                 rollback_errors.push(format!("layout store rollback failed: {rollback_error}"));
             }
             if active_layout_changed
                 && let Err(rollback_error) = self
-                    .admit_persisted_update_under_guard(&guard, active_layout)
+                    .admit_persisted_update_under_guard(&guard, active_layout, runtime)
                     .await
             {
                 rollback_errors.push(format!("active layout rollback failed: {rollback_error}"));
             }
             drop(guard);
             if active_layout_changed
-                && self.converge_persisted_update().await == LayoutPersistenceStatus::Pending
+                && self.converge_persisted_update(runtime).await == LayoutPersistenceStatus::Pending
             {
                 rollback_errors
                     .push("active layout rollback persistence remains pending".to_owned());
@@ -452,7 +462,7 @@ impl LayoutContext {
         self.exclusions.remove_layout(&key).await;
         drop(guard);
         let persistence = if active_layout_changed {
-            self.converge_persisted_update().await
+            self.converge_persisted_update(runtime).await
         } else {
             LayoutPersistenceStatus::Synchronized
         };
@@ -489,18 +499,13 @@ impl LayoutContext {
         let prepared = PreparedLayoutUpdate::try_new(updated.clone())
             .map_err(LayoutUpdateError::from)
             .map_err(layout_update_domain_error)?;
-        apply_prepared_layout_update_under_guard(
-            self.spatial.clone(),
-            self.scenes.clone(),
-            self.transactions.clone(),
-            &guard,
-            prepared,
-        )
-        .await
-        .map_err(layout_update_domain_error)?;
+        self.publication
+            .apply_prepared_under_guard(&guard, prepared)
+            .await
+            .map_err(layout_update_domain_error)?;
 
         let persisted_layout_updated = {
-            let mut layouts = self.layouts.write().await;
+            let mut layouts = self.catalog.entries().write().await;
             if let Some(saved_layout) = layouts.get_mut(&updated.id) {
                 saved_layout.canvas_width = width;
                 saved_layout.canvas_height = height;
@@ -542,7 +547,7 @@ impl LayoutContext {
         let guard = self.acquire_update_guard().await;
         let active_layout_id = self.current().id;
         let active_layout = {
-            let mut layouts = self.layouts.write().await;
+            let mut layouts = self.catalog.entries().write().await;
             let mut updated_active = None;
             for layout in layouts.values_mut() {
                 let zone_count = layout.zones.len();
@@ -563,16 +568,12 @@ impl LayoutContext {
         .await;
         let active_layout_error = if let Some(layout) = active_layout {
             match PreparedLayoutUpdate::try_new(layout) {
-                Ok(prepared) => apply_prepared_layout_update_under_guard(
-                    self.spatial.clone(),
-                    self.scenes.clone(),
-                    self.transactions.clone(),
-                    &guard,
-                    prepared,
-                )
-                .await
-                .err()
-                .map(layout_update_domain_error),
+                Ok(prepared) => self
+                    .publication
+                    .apply_prepared_under_guard(&guard, prepared)
+                    .await
+                    .err()
+                    .map(layout_update_domain_error),
                 Err(error) => Some(layout_update_domain_error(error.into())),
             }
         } else {

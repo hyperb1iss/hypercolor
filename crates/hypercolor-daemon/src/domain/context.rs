@@ -19,7 +19,7 @@ use crate::discovery;
 use crate::domain::DomainError;
 use crate::domain::commit::SceneCommit;
 use crate::domain::effect::EffectContext;
-use crate::domain::layout::LayoutContext;
+use crate::domain::layout::{LayoutContext, LayoutRuntime};
 use crate::domain::output::OutputContext;
 use crate::domain::scene::{
     COMMIT_ATTEMPTS, MEDIA_SOFT_PRODUCER_COST_US, MediaAdmissionContext, SceneLibraryContext,
@@ -202,6 +202,7 @@ pub struct SceneContext {
     config_manager: Option<Arc<ConfigManager>>,
     render_loop: Arc<RwLock<RenderLoop>>,
     layout: LayoutContext,
+    layout_runtime: LayoutRuntime,
 }
 
 impl SceneContext {
@@ -212,6 +213,7 @@ impl SceneContext {
         config_manager: Option<Arc<ConfigManager>>,
         render_loop: Arc<RwLock<RenderLoop>>,
         layout: LayoutContext,
+        layout_runtime: LayoutRuntime,
     ) -> Self {
         Self {
             scenes,
@@ -220,6 +222,7 @@ impl SceneContext {
             config_manager,
             render_loop,
             layout,
+            layout_runtime,
         }
     }
 
@@ -277,6 +280,10 @@ impl SceneContext {
     #[must_use]
     pub const fn layout(&self) -> &LayoutContext {
         &self.layout
+    }
+
+    pub(crate) const fn layout_runtime(&self) -> &LayoutRuntime {
+        &self.layout_runtime
     }
 
     /// Resolve the current media producer policy and asset vocabulary.
@@ -369,6 +376,13 @@ impl DeviceContext {
             driver_registry,
             config_manager,
         }
+    }
+
+    pub(crate) fn layout_runtime(&self) -> LayoutRuntime {
+        LayoutRuntime::new(
+            self.driver_host.discovery_runtime(),
+            Arc::clone(&self.driver_host),
+        )
     }
 
     /// Schedule discovery after released output ownership becomes available.

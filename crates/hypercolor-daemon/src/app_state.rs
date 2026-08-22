@@ -517,7 +517,6 @@ impl AppState {
             Arc::clone(&driver_registry),
             config_manager.clone(),
         ));
-        layout.bind_driver_host(&driver_host);
         {
             let mut manager = backend_manager.try_lock().expect(
                 "default app state should register the simulator backend without contention",
@@ -544,6 +543,7 @@ impl AppState {
             config_manager.clone(),
             Arc::clone(&render_loop),
             layout.clone(),
+            devices.layout_runtime(),
         );
         let output_power_transition = Arc::new(Mutex::new(()));
         let start_time = Instant::now();

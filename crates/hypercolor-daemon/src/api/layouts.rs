@@ -70,7 +70,12 @@ pub async fn update_layout(
 }
 
 pub async fn apply_layout(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
-    match state.domains.layout.apply(id).await {
+    match state
+        .domains
+        .layout
+        .apply(id, state.domains.devices.layout_runtime())
+        .await
+    {
         Ok(result) => layout_persistence_response(result.data, result.persistence),
         Err(error) => error.into_response(),
     }
@@ -80,14 +85,24 @@ pub async fn preview_layout(
     State(state): State<Arc<AppState>>,
     Json(layout): Json<SpatialLayout>,
 ) -> Response {
-    match state.domains.layout.preview(layout).await {
+    match state
+        .domains
+        .layout
+        .preview(layout, state.domains.devices.layout_runtime())
+        .await
+    {
         Ok(response) => envelope::ok(response),
         Err(error) => error.into_response(),
     }
 }
 
 pub async fn delete_layout(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
-    match state.domains.layout.delete(id).await {
+    match state
+        .domains
+        .layout
+        .delete(id, state.domains.devices.layout_runtime())
+        .await
+    {
         Ok(result) => layout_persistence_response(result.data, result.persistence),
         Err(error) => error.into_response(),
     }

@@ -591,8 +591,6 @@ fn make_runtime_with_registry(
         Arc::clone(&driver_registry),
         config_manager,
     ));
-    layout.test_fixture().bind_driver_host(&driver_host);
-
     TestDiscoveryRuntime {
         runtime,
         driver_host,

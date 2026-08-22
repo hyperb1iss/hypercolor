@@ -24,7 +24,7 @@ pub enum LayoutTransactionRejection {
 }
 
 #[derive(Debug, Error)]
-pub enum LayoutUpdateError {
+pub(crate) enum LayoutUpdateError {
     #[error(transparent)]
     SpatialPlan(#[from] SpatialPlanError),
     #[error(transparent)]
@@ -43,7 +43,7 @@ pub enum LayoutUpdateError {
 pub struct LayoutTransactionToken(u64);
 
 #[derive(Debug, Clone)]
-pub struct PreparedLayoutUpdate {
+pub(crate) struct PreparedLayoutUpdate {
     spatial_engine: SpatialEngine,
 }
 
@@ -70,15 +70,10 @@ pub(crate) enum LayoutPersistenceOutcome {
 }
 
 impl PreparedLayoutUpdate {
-    pub fn try_new(layout: SpatialLayout) -> Result<Self, SpatialPlanError> {
+    pub(crate) fn try_new(layout: SpatialLayout) -> Result<Self, SpatialPlanError> {
         Ok(Self {
             spatial_engine: SpatialEngine::try_new(layout)?,
         })
-    }
-
-    #[must_use]
-    pub fn spatial_engine(&self) -> &SpatialEngine {
-        &self.spatial_engine
     }
 
     fn into_spatial_engine(self) -> SpatialEngine {
@@ -319,11 +314,11 @@ impl Default for SceneTransactionQueue {
     }
 }
 
-pub struct SceneActivationGuard {
+pub(crate) struct SceneActivationGuard {
     _guard: OwnedMutexGuard<()>,
 }
 
-pub struct LayoutUpdateGuard {
+pub(crate) struct LayoutUpdateGuard {
     guard: Arc<OwnedMutexGuard<()>>,
 }
 
@@ -439,13 +434,13 @@ impl SceneTransactionQueue {
         }
     }
 
-    pub async fn acquire_layout_update_guard(&self) -> LayoutUpdateGuard {
+    pub(crate) async fn acquire_layout_update_guard(&self) -> LayoutUpdateGuard {
         LayoutUpdateGuard {
             guard: Arc::new(Arc::clone(&self.layout_update_lock).lock_owned().await),
         }
     }
 
-    pub async fn acquire_scene_activation_guard(&self) -> SceneActivationGuard {
+    pub(crate) async fn acquire_scene_activation_guard(&self) -> SceneActivationGuard {
         SceneActivationGuard {
             _guard: Arc::clone(&self.scene_activation_lock).lock_owned().await,
         }
@@ -534,7 +529,7 @@ where
         .await
 }
 
-pub async fn apply_prepared_layout_update_under_guard(
+pub(crate) async fn apply_prepared_layout_update_under_guard(
     spatial_engine: SpatialService,
     scene_manager: SceneService,
     scene_transactions: SceneTransactionQueue,
@@ -649,24 +644,6 @@ where
     })
     .await
     .map_err(|error| LayoutUpdateError::Coordinator(error.to_string()))?
-}
-
-pub async fn apply_layout_update(
-    spatial_engine: &SpatialService,
-    scene_manager: &SceneService,
-    scene_transactions: &SceneTransactionQueue,
-    layout: SpatialLayout,
-) -> Result<(), LayoutUpdateError> {
-    let guard = scene_transactions.acquire_layout_update_guard().await;
-    let prepared = PreparedLayoutUpdate::try_new(layout)?;
-    apply_prepared_layout_update_under_guard(
-        spatial_engine.clone(),
-        scene_manager.clone(),
-        scene_transactions.clone(),
-        &guard,
-        prepared,
-    )
-    .await
 }
 
 #[cfg(test)]

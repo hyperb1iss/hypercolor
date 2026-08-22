@@ -1312,7 +1312,7 @@ async fn seed_stale_auto_layout_zone(state: &AppState, device_id: &DeviceId) -> 
     layout.id = format!("stale-auto-layout-{device_id}");
     "Stale Auto Layout".clone_into(&mut layout.name);
     assert_eq!(
-        hypercolor_daemon::domain::layout::append_auto_layout_zones_for_device(
+        state.domains.layout.test_fixture().append_auto_zones(
             &mut layout,
             &layout_device_id,
             &tracked.info,
@@ -1327,7 +1327,7 @@ async fn seed_stale_auto_layout_zone(state: &AppState, device_id: &DeviceId) -> 
     "Stale Auto Layout Zone".clone_into(&mut stale_zone.name);
     let mut repair_probe = layout.clone();
     assert_eq!(
-        hypercolor_daemon::domain::layout::reconcile_auto_layout_zones_for_device(
+        state.domains.layout.test_fixture().reconcile_auto_zones(
             &mut repair_probe,
             &layout_device_id,
             &tracked.info,
@@ -4077,12 +4077,10 @@ async fn set_layout_targeting_device(
         version: 1,
     };
     let publisher = tokio::spawn(run_layout_publications(Arc::clone(state), 1));
-    state
-        .domains
-        .layout
-        .preview(layout)
-        .await
-        .expect("test layout should publish");
+    let response =
+        api::layouts::preview_layout(axum::extract::State(Arc::clone(state)), axum::Json(layout))
+            .await;
+    assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
         publisher
             .await

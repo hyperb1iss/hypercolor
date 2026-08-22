@@ -622,7 +622,6 @@ impl DaemonState {
             Arc::clone(&driver_registry),
             Some(Arc::clone(&config_manager)),
         ));
-        layout.bind_driver_host(&driver_host);
         info!(
             drivers = ?driver_registry.ids(),
             "Driver module registry ready"
@@ -672,6 +671,7 @@ impl DaemonState {
             Some(Arc::clone(&config_manager)),
             Arc::clone(&render_loop),
             layout.clone(),
+            devices.layout_runtime(),
         );
         let output = OutputContext::new(
             power_state.clone(),

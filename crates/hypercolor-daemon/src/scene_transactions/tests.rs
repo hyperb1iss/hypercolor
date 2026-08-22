@@ -4,7 +4,7 @@ use std::time::Duration;
 use super::{
     LayoutActivationControl, LayoutActivationDecision, LayoutPersistenceOutcome,
     LayoutPersistencePhase, LayoutTransactionRejection, LayoutUpdateError, PreparedLayoutUpdate,
-    SceneTransaction, SceneTransactionQueue, apply_layout_update,
+    SceneTransaction, SceneTransactionQueue, apply_prepared_layout_update_under_guard,
     apply_prepared_layout_update_under_guard_with_persistence, publish_prepared_layout_activation,
 };
 use hypercolor_core::bus::HypercolorBus;
@@ -43,6 +43,24 @@ fn state(initial: SpatialLayout) -> (SpatialService, SceneService, SceneTransact
         ),
         SceneTransactionQueue::default(),
     )
+}
+
+async fn apply_layout_update(
+    spatial_engine: &SpatialService,
+    scene_manager: &SceneService,
+    scene_transactions: &SceneTransactionQueue,
+    layout: SpatialLayout,
+) -> Result<(), LayoutUpdateError> {
+    let guard = scene_transactions.acquire_layout_update_guard().await;
+    let prepared = PreparedLayoutUpdate::try_new(layout)?;
+    apply_prepared_layout_update_under_guard(
+        spatial_engine.clone(),
+        scene_manager.clone(),
+        scene_transactions.clone(),
+        &guard,
+        prepared,
+    )
+    .await
 }
 
 async fn commit_scene_mutation(

@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock, Mutex as StdMutex};
+use std::time::Duration;
 
 use axum::body::Body;
 use http::{Request, StatusCode};
@@ -12,6 +13,7 @@ use tower::ServiceExt;
 use hypercolor_core::config::ConfigManager;
 use hypercolor_daemon::api;
 use hypercolor_daemon::app_state::AppState;
+use hypercolor_daemon::scene_transactions::SceneTransaction;
 use hypercolor_driver_api::{BackendInfo, DeviceBackend};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceError, DeviceFamily,
@@ -326,12 +328,38 @@ async fn set_active_layout_for_device(state: &Arc<AppState>, device_id: DeviceId
         version: 1,
     };
 
-    state
-        .domains
-        .layout
-        .preview(layout)
-        .await
-        .expect("attachment test layout should publish");
+    let preview =
+        api::layouts::preview_layout(axum::extract::State(Arc::clone(state)), axum::Json(layout));
+    tokio::pin!(preview);
+    let response = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            tokio::select! {
+                response = &mut preview => break response,
+                () = tokio::task::yield_now() => {
+                    for transaction in state.scene_transactions.drain() {
+                        match transaction {
+                            SceneTransaction::PrepareLayout(transaction) => {
+                                transaction
+                                    .accept_and_publish_for_test(
+                                        &state.spatial_engine,
+                                        &state.scene_manager,
+                                        || async {},
+                                    )
+                                    .await
+                                    .expect("attachment layout should publish");
+                            }
+                            SceneTransaction::SetScreenCaptureConfigured(_) => {
+                                panic!("attachment layout should not change capture state");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    })
+    .await
+    .expect("attachment layout publication should finish");
+    assert_eq!(response.status(), StatusCode::OK);
 }
 
 async fn register_recording_backend(

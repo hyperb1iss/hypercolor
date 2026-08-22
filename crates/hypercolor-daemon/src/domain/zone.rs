@@ -175,7 +175,9 @@ pub async fn delete_zone(
 /// just entered or left the active scene reconnects or releases.
 async fn settle_zone_mutation(ctx: &SceneContext) {
     ctx.save_runtime_session().await;
-    ctx.layout().sync_connectivity().await;
+    ctx.layout()
+        .sync_runtime_connectivity(ctx.layout_runtime())
+        .await;
 }
 
 fn zone_in_scene(

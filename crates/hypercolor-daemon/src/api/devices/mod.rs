@@ -817,7 +817,7 @@ pub(super) async fn ensure_default_logical_entry(
     let fallback_layout_id = state
         .domains
         .layout
-        .resolved_layout_device_id(device_info)
+        .resolved_layout_device_id(&state.domains.devices.layout_runtime(), device_info)
         .await;
 
     let mut store = state.logical_devices.write().await;

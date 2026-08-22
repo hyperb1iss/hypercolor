@@ -978,7 +978,7 @@ pub(crate) async fn sync_connected_display_surfaces(state: &AppState) {
     let displays = state
         .domains
         .layout
-        .connected_display_surface_layouts()
+        .connected_display_surface_layouts(&state.domains.devices.layout_runtime())
         .await;
     if let Err(error) =
         crate::domain::display::hydrate_existing_display_surfaces(&state.domains.scene, displays)

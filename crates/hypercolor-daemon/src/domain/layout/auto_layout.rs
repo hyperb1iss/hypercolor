@@ -7,9 +7,8 @@ use hypercolor_types::spatial::{
     Corner, EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection, Winding, ZoneShape,
 };
-#[doc(hidden)]
 #[must_use]
-pub fn append_auto_layout_zones_for_device(
+pub(super) fn append_auto_layout_zones_for_device(
     layout: &mut SpatialLayout,
     layout_device_id: &str,
     device_info: &DeviceInfo,
@@ -86,9 +85,8 @@ pub fn append_auto_layout_zones_for_device(
     eligible_segments.len()
 }
 
-#[doc(hidden)]
 #[must_use]
-pub fn reconcile_auto_layout_zones_for_device(
+pub(super) fn reconcile_auto_layout_zones_for_device(
     layout: &mut SpatialLayout,
     layout_device_id: &str,
     device_info: &DeviceInfo,
@@ -354,5 +352,291 @@ fn sanitize_auto_layout_component(raw: &str) -> String {
         "zone".to_owned()
     } else {
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use hypercolor_types::device::{
+        ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceId, DeviceInfo,
+        DeviceOrigin, DeviceTopologyHint, SegmentInfo, SegmentLayoutHint,
+    };
+    use hypercolor_types::spatial::{
+        EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout, ZoneShape,
+    };
+
+    use super::{append_auto_layout_zones_for_device, reconcile_auto_layout_zones_for_device};
+
+    fn layout() -> SpatialLayout {
+        SpatialLayout {
+            id: "default".to_owned(),
+            name: "Default Layout".to_owned(),
+            description: None,
+            canvas_width: 320,
+            canvas_height: 200,
+            zones: Vec::new(),
+            default_sampling_mode: SamplingMode::Bilinear,
+            default_edge_behavior: EdgeBehavior::Clamp,
+            spaces: None,
+            version: 1,
+        }
+    }
+
+    fn device(segments: Vec<SegmentInfo>) -> DeviceInfo {
+        DeviceInfo {
+            id: DeviceId::new(),
+            name: "Desk Device".to_owned(),
+            vendor: "Test".to_owned(),
+            family: DeviceFamily::new_static("layout-test", "Layout Test"),
+            model: None,
+            connection_type: ConnectionType::Usb,
+            origin: DeviceOrigin::native("layout-test", "usb", ConnectionType::Usb),
+            segments,
+            firmware_version: None,
+            capabilities: DeviceCapabilities::default(),
+        }
+    }
+
+    fn segment(name: &str, led_count: u32, topology: DeviceTopologyHint) -> SegmentInfo {
+        SegmentInfo {
+            name: name.to_owned(),
+            led_count,
+            topology,
+            color_format: DeviceColorFormat::Rgb,
+            layout_hint: None,
+        }
+    }
+
+    #[test]
+    fn append_mints_addressable_segments_and_skips_display_surfaces() {
+        let info = device(vec![
+            segment("Main", 30, DeviceTopologyHint::Strip),
+            segment(
+                "Screen",
+                1,
+                DeviceTopologyHint::Display {
+                    width: 320,
+                    height: 320,
+                    circular: true,
+                },
+            ),
+        ]);
+        let mut layout = layout();
+
+        assert_eq!(
+            append_auto_layout_zones_for_device(&mut layout, "usb:desk", &info),
+            1
+        );
+        assert_eq!(layout.zones.len(), 1);
+        assert_eq!(layout.zones[0].device_id, "usb:desk");
+        assert_eq!(layout.zones[0].zone_name.as_deref(), Some("Main"));
+        assert_eq!(
+            layout.zones[0].topology,
+            LedTopology::Strip {
+                count: 30,
+                direction: hypercolor_types::spatial::StripDirection::LeftToRight,
+            }
+        );
+    }
+
+    #[test]
+    fn append_skips_display_only_devices() {
+        let info = device(vec![segment(
+            "Screen",
+            1,
+            DeviceTopologyHint::Display {
+                width: 320,
+                height: 320,
+                circular: true,
+            },
+        )]);
+        let mut layout = layout();
+
+        assert_eq!(
+            append_auto_layout_zones_for_device(&mut layout, "usb:display", &info),
+            0
+        );
+        assert!(layout.zones.is_empty());
+    }
+
+    #[test]
+    fn append_honors_declared_custom_geometry() {
+        let hint =
+            SegmentLayoutHint::custom_grid(3, 2, &[(0, 0), (1, 0), (2, 0), (2, 1), (1, 1), (0, 1)])
+                .with_size(NormalizedPosition::new(0.2, 0.08))
+                .with_shape(ZoneShape::Rectangle);
+        let mut custom = segment("Perimeter", 6, DeviceTopologyHint::Custom);
+        custom.layout_hint = Some(hint);
+        let info = device(vec![custom]);
+        let mut layout = layout();
+
+        assert_eq!(
+            append_auto_layout_zones_for_device(&mut layout, "usb:custom", &info),
+            1
+        );
+        assert_eq!(layout.zones[0].size, NormalizedPosition::new(0.2, 0.08));
+        assert_eq!(layout.zones[0].shape, Some(ZoneShape::Rectangle));
+        match &layout.zones[0].topology {
+            LedTopology::Custom { positions } => assert_eq!(positions.len(), 6),
+            other => panic!("expected custom topology, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn append_preserves_colocated_ring_geometry() {
+        let outer = SegmentLayoutHint::custom_grid(3, 3, &[(2, 1), (1, 2), (0, 1), (1, 0)])
+            .with_size(NormalizedPosition::new(0.2, 0.2))
+            .with_shape(ZoneShape::Ring)
+            .co_located();
+        let inner = SegmentLayoutHint::custom_grid(3, 3, &[(2, 1), (1, 2), (0, 1), (1, 0)])
+            .with_size(NormalizedPosition::new(0.12, 0.12))
+            .with_shape(ZoneShape::Ring)
+            .co_located();
+        let mut outer_segment = segment("Outer", 4, DeviceTopologyHint::Ring { count: 4 });
+        outer_segment.layout_hint = Some(outer);
+        let mut inner_segment = segment("Inner", 4, DeviceTopologyHint::Ring { count: 4 });
+        inner_segment.layout_hint = Some(inner);
+        let info = device(vec![outer_segment, inner_segment]);
+        let mut layout = layout();
+
+        assert_eq!(
+            append_auto_layout_zones_for_device(&mut layout, "usb:rings", &info),
+            2
+        );
+        assert_eq!(layout.zones[0].position, layout.zones[1].position);
+        assert_eq!(layout.zones[0].size, NormalizedPosition::new(0.2, 0.2));
+        assert_eq!(layout.zones[1].size, NormalizedPosition::new(0.12, 0.12));
+    }
+
+    #[test]
+    fn append_preserves_asymmetric_custom_position_order() {
+        let positions = &[(2, 3), (2, 0), (0, 1), (4, 1), (3, 2)];
+        let mut custom = segment("Pointer", 5, DeviceTopologyHint::Custom);
+        custom.layout_hint = Some(SegmentLayoutHint::custom_grid(5, 4, positions));
+        let info = device(vec![custom]);
+        let mut layout = layout();
+
+        let _ = append_auto_layout_zones_for_device(&mut layout, "usb:pointer", &info);
+        let LedTopology::Custom { positions: actual } = &layout.zones[0].topology else {
+            panic!("expected custom topology");
+        };
+        assert_eq!(actual.len(), positions.len());
+        assert!(actual[0].y > actual[1].y);
+        assert!(actual[2].x < actual[3].x);
+    }
+
+    #[test]
+    fn append_dense_matrix_clamps_geometry_to_normalized_space() {
+        let info = device(
+            (0..12)
+                .map(|index| {
+                    segment(
+                        &format!("Matrix {index}"),
+                        64,
+                        DeviceTopologyHint::Matrix { rows: 8, cols: 8 },
+                    )
+                })
+                .collect(),
+        );
+        let mut layout = layout();
+
+        assert_eq!(
+            append_auto_layout_zones_for_device(&mut layout, "usb:matrix", &info),
+            12
+        );
+        assert!(layout.zones.iter().all(|zone| {
+            zone.position.x >= 0.0
+                && zone.position.x <= 1.0
+                && zone.position.y >= 0.0
+                && zone.position.y <= 1.0
+                && zone.size.x >= 0.0
+                && zone.size.x <= 1.0
+                && zone.size.y >= 0.0
+                && zone.size.y <= 1.0
+        }));
+    }
+
+    #[test]
+    fn reconcile_repairs_geometry_preserves_authored_rotation_and_removes_stale_zones() {
+        let mut original = segment("Main", 10, DeviceTopologyHint::Strip);
+        let mut stale = segment("Removed", 5, DeviceTopologyHint::Strip);
+        let initial = device(vec![original.clone(), stale.clone()]);
+        let mut layout = layout();
+        assert_eq!(
+            append_auto_layout_zones_for_device(&mut layout, "usb:repair", &initial),
+            2
+        );
+        layout.zones[0].rotation = 37.0;
+        original.led_count = 24;
+        original.layout_hint = Some(
+            SegmentLayoutHint::custom_grid(2, 2, &[(0, 0), (1, 0), (1, 1), (0, 1)])
+                .with_size(NormalizedPosition::new(0.3, 0.2)),
+        );
+        stale.name = "Unused".to_owned();
+        let updated = device(vec![original]);
+
+        assert_eq!(
+            reconcile_auto_layout_zones_for_device(&mut layout, "usb:repair", &updated),
+            2
+        );
+        assert_eq!(layout.zones.len(), 1);
+        assert_eq!(layout.zones[0].rotation, 37.0);
+        assert_eq!(layout.zones[0].size, NormalizedPosition::new(0.3, 0.2));
+        match &layout.zones[0].topology {
+            LedTopology::Custom { positions } => assert_eq!(positions.len(), 4),
+            other => panic!("expected repaired custom topology, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reconcile_updates_an_existing_auto_zone_without_duplicating_it() {
+        let initial = device(vec![segment("Main", 10, DeviceTopologyHint::Strip)]);
+        let mut layout = layout();
+        let _ = append_auto_layout_zones_for_device(&mut layout, "usb:update", &initial);
+        let mut updated_segment = segment("Main", 20, DeviceTopologyHint::Strip);
+        updated_segment.layout_hint = Some(
+            SegmentLayoutHint::custom_grid(2, 2, &[(0, 0), (1, 0), (1, 1), (0, 1)])
+                .with_size(NormalizedPosition::new(0.25, 0.25)),
+        );
+        let updated = device(vec![updated_segment]);
+
+        assert_eq!(
+            reconcile_auto_layout_zones_for_device(&mut layout, "usb:update", &updated),
+            1
+        );
+        assert_eq!(layout.zones.len(), 1);
+        assert_eq!(layout.zones[0].zone_name.as_deref(), Some("Main"));
+        assert_eq!(layout.zones[0].size, NormalizedPosition::new(0.25, 0.25));
+    }
+
+    #[test]
+    fn reconcile_removes_only_stale_auto_zones() {
+        let initial = device(vec![
+            segment("Main", 10, DeviceTopologyHint::Strip),
+            segment("Aux", 5, DeviceTopologyHint::Strip),
+        ]);
+        let mut layout = layout();
+        let _ = append_auto_layout_zones_for_device(&mut layout, "usb:remove", &initial);
+        let authored = layout.zones[0].clone();
+        let mut authored = hypercolor_types::spatial::Output {
+            id: "authored-zone".to_owned(),
+            ..authored
+        };
+        authored.device_id = "usb:remove".to_owned();
+        layout.zones.push(authored);
+        let updated = device(vec![segment("Main", 10, DeviceTopologyHint::Strip)]);
+
+        assert_eq!(
+            reconcile_auto_layout_zones_for_device(&mut layout, "usb:remove", &updated),
+            2
+        );
+        assert_eq!(layout.zones.len(), 2);
+        assert!(layout.zones.iter().any(|zone| zone.id == "authored-zone"));
+        assert!(
+            layout
+                .zones
+                .iter()
+                .all(|zone| zone.zone_name.as_deref() != Some("Aux"))
+        );
     }
 }
