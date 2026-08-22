@@ -1179,6 +1179,105 @@ fn set_effect_advertises_only_the_closed_cut_transition() {
     );
 }
 
+#[test]
+fn adjust_controls_advertises_recursive_canonical_values() {
+    let tools = build_tool_definitions();
+    let adjust = tools
+        .iter()
+        .find(|tool| tool.name == "adjust_controls")
+        .expect("adjust_controls should be registered");
+    assert_eq!(
+        adjust.input_schema["properties"]["values"]["additionalProperties"]["$ref"],
+        "#/$defs/controlValue"
+    );
+
+    let variants = adjust.input_schema["$defs"]["controlValue"]["oneOf"]
+        .as_array()
+        .expect("ControlValue should be a tagged union");
+    let tags = variants
+        .iter()
+        .map(|variant| {
+            variant["properties"]["kind"]["const"]
+                .as_str()
+                .expect("every variant should pin its tag")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        tags,
+        vec![
+            "null",
+            "bool",
+            "int",
+            "float",
+            "text",
+            "secret_ref",
+            "ip",
+            "mac",
+            "duration",
+            "color_rgb",
+            "color_rgba",
+            "color_linear",
+            "gradient",
+            "rect",
+            "enum",
+            "flags",
+            "list",
+            "map",
+            "unknown",
+        ]
+    );
+    let variant = |kind: &str| {
+        variants
+            .iter()
+            .find(|variant| variant["properties"]["kind"]["const"] == kind)
+            .unwrap_or_else(|| panic!("{kind} should be advertised"))
+    };
+    assert_eq!(
+        variant("list")["properties"]["value"]["items"]["$ref"],
+        "#/$defs/controlValue"
+    );
+    assert_eq!(
+        variant("map")["properties"]["value"]["additionalProperties"]["$ref"],
+        "#/$defs/controlValue"
+    );
+
+    let validator = jsonschema::validator_for(&adjust.input_schema)
+        .expect("adjust_controls schema should compile");
+    let valid = json!({
+        "zone": "primary",
+        "layer": "layer-1",
+        "values": {
+            "nested": {
+                "kind": "map",
+                "value": {
+                    "items": {
+                        "kind": "list",
+                        "value": [
+                            { "kind": "float", "value": 0.5 },
+                            { "kind": "unknown" }
+                        ]
+                    }
+                }
+            }
+        }
+    });
+    assert!(validator.is_valid(&valid));
+    for invalid in [
+        json!({
+            "zone": "primary",
+            "layer": "layer-1",
+            "values": { "speed": 0.5 }
+        }),
+        json!({
+            "zone": "primary",
+            "layer": "layer-1",
+            "values": { "future": { "kind": "vector3", "value": [0, 0, 0] } }
+        }),
+    ] {
+        assert!(!validator.is_valid(&invalid));
+    }
+}
+
 /// A deleted parameter is refused, not quietly dropped.
 ///
 /// `additionalProperties: false` is enforced in the dispatch path

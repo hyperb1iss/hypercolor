@@ -136,6 +136,7 @@ pub(super) fn build_clear_zone() -> ToolDefinition {
 }
 
 pub(super) fn build_adjust_controls() -> ToolDefinition {
+    let control_value_schema = canonical_control_value_schema();
     ToolDefinition {
         name: "adjust_controls".into(),
         title: "Adjust Layer Controls".into(),
@@ -155,7 +156,7 @@ pub(super) fn build_adjust_controls() -> ToolDefinition {
                     "type": "object",
                     "description": "Canonical typed ControlValue entries keyed by control ID",
                     "default": {},
-                    "additionalProperties": true
+                    "additionalProperties": { "$ref": "#/$defs/controlValue" }
                 },
                 "clear_bindings": {
                     "type": "array",
@@ -165,13 +166,111 @@ pub(super) fn build_adjust_controls() -> ToolDefinition {
                 }
             },
             "required": ["zone", "layer"],
-            "additionalProperties": false
+            "additionalProperties": false,
+            "$defs": {
+                "controlValue": control_value_schema
+            }
         }),
         output_schema: output_schema::<AdjustControlsResult>(),
         read_only: false,
         destructive: false,
         idempotent: true,
     }
+}
+
+fn canonical_control_value_schema() -> Value {
+    fn unit(kind: &str) -> Value {
+        json!({
+            "type": "object",
+            "properties": { "kind": { "const": kind } },
+            "required": ["kind"],
+            "additionalProperties": false
+        })
+    }
+
+    fn tagged(kind: &str, value: Value) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "kind": { "const": kind },
+                "value": value
+            },
+            "required": ["kind", "value"],
+            "additionalProperties": false
+        })
+    }
+
+    fn channels(names: &[&str], channel: Value) -> Value {
+        let properties = names
+            .iter()
+            .map(|name| ((*name).to_owned(), channel.clone()))
+            .collect::<serde_json::Map<_, _>>();
+        json!({
+            "type": "object",
+            "properties": properties,
+            "required": names,
+            "additionalProperties": false
+        })
+    }
+
+    let recursive = json!({ "$ref": "#/$defs/controlValue" });
+    let byte = json!({ "type": "integer", "minimum": 0, "maximum": 255 });
+    let number = json!({ "type": "number" });
+    let variants = vec![
+        unit("null"),
+        tagged("bool", json!({ "type": "boolean" })),
+        tagged("int", json!({ "type": "integer" })),
+        tagged("float", number.clone()),
+        tagged("text", json!({ "type": "string" })),
+        tagged("secret_ref", json!({ "type": "string" })),
+        tagged("ip", json!({ "type": "string" })),
+        tagged("mac", json!({ "type": "string" })),
+        tagged("duration", json!({ "type": "integer", "minimum": 0 })),
+        tagged("color_rgb", channels(&["r", "g", "b"], byte.clone())),
+        tagged("color_rgba", channels(&["r", "g", "b", "a"], byte)),
+        tagged(
+            "color_linear",
+            channels(&["r", "g", "b", "a"], number.clone()),
+        ),
+        tagged(
+            "gradient",
+            json!({
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 8,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "position": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+                        "color": {
+                            "type": "array",
+                            "items": { "type": "number" },
+                            "minItems": 4,
+                            "maxItems": 4
+                        }
+                    },
+                    "required": ["position", "color"],
+                    "additionalProperties": false
+                }
+            }),
+        ),
+        tagged("rect", channels(&["x", "y", "width", "height"], number)),
+        tagged("enum", json!({ "type": "string" })),
+        tagged(
+            "flags",
+            json!({ "type": "array", "items": { "type": "string" } }),
+        ),
+        tagged(
+            "list",
+            json!({ "type": "array", "items": recursive.clone() }),
+        ),
+        tagged(
+            "map",
+            json!({ "type": "object", "additionalProperties": recursive }),
+        ),
+        unit("unknown"),
+    ];
+    json!({ "oneOf": variants })
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────
