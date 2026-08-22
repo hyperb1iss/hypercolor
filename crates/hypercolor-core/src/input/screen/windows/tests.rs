@@ -16,10 +16,10 @@ use super::{
     WindowsPhysicalReductionRoute, WindowsPublicationSource, WindowsScreenCaptureInput,
     WorkerCaptureSchedule, WorkerCommand, bind_current_exact_runtime, capture_epoch,
     capture_freshness, capture_geometry, capture_gpu_descriptor, capture_gpu_reduction_descriptor,
-    capture_issue, classify_windows_physical_reduction, native_capture_extent, reap_exact_runtimes,
-    record_capture_health, resolve_windows_publication_branch, settle_inactive_capture,
-    windows_gpu_attempt_at, windows_gpu_candidate_admission, windows_gpu_preparation_gate,
-    windows_gpu_retry_at,
+    capture_issue, classify_windows_physical_reduction, display_rotation, native_capture_extent,
+    reap_exact_runtimes, record_capture_health, resolve_windows_publication_branch,
+    settle_inactive_capture, windows_gpu_attempt_at, windows_gpu_candidate_admission,
+    windows_gpu_preparation_gate, windows_gpu_retry_at,
 };
 
 #[test]
@@ -1476,6 +1476,18 @@ fn adapter_preserves_native_and_stored_geometry_for_every_dxgi_rotation() {
         assert_eq!(geometry.storage_extent(), extent(1280, 720));
         assert_eq!(geometry.origin(), PhysicalOrigin { x: -3840, y: 120 });
         assert_eq!(geometry.rotation(), expected_rotation);
+    }
+}
+
+#[test]
+fn reflected_capture_transforms_cannot_cross_the_dxgi_rotation_boundary() {
+    for transform in [
+        CaptureRotation::Flipped,
+        CaptureRotation::Flipped90,
+        CaptureRotation::Flipped180,
+        CaptureRotation::Flipped270,
+    ] {
+        assert!(display_rotation(transform).is_err());
     }
 }
 

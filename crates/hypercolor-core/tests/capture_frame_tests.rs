@@ -285,6 +285,10 @@ fn every_rotation_preserves_raw_scanout_and_reports_logical_extent() {
         (CaptureRotation::Clockwise90, extent(3, 4)),
         (CaptureRotation::Clockwise180, extent(4, 3)),
         (CaptureRotation::Clockwise270, extent(3, 4)),
+        (CaptureRotation::Flipped, extent(4, 3)),
+        (CaptureRotation::Flipped90, extent(3, 4)),
+        (CaptureRotation::Flipped180, extent(4, 3)),
+        (CaptureRotation::Flipped270, extent(3, 4)),
     ] {
         let frame = CaptureFrame::<RawCaptureSurface>::new(
             metadata(rotation),
@@ -301,6 +305,33 @@ fn every_rotation_preserves_raw_scanout_and_reports_logical_extent() {
                 .rotation()
                 .apply_to_extent(frame.metadata().geometry.native_extent()),
             expected
+        );
+    }
+}
+
+#[test]
+fn every_d4_transform_maps_unique_corners_and_inverts_exactly() {
+    let native = extent(4, 3);
+    for (transform, expected) in [
+        (CaptureRotation::Identity, (0, 0)),
+        (CaptureRotation::Clockwise90, (2, 0)),
+        (CaptureRotation::Clockwise180, (3, 2)),
+        (CaptureRotation::Clockwise270, (0, 3)),
+        (CaptureRotation::Flipped, (3, 0)),
+        (CaptureRotation::Flipped90, (2, 3)),
+        (CaptureRotation::Flipped180, (0, 2)),
+        (CaptureRotation::Flipped270, (0, 0)),
+    ] {
+        let logical = transform
+            .apply_to_point(0, 0, native)
+            .expect("native corner is in bounds");
+        assert_eq!(logical, expected);
+        let logical_extent = transform.apply_to_extent(native);
+        assert_eq!(
+            transform
+                .invert()
+                .apply_to_point(logical.0, logical.1, logical_extent),
+            Some((0, 0))
         );
     }
 }

@@ -294,6 +294,10 @@ fn every_rotation_reflection_and_filter_preserves_native_texels() {
         CaptureRotation::Clockwise90,
         CaptureRotation::Clockwise180,
         CaptureRotation::Clockwise270,
+        CaptureRotation::Flipped,
+        CaptureRotation::Flipped90,
+        CaptureRotation::Flipped180,
+        CaptureRotation::Flipped270,
     ] {
         let logical = rotation.apply_to_extent(native);
         for reflection in [

@@ -3457,6 +3457,10 @@ const fn capture_rotation_rank(rotation: CaptureRotation) -> u8 {
         CaptureRotation::Clockwise90 => 1,
         CaptureRotation::Clockwise180 => 2,
         CaptureRotation::Clockwise270 => 3,
+        CaptureRotation::Flipped => 4,
+        CaptureRotation::Flipped90 => 5,
+        CaptureRotation::Flipped180 => 6,
+        CaptureRotation::Flipped270 => 7,
     }
 }
 

@@ -1810,7 +1810,7 @@ fn capture_gpu_descriptor(
         id,
         source_region: region,
         coordinate_space: GpuSurfaceCoordinateSpace::LogicalDisplay,
-        source_rotation: display_rotation(source.rotation),
+        source_rotation: display_rotation(source.rotation)?,
         source_color_space: source.source_color_space,
         output_extent: NativeCaptureExtent::try_new(output.width(), output.height())?,
         filter,
@@ -1879,7 +1879,7 @@ fn capture_gpu_reduction_descriptor(
         id,
         source_region: region,
         coordinate_space: GpuSurfaceCoordinateSpace::LogicalDisplay,
-        source_rotation: display_rotation(source.rotation),
+        source_rotation: display_rotation(source.rotation)?,
         source_color_space: source.source_color_space,
         output_extent: NativeCaptureExtent::try_new(output.width(), output.height())?,
         filter,
@@ -1994,13 +1994,19 @@ fn windows_gpu_preparation_gate(adapter_luid: GpuAdapterLuid) -> Arc<Mutex<()>> 
     )
 }
 
-const fn display_rotation(rotation: CaptureRotation) -> DisplayRotation {
-    match rotation {
+fn display_rotation(rotation: CaptureRotation) -> anyhow::Result<DisplayRotation> {
+    Ok(match rotation {
         CaptureRotation::Identity => DisplayRotation::Identity,
         CaptureRotation::Clockwise90 => DisplayRotation::Clockwise90,
         CaptureRotation::Clockwise180 => DisplayRotation::Clockwise180,
         CaptureRotation::Clockwise270 => DisplayRotation::Clockwise270,
-    }
+        CaptureRotation::Flipped
+        | CaptureRotation::Flipped90
+        | CaptureRotation::Flipped180
+        | CaptureRotation::Flipped270 => {
+            anyhow::bail!("reflected capture transforms are not DXGI display rotations")
+        }
+    })
 }
 
 impl Drop for WindowsScreenCaptureInput {
@@ -3006,7 +3012,7 @@ fn publish_windows_reduction_outcome(
         && provenance.logical_source_extent.width() == source.logical_extent.width()
         && provenance.logical_source_extent.height() == source.logical_extent.height()
         && provenance.source_color_space == source.source_color_space
-        && provenance.source_rotation == display_rotation(source.rotation)
+        && provenance.source_rotation == display_rotation(source.rotation)?
         && provenance.descriptor.output_extent().width() == output.width()
         && provenance.descriptor.output_extent().height() == output.height()
         && (!provenance.cursor_composed || physical.cursor() == ScreenCursorPolicy::Include);

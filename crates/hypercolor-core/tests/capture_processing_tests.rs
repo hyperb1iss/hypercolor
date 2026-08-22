@@ -142,6 +142,26 @@ fn every_rotation_is_applied_exactly_once() {
             extent(2, 3),
             vec![3, 6, 2, 5, 1, 4],
         ),
+        (
+            CaptureRotation::Flipped,
+            extent(3, 2),
+            vec![3, 2, 1, 6, 5, 4],
+        ),
+        (
+            CaptureRotation::Flipped90,
+            extent(2, 3),
+            vec![6, 3, 5, 2, 4, 1],
+        ),
+        (
+            CaptureRotation::Flipped180,
+            extent(3, 2),
+            vec![4, 5, 6, 1, 2, 3],
+        ),
+        (
+            CaptureRotation::Flipped270,
+            extent(2, 3),
+            vec![1, 4, 2, 5, 3, 6],
+        ),
     ] {
         let processed = CaptureFrameProcessor::default()
             .process(raw_rgba(3, 2, rotation, None))
@@ -199,6 +219,19 @@ fn crop_origin_tracks_every_rotation_from_negative_desktop_coordinates() {
         (
             CaptureRotation::Clockwise270,
             PhysicalOrigin { x: -99, y: -197 },
+        ),
+        (CaptureRotation::Flipped, PhysicalOrigin { x: -97, y: -199 }),
+        (
+            CaptureRotation::Flipped90,
+            PhysicalOrigin { x: -97, y: -197 },
+        ),
+        (
+            CaptureRotation::Flipped180,
+            PhysicalOrigin { x: -98, y: -197 },
+        ),
+        (
+            CaptureRotation::Flipped270,
+            PhysicalOrigin { x: -99, y: -198 },
         ),
     ] {
         let processed = CaptureFrameProcessor::default()

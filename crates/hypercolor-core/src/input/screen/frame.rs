@@ -170,6 +170,14 @@ pub enum CaptureRotation {
     Clockwise180,
     /// Rotate 270 degrees clockwise.
     Clockwise270,
+    /// Reflect horizontally.
+    Flipped,
+    /// Reflect horizontally, then rotate 90 degrees clockwise.
+    Flipped90,
+    /// Reflect horizontally, then rotate 180 degrees.
+    Flipped180,
+    /// Reflect horizontally, then rotate 270 degrees clockwise.
+    Flipped270,
 }
 
 impl CaptureRotation {
@@ -177,11 +185,46 @@ impl CaptureRotation {
     #[must_use]
     pub const fn apply_to_extent(self, extent: PixelExtent) -> PixelExtent {
         match self {
-            Self::Identity | Self::Clockwise180 => extent,
-            Self::Clockwise90 | Self::Clockwise270 => PixelExtent {
-                width: extent.height,
-                height: extent.width,
-            },
+            Self::Identity | Self::Clockwise180 | Self::Flipped | Self::Flipped180 => extent,
+            Self::Clockwise90 | Self::Clockwise270 | Self::Flipped90 | Self::Flipped270 => {
+                PixelExtent {
+                    width: extent.height,
+                    height: extent.width,
+                }
+            }
+        }
+    }
+
+    /// Transform one in-bounds native pixel coordinate into logical space.
+    #[must_use]
+    pub const fn apply_to_point(self, x: u32, y: u32, extent: PixelExtent) -> Option<(u32, u32)> {
+        if x >= extent.width || y >= extent.height {
+            return None;
+        }
+        Some(match self {
+            Self::Identity => (x, y),
+            Self::Clockwise90 => (extent.height - 1 - y, x),
+            Self::Clockwise180 => (extent.width - 1 - x, extent.height - 1 - y),
+            Self::Clockwise270 => (y, extent.width - 1 - x),
+            Self::Flipped => (extent.width - 1 - x, y),
+            Self::Flipped90 => (extent.height - 1 - y, extent.width - 1 - x),
+            Self::Flipped180 => (x, extent.height - 1 - y),
+            Self::Flipped270 => (y, x),
+        })
+    }
+
+    /// Return the transform that restores this transform's input orientation.
+    #[must_use]
+    pub const fn invert(self) -> Self {
+        match self {
+            Self::Identity
+            | Self::Clockwise180
+            | Self::Flipped
+            | Self::Flipped90
+            | Self::Flipped180
+            | Self::Flipped270 => self,
+            Self::Clockwise90 => Self::Clockwise270,
+            Self::Clockwise270 => Self::Clockwise90,
         }
     }
 }
