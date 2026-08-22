@@ -1,7 +1,7 @@
 use super::admission::prepare_macos_exact_runtime;
 use super::publication::{capture_source_id, publish_frame};
 use super::{
-    Arc, AtomicBool, CaptureSessionAuthority, CaptureWorker, MacosCaptureControl,
+    Arc, AtomicBool, CaptureSession, CaptureSessionAuthority, CaptureWorker, MacosCaptureControl,
     MacosExactPublicationShared, MacosExactRuntime, MacosFrameEvent, MacosFrameMailbox,
     MacosFrameStatus, MacosPublication, MacosScreenRuntimeTelemetry, Mutex, Ordering,
     PreparedWorker, ResourceState, ScreenPublicationHealth, ScreenPublicationHub,
@@ -21,15 +21,16 @@ impl StagedCaptureWorker {
 
 impl Drop for StagedCaptureWorker {
     fn drop(&mut self) {
-        let Some(mut worker) = self.worker.take() else {
+        let Some(worker) = self.worker.take() else {
             return;
         };
-        worker.stop.store(true, Ordering::Release);
+        worker.abort();
         self.start.store(true, Ordering::Release);
-        if let Some(join) = worker.join.take() {
+        if let Some(join) = worker.join.as_ref() {
             join.thread().unpark();
-            let _ = join.join();
         }
+        worker.wake();
+        worker.detach();
     }
 }
 

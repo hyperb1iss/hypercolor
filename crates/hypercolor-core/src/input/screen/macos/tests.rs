@@ -24,6 +24,108 @@ use hypercolor_macos_capture::{
     MacosRawCapturePlane, MacosRawCaptureSample, MacosRawCompleteFrame, MacosRawFrameAttachments,
 };
 
+#[test]
+fn staged_worker_rollback_does_not_wait_for_native_exit() {
+    let stop = Arc::new(AtomicBool::new(false));
+    let worker_stop = Arc::clone(&stop);
+    let start = Arc::new(AtomicBool::new(false));
+    let worker_start = Arc::clone(&start);
+    let (started_tx, started_rx) = mpsc::sync_channel(0);
+    let (release_tx, release_rx) = mpsc::sync_channel(0);
+    let (exit_tx, exit_rx) = mpsc::channel();
+    let (command_tx, _command_rx) = mpsc::channel();
+    let join = thread::spawn(move || {
+        while !worker_start.load(Ordering::Acquire) {
+            thread::park();
+        }
+        started_tx.send(()).expect("test worker reports startup");
+        release_rx.recv().expect("test releases native exit");
+        let _ = exit_tx.send(Ok(()));
+    });
+    let staged = StagedCaptureWorker {
+        generation: 1,
+        worker: Some(CaptureWorker {
+            authority: CaptureSessionAuthority::new(1),
+            stop: Arc::clone(&stop),
+            mailbox: MacosFrameMailbox::default(),
+            command_tx,
+            exit_rx,
+            join: Some(join),
+        }),
+        start: Arc::clone(&start),
+    };
+    let (returned_tx, returned_rx) = mpsc::sync_channel(0);
+
+    thread::spawn(move || {
+        drop(staged);
+        returned_tx.send(()).expect("rollback reports completion");
+    });
+
+    returned_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("rollback returns before native exit");
+    started_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("rollback releases the staged worker start gate");
+    assert!(start.load(Ordering::Acquire));
+    assert!(worker_stop.load(Ordering::Acquire));
+    release_tx.send(()).expect("native worker may exit");
+}
+
+#[test]
+fn retired_worker_cannot_republish_after_stop_returns() {
+    let admission =
+        ScreenByteAdmissionCoordinator::new(ScreenAdmissionCapacity::new(u64::MAX, u64::MAX));
+    let (mut input, _fixture) =
+        MacosScreenCaptureFixture::source(CaptureConfig::default(), admission);
+    let authority = CaptureSessionAuthority::new(1);
+    input.worker_generation = 1;
+    drop(input.exact.activate_authority(authority));
+    {
+        let mut publication = lock(&input.publication);
+        publication
+            .replace_fence_preserving_latest(MacosPublicationFence(1), 1)
+            .expect("test worker owns compatibility publication");
+    }
+    let stop = Arc::new(AtomicBool::new(false));
+    let worker_stop = Arc::clone(&stop);
+    let (release_tx, release_rx) = mpsc::sync_channel(0);
+    let (exit_tx, exit_rx) = mpsc::channel();
+    let (command_tx, _command_rx) = mpsc::channel();
+    let join = thread::spawn(move || {
+        release_rx.recv().expect("test releases retired worker");
+        let _ = exit_tx.send(Ok(()));
+    });
+    assert!(
+        input
+            .sessions
+            .install(CaptureWorker {
+                authority,
+                stop,
+                mailbox: MacosFrameMailbox::default(),
+                command_tx,
+                exit_rx,
+                join: Some(join),
+            })
+            .is_ok()
+    );
+
+    input.stop_worker();
+
+    assert!(worker_stop.load(Ordering::Acquire));
+    assert!(!input.exact.is_current_authority(authority));
+    assert!(
+        !input
+            .exact
+            .replace_source_if_current(authority, Some(source(&frame())))
+    );
+    let mut publication = lock(&input.publication);
+    assert!(!publication.is_active(&1));
+    assert!(publication.publish(&1, Arc::new(InputData::None)).is_err());
+    drop(publication);
+    release_tx.send(()).expect("retired worker may exit");
+}
+
 const BGRA8: u32 = 0x4247_5241;
 const ARGB2101010: u32 = 0x6c31_3072;
 const RGBA16_FLOAT: u32 = 0x5247_6841;

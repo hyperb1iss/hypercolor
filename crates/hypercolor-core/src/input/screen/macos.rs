@@ -28,6 +28,7 @@ use hypercolor_macos_capture::{
     MacosDisplayClock, MacosScreenCaptureSession, MacosScreenshotReferenceCapture,
 };
 use hypercolor_macos_input::{MacosCapabilityOwner, MacosDaemonOwnerConflict};
+use hypercolor_worker_retention::retain_worker;
 
 #[cfg(not(feature = "macos-capture-fixtures"))]
 use super::ScreenColorTransformCapabilities;
@@ -73,7 +74,8 @@ use crate::input::{SourceIssue, SourceStatusHandle, SourceStatusReporter};
 use super::adapter::{
     CaptureExactCommand, CaptureExactCommandEndpoint, CaptureExactCommandRejected,
     CaptureExactPublicationShared, CaptureExactRuntimeOwner, CaptureOwnedSource,
-    CapturePublication, CapturePublicationFence, CapturePublicationSource, CaptureSessionAuthority,
+    CapturePublication, CapturePublicationFence, CapturePublicationSource, CaptureSession,
+    CaptureSessionAuthority, CaptureSessionSet, CaptureSuccessorPolicy,
     begin_capture_exact_preparation, begin_capture_exact_retirement, execute_capture_exact_command,
 };
 
@@ -384,6 +386,72 @@ impl CaptureWorker {
     }
 }
 
+impl CaptureSession for CaptureWorker {
+    type Exit = anyhow::Result<()>;
+    type ExactEndpoint = MacosExactCommandEndpoint;
+
+    const SUCCESSOR_POLICY: CaptureSuccessorPolicy = CaptureSuccessorPolicy::AllowOverlap;
+
+    fn authority(&self) -> CaptureSessionAuthority {
+        self.authority
+    }
+
+    fn exact_endpoint(&self) -> Self::ExactEndpoint {
+        CaptureWorker::exact_command_endpoint(self)
+    }
+
+    fn abort(&self) {
+        self.stop.store(true, Ordering::Release);
+    }
+
+    fn wake(&self) {
+        self.mailbox.wake();
+    }
+
+    fn is_finished(&self) -> bool {
+        self.join
+            .as_ref()
+            .is_none_or(thread::JoinHandle::is_finished)
+    }
+
+    fn finish(mut self) -> Self::Exit {
+        let channel_result = self.exit_rx.try_recv();
+        let thread_result = self
+            .join
+            .take()
+            .expect("finished macOS worker retains its thread handle")
+            .join();
+        if let Err(panic) = thread_result {
+            return Err(anyhow!("macOS capture worker panicked: {panic:?}"));
+        }
+        match channel_result {
+            Ok(result) => result,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                Err(anyhow!("macOS capture worker disconnected"))
+            }
+            Err(mpsc::TryRecvError::Empty) => Err(anyhow!(
+                "finished macOS capture worker did not report its result"
+            )),
+        }
+    }
+
+    fn detach(mut self) {
+        if let Some(join) = self.join.take() {
+            retain_worker(join, "macOS screen capture worker");
+        }
+    }
+}
+
+impl Drop for CaptureWorker {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        self.mailbox.wake();
+        if let Some(join) = self.join.take() {
+            retain_worker(join, "macOS screen capture worker");
+        }
+    }
+}
+
 struct StagedCaptureWorker {
     generation: u64,
     worker: Option<CaptureWorker>,
@@ -400,7 +468,7 @@ pub struct MacosScreenCaptureInput {
     publication: Arc<Mutex<MacosPublication>>,
     exact: Arc<MacosExactPublicationShared>,
     telemetry: Arc<MacosScreenRuntimeTelemetry>,
-    worker: Option<CaptureWorker>,
+    sessions: CaptureSessionSet<CaptureWorker>,
     worker_generation: u64,
     demand: ScreenCaptureDemand,
     running: bool,

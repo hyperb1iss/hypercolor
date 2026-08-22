@@ -2,8 +2,9 @@ use super::{
     CaptureExactCommand, CaptureExactCommandEndpoint, CaptureExactCommandRejected,
     CaptureExactPublicationShared, CaptureExactRuntimeCollection, CaptureExactRuntimeOwner,
     CaptureExactRuntimeStore, CaptureOwnedSource, CapturePublication, CapturePublicationFence,
-    CapturePublicationSource, CaptureSessionAuthority, VersionedCaptureSettings,
-    begin_capture_exact_retirement, exact_preparation_abort, reap_capture_exact_runtimes,
+    CapturePublicationSource, CaptureSession, CaptureSessionAuthority, CaptureSessionSet,
+    CaptureSuccessorPolicy, VersionedCaptureSettings, begin_capture_exact_retirement,
+    exact_preparation_abort, reap_capture_exact_runtimes,
 };
 use crate::input::screen::{
     CaptureSourceId, ExactBoxList, PixelExtent, ScreenCaptureDemand, ScreenCommittedState,
@@ -18,6 +19,229 @@ struct FakeExactEndpoint {
     wakes: Arc<AtomicUsize>,
     authority: Arc<AtomicU64>,
     reject: bool,
+}
+
+struct FakeSession {
+    authority: CaptureSessionAuthority,
+    endpoint: FakeExactEndpoint,
+    finished: Arc<AtomicBool>,
+    aborts: Arc<AtomicUsize>,
+    wakes: Arc<AtomicUsize>,
+    finishes: Arc<AtomicUsize>,
+    detaches: Arc<AtomicUsize>,
+}
+
+impl FakeSession {
+    fn new(generation: u64) -> Self {
+        Self {
+            authority: CaptureSessionAuthority::new(generation),
+            endpoint: FakeExactEndpoint::default(),
+            finished: Arc::new(AtomicBool::new(false)),
+            aborts: Arc::default(),
+            wakes: Arc::default(),
+            finishes: Arc::default(),
+            detaches: Arc::default(),
+        }
+    }
+}
+
+impl CaptureSession for FakeSession {
+    type Exit = CaptureSessionAuthority;
+    type ExactEndpoint = FakeExactEndpoint;
+
+    const SUCCESSOR_POLICY: CaptureSuccessorPolicy = CaptureSuccessorPolicy::AllowOverlap;
+
+    fn authority(&self) -> CaptureSessionAuthority {
+        self.authority
+    }
+
+    fn exact_endpoint(&self) -> Self::ExactEndpoint {
+        self.endpoint.clone()
+    }
+
+    fn abort(&self) {
+        self.aborts.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn wake(&self) {
+        self.wakes.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn is_finished(&self) -> bool {
+        self.finished.load(Ordering::Acquire)
+    }
+
+    fn finish(self) -> Self::Exit {
+        self.finishes.fetch_add(1, Ordering::Relaxed);
+        self.authority
+    }
+
+    fn detach(self) {
+        self.detaches.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+struct ExclusiveFakeSession(FakeSession);
+
+impl CaptureSession for ExclusiveFakeSession {
+    type Exit = CaptureSessionAuthority;
+    type ExactEndpoint = FakeExactEndpoint;
+
+    const SUCCESSOR_POLICY: CaptureSuccessorPolicy = CaptureSuccessorPolicy::WaitForRetirement;
+
+    fn authority(&self) -> CaptureSessionAuthority {
+        self.0.authority()
+    }
+
+    fn exact_endpoint(&self) -> Self::ExactEndpoint {
+        self.0.exact_endpoint()
+    }
+
+    fn abort(&self) {
+        self.0.abort();
+    }
+
+    fn wake(&self) {
+        self.0.wake();
+    }
+
+    fn is_finished(&self) -> bool {
+        self.0.is_finished()
+    }
+
+    fn finish(self) -> Self::Exit {
+        self.0.finish()
+    }
+
+    fn detach(self) {
+        self.0.detach();
+    }
+}
+
+#[test]
+fn session_set_drop_aborts_wakes_and_detaches_without_finishing() {
+    let session = FakeSession::new(1);
+    let aborts = Arc::clone(&session.aborts);
+    let wakes = Arc::clone(&session.wakes);
+    let finishes = Arc::clone(&session.finishes);
+    let detaches = Arc::clone(&session.detaches);
+    let mut sessions = CaptureSessionSet::default();
+    assert!(sessions.install(session).is_ok());
+
+    drop(sessions);
+
+    assert_eq!(aborts.load(Ordering::Relaxed), 1);
+    assert_eq!(wakes.load(Ordering::Relaxed), 1);
+    assert_eq!(finishes.load(Ordering::Relaxed), 0);
+    assert_eq!(detaches.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn finished_session_is_finished_exactly_once() {
+    let session = FakeSession::new(1);
+    let finished = Arc::clone(&session.finished);
+    let finishes = Arc::clone(&session.finishes);
+    let mut sessions = CaptureSessionSet::default();
+    assert!(sessions.install(session).is_ok());
+    finished.store(true, Ordering::Release);
+
+    assert_eq!(
+        sessions.take_finished_active(),
+        Some((
+            CaptureSessionAuthority::new(1),
+            CaptureSessionAuthority::new(1)
+        ))
+    );
+    assert!(sessions.take_finished_active().is_none());
+    assert_eq!(finishes.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn retired_session_exit_cannot_remove_the_successor() {
+    let first = FakeSession::new(1);
+    let first_finished = Arc::clone(&first.finished);
+    let mut sessions = CaptureSessionSet::default();
+    assert!(sessions.install(first).is_ok());
+    assert_eq!(
+        sessions.retire_active(),
+        Some(CaptureSessionAuthority::new(1))
+    );
+    assert!(sessions.install(FakeSession::new(2)).is_ok());
+    first_finished.store(true, Ordering::Release);
+
+    let mut exits = Vec::new();
+    sessions.reap_finished(|authority, exit| exits.push((authority, exit)));
+
+    assert_eq!(
+        exits,
+        [(
+            CaptureSessionAuthority::new(1),
+            CaptureSessionAuthority::new(1)
+        )]
+    );
+    assert_eq!(
+        sessions.active().map(CaptureSession::authority),
+        Some(CaptureSessionAuthority::new(2))
+    );
+}
+
+#[test]
+fn reap_callbacks_run_after_session_ownership_is_released() {
+    let first = FakeSession::new(1);
+    let first_finished = Arc::clone(&first.finished);
+    let mut sessions = CaptureSessionSet::default();
+    assert!(sessions.install(first).is_ok());
+    sessions.retire_active();
+    first_finished.store(true, Ordering::Release);
+    let publication = Mutex::new(false);
+
+    sessions.reap_finished(|_, _| {
+        *publication
+            .lock()
+            .expect("publication lock remains available while reaping") = true;
+    });
+
+    assert!(
+        *publication
+            .lock()
+            .expect("publication lock remains healthy")
+    );
+}
+
+#[test]
+fn successor_overlap_policy_is_statically_enforced() {
+    let mut exclusive = CaptureSessionSet::default();
+    assert!(
+        exclusive
+            .install(ExclusiveFakeSession(FakeSession::new(1)))
+            .is_ok()
+    );
+    exclusive.retire_active();
+    assert!(!exclusive.can_install_successor());
+    assert!(
+        exclusive
+            .install(ExclusiveFakeSession(FakeSession::new(2)))
+            .is_err()
+    );
+
+    let mut overlapping = CaptureSessionSet::default();
+    assert!(overlapping.install(FakeSession::new(1)).is_ok());
+    overlapping.retire_active();
+    assert!(overlapping.can_install_successor());
+}
+
+#[test]
+fn steady_state_access_does_not_grow_retirement_storage() {
+    let mut sessions = CaptureSessionSet::default();
+    assert!(sessions.install(FakeSession::new(1)).is_ok());
+    let capacity = sessions.retiring_capacity();
+
+    for _ in 0..100 {
+        assert!(sessions.active().is_some());
+        assert_eq!(sessions.retiring_len(), 0);
+    }
+
+    assert_eq!(sessions.retiring_capacity(), capacity);
 }
 
 impl Default for FakeExactEndpoint {

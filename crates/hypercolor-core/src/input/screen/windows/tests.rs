@@ -1192,8 +1192,8 @@ fn wait_for_activity(input: &WindowsScreenCaptureInput, expected: u64) {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let processed = input
-            .worker
-            .as_ref()
+            .sessions
+            .active()
             .expect("capture owns a worker while activity is changing")
             .processed_activity_generation
             .load(Ordering::Acquire);
@@ -1263,7 +1263,7 @@ fn activity_fence_rejects_a_pre_deactivation_frame_after_reactivation() {
 fn deactivated_worker_is_reused_when_capture_reactivates() {
     let mut input = WindowsScreenCaptureInput::new(CaptureConfig::default());
     input.start().expect("idle capture source starts");
-    assert!(input.worker.is_none());
+    assert!(input.sessions.active().is_none());
 
     input
         .set_capture_demand_state(active_demand())
@@ -1271,8 +1271,8 @@ fn deactivated_worker_is_reused_when_capture_reactivates() {
     let first_activity = input.settings.activity_generation.load(Ordering::Acquire);
     wait_for_activity(&input, first_activity);
     let first_thread = input
-        .worker
-        .as_ref()
+        .sessions
+        .active()
         .and_then(|worker| worker.join_handle.as_ref())
         .expect("active capture owns a worker thread")
         .thread()
@@ -1285,7 +1285,7 @@ fn deactivated_worker_is_reused_when_capture_reactivates() {
     let inactive_activity = input.settings.activity_generation.load(Ordering::Acquire);
     wait_for_activity(&input, inactive_activity);
     assert!(
-        input.worker.is_some(),
+        input.sessions.active().is_some(),
         "acknowledged idle capture retains worker ownership"
     );
 
@@ -1295,8 +1295,8 @@ fn deactivated_worker_is_reused_when_capture_reactivates() {
     let reactivated_activity = input.settings.activity_generation.load(Ordering::Acquire);
     wait_for_activity(&input, reactivated_activity);
     let reactivated_thread = input
-        .worker
-        .as_ref()
+        .sessions
+        .active()
         .and_then(|worker| worker.join_handle.as_ref())
         .expect("reactivated capture still owns a worker thread")
         .thread()
@@ -1337,14 +1337,19 @@ fn disconnected_worker_is_reaped_before_activation_retries_once() {
     });
     ready_rx.recv().expect("fake worker is running");
     let disconnected_thread = join_handle.thread().id();
-    input.worker = Some(CaptureWorker {
-        authority: CaptureSessionAuthority::new(1),
-        command_tx,
-        exit_rx,
-        join_handle: Some(join_handle),
-        cancel,
-        processed_activity_generation: Arc::new(AtomicU64::new(0)),
-    });
+    assert!(
+        input
+            .sessions
+            .install(CaptureWorker {
+                authority: CaptureSessionAuthority::new(1),
+                command_tx,
+                exit_rx,
+                join_handle: Some(join_handle),
+                cancel,
+                processed_activity_generation: Arc::new(AtomicU64::new(0)),
+            })
+            .is_ok()
+    );
 
     input
         .set_capture_demand_state(active_demand())
@@ -1352,8 +1357,8 @@ fn disconnected_worker_is_reaped_before_activation_retries_once() {
     let activity_generation = input.settings.activity_generation.load(Ordering::Acquire);
     wait_for_activity(&input, activity_generation);
     let replacement_thread = input
-        .worker
-        .as_ref()
+        .sessions
+        .active()
         .and_then(|worker| worker.join_handle.as_ref())
         .expect("activation owns the replacement worker")
         .thread()
@@ -1368,6 +1373,72 @@ fn disconnected_worker_is_reaped_before_activation_retries_once() {
     );
 
     input.stop();
+}
+
+#[test]
+fn retired_worker_cannot_republish_after_stop_returns() {
+    let mut input = WindowsScreenCaptureInput::new(CaptureConfig::default());
+    let authority = CaptureSessionAuthority::new(1);
+    input
+        .settings
+        .session_generation
+        .store(1, Ordering::Release);
+    drop(input.exact.activate_authority(authority));
+
+    let epoch = active_epoch("display:main", 3, 1, 1);
+    {
+        let mut publication = input
+            .publication
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(publication.activate(epoch.clone()).is_ok());
+        assert!(publication.publish(&epoch, "active frame").is_ok());
+    }
+
+    let (command_tx, command_rx) = mpsc::channel::<WorkerCommand>();
+    let (_exit_tx, exit_rx) = mpsc::sync_channel(1);
+    let release = Arc::new(AtomicBool::new(false));
+    let worker_release = Arc::clone(&release);
+    let join_handle = thread::spawn(move || {
+        let _command_rx = command_rx;
+        while !worker_release.load(Ordering::Acquire) {
+            thread::yield_now();
+        }
+    });
+    assert!(
+        input
+            .sessions
+            .install(CaptureWorker {
+                authority,
+                command_tx,
+                exit_rx,
+                join_handle: Some(join_handle),
+                cancel: Arc::new(AtomicBool::new(false)),
+                processed_activity_generation: Arc::new(AtomicU64::new(0)),
+            })
+            .is_ok()
+    );
+
+    input.stop();
+
+    assert!(!input.exact.is_current_authority(authority));
+    let mut publication = input
+        .publication
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    assert!(publication.activate(epoch.clone()).is_err());
+    assert!(publication.publish(&epoch, "retired frame").is_err());
+    drop(publication);
+
+    release.store(true, Ordering::Release);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while input.sessions.retiring_len() != 0 {
+        input.sessions.reap_finished(|_, result| {
+            result.expect("retired worker exits cleanly");
+        });
+        assert!(Instant::now() < deadline, "retired worker did not exit");
+        thread::yield_now();
+    }
 }
 
 #[test]

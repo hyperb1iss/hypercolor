@@ -60,8 +60,9 @@ use hypercolor_worker_retention::{retain_worker, spawn_worker};
 use super::adapter::{
     CaptureExactCommand, CaptureExactCommandEndpoint, CaptureExactCommandRejected,
     CaptureExactPublicationShared, CaptureExactRuntimeOwner, CaptureOwnedSource,
-    CapturePublication, CapturePublicationFence, CapturePublicationSource, CaptureSessionAuthority,
-    VersionedCaptureSettings, begin_capture_exact_preparation, begin_capture_exact_retirement,
+    CapturePublication, CapturePublicationFence, CapturePublicationSource, CaptureSession,
+    CaptureSessionAuthority, CaptureSessionSet, CaptureSuccessorPolicy, VersionedCaptureSettings,
+    begin_capture_exact_preparation, begin_capture_exact_retirement,
     bind_current_capture_exact_runtime, execute_capture_exact_command,
 };
 
@@ -1330,11 +1331,17 @@ impl SharedSettings {
         } else {
             None
         };
-        self.exact
-            .replace_source_if_current(CaptureSessionAuthority::new(session_generation), None);
+        let retirement_generation = session_generation
+            .checked_add(1)
+            .expect("Wayland capture session generation exhausted during retirement");
+        self.session_generation
+            .store(retirement_generation, Ordering::Release);
+        let displaced_exact = self
+            .exact
+            .activate_authority(CaptureSessionAuthority::new(retirement_generation));
         drop(publication);
         drop(session_guard);
-        drop(displaced);
+        drop((displaced, displaced_exact));
     }
 
     fn persist_restore_token_for_session(
@@ -1518,8 +1525,7 @@ pub struct WaylandScreenCaptureInput {
     capture_demand: ScreenCaptureDemand,
     publication: Arc<Mutex<WaylandCapturePublication>>,
     status_snapshot_generation: u64,
-    worker: Option<WaylandCaptureWorker>,
-    retiring_workers: Vec<WaylandCaptureWorker>,
+    sessions: CaptureSessionSet<WaylandCaptureWorker>,
     token_sink: Option<RestoreTokenSink>,
     next_adoption_id: u64,
     status: SourceStatusReporter,
@@ -1595,8 +1601,7 @@ impl WaylandScreenCaptureInput {
             capture_demand: ScreenCaptureDemand::Inactive,
             publication,
             status_snapshot_generation: 0,
-            worker: None,
-            retiring_workers: Vec::new(),
+            sessions: CaptureSessionSet::default(),
             token_sink: None,
             next_adoption_id: 0,
             status: SourceStatusReporter::new(
@@ -1688,8 +1693,8 @@ impl WaylandScreenCaptureInput {
         self.next_adoption_id = self.next_adoption_id.wrapping_add(1).max(1);
         let adoption_id = self.next_adoption_id;
         let worker = self
-            .worker
-            .as_ref()
+            .sessions
+            .active()
             .ok_or_else(|| anyhow!("Wayland capture worker is unavailable for live adoption"))?;
         if worker.portal_pending.load(Ordering::SeqCst) {
             anyhow::bail!("Wayland capture worker cannot adopt settings while the portal is open");
@@ -1727,7 +1732,7 @@ impl WaylandScreenCaptureInput {
             WORKER_STOP_TIMEOUT,
             &authority,
             || {
-                cancellation_sent.set(self.worker.as_ref().is_some_and(|worker| {
+                cancellation_sent.set(self.sessions.active().is_some_and(|worker| {
                     worker
                         .command_tx
                         .send(WorkerCommand::CancelAdoption { adoption_id })
@@ -1823,7 +1828,7 @@ impl WaylandScreenCaptureInput {
     fn detached_reselect_action(&self) -> ScreenSourcePickerAction {
         let settings = Arc::clone(&self.settings);
         let token_sink = self.token_sink.clone();
-        let worker = self.worker.as_ref().map(|worker| {
+        let worker = self.sessions.active().map(|worker| {
             (
                 Arc::clone(&worker.portal_pending),
                 worker.command_tx.clone(),
@@ -1851,8 +1856,8 @@ impl WaylandScreenCaptureInput {
     }
 
     fn portal_pending(&self) -> bool {
-        self.worker
-            .as_ref()
+        self.sessions
+            .active()
             .is_some_and(|worker| worker.portal_pending.load(Ordering::SeqCst))
     }
 
@@ -1871,7 +1876,7 @@ impl WaylandScreenCaptureInput {
             if demand.is_active() && self.running {
                 self.request_active_worker_demand();
             }
-            if demand.is_active() && self.running && self.worker.is_none() {
+            if demand.is_active() && self.running && self.sessions.active().is_none() {
                 self.spawn_worker()?;
                 self.send_worker_command(WorkerCommand::SetDemand(demand))?;
             }
@@ -1928,7 +1933,7 @@ impl WaylandScreenCaptureInput {
         let result = if demand.is_active() {
             self.spawn_worker()
                 .and_then(|()| self.send_worker_command(WorkerCommand::SetDemand(demand)))
-        } else if self.worker.is_some() {
+        } else if self.sessions.active().is_some() {
             self.shutdown_worker();
             Ok(())
         } else {
@@ -1970,15 +1975,15 @@ impl WaylandScreenCaptureInput {
     }
 
     fn request_active_worker_demand(&self) -> bool {
-        let Some(worker) = self.worker.as_ref() else {
+        let Some(worker) = self.sessions.active() else {
             return false;
         };
         request_active_worker_demand(&worker.demand_state)
     }
 
     fn spawn_worker(&mut self) -> anyhow::Result<()> {
-        self.reap_workers(false);
-        if self.worker.is_some() {
+        self.reap_workers();
+        if self.sessions.active().is_some() {
             return Ok(());
         }
 
@@ -1998,7 +2003,6 @@ impl WaylandScreenCaptureInput {
         let (command_tx, command_rx) = loop_channel();
         let worker_command_tx = command_tx.clone();
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
-        let (exit_tx, exit_rx) = mpsc::sync_channel(1);
         let status_writer = self.status_session.load();
         let worker_status_writer = status_writer.clone();
         let session_generation = Arc::new(AtomicU64::new(settings.begin_session()));
@@ -2017,22 +2021,22 @@ impl WaylandScreenCaptureInput {
                     status_writer,
                     capture_session_generation,
                 );
-                let _ = exit_tx.send(());
             },
         )
         .context("failed to spawn Wayland screen capture worker")?;
 
-        self.worker = Some(WaylandCaptureWorker {
-            command_tx,
-            exit_rx,
-            join_handle: Some(join_handle),
-            cancel,
-            portal_pending,
-            demand_state,
-            status_writer: worker_status_writer,
-            session_generation,
-            settings: worker_settings,
-        });
+        self.sessions
+            .install(WaylandCaptureWorker {
+                command_tx,
+                join_handle: Some(join_handle),
+                cancel,
+                portal_pending,
+                demand_state,
+                status_writer: worker_status_writer,
+                session_generation,
+                settings: worker_settings,
+            })
+            .unwrap_or_else(|_| unreachable!("Wayland capture sessions permit overlap"));
         if let Err(error) = ready_rx.recv_timeout(WORKER_READY_TIMEOUT) {
             self.shutdown_worker();
             anyhow::bail!("Wayland screen capture worker readiness timed out: {error}");
@@ -2047,7 +2051,7 @@ impl WaylandScreenCaptureInput {
         let WorkerCommand::SetDemand(demand) = command else {
             anyhow::bail!("only demand commands use the restartable Wayland dispatch path");
         };
-        let Some(worker) = &self.worker else {
+        let Some(worker) = self.sessions.active() else {
             return Ok(());
         };
 
@@ -2065,7 +2069,7 @@ impl WaylandScreenCaptureInput {
 
         if demand.is_active() {
             self.spawn_worker()?;
-            let replacement_accepted = self.worker.as_ref().is_some_and(|worker| {
+            let replacement_accepted = self.sessions.active().is_some_and(|worker| {
                 set_worker_demand(&worker.demand_state, true);
                 worker
                     .command_tx
@@ -2082,66 +2086,56 @@ impl WaylandScreenCaptureInput {
     }
 
     fn shutdown_worker(&mut self) {
-        let Some(worker) = self.worker.take() else {
+        let portal_pending = self
+            .sessions
+            .active()
+            .is_some_and(|worker| worker.portal_pending.load(Ordering::SeqCst));
+        if self.sessions.retire_active().is_none() {
             return;
-        };
-
-        worker.cancel_session();
-        let _ = worker.command_tx.send(WorkerCommand::Stop);
-
-        if !worker.portal_pending.load(Ordering::SeqCst) {
-            let _ = worker.exit_rx.recv_timeout(WORKER_STOP_TIMEOUT);
         }
-        if worker.is_finished() {
-            let _ = worker.join(false);
-        } else {
+        if portal_pending {
             debug!("Retaining Wayland capture worker until the portal request terminates");
-            self.retiring_workers.push(worker);
         }
+        self.reap_workers();
     }
 
     fn observe_worker_exit(&mut self, publish_failure: bool) -> bool {
-        let Some(worker) = self.worker.as_ref() else {
-            self.reap_workers(false);
+        let Some((_authority, exit)) = self.sessions.take_finished_active() else {
+            self.reap_workers();
             return false;
         };
-        if !worker.is_finished() {
-            self.reap_workers(false);
-            return false;
-        }
-        let worker = self.worker.take().expect("finished worker remains owned");
-        let status_writer = worker.status_writer.clone();
-        let session_generation = Arc::clone(&worker.session_generation);
-        let cancel = Arc::clone(&worker.cancel);
-        let failure_reason = worker.join(publish_failure);
-        if let (Some(reason), Some(status)) = (failure_reason, status_writer.as_ref()) {
+        let failure_reason = if publish_failure {
+            Some(exit.thread_result.err().map_or_else(
+                || "Wayland screen capture worker exited unexpectedly".to_owned(),
+                |panic| format!("Wayland screen capture worker panicked: {panic:?}"),
+            ))
+        } else {
+            if let Err(panic) = exit.thread_result {
+                warn!(message = ?panic, "Wayland screen capture worker panicked");
+            }
+            None
+        };
+        if let (Some(reason), Some(status)) = (failure_reason, exit.status_writer.as_ref()) {
             publish_unexpected_exit_status(
                 &self.settings,
-                &session_generation,
-                &cancel,
+                &exit.session_generation,
+                &exit.cancel,
                 status,
                 reason,
             );
         }
         self.settings
-            .invalidate_session(session_generation.load(Ordering::Acquire));
-        self.reap_workers(false);
+            .invalidate_session(exit.session_generation.load(Ordering::Acquire));
+        self.reap_workers();
         true
     }
 
-    fn reap_workers(&mut self, wait: bool) {
-        let mut retained = Vec::with_capacity(self.retiring_workers.len());
-        for worker in self.retiring_workers.drain(..) {
-            if wait && !worker.portal_pending.load(Ordering::SeqCst) {
-                let _ = worker.exit_rx.recv_timeout(WORKER_STOP_TIMEOUT);
+    fn reap_workers(&mut self) {
+        self.sessions.reap_finished(|_, exit| {
+            if let Err(panic) = exit.thread_result {
+                warn!(message = ?panic, "Wayland screen capture worker panicked");
             }
-            if worker.is_finished() {
-                let _ = worker.join(false);
-            } else {
-                retained.push(worker);
-            }
-        }
-        self.retiring_workers = retained;
+        });
     }
 }
 
@@ -2186,12 +2180,12 @@ impl InputSource for WaylandScreenCaptureInput {
         if let Ok(mut demand) = self.settings.values.try_lock_demand() {
             *demand = ScreenCaptureDemand::Inactive;
         }
-        if self.worker.is_some() {
+        if self.sessions.active().is_some() {
             self.shutdown_worker();
         } else {
             self.settings.clear_expected_epoch();
         }
-        self.reap_workers(true);
+        self.reap_workers();
         let session_generation = self.settings.session_generation.load(Ordering::Acquire);
         if session_generation != 0 {
             let authority = CaptureSessionAuthority::new(session_generation);
@@ -2378,17 +2372,15 @@ impl ScreenSource for WaylandScreenCaptureInput {
         &mut self,
         ticket: ScreenWorkerPreparationTicket,
     ) -> anyhow::Result<ScreenWorkerPreparation> {
-        let worker = self.worker.as_ref().ok_or_else(|| {
+        let endpoint = self.sessions.exact_endpoint().ok_or_else(|| {
             anyhow!("Wayland capture worker is unavailable for exact publication preparation")
         })?;
-        begin_capture_exact_preparation(&worker.exact_command_endpoint(), ticket)
+        begin_capture_exact_preparation(&endpoint, ticket)
     }
 
     fn begin_screen_publication_retirement(&mut self) -> Option<ScreenWorkerRetirement> {
-        let worker = self.worker.as_ref()?;
-        Some(begin_capture_exact_retirement(
-            &worker.exact_command_endpoint(),
-        ))
+        let endpoint = self.sessions.exact_endpoint()?;
+        Some(begin_capture_exact_retirement(&endpoint))
     }
 
     fn reconfigure_screen_capture(&mut self, config: &CaptureConfig) -> anyhow::Result<()> {
@@ -2421,7 +2413,6 @@ fn clear_restore_token(settings: &SharedSettings, token_sink: Option<&RestoreTok
 
 struct WaylandCaptureWorker {
     command_tx: LoopSender<WorkerCommand>,
-    exit_rx: mpsc::Receiver<()>,
     join_handle: Option<thread::JoinHandle<()>>,
     /// Tells the worker to exit at its next checkpoint without touching
     /// shared state (snapshot, settings, restore token).
@@ -2433,6 +2424,13 @@ struct WaylandCaptureWorker {
     status_writer: Option<SourceSessionWriter>,
     session_generation: Arc<AtomicU64>,
     settings: Arc<SharedSettings>,
+}
+
+struct WaylandCaptureExit {
+    status_writer: Option<SourceSessionWriter>,
+    session_generation: Arc<AtomicU64>,
+    cancel: Arc<AtomicBool>,
+    thread_result: thread::Result<()>,
 }
 
 #[derive(Clone)]
@@ -2464,10 +2462,26 @@ impl WaylandCaptureWorker {
     }
 }
 
-impl WaylandCaptureWorker {
-    fn cancel_session(&self) {
-        self.settings
-            .cancel_worker_session(&self.cancel, &self.session_generation);
+impl CaptureSession for WaylandCaptureWorker {
+    type Exit = WaylandCaptureExit;
+    type ExactEndpoint = WaylandExactCommandEndpoint;
+
+    const SUCCESSOR_POLICY: CaptureSuccessorPolicy = CaptureSuccessorPolicy::AllowOverlap;
+
+    fn authority(&self) -> CaptureSessionAuthority {
+        CaptureSessionAuthority::new(self.session_generation.load(Ordering::Acquire))
+    }
+
+    fn exact_endpoint(&self) -> Self::ExactEndpoint {
+        self.exact_command_endpoint()
+    }
+
+    fn abort(&self) {
+        self.cancel_session();
+    }
+
+    fn wake(&self) {
+        let _ = self.command_tx.send(WorkerCommand::Stop);
     }
 
     fn is_finished(&self) -> bool {
@@ -2476,20 +2490,31 @@ impl WaylandCaptureWorker {
             .is_none_or(thread::JoinHandle::is_finished)
     }
 
-    fn join(mut self, publish_failure: bool) -> Option<String> {
-        let Some(join_handle) = self.join_handle.take() else {
-            return None;
-        };
-        let failure = join_handle.join().err();
-        if publish_failure {
-            return Some(failure.map_or_else(
-                || "Wayland screen capture worker exited unexpectedly".to_owned(),
-                |panic| format!("Wayland screen capture worker panicked: {panic:?}"),
-            ));
-        } else if let Some(panic) = failure {
-            warn!(message = ?panic, "Wayland screen capture worker panicked");
+    fn finish(mut self) -> Self::Exit {
+        let thread_result = self
+            .join_handle
+            .take()
+            .expect("finished Wayland worker retains its thread handle")
+            .join();
+        WaylandCaptureExit {
+            status_writer: self.status_writer.take(),
+            session_generation: Arc::clone(&self.session_generation),
+            cancel: Arc::clone(&self.cancel),
+            thread_result,
         }
-        None
+    }
+
+    fn detach(mut self) {
+        if let Some(join_handle) = self.join_handle.take() {
+            retain_worker(join_handle, "Wayland capture worker");
+        }
+    }
+}
+
+impl WaylandCaptureWorker {
+    fn cancel_session(&self) {
+        self.settings
+            .cancel_worker_session(&self.cancel, &self.session_generation);
     }
 }
 
@@ -2500,10 +2525,6 @@ impl Drop for WaylandCaptureWorker {
         };
         self.cancel_session();
         let _ = self.command_tx.send(WorkerCommand::Stop);
-        if join_handle.is_finished() {
-            let _ = join_handle.join();
-            return;
-        }
         retain_worker(join_handle, "Wayland capture worker");
     }
 }

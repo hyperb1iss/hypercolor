@@ -20,7 +20,7 @@ use crate::input::{SourceKind, SourceStatusReporter};
 
 use super::status::protected_screen_action_issue;
 use super::{
-    CaptureConfig, CaptureSessionAuthority, CaptureWorker, MacosCaptureControl,
+    CaptureConfig, CaptureSessionAuthority, CaptureSessionSet, CaptureWorker, MacosCaptureControl,
     MacosExactPublicationShared, MacosPublication, MacosScreenCaptureInput,
     MacosScreenRuntimeTelemetry, PixelExtent, PreparedWorker, ScreenByteAdmissionCoordinator,
     ScreenCaptureDemand, ScreenComputeCapacityPolicy, StagedCaptureWorker, color_space_name,
@@ -115,7 +115,7 @@ impl MacosScreenCaptureInput {
                 compute_capacity_policy,
             )),
             telemetry,
-            worker: None,
+            sessions: CaptureSessionSet::default(),
             worker_generation: 0,
             demand: ScreenCaptureDemand::Inactive,
             running: false,
@@ -451,10 +451,12 @@ impl MacosScreenCaptureInput {
             displaced
         };
         drop(displaced);
-        self.worker = Some(worker);
+        self.sessions
+            .install(worker)
+            .unwrap_or_else(|_| unreachable!("macOS capture sessions permit overlap"));
         start.store(true, Ordering::Release);
-        self.worker
-            .as_ref()
+        self.sessions
+            .active()
             .and_then(|worker| worker.join.as_ref())
             .expect("installed worker retains its thread handle")
             .thread()
@@ -462,40 +464,55 @@ impl MacosScreenCaptureInput {
     }
 
     pub(super) fn stop_worker(&mut self) {
-        let Some(mut worker) = self.worker.take() else {
+        let Some(authority) = self.sessions.retire_active() else {
             return;
         };
-        worker.stop.store(true, Ordering::Release);
-        worker.mailbox.wake();
-        if let Some(join) = worker.join.take() {
-            let _ = join.join();
-        }
-        let latest = { lock(&self.publication).clear_latest() };
-        drop(latest);
-        self.exact.replace_current_source(worker.authority, None);
+        self.retire_worker_authority(authority);
+        self.sessions.reap_finished(|_, result| {
+            if let Err(error) = result {
+                tracing::warn!(error = format!("{error:#}"), "retired macOS worker failed");
+            }
+        });
     }
 
     pub(super) fn observe_worker_exit(&mut self) -> anyhow::Result<()> {
-        let Some(worker) = self.worker.as_ref() else {
+        self.sessions.reap_finished(|_, result| {
+            if let Err(error) = result {
+                tracing::warn!(error = format!("{error:#}"), "retired macOS worker failed");
+            }
+        });
+        let Some((authority, result)) = self.sessions.take_finished_active() else {
             return Ok(());
         };
-        match worker.exit_rx.try_recv() {
-            Ok(Ok(())) => {
-                self.stop_worker();
-                if self.running && self.demand.is_active() {
-                    return Err(anyhow!("macOS capture worker exited while active"));
-                }
-            }
-            Ok(Err(error)) => {
-                self.stop_worker();
-                return Err(error);
-            }
-            Err(mpsc::TryRecvError::Disconnected) => {
-                self.stop_worker();
-                return Err(anyhow!("macOS capture worker disconnected"));
-            }
-            Err(mpsc::TryRecvError::Empty) => {}
+        self.retire_worker_authority(authority);
+        result?;
+        if self.running && self.demand.is_active() {
+            return Err(anyhow!("macOS capture worker exited while active"));
         }
         Ok(())
+    }
+
+    fn retire_worker_authority(&mut self, authority: CaptureSessionAuthority) {
+        debug_assert!(self.exact.is_current_authority(authority));
+        let retirement_generation = self
+            .worker_generation
+            .checked_add(1)
+            .expect("macOS capture worker generation exhausted during retirement");
+        self.worker_generation = retirement_generation;
+        let displaced_exact = self
+            .exact
+            .activate_authority(CaptureSessionAuthority::new(retirement_generation));
+        let (displaced_active, displaced_latest) = {
+            let mut publication = lock(&self.publication);
+            let displaced_active = publication
+                .replace_fence_preserving_latest(
+                    super::MacosPublicationFence(retirement_generation),
+                    retirement_generation,
+                )
+                .expect("macOS retirement generation matches its publication fence");
+            let displaced_latest = publication.clear_latest();
+            (displaced_active, displaced_latest)
+        };
+        drop((displaced_exact, displaced_active, displaced_latest));
     }
 }

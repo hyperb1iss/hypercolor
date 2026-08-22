@@ -11,13 +11,13 @@ use super::{
     PipeWireFormatAcknowledgment, PipeWireFormatRequest, PipeWireFormatState, PipeWireLoopExit,
     RestoreTokenSink, SharedSettings, SpaChunkView, SpaVideoFormat, UnavailablePark,
     VersionedCaptureSettings, WaylandAnalysisState, WaylandCapturePublication,
-    WaylandCaptureUserData, WaylandExactPublicationShared, WaylandScreenCaptureInput,
-    WaylandSourceMetadata, WaylandTopologySignature, commit_if_authorized, convert_packed_to_rgba,
-    decode_chunk, fence_previous_publication, initial_native_extent_correction,
-    initial_worker_demand, park_unavailable_worker, prepare_wayland_exact_runtime,
-    publish_unexpected_exit_status, request_active_worker_demand, set_worker_demand,
-    settle_pipewire_restoration, unavailable_format_outcome, wait_for_adoption_result,
-    worker_demand_epoch, worker_demanded,
+    WaylandCaptureUserData, WaylandCaptureWorker, WaylandExactPublicationShared,
+    WaylandScreenCaptureInput, WaylandSourceMetadata, WaylandTopologySignature,
+    commit_if_authorized, convert_packed_to_rgba, decode_chunk, fence_previous_publication,
+    initial_native_extent_correction, initial_worker_demand, park_unavailable_worker,
+    prepare_wayland_exact_runtime, publish_unexpected_exit_status, request_active_worker_demand,
+    set_worker_demand, settle_pipewire_restoration, unavailable_format_outcome,
+    wait_for_adoption_result, worker_demand_epoch, worker_demanded,
 };
 use crate::input::screen::adapter::{CaptureSessionAuthority, reap_capture_exact_runtimes};
 use crate::input::screen::{
@@ -50,6 +50,52 @@ fn settings(session_generation: u64) -> Arc<SharedSettings> {
         publication,
         exact,
     })
+}
+
+#[test]
+fn portal_pending_worker_retirement_does_not_wait_for_picker_exit() {
+    let mut input = WaylandScreenCaptureInput::new(CaptureConfig::default());
+    let (command_tx, _command_rx) = super::loop_channel();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let portal_pending = Arc::new(AtomicBool::new(true));
+    let demand_state = Arc::new(AtomicU64::new(initial_worker_demand(false)));
+    let session_generation = Arc::new(AtomicU64::new(1));
+    let (started_tx, started_rx) = mpsc::sync_channel(0);
+    let (release_tx, release_rx) = mpsc::sync_channel(0);
+    let join_handle = thread::spawn(move || {
+        started_tx.send(()).expect("test worker reports startup");
+        release_rx.recv().expect("test releases portal picker");
+    });
+    assert!(
+        input
+            .sessions
+            .install(WaylandCaptureWorker {
+                command_tx,
+                join_handle: Some(join_handle),
+                cancel: Arc::clone(&cancel),
+                portal_pending,
+                demand_state,
+                status_writer: None,
+                session_generation,
+                settings: Arc::clone(&input.settings),
+            })
+            .is_ok()
+    );
+    started_rx.recv().expect("portal worker is running");
+    let (returned_tx, returned_rx) = mpsc::sync_channel(0);
+
+    thread::spawn(move || {
+        input.shutdown_worker();
+        assert!(input.sessions.active().is_none());
+        assert!(input.sessions.can_install_successor());
+        returned_tx.send(()).expect("retirement reports completion");
+    });
+
+    returned_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("portal retirement returns before picker exit");
+    assert!(cancel.load(Ordering::Acquire));
+    release_tx.send(()).expect("portal worker may exit");
 }
 
 fn source_id(value: &str) -> CaptureSourceId {
@@ -1145,6 +1191,42 @@ fn cancellation_after_status_validation_is_serialized_with_publication() {
         snapshot.issue.as_ref().map(|issue| issue.code.as_ref()),
         Some("pre_cancel_publication")
     );
+}
+
+#[test]
+fn retired_worker_cannot_reinstall_its_exact_source_after_stop() {
+    let settings = settings(61);
+    let mut worker = WaylandAnalysisState::new(
+        Arc::clone(&settings),
+        source(61, PhysicalOrigin { x: 0, y: 0 }, extent(1920, 1080)),
+        CaptureConfig::default(),
+        active_demand(),
+    )
+    .expect("test analysis extent allocates");
+    capture_legacy(&mut worker, 4, 2, 7);
+    let stale_source = settings
+        .exact
+        .source()
+        .expect("active worker installs its exact source");
+    let cancel = AtomicBool::new(false);
+    let active_session_generation = AtomicU64::new(61);
+
+    settings.cancel_worker_session(&cancel, &active_session_generation);
+
+    assert!(cancel.load(Ordering::Acquire));
+    assert_eq!(settings.session_generation.load(Ordering::Acquire), 62);
+    assert!(
+        !settings
+            .exact
+            .is_current_authority(CaptureSessionAuthority::new(61))
+    );
+    assert!(settings.exact.source().is_none());
+    assert!(
+        !settings
+            .exact
+            .replace_source_if_current(CaptureSessionAuthority::new(61), Some(stale_source))
+    );
+    assert!(settings.exact.source().is_none());
 }
 
 #[test]

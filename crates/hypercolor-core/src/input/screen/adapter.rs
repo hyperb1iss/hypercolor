@@ -1,4 +1,5 @@
 pub(in crate::input::screen) mod exact;
+mod session;
 #[cfg(any(target_os = "linux", target_os = "windows", test))]
 mod settings;
 #[cfg(test)]
@@ -18,6 +19,9 @@ use super::{
 pub(in crate::input::screen) use exact::{
     CaptureExactPublicationShared, CaptureOwnedSource, CapturePublicationSource,
     CaptureSessionAuthority,
+};
+pub(in crate::input::screen) use session::{
+    CaptureSession, CaptureSessionSet, CaptureSuccessorPolicy,
 };
 #[cfg(any(target_os = "linux", target_os = "windows", test))]
 pub(in crate::input::screen) use settings::VersionedCaptureSettings;

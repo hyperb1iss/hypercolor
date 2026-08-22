@@ -219,17 +219,15 @@ impl ScreenSource for MacosScreenCaptureInput {
         &mut self,
         ticket: ScreenWorkerPreparationTicket,
     ) -> anyhow::Result<ScreenWorkerPreparation> {
-        let worker = self.worker.as_ref().ok_or_else(|| {
+        let endpoint = self.sessions.exact_endpoint().ok_or_else(|| {
             anyhow!("macOS capture worker is unavailable for exact publication preparation")
         })?;
-        begin_capture_exact_preparation(&worker.exact_command_endpoint(), ticket)
+        begin_capture_exact_preparation(&endpoint, ticket)
     }
 
     fn begin_screen_publication_retirement(&mut self) -> Option<ScreenWorkerRetirement> {
-        let worker = self.worker.as_ref()?;
-        Some(begin_capture_exact_retirement(
-            &worker.exact_command_endpoint(),
-        ))
+        let endpoint = self.sessions.exact_endpoint()?;
+        Some(begin_capture_exact_retirement(&endpoint))
     }
 
     fn reconfigure_screen_capture(&mut self, config: &CaptureConfig) -> anyhow::Result<()> {
@@ -306,7 +304,7 @@ impl ScreenSource for MacosScreenCaptureInput {
             return Ok(());
         }
         #[cfg(feature = "macos-capture-fixtures")]
-        if let Some(worker) = self.worker.as_ref() {
+        if let Some(worker) = self.sessions.active() {
             let (completion_tx, completion_rx) = mpsc::sync_channel(1);
             worker
                 .command_tx
