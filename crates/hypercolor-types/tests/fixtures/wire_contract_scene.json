@@ -1,7 +1,7 @@
 {
   "id": "01931234-5678-7abc-9def-0123456789ab",
-  "name": "Wire compat scene",
-  "description": "Locks the wire format Plan 55 P3 must preserve",
+  "name": "Wire contract scene",
+  "description": "Locks the canonical scene wire format",
   "zones": [
     {
       "id": "01931234-5678-7def-9abc-0123456789cd",
@@ -48,7 +48,7 @@
       "layout": {
         "id": "layout-fixture",
         "name": "Fixture layout",
-        "description": "Wire-compat layout snapshot",
+        "description": "Wire-contract layout snapshot",
         "canvas_width": 640,
         "canvas_height": 480,
         "zones": [

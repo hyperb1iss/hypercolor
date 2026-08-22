@@ -1,20 +1,15 @@
-//! Wire-format compatibility tests.
+//! Serialized scene and component wire-contract fixtures.
 //!
-//! These tests are the gate for Plan 55 Wave P3 (the codebase-wide
-//! type rename from the legacy `RenderGroup`/`DeviceZone`/`Attachment*`
-//! identifiers to today's `Zone`/`Output`/`Component*` ones). The
-//! rename is a Rust-identifier rename only; the serialized wire
-//! format must stay byte-identical. These tests build a
-//! representative Scene and ComponentTemplate with the affected
-//! types populated, serialize them, and assert the bytes match a
-//! checked-in golden. Run as part of `just verify`; a
-//! diff means an unintentional wire change crept in.
+//! These tests build representative `Scene` and `ComponentTemplate`
+//! resources, serialize them, and assert their exact checked-in wire shapes.
+//! Run them as part of `just verify`; a diff means the shared contract changed
+//! and every lockstep consumer plus the fixture must be updated deliberately.
 //!
 //! Regenerating the goldens (only when a wire change is genuinely
 //! intentional):
 //!
 //! ```ignore
-//! BOOTSTRAP_FIXTURES=1 cargo test -p hypercolor-types --test wire_compat_tests
+//! BOOTSTRAP_FIXTURES=1 cargo test -p hypercolor-types --test wire_contract_tests
 //! ```
 //!
 //! HashMap iteration order is non-deterministic; the fixture data
@@ -42,8 +37,8 @@ use hypercolor_types::spatial::{
     SpatialLayout, StripDirection, ZoneShape,
 };
 
-const SCENE_FIXTURE: &str = "tests/fixtures/wire_compat_scene.json";
-const ATTACHMENT_FIXTURE: &str = "tests/fixtures/wire_compat_attachment_template.toml";
+const SCENE_FIXTURE: &str = "tests/fixtures/wire_contract_scene.json";
+const ATTACHMENT_FIXTURE: &str = "tests/fixtures/wire_contract_attachment_template.toml";
 
 const FIXTURE_SCENE_UUID: Uuid = uuid!("01931234-5678-7abc-9def-0123456789ab");
 const FIXTURE_GROUP_UUID: Uuid = uuid!("01931234-5678-7def-9abc-0123456789cd");
@@ -61,7 +56,7 @@ fn build_fixture_scene() -> Scene {
     let layout = SpatialLayout {
         id: "layout-fixture".to_owned(),
         name: "Fixture layout".to_owned(),
-        description: Some("Wire-compat layout snapshot".to_owned()),
+        description: Some("Wire-contract layout snapshot".to_owned()),
         canvas_width: 640,
         canvas_height: 480,
         zones: vec![Output {
@@ -124,8 +119,8 @@ fn build_fixture_scene() -> Scene {
 
     Scene {
         id: SceneId(FIXTURE_SCENE_UUID),
-        name: "Wire compat scene".to_owned(),
-        description: Some("Locks the wire format Plan 55 P3 must preserve".to_owned()),
+        name: "Wire contract scene".to_owned(),
+        description: Some("Locks the canonical scene wire format".to_owned()),
         zones: vec![group],
         zones_revision: 7,
         transition: TransitionSpec {
@@ -155,7 +150,7 @@ fn build_fixture_attachment_manifest() -> ComponentTemplateManifest {
             name: "Fixture 24-LED strip".to_owned(),
             vendor: "fixtureco".to_owned(),
             category: ComponentCategory::Strip,
-            description: "Wire-compat strip template".to_owned(),
+            description: "Wire-contract strip template".to_owned(),
             tags: vec!["strip".to_owned(), "fixture".to_owned()],
             origin: ComponentOrigin::BuiltIn,
             topology: LedTopology::Strip {
@@ -195,9 +190,9 @@ fn scene_wire_format_matches_golden() {
 
     let golden = fs::read_to_string(&path).unwrap_or_else(|_| {
         panic!(
-            "Scene wire-compat golden missing at {}. Seed it with \
+            "Scene wire-contract golden missing at {}. Seed it with \
              BOOTSTRAP_FIXTURES=1 cargo test -p hypercolor-types \
-             --test wire_compat_tests",
+             --test wire_contract_tests",
             path.display()
         );
     });
@@ -206,7 +201,7 @@ fn scene_wire_format_matches_golden() {
         golden.trim(),
         "Scene wire format diverged from golden. If intentional, regenerate \
          with BOOTSTRAP_FIXTURES=1 cargo test -p hypercolor-types --test \
-         wire_compat_tests."
+         wire_contract_tests."
     );
 
     let parsed: Scene = serde_json::from_str(&golden).expect("golden scene parses back");
@@ -235,9 +230,9 @@ fn attachment_template_manifest_wire_format_matches_golden() {
 
     let golden = fs::read_to_string(&path).unwrap_or_else(|_| {
         panic!(
-            "ComponentTemplate wire-compat golden missing at {}. Seed \
+            "ComponentTemplate wire-contract golden missing at {}. Seed \
              it with BOOTSTRAP_FIXTURES=1 cargo test -p hypercolor-types \
-             --test wire_compat_tests",
+             --test wire_contract_tests",
             path.display()
         );
     });
@@ -246,7 +241,7 @@ fn attachment_template_manifest_wire_format_matches_golden() {
         golden.trim(),
         "ComponentTemplate wire format diverged from golden. If \
          intentional, regenerate with BOOTSTRAP_FIXTURES=1 cargo test \
-         -p hypercolor-types --test wire_compat_tests."
+         -p hypercolor-types --test wire_contract_tests."
     );
 
     let parsed: ComponentTemplateManifest =

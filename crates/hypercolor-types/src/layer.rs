@@ -106,7 +106,7 @@ pub struct SceneLayer {
 }
 
 impl SceneLayer {
-    /// Create the legacy single-effect layer for a zone.
+    /// Create an effect-backed layer for a zone.
     #[must_use]
     pub fn from_effect(
         id: SceneLayerId,

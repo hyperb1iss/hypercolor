@@ -3,7 +3,7 @@ id = "fixture-strip-24"
 name = "Fixture 24-LED strip"
 category = "strip"
 origin = "built_in"
-description = "Wire-compat strip template"
+description = "Wire-contract strip template"
 vendor = "fixtureco"
 tags = [
     "strip",

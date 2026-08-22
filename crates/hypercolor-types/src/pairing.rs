@@ -2,7 +2,7 @@
 //!
 //! These types describe pairing flows on the wire — driver capability
 //! traits that *implement* pairing live in `hypercolor-driver-api`
-//! (which re-exports everything here for back-compat).
+//! (which re-exports the vocabulary as its ergonomic driver boundary).
 
 use std::collections::HashMap;
 
