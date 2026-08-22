@@ -125,16 +125,35 @@ fn frame_payload_emits_control_deltas_only() {
     let first = runtime
         .frame_payload(&input, &controls, options)
         .expect("changed control should emit");
-    assert_eq!(first.controls["speed"], LightScriptControlValue::Float(0.5));
+    assert_eq!(first.controls["speed"], serde_json::json!(0.5));
     assert!(runtime.frame_payload(&input, &controls, options).is_none());
 
     controls.insert("speed".to_owned(), ControlValue::Float(0.8));
     let changed = runtime
         .frame_payload(&input, &controls, options)
         .expect("updated control should emit");
-    assert_eq!(
-        changed.controls["speed"],
-        LightScriptControlValue::Float(0.8)
+    let speed = changed.controls["speed"]
+        .as_f64()
+        .expect("speed should project as a number");
+    assert!((speed - 0.8).abs() < f64::from(f32::EPSILON));
+}
+
+#[test]
+fn frame_payload_rejects_out_of_range_control_values() {
+    let mut runtime = LightscriptRuntime::new(320, 200);
+    let audio = AudioData::silence();
+    let interaction = InteractionData::default();
+    let sensors = SystemSnapshot::empty();
+    let input = quiet_frame(&audio, &interaction, &sensors);
+    let controls = HashMap::from([(
+        "count".to_owned(),
+        ControlValue::Int(i64::from(i32::MAX) + 1),
+    )]);
+
+    assert!(
+        runtime
+            .frame_payload(&input, &controls, default_options())
+            .is_none()
     );
 }
 
