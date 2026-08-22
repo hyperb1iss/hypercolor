@@ -3020,7 +3020,7 @@ fn reconcile_auto_layout_zones_for_device_removes_stale_auto_zones() {
 }
 
 #[tokio::test]
-async fn effect_error_fallback_worker_clears_active_groups_when_configured() {
+async fn effect_error_fallback_worker_clears_active_zones_when_configured() {
     let _guard = TestDataDirGuard::new().await;
     let mut config = default_config();
     config.effect_engine.effect_error_fallback = EffectErrorFallbackPolicy::ClearGroups;

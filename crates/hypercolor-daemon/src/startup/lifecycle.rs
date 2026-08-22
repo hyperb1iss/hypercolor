@@ -838,7 +838,13 @@ impl DaemonState {
                     continue;
                 }
 
-                match crate::api::apply_effect_error_fallback(&state, &effect_id, policy).await {
+                match crate::domain::effect::apply_error_fallback(
+                    &state.domains.effects,
+                    &effect_id,
+                    policy,
+                )
+                .await
+                {
                     Ok(Some(applied)) => {
                         {
                             let mut performance = state.performance.write().await;
@@ -854,7 +860,7 @@ impl DaemonState {
                         info!(
                             effect_id,
                             effect = %applied.effect.name,
-                            cleared_groups = applied.cleared_group_count,
+                            cleared_zones = applied.cleared_zone_count,
                             fallback_policy = ?policy,
                             "Applied effect-error fallback"
                         );

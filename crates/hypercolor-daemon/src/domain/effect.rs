@@ -15,10 +15,11 @@ use hypercolor_core::effect::{EffectEntry, EffectRegistry, RescanReport};
 use strum::VariantNames;
 
 use hypercolor_types::api::scene::SideEffectOutcome;
+use hypercolor_types::config::EffectErrorFallbackPolicy;
 use hypercolor_types::effect::{
     ControlValue, EffectCategory, EffectId, EffectMetadata, EffectSource,
 };
-use hypercolor_types::event::{EffectRef, ZoneChangeKind};
+use hypercolor_types::event::{EffectRef, EffectStopReason, ZoneChangeKind};
 use hypercolor_types::library::PresetId;
 use hypercolor_types::scene::{SceneId, Zone, ZoneId};
 use hypercolor_types::spatial::SpatialLayout;
@@ -263,6 +264,15 @@ pub struct EffectApplied {
     pub commit: SceneCommit,
 }
 
+/// Outcome of applying the configured policy after an effect failure.
+#[derive(Debug, Clone)]
+pub struct EffectErrorFallbackApplied {
+    /// The failed effect removed from the active scene.
+    pub effect: EffectRef,
+    /// Number of active zones cleared by the policy.
+    pub cleared_zone_count: usize,
+}
+
 /// Load an effect into the active scene and start rendering it.
 ///
 /// # Errors
@@ -371,6 +381,92 @@ pub async fn apply_effect(
         output,
         commit,
     })
+}
+
+/// Unload a failed effect from the active scene as configured.
+///
+/// `Ok(None)` means the policy made no change, either because fallback
+/// is disabled or because no active zone ran the failed effect.
+///
+/// # Errors
+///
+/// [`DomainError::Conflict`] when the active scene cannot be mutated or
+/// a concurrent scene commit wins first.
+pub async fn apply_error_fallback(
+    ctx: &EffectContext,
+    effect_id: &str,
+    policy: EffectErrorFallbackPolicy,
+) -> Result<Option<EffectErrorFallbackApplied>, DomainError> {
+    match policy {
+        EffectErrorFallbackPolicy::None => Ok(None),
+        EffectErrorFallbackPolicy::ClearGroups => {
+            clear_active_scene_effect_zones(ctx, effect_id).await
+        }
+    }
+}
+
+async fn clear_active_scene_effect_zones(
+    ctx: &EffectContext,
+    effect_id: &str,
+) -> Result<Option<EffectErrorFallbackApplied>, DomainError> {
+    let effect = resolve_effect_ref_for_fallback(ctx, effect_id).await;
+
+    let mut mutation = ctx.scene.begin_mutation().await;
+    mutation.active_scene_for_runtime_mutation("applying an effect error fallback")?;
+    let zone_ids = mutation
+        .scenes()
+        .active_scene()
+        .map(|scene| {
+            scene
+                .zones
+                .iter()
+                .filter(|zone| {
+                    zone.effect_ids()
+                        .any(|candidate| candidate.to_string() == effect_id)
+                })
+                .map(|zone| zone.id)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if zone_ids.is_empty() {
+        return Ok(None);
+    }
+
+    let cleared_zones = zone_ids
+        .into_iter()
+        .filter_map(|zone_id| {
+            mutation.clear_zone_effect(zone_id, Some(effect.clone()), EffectStopReason::Error)
+        })
+        .collect::<Vec<_>>();
+    if cleared_zones.is_empty() {
+        return Ok(None);
+    }
+
+    ctx.scene
+        .commit(mutation)
+        .await?
+        .log_if_retrying("Failed to persist effect fallback");
+    ctx.scene.save_runtime_session().await;
+
+    Ok(Some(EffectErrorFallbackApplied {
+        effect,
+        cleared_zone_count: cleared_zones.len(),
+    }))
+}
+
+async fn resolve_effect_ref_for_fallback(ctx: &EffectContext, effect_id: &str) -> EffectRef {
+    let parsed_id = effect_id.parse::<uuid::Uuid>().ok().map(EffectId::new);
+    if let Some(parsed_id) = parsed_id
+        && let Some(metadata) = ctx.metadata(parsed_id).await
+    {
+        return effect_ref(&metadata);
+    }
+
+    EffectRef {
+        id: effect_id.to_owned(),
+        name: effect_id.to_owned(),
+        engine: "unknown".to_owned(),
+    }
 }
 
 /// Recompute the active scene's resolved zones after the effect registry

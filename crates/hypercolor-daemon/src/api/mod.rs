@@ -44,12 +44,10 @@ use tracing::warn;
 use utoipa_axum::router::OpenApiRouter;
 
 use self::openapi::OperationDoc;
-use hypercolor_types::config::{EffectErrorFallbackPolicy, McpConfig, WebConfig};
+use hypercolor_types::config::{McpConfig, WebConfig};
 use hypercolor_types::device::DeviceId;
-use hypercolor_types::effect::EffectId;
-use hypercolor_types::event::{EffectRef, EffectStopReason, HypercolorEvent, ZoneChangeKind};
+use hypercolor_types::event::{HypercolorEvent, ZoneChangeKind};
 use hypercolor_types::scene::{SceneId, Zone};
-use uuid::Uuid;
 
 /// Persist the spatial layout store to disk.
 pub(crate) async fn persist_layouts(state: &Arc<AppState>) -> anyhow::Result<()> {
@@ -86,93 +84,6 @@ pub(crate) fn publish_render_group_changed(
         role: group.role,
         kind,
     });
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct EffectErrorFallbackApplied {
-    pub effect: EffectRef,
-    pub cleared_group_count: usize,
-}
-
-/// Unload an effect from every zone of the active scene that runs it,
-/// as the configured error-fallback policy demands.
-///
-/// `Ok(None)` means the policy did nothing: either it is `None`, or no
-/// zone was running the failed effect.
-pub(crate) async fn apply_effect_error_fallback(
-    state: &Arc<AppState>,
-    effect_id: &str,
-    policy: EffectErrorFallbackPolicy,
-) -> Result<Option<EffectErrorFallbackApplied>, crate::domain::DomainError> {
-    match policy {
-        EffectErrorFallbackPolicy::None => Ok(None),
-        EffectErrorFallbackPolicy::ClearGroups => {
-            clear_active_scene_effect_groups(state, effect_id).await
-        }
-    }
-}
-
-async fn clear_active_scene_effect_groups(
-    state: &Arc<AppState>,
-    effect_id: &str,
-) -> Result<Option<EffectErrorFallbackApplied>, crate::domain::DomainError> {
-    let effect = resolve_effect_ref_for_fallback(state, effect_id).await;
-
-    let mut mutation = state.domains.scene.begin_mutation().await;
-    mutation.active_scene_for_runtime_mutation("applying an effect error fallback")?;
-    let zone_ids = mutation
-        .scenes()
-        .active_scene()
-        .map(|scene| {
-            scene
-                .zones
-                .iter()
-                .filter(|zone| {
-                    zone.effect_ids()
-                        .any(|candidate| candidate.to_string() == effect_id)
-                })
-                .map(|zone| zone.id)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    if zone_ids.is_empty() {
-        return Ok(None);
-    }
-
-    let cleared_zones = zone_ids
-        .into_iter()
-        .filter_map(|zone_id| {
-            mutation.clear_zone_effect(zone_id, Some(effect.clone()), EffectStopReason::Error)
-        })
-        .collect::<Vec<_>>();
-    if cleared_zones.is_empty() {
-        return Ok(None);
-    }
-
-    crate::domain::scene::commit_scene(&state.domains.scene, mutation)
-        .await?
-        .log_if_retrying("Failed to persist effect fallback");
-    persist_runtime_session(state).await;
-
-    Ok(Some(EffectErrorFallbackApplied {
-        effect,
-        cleared_group_count: cleared_zones.len(),
-    }))
-}
-
-async fn resolve_effect_ref_for_fallback(state: &AppState, effect_id: &str) -> EffectRef {
-    let parsed_id = Uuid::parse_str(effect_id).ok().map(EffectId::new);
-    if let Some(parsed_id) = parsed_id
-        && let Some(metadata) = state.domains.effects.metadata(parsed_id).await
-    {
-        return crate::domain::effect::effect_ref(&metadata);
-    }
-
-    EffectRef {
-        id: effect_id.to_owned(),
-        name: effect_id.to_owned(),
-        engine: "unknown".to_owned(),
-    }
 }
 
 /// Remove every display assignment a deleted device leaves behind: its

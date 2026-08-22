@@ -159,6 +159,33 @@ fn domain_modules_do_not_depend_on_transport_modules() {
 }
 
 #[test]
+fn effect_fallback_worker_uses_domain_authority() {
+    let sources = daemon_sources();
+    let source = |suffix: &str| {
+        sources
+            .iter()
+            .find(|(path, _)| path.ends_with(suffix))
+            .map(|(_, source)| source.as_str())
+            .unwrap_or_else(|| panic!("missing daemon source {suffix}"))
+    };
+    let startup = source("startup/lifecycle.rs");
+    let api_root = source("api/mod.rs");
+
+    assert!(
+        startup.contains("crate::domain::effect::apply_error_fallback"),
+        "effect fallback worker must enter through the effect domain"
+    );
+    assert!(
+        !startup.contains("crate::api::apply_effect_error_fallback"),
+        "effect fallback worker must not call a REST adapter"
+    );
+    assert!(
+        !api_root.contains("apply_effect_error_fallback"),
+        "REST router module must not own effect fallback policy"
+    );
+}
+
+#[test]
 fn domain_errors_do_not_render_transport_responses() {
     let banned = [
         "use axum",
