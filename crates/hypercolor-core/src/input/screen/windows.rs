@@ -80,8 +80,9 @@ use super::adapter::{
     CaptureExactCommand, CaptureExactCommandEndpoint, CaptureExactCommandRejected,
     CaptureExactPublicationShared, CaptureExactRuntimeOwner, CaptureOwnedSource,
     CapturePublication as AdapterCapturePublication, CapturePublicationFence,
-    CapturePublicationSource, begin_capture_exact_preparation, begin_capture_exact_retirement,
-    bind_current_capture_exact_runtime, execute_capture_exact_command,
+    CapturePublicationSource, VersionedCaptureSettings, begin_capture_exact_preparation,
+    begin_capture_exact_retirement, bind_current_capture_exact_runtime,
+    execute_capture_exact_command,
 };
 
 /// How long a worker waits on DXGI before checking its command channel.
@@ -117,11 +118,9 @@ pub struct ResolvedCaptureSource {
 
 /// Settings shared between the input source handle and the capture worker.
 struct SharedSettings {
-    config: Mutex<VersionedCaptureConfig>,
+    values: VersionedCaptureSettings<VersionedCaptureConfig>,
     compute_capacity_policy: ScreenComputeCapacityPolicy,
-    demand: Mutex<ScreenCaptureDemand>,
     admission_coordinator: ScreenByteAdmissionCoordinator,
-    generation: AtomicU64,
     session_generation: AtomicU64,
     activity_generation: AtomicU64,
 }
@@ -220,6 +219,7 @@ const fn capture_resource_operation(kind: CaptureResourceKind) -> &'static str {
     }
 }
 
+#[derive(Clone)]
 struct VersionedCaptureConfig {
     value: CaptureConfig,
     source_generation: u64,
@@ -504,17 +504,11 @@ impl ExactPublicationShared {
 
 impl SharedSettings {
     fn snapshot(&self) -> CaptureSettingsSnapshot {
-        let config = self
-            .config
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let snapshot = self.values.snapshot();
         CaptureSettingsSnapshot {
-            config: config.value.clone(),
-            source_generation: config.source_generation,
-            demand: *self
-                .demand
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            config: snapshot.config.value,
+            source_generation: snapshot.config.source_generation,
+            demand: snapshot.demand,
         }
     }
 
@@ -532,21 +526,11 @@ impl SharedSettings {
         source_generation: u64,
         demand: ScreenCaptureDemand,
     ) -> u64 {
-        {
-            let mut config = self
-                .config
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            config.value.clone_from(next_config);
-            config.source_generation = source_generation;
-        }
-        *self
-            .demand
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = demand;
-        self.generation
-            .fetch_add(1, Ordering::AcqRel)
-            .wrapping_add(1)
+        let mut values = self.values.lock();
+        values.config_mut().value.clone_from(next_config);
+        values.config_mut().source_generation = source_generation;
+        *values.demand_mut() = demand;
+        values.commit()
     }
 }
 
@@ -878,14 +862,15 @@ impl WindowsScreenCaptureInput {
     ) -> Self {
         Self {
             settings: Arc::new(SharedSettings {
-                config: Mutex::new(VersionedCaptureConfig {
-                    value: config,
-                    source_generation: 0,
-                }),
+                values: VersionedCaptureSettings::new(
+                    VersionedCaptureConfig {
+                        value: config,
+                        source_generation: 0,
+                    },
+                    ScreenCaptureDemand::Inactive,
+                ),
                 compute_capacity_policy,
-                demand: Mutex::new(ScreenCaptureDemand::Inactive),
                 admission_coordinator,
-                generation: AtomicU64::new(0),
                 session_generation: AtomicU64::new(0),
                 activity_generation: AtomicU64::new(0),
             }),
@@ -1317,12 +1302,8 @@ impl WindowsScreenCaptureInput {
         } else {
             self.settings.activity_generation.load(Ordering::Acquire)
         };
-        *self
-            .settings
-            .demand
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = demand;
-        self.settings.generation.fetch_add(1, Ordering::Release);
+        *self.settings.values.lock_demand() = demand;
+        self.settings.values.bump_revision();
 
         if !self.running {
             self.capture_demand = demand;
@@ -1338,12 +1319,8 @@ impl WindowsScreenCaptureInput {
             Ok(())
         };
         if let Err(error) = transition {
-            *self
-                .settings
-                .demand
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = previous;
-            self.settings.generation.fetch_add(1, Ordering::Release);
+            *self.settings.values.lock_demand() = previous;
+            self.settings.values.bump_revision();
             if previous.is_active() {
                 let rollback_generation = self
                     .settings
@@ -1481,12 +1458,8 @@ impl InputSource for WindowsScreenCaptureInput {
         self.status.stop();
         self.running = false;
         self.capture_demand = ScreenCaptureDemand::Inactive;
-        *self
-            .settings
-            .demand
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = ScreenCaptureDemand::Inactive;
-        self.settings.generation.fetch_add(1, Ordering::Release);
+        *self.settings.values.lock_demand() = ScreenCaptureDemand::Inactive;
+        self.settings.values.bump_revision();
         self.shutdown_worker();
 
         #[cfg(feature = "windows-capture-fixtures")]
@@ -3297,7 +3270,7 @@ fn run_worker(
     };
     let mut source_generation = initial_settings.source_generation;
     let mut demand = initial_settings.demand;
-    let mut generation = settings.generation.load(Ordering::Acquire);
+    let mut generation = settings.values.revision();
     let mut analyzer = match build_worker_analyzer(
         &config,
         demand,
@@ -3406,7 +3379,7 @@ fn run_worker(
 
         processed_activity_generation.store(activity_generation, Ordering::Release);
 
-        let latest_generation = settings.generation.load(Ordering::Acquire);
+        let latest_generation = settings.values.revision();
         if latest_generation != generation
             && (failed_settings_generation != Some(latest_generation)
                 || Instant::now() >= settings_retry_at)

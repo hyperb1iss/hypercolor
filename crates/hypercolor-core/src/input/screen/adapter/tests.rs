@@ -1,11 +1,11 @@
 use super::{
     CaptureExactCommand, CaptureExactCommandEndpoint, CaptureExactCommandRejected,
     CaptureExactPublicationShared, CaptureOwnedSource, CapturePublication, CapturePublicationFence,
-    CapturePublicationSource, begin_capture_exact_retirement,
+    CapturePublicationSource, VersionedCaptureSettings, begin_capture_exact_retirement,
 };
 use crate::input::screen::{
-    CaptureSourceId, ExactBoxList, ScreenCommittedState, ScreenPublicationHub,
-    ScreenPublicationSlotPolicy,
+    CaptureSourceId, ExactBoxList, PixelExtent, ScreenCaptureDemand, ScreenCommittedState,
+    ScreenPublicationHub, ScreenPublicationSlotPolicy,
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -75,6 +75,43 @@ struct FakeEpoch {
 struct FakeFence {
     source: u64,
     activity: u64,
+}
+
+#[test]
+fn versioned_settings_commit_one_coherent_config_and_demand_snapshot() {
+    let settings =
+        VersionedCaptureSettings::new(String::from("initial"), ScreenCaptureDemand::Inactive);
+
+    assert_eq!(settings.revision(), 0);
+    let initial = settings.snapshot();
+    assert_eq!(initial.config, "initial");
+    assert_eq!(initial.demand, ScreenCaptureDemand::Inactive);
+
+    let active = ScreenCaptureDemand::active(
+        PixelExtent::new(64, 32).expect("test capture extent is nonzero"),
+    );
+    let mut values = settings.lock();
+    values.config_mut().clone_from(&String::from("committed"));
+    assert_eq!(values.config(), "committed");
+    *values.demand_mut() = active;
+    assert_eq!(values.commit(), 1);
+
+    let committed = settings.snapshot();
+    assert_eq!(committed.config, "committed");
+    assert_eq!(committed.demand, active);
+    assert_eq!(settings.commit_revision(), 2);
+    assert_eq!(settings.bump_revision(), 3);
+    assert_eq!(settings.revision(), 3);
+
+    settings.lock_config().clone_from(&String::from("direct"));
+    assert_eq!(settings.lock_config().as_str(), "direct");
+    *settings.lock_demand() = ScreenCaptureDemand::Inactive;
+    assert_eq!(
+        *settings
+            .try_lock_demand()
+            .expect("demand lock should be available"),
+        ScreenCaptureDemand::Inactive
+    );
 }
 
 impl CapturePublicationFence<FakeEpoch> for FakeFence {

@@ -61,7 +61,7 @@ use super::adapter::{
     CaptureExactCommand, CaptureExactCommandEndpoint, CaptureExactCommandRejected,
     CaptureExactPublicationShared, CaptureExactRuntimeOwner, CaptureOwnedSource,
     CapturePublication, CapturePublicationFence, CapturePublicationSource,
-    begin_capture_exact_preparation, begin_capture_exact_retirement,
+    VersionedCaptureSettings, begin_capture_exact_preparation, begin_capture_exact_retirement,
     bind_current_capture_exact_runtime, execute_capture_exact_command,
 };
 
@@ -538,11 +538,9 @@ pub type RestoreTokenSink = Arc<dyn Fn(Option<String>) + Send + Sync>;
 /// the worker polls the counter once per frame and only takes the lock when
 /// a reconfiguration actually happened.
 struct SharedSettings {
-    config: Mutex<CaptureConfig>,
-    demand: Mutex<ScreenCaptureDemand>,
+    values: VersionedCaptureSettings<CaptureConfig>,
     admission_coordinator: ScreenByteAdmissionCoordinator,
     compute_capacity_policy: ScreenComputeCapacityPolicy,
-    generation: AtomicU64,
     topology_generation: AtomicU64,
     topology: Mutex<Option<WaylandTopologyState>>,
     session_generation: AtomicU64,
@@ -1187,10 +1185,7 @@ type WaylandCapturePublication =
 
 impl SharedSettings {
     fn config_snapshot(&self) -> CaptureConfig {
-        self.config
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+        self.values.lock_config().clone()
     }
 
     fn commit_runtime(&self, next: &PreparedAnalysisSettings) -> u64 {
@@ -1198,24 +1193,14 @@ impl SharedSettings {
     }
 
     fn commit_values(&self, next_config: &CaptureConfig, demand: ScreenCaptureDemand) -> u64 {
-        {
-            let mut config = self
-                .config
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let granted_token = config.restore_token.take();
-            config.clone_from(next_config);
-            if config.restore_token.is_none() {
-                config.restore_token = granted_token;
-            }
+        let mut values = self.values.lock();
+        let granted_token = values.config_mut().restore_token.take();
+        values.config_mut().clone_from(next_config);
+        if values.config().restore_token.is_none() {
+            values.config_mut().restore_token = granted_token;
         }
-        *self
-            .demand
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = demand;
-        self.generation
-            .fetch_add(1, Ordering::AcqRel)
-            .wrapping_add(1)
+        *values.demand_mut() = demand;
+        values.commit()
     }
 
     fn snapshot_for_session(
@@ -1232,12 +1217,11 @@ impl SharedSettings {
         {
             return None;
         }
-        let config = self.config_snapshot();
-        let demand = *self
-            .demand
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        Some(CaptureRuntimeSettings { config, demand })
+        let snapshot = self.values.snapshot();
+        Some(CaptureRuntimeSettings {
+            config: snapshot.config,
+            demand: snapshot.demand,
+        })
     }
 
     fn expected_epoch(&self) -> Option<CaptureEpoch> {
@@ -1354,9 +1338,8 @@ impl SharedSettings {
         {
             return false;
         }
-        self.config
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.values
+            .lock_config()
             .restore_token
             .clone_from(&restore_token);
         if let Some(sink) = token_sink {
@@ -1578,11 +1561,9 @@ impl WaylandScreenCaptureInput {
         let publication = Arc::new(Mutex::new(WaylandCapturePublication::default()));
         Self {
             settings: Arc::new(SharedSettings {
-                config: Mutex::new(config),
-                demand: Mutex::new(ScreenCaptureDemand::Inactive),
+                values: VersionedCaptureSettings::new(config, ScreenCaptureDemand::Inactive),
                 admission_coordinator,
                 compute_capacity_policy,
-                generation: AtomicU64::new(0),
                 topology_generation: AtomicU64::new(0),
                 topology: Mutex::new(None),
                 session_generation: AtomicU64::new(0),
@@ -1905,10 +1886,10 @@ impl WaylandScreenCaptureInput {
             })
             .transpose()?;
 
-        if let Ok(mut current) = self.settings.demand.lock() {
+        if let Ok(mut current) = self.settings.values.try_lock_demand() {
             *current = demand;
         }
-        self.settings.generation.fetch_add(1, Ordering::Release);
+        self.settings.values.bump_revision();
 
         if !self.running {
             if !demand.is_active() {
@@ -1936,10 +1917,10 @@ impl WaylandScreenCaptureInput {
         };
 
         if let Err(error) = result {
-            if let Ok(mut current) = self.settings.demand.lock() {
+            if let Ok(mut current) = self.settings.values.try_lock_demand() {
                 *current = previous;
             }
-            self.settings.generation.fetch_add(1, Ordering::Release);
+            self.settings.values.bump_revision();
             let rollback = if previous.is_active() {
                 self.spawn_worker()
                     .and_then(|()| self.send_worker_command(WorkerCommand::SetDemand(previous)))
@@ -2182,7 +2163,7 @@ impl InputSource for WaylandScreenCaptureInput {
         self.status.stop();
         self.running = false;
         self.capture_demand = ScreenCaptureDemand::Inactive;
-        if let Ok(mut demand) = self.settings.demand.lock() {
+        if let Ok(mut demand) = self.settings.values.try_lock_demand() {
             *demand = ScreenCaptureDemand::Inactive;
         }
         if self.worker.is_some() {
@@ -2404,11 +2385,7 @@ fn clear_restore_token(settings: &SharedSettings, token_sink: Option<&RestoreTok
         .session_guard
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    settings
-        .config
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .restore_token = None;
+    settings.values.lock_config().restore_token = None;
     if let Some(sink) = token_sink {
         sink(None);
     }
@@ -3540,7 +3517,7 @@ impl WaylandAnalysisState {
         config: CaptureConfig,
         demand: ScreenCaptureDemand,
     ) -> anyhow::Result<Self> {
-        let applied_generation = settings.generation.load(Ordering::Acquire);
+        let applied_generation = settings.values.revision();
         let requested_extent = demand
             .requested_extent()
             .expect("an active Wayland analysis worker carries an extent");
@@ -3577,7 +3554,7 @@ impl WaylandAnalysisState {
     }
 
     fn sync_settings(&mut self, cancel: &AtomicBool) -> bool {
-        let generation = self.settings.generation.load(Ordering::Acquire);
+        let generation = self.settings.values.revision();
         if generation == self.applied_generation {
             return self
                 .settings
@@ -3632,16 +3609,7 @@ impl WaylandAnalysisState {
             demand,
             analyzer,
         } = adoption.prepared;
-        let mut current_config = self
-            .settings
-            .config
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut current_demand = self
-            .settings
-            .demand
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut current_values = self.settings.values.lock();
         let mut latest_snapshot = self
             .settings
             .publication
@@ -3651,17 +3619,13 @@ impl WaylandAnalysisState {
         let mut displaced_snapshot = None;
         let committed = adoption.authority.claim_commit()
             && commit_claimed(&adoption.authority, adoption.finalize_authority, || {
-                let granted_token = current_config.restore_token.take();
+                let granted_token = current_values.config_mut().restore_token.take();
                 if config.restore_token.is_none() {
                     config.restore_token = granted_token;
                 }
-                *current_config = config;
-                *current_demand = demand;
-                let committed_generation = self
-                    .settings
-                    .generation
-                    .fetch_add(1, Ordering::AcqRel)
-                    .wrapping_add(1);
+                *current_values.config_mut() = config;
+                *current_values.demand_mut() = demand;
+                let committed_generation = self.settings.values.commit_revision();
                 generation.set(committed_generation);
                 self.analyzer = analyzer;
                 self.cadence = cadence;

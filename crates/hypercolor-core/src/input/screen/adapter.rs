@@ -1,3 +1,5 @@
+#[cfg(any(target_os = "linux", target_os = "windows", test))]
+mod settings;
 #[cfg(test)]
 mod tests;
 
@@ -11,6 +13,9 @@ use super::{
     ScreenPublicationHub, ScreenWorkerBinding, ScreenWorkerBindingState, ScreenWorkerPreparation,
     ScreenWorkerPreparationTicket, ScreenWorkerRetirement,
 };
+
+#[cfg(any(target_os = "linux", target_os = "windows", test))]
+pub(in crate::input::screen) use settings::VersionedCaptureSettings;
 
 pub enum CaptureExactCommand {
     Prepare {

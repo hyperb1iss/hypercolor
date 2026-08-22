@@ -10,13 +10,14 @@ use super::{
     FormatOffer, NegotiatedFormat, NegotiatedVideoFormat, PendingPipeWireAdoption,
     PipeWireFormatAcknowledgment, PipeWireFormatRequest, PipeWireFormatState, PipeWireLoopExit,
     RestoreTokenSink, SharedSettings, SpaChunkView, SpaVideoFormat, UnavailablePark,
-    WaylandAnalysisState, WaylandCapturePublication, WaylandCaptureUserData,
-    WaylandExactPublicationShared, WaylandScreenCaptureInput, WaylandSourceMetadata,
-    WaylandTopologySignature, commit_if_authorized, convert_packed_to_rgba, decode_chunk,
-    fence_previous_publication, initial_native_extent_correction, initial_worker_demand,
-    park_unavailable_worker, prepare_wayland_exact_runtime, publish_unexpected_exit_status,
-    request_active_worker_demand, set_worker_demand, settle_pipewire_restoration,
-    unavailable_format_outcome, wait_for_adoption_result, worker_demand_epoch, worker_demanded,
+    VersionedCaptureSettings, WaylandAnalysisState, WaylandCapturePublication,
+    WaylandCaptureUserData, WaylandExactPublicationShared, WaylandScreenCaptureInput,
+    WaylandSourceMetadata, WaylandTopologySignature, commit_if_authorized, convert_packed_to_rgba,
+    decode_chunk, fence_previous_publication, initial_native_extent_correction,
+    initial_worker_demand, park_unavailable_worker, prepare_wayland_exact_runtime,
+    publish_unexpected_exit_status, request_active_worker_demand, set_worker_demand,
+    settle_pipewire_restoration, unavailable_format_outcome, wait_for_adoption_result,
+    worker_demand_epoch, worker_demanded,
 };
 use crate::input::screen::adapter::reap_capture_exact_runtimes;
 use crate::input::screen::{
@@ -37,11 +38,9 @@ use crate::input::{SourceIssue, SourceKind, SourceState, SourceStatusReporter};
 fn settings(session_generation: u64) -> Arc<SharedSettings> {
     let publication = Arc::new(Mutex::new(WaylandCapturePublication::default()));
     Arc::new(SharedSettings {
-        config: Mutex::new(CaptureConfig::default()),
-        demand: Mutex::new(active_demand()),
+        values: VersionedCaptureSettings::new(CaptureConfig::default(), active_demand()),
         admission_coordinator: ScreenByteAdmissionCoordinator::default(),
         compute_capacity_policy: ScreenComputeCapacityPolicy::UNBOUNDED,
-        generation: 0.into(),
         topology_generation: 0.into(),
         topology: Mutex::new(None),
         session_generation: session_generation.into(),
@@ -877,11 +876,7 @@ fn stale_worker_cannot_overwrite_the_successor_snapshot() {
 #[test]
 fn retired_worker_cannot_read_or_update_successor_settings() {
     let settings = settings(31);
-    settings
-        .config
-        .lock()
-        .expect("capture config mutex is healthy")
-        .restore_token = Some("retiring".to_owned());
+    settings.values.lock_config().restore_token = Some("retiring".to_owned());
     let not_cancelled = AtomicBool::new(false);
     let active_session_generation = AtomicU64::new(31);
     assert_eq!(
@@ -895,11 +890,7 @@ fn retired_worker_cannot_read_or_update_successor_settings() {
     );
 
     let successor_generation = settings.begin_session();
-    settings
-        .config
-        .lock()
-        .expect("capture config mutex is healthy")
-        .restore_token = Some("successor".to_owned());
+    settings.values.lock_config().restore_token = Some("successor".to_owned());
     let sink_calls = Arc::new(AtomicUsize::new(0));
     let sink_calls_for_callback = Arc::clone(&sink_calls);
     let publication_for_callback = Arc::clone(&settings.publication);
@@ -922,12 +913,7 @@ fn retired_worker_cannot_read_or_update_successor_settings() {
     );
     assert_eq!(sink_calls.load(Ordering::Relaxed), 0);
     assert_eq!(
-        settings
-            .config
-            .lock()
-            .expect("capture config mutex is healthy")
-            .restore_token
-            .as_deref(),
+        settings.values.lock_config().restore_token.as_deref(),
         Some("successor")
     );
 
@@ -953,12 +939,7 @@ fn retired_worker_cannot_read_or_update_successor_settings() {
     ));
     assert_eq!(sink_calls.load(Ordering::Relaxed), 1);
     assert_eq!(
-        settings
-            .config
-            .lock()
-            .expect("capture config mutex is healthy")
-            .restore_token
-            .as_deref(),
+        settings.values.lock_config().restore_token.as_deref(),
         Some("current")
     );
 }
