@@ -9,7 +9,7 @@ use hypercolor_core::scene::SceneManager;
 use hypercolor_types::scene::{Scene, SceneId, SceneKind};
 use serde::{Deserialize, Serialize};
 
-use crate::effect_id_migration::{EffectIdMigrations, remap_zones};
+use crate::domain::effect::{EffectIdMigrations, remap_zones};
 use crate::persistence::{
     AdmittedAtomicWrite, AtomicFileWriter, AtomicWriteCommitResult, AtomicWriteOutcome,
     PersistenceError, serialize_json_pretty,

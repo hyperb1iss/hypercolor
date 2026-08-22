@@ -19,6 +19,7 @@ use crate::discovery::{self, DiscoveryTarget};
 use crate::display_output::{
     DEFAULT_STATIC_HOLD_REFRESH_INTERVAL, DisplayOutputState, DisplayOutputThread,
 };
+use crate::domain::effect::reload_registry_file;
 use crate::interactive_preview::{
     InteractivePreviewAcceleration, InteractivePreviewContext, InteractivePreviewExecutor,
 };
@@ -719,16 +720,13 @@ impl DaemonState {
                 };
                 info!(path = %path.display(), action, "Effect file change detected");
 
-                let report =
-                    match crate::effect_id_migration::reload_registry_file(&watcher_state, &path)
-                        .await
-                    {
-                        Ok(report) => report,
-                        Err(error) => {
-                            warn!(path = %path.display(), %error, "Effect hot reload rejected");
-                            continue;
-                        }
-                    };
+                let report = match reload_registry_file(&watcher_state, &path).await {
+                    Ok(report) => report,
+                    Err(error) => {
+                        warn!(path = %path.display(), %error, "Effect hot reload rejected");
+                        continue;
+                    }
+                };
 
                 watcher_state.event_bus.publish(
                     hypercolor_types::event::HypercolorEvent::EffectRegistryUpdated {

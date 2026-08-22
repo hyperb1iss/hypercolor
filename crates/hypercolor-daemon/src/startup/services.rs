@@ -96,7 +96,7 @@ fn open_persisted_library_store(
 
 fn open_persisted_library_store_with_effect_id_migrations(
     path: &std::path::Path,
-    migrations: &crate::effect_id_migration::EffectIdMigrations,
+    migrations: &crate::domain::effect::EffectIdMigrations,
 ) -> Result<Arc<dyn crate::library::LibraryStore>> {
     Ok(Arc::new(
         crate::library::JsonLibraryStore::open_with_effect_id_migrations(

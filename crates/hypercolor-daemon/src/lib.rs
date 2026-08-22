@@ -15,7 +15,6 @@ pub mod display_output;
 pub mod display_preferences;
 pub mod domain;
 pub mod driver_inventory;
-mod effect_id_migration;
 pub mod extensions;
 pub mod interaction_routing;
 pub mod interactive_preview;

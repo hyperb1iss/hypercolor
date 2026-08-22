@@ -156,7 +156,7 @@ fn display_worker_delegates_delivery_policy_to_the_core_lane() {
 }
 
 #[test]
-fn registry_refreshes_share_the_migration_coordinator_and_playlist_runtime() {
+fn registry_refreshes_share_the_effect_domain_identity_authority() {
     let sources = daemon_sources();
     let source = |suffix: &str| {
         sources
@@ -166,19 +166,22 @@ fn registry_refreshes_share_the_migration_coordinator_and_playlist_runtime() {
             .unwrap_or_else(|| panic!("missing daemon source {suffix}"))
     };
     let effect_api = source("api/effects.rs");
-    assert!(effect_api.contains("effect_id_migration::rescan_registry"));
-    assert!(effect_api.contains("effect_id_migration::reload_registry_file"));
+    assert!(effect_api.contains("domain::effect::rescan_registry"));
+    assert!(effect_api.contains("domain::effect::reload_registry_file"));
     assert!(!effect_api.contains("domains.effects.rescan()"));
     assert!(!effect_api.contains("domains.effects.register("));
 
     let lifecycle = source("startup/lifecycle.rs");
-    assert!(lifecycle.contains("effect_id_migration::reload_registry_file"));
+    assert!(lifecycle.contains("use crate::domain::effect::reload_registry_file;"));
+    assert!(lifecycle.contains("reload_registry_file(&watcher_state"));
     assert!(!lifecycle.contains("reload_single(&path)"));
 
     let app_state = source("app_state.rs");
     assert!(app_state.contains("playlist_runtime: Arc::clone(&daemon.playlist_runtime)"));
     let startup = source("startup/mod.rs");
     assert!(startup.contains("pub playlist_runtime: Arc<Mutex<PlaylistRuntimeState>>"));
+    let library = source("lib.rs");
+    assert!(!library.contains("mod effect_id_migration"));
 }
 
 #[test]

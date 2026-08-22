@@ -16,7 +16,7 @@ use hypercolor_types::scene::DisplayFaceBlendMode;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{OwnedRwLockWriteGuard, RwLock};
 
-use crate::effect_id_migration::{EffectIdMigrations, remap_effect_id};
+use crate::domain::effect::{EffectIdMigrations, remap_effect_id};
 use crate::path_migration::{
     MigratedStore, MigrationOutcome, PathMigrationEntry, VersionedDocument, migrate,
 };

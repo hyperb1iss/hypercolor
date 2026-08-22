@@ -18,7 +18,7 @@ use hypercolor_types::library::{
     EffectPlaylist, EffectPreset, FavoriteEffect, PlaylistId, PlaylistItemTarget, PresetId,
 };
 
-use crate::effect_id_migration::{EffectIdMigrations, remap_effect_id};
+use crate::domain::effect::{EffectIdMigrations, remap_effect_id};
 use crate::persistence::{
     AdmittedAtomicWrite, AtomicFileWriter, AtomicWriteCommitResult, AtomicWriteOutcome,
     PersistenceError, serialize_json_pretty,

@@ -9,12 +9,12 @@ use hypercolor_types::library::{EffectPlaylist, PlaylistItemTarget};
 use hypercolor_types::scene::Zone;
 use tokio::sync::{OwnedMutexGuard, OwnedRwLockWriteGuard};
 
+use super::{EffectRegistryPublication, EffectRegistryUpdate};
 use crate::app_state::AppState;
 use crate::display_preferences::{
     DisplayPreferencesEffectIdMigrationPublication, PersistedDisplayPreferencesEffectIdMigration,
 };
 use crate::domain::DomainError;
-use crate::domain::effect::{EffectRegistryPublication, EffectRegistryUpdate};
 use crate::domain::scene::SceneEffectIdMigrationPublication;
 use crate::library::{LibraryEffectIdMigration, LibraryEffectIdMigrationPublication};
 use crate::playlist_runtime::PlaylistRuntimeState;
@@ -327,7 +327,7 @@ mod tests {
     use axum::extract::{Path as AxumPath, State};
     use axum::http::{HeaderMap, StatusCode};
     use hypercolor_core::scene::SceneManager;
-    use hypercolor_types::api::scene::CreateLayerRequest;
+    use hypercolor_types::api::scene::ReplaceLayerRequest;
     use hypercolor_types::api::scenes::ReplaceSceneRequest;
     use hypercolor_types::device::{
         ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
@@ -542,8 +542,8 @@ mod tests {
         }
     }
 
-    fn effect_layer_request(effect_id: EffectId) -> CreateLayerRequest {
-        CreateLayerRequest {
+    fn effect_layer_request(effect_id: EffectId) -> ReplaceLayerRequest {
+        ReplaceLayerRequest {
             source: LayerSource::Effect {
                 effect_id,
                 controls: HashMap::new(),
@@ -1046,7 +1046,7 @@ mod tests {
                 State(create_state),
                 AxumPath(zone_id.to_string()),
                 HeaderMap::new(),
-                Json(effect_layer_request(legacy_id)),
+                Json(effect_layer_request(legacy_id).into()),
             )
             .await
         });
@@ -1225,7 +1225,7 @@ mod tests {
                 State(Arc::clone(&state)),
                 AxumPath(zone_id.to_string()),
                 HeaderMap::new(),
-                Json(effect_layer_request(effect_id)),
+                Json(effect_layer_request(effect_id).into()),
             )
             .await;
             assert_eq!(response.status(), StatusCode::NOT_FOUND);

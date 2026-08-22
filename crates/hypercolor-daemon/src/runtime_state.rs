@@ -8,7 +8,7 @@ use hypercolor_core::scene::SceneManager;
 use hypercolor_types::scene::{SceneId, Zone};
 use serde::{Deserialize, Serialize};
 
-use crate::effect_id_migration::{EffectIdMigrations, remap_zones};
+use crate::domain::effect::{EffectIdMigrations, remap_zones};
 use crate::path_migration::{
     MigratedStore, MigrationOutcome, PathMigrationEntry, PathMigrationError, VersionedDocument,
     migrate,

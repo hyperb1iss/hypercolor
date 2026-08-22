@@ -413,7 +413,7 @@ pub async fn get_effect_cover(
 
 /// `POST /api/v1/effects/rescan` — Manually trigger an effect registry rescan.
 pub async fn rescan_effects(State(state): State<Arc<AppState>>) -> Response {
-    let report = match crate::effect_id_migration::rescan_registry(state.as_ref()).await {
+    let report = match crate::domain::effect::rescan_registry(state.as_ref()).await {
         Ok(report) => report,
         Err(error) => return error.into_response(),
     };
@@ -523,9 +523,7 @@ pub async fn install_effect(
     };
 
     let report =
-        match crate::effect_id_migration::reload_registry_file(state.as_ref(), &installed_path)
-            .await
-        {
+        match crate::domain::effect::reload_registry_file(state.as_ref(), &installed_path).await {
             Ok(report) => report,
             Err(error) => return error.into_response(),
         };

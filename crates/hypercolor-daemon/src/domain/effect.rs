@@ -7,6 +7,12 @@
 //! [`RequestedTransition`], and both get the same validation, scene
 //! mutation, and ordered events.
 
+mod identity;
+
+pub(crate) use identity::{
+    EffectIdMigrations, reload_registry_file, remap_effect_id, remap_zones, rescan_registry,
+};
+
 use std::collections::HashMap;
 use std::path::Path;
 use std::str::FromStr;
