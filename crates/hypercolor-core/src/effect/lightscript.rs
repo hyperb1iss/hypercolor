@@ -199,11 +199,7 @@ impl LightscriptRuntime {
             "  if (!(window.engine.audio.spectralFluxBands instanceof Float32Array) || window.engine.audio.spectralFluxBands.length !== 3) { window.engine.audio.spectralFluxBands = new Float32Array(3); }\n",
         );
         script.push_str(&format!(
-            "  window.engine.audio.level = {};\n",
-            LEVEL_FLOOR_DB
-        ));
-        script.push_str(&format!(
-            "  window.engine.audio.levelRaw = {};\n",
+            "  window.engine.audio.levelDb = {};\n",
             LEVEL_FLOOR_DB
         ));
         script.push_str("  window.engine.audio.levelLinear = 0;\n");

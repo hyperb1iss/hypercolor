@@ -270,11 +270,8 @@ declaration.
 <meta audio-reactive="true" />
 ```
 
-If this tag is absent, the daemon applies a heuristic: it searches the HTML
-content for markers like `engine.audio`, `iAudio`, `audio.freq`, `audio.level`,
-`audio.density`. If any are found, the effect is flagged as audio-reactive.
-
-Explicit declaration is preferred.
+The tag is the authority. Runtime code does not infer audio reactivity from
+JavaScript source text.
 
 ### 3.7 Runtime Environment
 

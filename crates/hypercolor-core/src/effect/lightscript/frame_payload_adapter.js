@@ -37,8 +37,7 @@
     const applyAudio = function(engine, audio) {
       if (typeof audio !== 'object' || audio === null) { return; }
       if (typeof engine.audio !== 'object' || engine.audio === null) { engine.audio = {}; }
-      engine.audio.level = finiteNumber(audio.levelDb, 0);
-      engine.audio.levelRaw = finiteNumber(audio.levelDb, 0);
+      engine.audio.levelDb = finiteNumber(audio.levelDb, -100);
       engine.audio.levelLinear = finiteNumber(audio.levelLinear, 0);
       engine.audio.levelShort = finiteNumber(audio.levelShort, 0);
       engine.audio.levelLong = finiteNumber(audio.levelLong, 0);

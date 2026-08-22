@@ -7,11 +7,10 @@
  * All fields are computed per-frame by getAudioData().
  */
 export interface AudioData {
-    // ── Legacy (backwards-compatible) ───────────────────────────────
+    /** Overall level in decibels (-100 to 0) */
+    levelDb: number
     /** Normalized overall level (0-1) */
-    level: number
-    /** Raw level in dB (-100 to 0) */
-    levelRaw: number
+    levelLinear: number
     /** Tone density / spectral flatness (0-1) */
     density: number
     /** Stereo width (0-1) */

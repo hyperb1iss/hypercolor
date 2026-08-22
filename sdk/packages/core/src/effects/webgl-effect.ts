@@ -327,7 +327,7 @@ export abstract class WebGLEffect<T> extends BaseEffect<T> {
     }
 
     private pushAudioUniforms(audio: AudioData): void {
-        this.setUniform('iAudioLevel', audio.level)
+        this.setUniform('iAudioLevel', audio.levelLinear)
         this.setUniform('iAudioBass', audio.bass)
         this.setUniform('iAudioMid', audio.mid)
         this.setUniform('iAudioTreble', audio.treble)

@@ -174,7 +174,7 @@ describe('tooling build', () => {
 
 export default face('${slug}', {}, { ${options} }, (ctx) => {
     return (_time, _controls, _sensors, audio) => {
-        void audio.data().level
+        void audio.data().levelLinear
         void ctx.width
     }
 })
@@ -390,7 +390,7 @@ import { audio, canvas } from ${JSON.stringify(SDK_ALIAS)}
 export default canvas.stateful('Missing Audio Opt-In', {}, () => {
     return () => {
         const data = audio()
-        void data.level
+        void data.levelLinear
     }
 })
 `,

@@ -91,7 +91,6 @@ export {
     getTrebleLevel,
     isOnBeat,
     MEL_BANDS,
-    normalizeAudioLevel,
     normalizeFrequencyBin,
     PITCH_CLASSES,
     pitchClassToHue,

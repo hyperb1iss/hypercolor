@@ -1031,7 +1031,7 @@ mod tests {
 </head>
 <script>
   // Bundled SDK runtime includes audio infrastructure:
-  engine.audio.freq; audio.level; audio.density;
+  engine.audio.freq; audio.levelLinear; audio.density;
 </script>
 "#;
         let parsed = parse_html_effect_metadata(html);
