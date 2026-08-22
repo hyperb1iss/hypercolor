@@ -41,7 +41,7 @@ const MAX_EFFECT_UPLOAD_BYTES: usize = 1024 * 1024;
 const EFFECT_COVER_FILE_NAME: &str = "default.webp";
 const EFFECT_COVER_CONTENT_TYPE: &str = "image/webp";
 
-pub(crate) async fn invalidate_active_render_groups_after_effect_registry_update(state: &AppState) {
+async fn invalidate_active_zones_after_registry_update(state: &AppState) {
     if let Err(error) = domain::effect::invalidate_active_zones(&state.domains.effects).await {
         warn!(%error, "Failed to refresh active zones after an effect registry update");
     }
@@ -421,7 +421,7 @@ pub async fn rescan_effects(State(state): State<Arc<AppState>>) -> Response {
     let report = state.domains.effects.rescan().await;
 
     if report.added > 0 || report.removed > 0 || report.updated > 0 {
-        invalidate_active_render_groups_after_effect_registry_update(state.as_ref()).await;
+        invalidate_active_zones_after_registry_update(state.as_ref()).await;
     }
 
     info!(
@@ -534,7 +534,7 @@ pub async fn install_effect(
         (1, 0)
     };
 
-    invalidate_active_render_groups_after_effect_registry_update(state.as_ref()).await;
+    invalidate_active_zones_after_registry_update(state.as_ref()).await;
 
     state
         .event_bus

@@ -726,11 +726,13 @@ impl DaemonState {
                     reg.reload_single(&path)
                 };
 
-                if report.added > 0 || report.removed > 0 || report.updated > 0 {
-                    crate::api::effects::invalidate_active_render_groups_after_effect_registry_update(
-                        &watcher_state,
+                if (report.added > 0 || report.removed > 0 || report.updated > 0)
+                    && let Err(error) = crate::domain::effect::invalidate_active_zones(
+                        &watcher_state.domains.effects,
                     )
-                    .await;
+                    .await
+                {
+                    warn!(%error, "Failed to refresh active zones after an effect registry update");
                 }
 
                 event_bus.publish(

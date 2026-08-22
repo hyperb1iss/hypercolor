@@ -209,6 +209,20 @@ fn active_effect_queries_use_domain_authority() {
 }
 
 #[test]
+fn effect_registry_watcher_uses_domain_authority() {
+    let sources = daemon_sources();
+    let startup = sources
+        .iter()
+        .find(|(path, _)| path.ends_with("startup/lifecycle.rs"))
+        .map(|(_, source)| source.as_str())
+        .expect("startup lifecycle source should exist");
+
+    assert!(startup.contains("crate::domain::effect::invalidate_active_zones"));
+    assert!(!startup.contains("crate::api::effects::invalidate"));
+    assert!(!startup.contains("invalidate_active_render_groups"));
+}
+
+#[test]
 fn domain_errors_do_not_render_transport_responses() {
     let banned = [
         "use axum",
