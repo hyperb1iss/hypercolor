@@ -30,7 +30,7 @@ use crate::persistence::{AtomicFileWriter, serialize_json_pretty, write_atomic};
 /// File name of the overlay inside the daemon state directory.
 pub const DEVICE_ALIASES_FILE: &str = "device-aliases.json";
 
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 2;
 const STORE_SUBJECT: &str = "device aliases";
 
 /// Persisted portable-key overlay.
@@ -337,9 +337,14 @@ impl DeviceAliasCodec {
             .with_context(|| format!("failed to read device aliases at {}", path.display()))?;
         let probe: AliasSchemaProbe = serde_json::from_str(&payload)
             .with_context(|| format!("failed to probe device aliases at {}", path.display()))?;
-        if probe.schema_version > SCHEMA_VERSION {
+        if probe.schema_version != SCHEMA_VERSION {
+            let relation = if probe.schema_version > SCHEMA_VERSION {
+                "newer"
+            } else {
+                "older"
+            };
             anyhow::bail!(
-                "device-aliases.json is schema v{}, newer than supported v{}; refusing to read or rewrite it",
+                "device-aliases.json is schema v{}, {relation} than supported v{}; refusing to read or rewrite it",
                 probe.schema_version,
                 SCHEMA_VERSION
             );
@@ -579,13 +584,27 @@ mod tests {
     fn newer_overlay_schema_is_refused_without_rewrite() {
         let dir = TempDir::new().expect("tempdir");
         let path = overlay_path(&dir);
-        let payload = br#"{"schema_version":2,"aliases":{},"quarantined_keys":[],"collisions":[],"future":true}"#;
+        let payload = br#"{"schema_version":3,"aliases":{},"quarantined_keys":[],"collisions":[],"future":true}"#;
         fs::write(&path, payload).expect("write future overlay");
 
         let error = load(&path).expect_err("future schema is refused");
 
-        assert!(error.to_string().contains("schema v2"));
+        assert!(error.to_string().contains("schema v3"));
         assert_eq!(fs::read(&path).expect("future overlay survives"), payload);
+    }
+
+    #[test]
+    fn older_vendor_specific_overlay_is_refused_without_rewrite() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = overlay_path(&dir);
+        let payload = br#"{"schema_version":1,"aliases":{},"quarantined_keys":[],"collisions":[]}"#;
+        fs::write(&path, payload).expect("write older overlay");
+
+        let error = load(&path).expect_err("older schema is refused");
+
+        assert!(error.to_string().contains("schema v1"));
+        assert!(error.to_string().contains("older than supported v2"));
+        assert_eq!(fs::read(&path).expect("older overlay survives"), payload);
     }
 
     #[test]

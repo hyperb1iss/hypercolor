@@ -126,7 +126,7 @@ impl HueDiscoveredBridge {
             DeviceFingerprint::mint(FingerprintNamespace::Net, "hue", &self.bridge_id);
         // The bridge id is MAC-derived and fixed for the life of the
         // bridge, which is exactly what a portable identity requires.
-        let claim = PortableIdentityClaim::hue_bridge_id(&self.bridge_id, self.ip);
+        let claim = PortableIdentityClaim::driver_identifier("hue", &self.bridge_id, self.ip);
 
         DiscoveredDevice {
             fingerprint,

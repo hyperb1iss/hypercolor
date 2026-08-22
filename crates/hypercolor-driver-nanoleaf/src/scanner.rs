@@ -302,10 +302,16 @@ async fn build_discovered_device(
     // re-claims when a live source next proves who it is.
     let claim = if serial_no.is_empty() {
         (candidate.device_id_is_identifier && !candidate.device_id.is_empty())
-            .then(|| PortableIdentityClaim::nanoleaf_serial(&candidate.device_id, candidate.ip))
+            .then(|| {
+                PortableIdentityClaim::driver_identifier(
+                    "nanoleaf",
+                    &candidate.device_id,
+                    candidate.ip,
+                )
+            })
             .flatten()
     } else {
-        PortableIdentityClaim::nanoleaf_serial(&serial_no, candidate.ip)
+        PortableIdentityClaim::driver_identifier("nanoleaf", &serial_no, candidate.ip)
     };
 
     let info = build_device_info(

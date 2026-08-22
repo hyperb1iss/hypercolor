@@ -277,7 +277,7 @@ async fn daemon_initialization_relocates_machine_state_out_of_data() {
         (
             "device-aliases.json",
             serde_json::json!({
-                "schema_version": 1,
+                "schema_version": 2,
                 "aliases": {},
                 "quarantined_keys": [],
                 "collisions": [],

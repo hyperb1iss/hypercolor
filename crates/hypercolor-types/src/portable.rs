@@ -54,10 +54,8 @@ pub enum PortableIdentitySource {
     UsbSerial,
     /// Burned-in hardware MAC.
     MacAddress,
-    /// Hue bridge id (MAC-derived, fixed for the life of the bridge).
-    HueBridgeId,
-    /// Nanoleaf controller serial. Never a device name and never an address.
-    NanoleafSerial,
+    /// Stable identifier interpreted by the driver that discovered it.
+    DriverIdentifier,
 }
 
 /// How network-sourced hardware was reachable when it was observed.
@@ -107,24 +105,16 @@ pub enum PortableIdentityClaim {
         /// How the device was reachable when observed.
         attachment: NetworkAttachment,
     },
-    /// A Hue bridge id.
+    /// A stable identifier in a driver-owned namespace.
     #[non_exhaustive]
-    HueBridgeId {
-        /// Canonical key, `hue:{bridge id, lowercased}`.
+    DriverIdentifier {
+        /// Canonical key, `{namespace}:{identifier, lowercased}`.
         key: PortableDeviceKey,
-        /// The id as the bridge reported it.
+        /// Driver-owned namespace that prevents cross-protocol collisions.
+        namespace: String,
+        /// The identifier as the device reported it.
         raw: String,
-        /// The bridge's address when observed.
-        peer: IpAddr,
-    },
-    /// A Nanoleaf controller serial (`serial_no` or the API's `device_id`).
-    #[non_exhaustive]
-    NanoleafSerial {
-        /// Canonical key, `nanoleaf:{serial, lowercased}`.
-        key: PortableDeviceKey,
-        /// The serial as the controller reported it.
-        raw: String,
-        /// The controller's address when observed.
+        /// The device's address when observed.
         peer: IpAddr,
     },
 }
@@ -175,30 +165,20 @@ impl PortableIdentityClaim {
         })
     }
 
-    /// Claims a Hue bridge id.
-    #[must_use]
-    pub fn hue_bridge_id(raw_bridge_id: &str, peer: IpAddr) -> Option<Self> {
-        let canonical = plausible_serial(raw_bridge_id)?.to_lowercase();
-
-        Some(Self::HueBridgeId {
-            key: PortableDeviceKey(format!("hue:{canonical}")),
-            raw: raw_bridge_id.to_owned(),
-            peer,
-        })
-    }
-
-    /// Claims a Nanoleaf controller serial.
+    /// Claims a stable identifier in a driver-owned namespace.
     ///
-    /// The caller must pass `serial_no` or the API's `device_id`, never a
-    /// device name and never an address; this constructor can validate
-    /// shape but cannot know which field the scanner read.
+    /// The namespace must start with an ASCII letter or digit and contain
+    /// only lowercase ASCII letters, digits, `-`, or `_`. The identifier is
+    /// refused when it is empty or resembles a common vendor placeholder.
     #[must_use]
-    pub fn nanoleaf_serial(raw_serial: &str, peer: IpAddr) -> Option<Self> {
-        let canonical = plausible_serial(raw_serial)?.to_lowercase();
+    pub fn driver_identifier(namespace: &str, raw_identifier: &str, peer: IpAddr) -> Option<Self> {
+        let namespace = canonical_namespace(namespace)?;
+        let canonical = plausible_serial(raw_identifier)?.to_lowercase();
 
-        Some(Self::NanoleafSerial {
-            key: PortableDeviceKey(format!("nanoleaf:{canonical}")),
-            raw: raw_serial.to_owned(),
+        Some(Self::DriverIdentifier {
+            key: PortableDeviceKey(format!("{namespace}:{canonical}")),
+            namespace,
+            raw: raw_identifier.to_owned(),
             peer,
         })
     }
@@ -209,8 +189,7 @@ impl PortableIdentityClaim {
         match self {
             Self::UsbSerial { key, .. }
             | Self::MacAddress { key, .. }
-            | Self::HueBridgeId { key, .. }
-            | Self::NanoleafSerial { key, .. } => key,
+            | Self::DriverIdentifier { key, .. } => key,
         }
     }
 
@@ -220,8 +199,7 @@ impl PortableIdentityClaim {
         match self {
             Self::UsbSerial { .. } => PortableIdentitySource::UsbSerial,
             Self::MacAddress { .. } => PortableIdentitySource::MacAddress,
-            Self::HueBridgeId { .. } => PortableIdentitySource::HueBridgeId,
-            Self::NanoleafSerial { .. } => PortableIdentitySource::NanoleafSerial,
+            Self::DriverIdentifier { .. } => PortableIdentitySource::DriverIdentifier,
         }
     }
 
@@ -231,8 +209,16 @@ impl PortableIdentityClaim {
         match self {
             Self::UsbSerial { raw, .. }
             | Self::MacAddress { raw, .. }
-            | Self::HueBridgeId { raw, .. }
-            | Self::NanoleafSerial { raw, .. } => raw,
+            | Self::DriverIdentifier { raw, .. } => raw,
+        }
+    }
+
+    /// The driver-owned namespace for a namespaced identifier claim.
+    #[must_use]
+    pub fn namespace(&self) -> Option<&str> {
+        match self {
+            Self::DriverIdentifier { namespace, .. } => Some(namespace),
+            Self::UsbSerial { .. } | Self::MacAddress { .. } => None,
         }
     }
 
@@ -246,9 +232,7 @@ impl PortableIdentityClaim {
                 NetworkAttachment::Peer(peer) => AttachmentEvidence::NetworkPeer(*peer),
                 NetworkAttachment::CloudInventory => AttachmentEvidence::Unavailable,
             },
-            Self::HueBridgeId { peer, .. } | Self::NanoleafSerial { peer, .. } => {
-                AttachmentEvidence::NetworkPeer(*peer)
-            }
+            Self::DriverIdentifier { peer, .. } => AttachmentEvidence::NetworkPeer(*peer),
         }
     }
 }
@@ -387,6 +371,27 @@ fn plausible_serial(raw: &str) -> Option<&str> {
     }
 
     Some(trimmed)
+}
+
+fn canonical_namespace(raw: &str) -> Option<String> {
+    let namespace = raw.trim();
+    if namespace != raw {
+        return None;
+    }
+    let mut chars = namespace.chars();
+    let first = chars.next()?;
+    if !first.is_ascii_lowercase() && !first.is_ascii_digit() {
+        return None;
+    }
+    if !chars.all(|character| {
+        character.is_ascii_lowercase()
+            || character.is_ascii_digit()
+            || matches!(character, '-' | '_')
+    }) {
+        return None;
+    }
+
+    Some(namespace.to_owned())
 }
 
 /// Normalizes every accepted MAC encoding into twelve lowercase hex
@@ -534,15 +539,26 @@ mod tests {
     }
 
     #[test]
-    fn hue_and_nanoleaf_ids_lowercase_into_stable_keys() {
-        let hue =
-            PortableIdentityClaim::hue_bridge_id("001788FFFE23A4B5", PEER).expect("real bridge id");
-        let nanoleaf =
-            PortableIdentityClaim::nanoleaf_serial("S19122A1234", PEER).expect("real serial");
+    fn driver_namespaces_lowercase_identifiers_into_stable_keys() {
+        let hue = PortableIdentityClaim::driver_identifier("hue", "001788FFFE23A4B5", PEER)
+            .expect("real bridge id");
+        let nanoleaf = PortableIdentityClaim::driver_identifier("nanoleaf", "S19122A1234", PEER)
+            .expect("real serial");
 
         assert_eq!(hue.key().as_str(), "hue:001788fffe23a4b5");
-        assert_eq!(hue.source(), PortableIdentitySource::HueBridgeId);
+        assert_eq!(hue.source(), PortableIdentitySource::DriverIdentifier);
+        assert_eq!(hue.namespace(), Some("hue"));
         assert_eq!(nanoleaf.key().as_str(), "nanoleaf:s19122a1234");
+    }
+
+    #[test]
+    fn invalid_driver_namespaces_are_refused() {
+        for namespace in ["", "Hue", "hue.bridge", "hue:bridge", " hue "] {
+            let claim =
+                PortableIdentityClaim::driver_identifier(namespace, "001788FFFE23A4B5", PEER);
+
+            assert!(claim.is_none(), "accepted namespace {namespace:?}");
+        }
     }
 
     #[test]
@@ -598,14 +614,12 @@ mod tests {
 
     #[test]
     fn claims_round_trip_through_serde() {
-        let claim = PortableIdentityClaim::mac_address(
-            "2C:F4:32:11:22:33",
-            NetworkAttachment::CloudInventory,
-        )
-        .expect("valid unicast MAC");
+        let claim = PortableIdentityClaim::driver_identifier("hue", "001788FFFE23A4B5", PEER)
+            .expect("valid driver identifier");
         let json = serde_json::to_string(&claim).expect("serializes");
         let back: PortableIdentityClaim = serde_json::from_str(&json).expect("deserializes");
 
         assert_eq!(back, claim);
+        assert!(json.contains(r#""namespace":"hue""#));
     }
 }
