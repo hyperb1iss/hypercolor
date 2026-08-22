@@ -15,7 +15,6 @@
 //! The capture backend feeds raw pixel buffers. Everything downstream is
 //! backend-agnostic and testable with synthetic data.
 
-#[cfg(any(target_os = "windows", test))]
 mod adapter;
 mod admission;
 mod cadence;
@@ -32,7 +31,6 @@ mod plan;
 mod process;
 mod publication;
 mod reducer;
-#[cfg(any(target_os = "linux", target_os = "windows"))]
 mod retained;
 mod sampling;
 pub mod sector;
@@ -142,7 +140,6 @@ pub use reducer::{
     CpuReductionExecutor, CpuReductionLayout, CpuReductionRequest, CpuSurfaceReductionJob,
     PreparedCpuMaterializationWorkspace, PreparedCpuReductionBatch,
 };
-#[cfg(any(target_os = "linux", target_os = "windows"))]
 pub(crate) use retained::{ExactBoxList, ExactBoxNode};
 pub use sampling::{
     CpuMappedSamplingPoint, CpuSamplingError, CpuSamplingPoint, CpuSamplingView,

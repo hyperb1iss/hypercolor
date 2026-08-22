@@ -17,7 +17,7 @@ use super::{
     ScreenCaptureDemand, ScreenPublicationHub, ScreenPublicationRequest,
     ScreenRendererExecutionState, ScreenSource, ScreenSourcePickerAction, ScreenWorkerPreparation,
     ScreenWorkerPreparationTicket, ScreenWorkerRetirement, SourceCapabilityContext,
-    SourceDiagnosticArtifactAction, WorkerCommand, lock, production_stream_request,
+    SourceDiagnosticArtifactAction, WorkerCommand, production_stream_request,
     protected_action_identity, resolve_macos_publication_branch_with_telemetry,
 };
 #[cfg(feature = "macos-capture-fixtures")]
@@ -170,11 +170,11 @@ impl ScreenSource for MacosScreenCaptureInput {
     }
 
     fn set_screen_publication_hub(&mut self, hub: Arc<ScreenPublicationHub>) {
-        *lock(&self.exact.hub) = Some(hub);
+        self.exact.install_hub(hub);
     }
 
     fn screen_publication_resolution_revision(&self) -> u64 {
-        self.exact.resolution_revision.load(Ordering::Acquire)
+        self.exact.resolution_revision()
     }
 
     fn resolve_screen_publication_branch(

@@ -73,7 +73,7 @@ fn worker_invalidation_is_atomic_across_branches_and_stale_safe() {
     let mut builder = ScreenPlanBuilder::new();
     let exact = MacosExactPublicationShared::default();
     let hub = builder.publication_hub();
-    *lock(&exact.hub) = Some(Arc::clone(&hub));
+    exact.install_hub(Arc::clone(&hub));
     let mut runtimes = Vec::new();
     let source = source(&frame());
     exact.replace_source(Some(source.clone()));
@@ -274,7 +274,7 @@ fn cpu_reduction_timing_excludes_frames_when_branch_cadence_is_not_due() {
     let native_source = source(&native_frame);
     let mut builder = ScreenPlanBuilder::new();
     let exact = MacosExactPublicationShared::default();
-    *lock(&exact.hub) = Some(builder.publication_hub());
+    exact.install_hub(builder.publication_hub());
     exact.replace_source(Some(native_source.clone()));
     let demand = cpu_demand_for_kind_at_hz(
         ScreenProcessingProfile::default(),
@@ -629,7 +629,7 @@ fn commit_cpu_runtimes(
     let (token, runtime) = prepare_macos_exact_runtime(ticket, Some(source), exact)
         .expect("macOS CPU runtime prepares");
     let (runtime, owned_source) = runtime.expect("CPU plan owns a runtime");
-    exact.register_owned_source(owned_source);
+    exact.register_owned_source(ExactBoxList::boxed_node(owned_source));
     runtimes.push(runtime);
     preparing
         .acknowledge(token)
@@ -1058,7 +1058,7 @@ fn macos_cpu_resolves_p3_and_full_precision_hdr() {
 fn macos_publication_transition_is_deterministic_at_zero_midpoint_and_completion() {
     let mut builder = ScreenPlanBuilder::new();
     let exact = MacosExactPublicationShared::default();
-    *lock(&exact.hub) = Some(builder.publication_hub());
+    exact.install_hub(builder.publication_hub());
     let mut runtimes = Vec::new();
     let base_frame = frame();
     let sdr_source = source(&base_frame);
@@ -1127,7 +1127,7 @@ fn macos_publication_transition_is_deterministic_at_zero_midpoint_and_completion
 fn macos_transition_inheritance_skips_matching_routes_without_curve_state() {
     let mut builder = ScreenPlanBuilder::new();
     let exact = MacosExactPublicationShared::default();
-    *lock(&exact.hub) = Some(builder.publication_hub());
+    exact.install_hub(builder.publication_hub());
     let mut runtimes = Vec::new();
     let base_frame = frame();
     let sdr_source = source(&base_frame);
@@ -1193,7 +1193,7 @@ fn macos_transition_inheritance_skips_matching_routes_without_curve_state() {
 fn macos_publication_transition_restarts_from_its_midpoint_curve() {
     let mut builder = ScreenPlanBuilder::new();
     let exact = MacosExactPublicationShared::default();
-    *lock(&exact.hub) = Some(builder.publication_hub());
+    exact.install_hub(builder.publication_hub());
     let mut runtimes = Vec::new();
     let base_frame = frame();
     let sdr_source = source(&base_frame);
@@ -1309,7 +1309,7 @@ fn macos_publication_transition_restarts_from_its_midpoint_curve() {
 fn sdr_exposure_reconfiguration_swaps_atomically_without_transition() {
     let mut builder = ScreenPlanBuilder::new();
     let exact = MacosExactPublicationShared::default();
-    *lock(&exact.hub) = Some(builder.publication_hub());
+    exact.install_hub(builder.publication_hub());
     let mut runtimes = Vec::new();
     let source = source(&frame());
     exact.replace_source(Some(source.clone()));
@@ -1386,7 +1386,7 @@ fn sdr_exposure_reconfiguration_swaps_atomically_without_transition() {
 fn hdr_calibration_reconfiguration_swaps_atomically_without_transition() {
     let mut builder = ScreenPlanBuilder::new();
     let exact = MacosExactPublicationShared::default();
-    *lock(&exact.hub) = Some(builder.publication_hub());
+    exact.install_hub(builder.publication_hub());
     let mut runtimes = Vec::new();
     let source = hdr_transition_source(&source(&frame()));
     exact.replace_source(Some(source.clone()));
@@ -1469,7 +1469,7 @@ fn macos_publication_samples_once_and_suppresses_both_scene_cut_paths() {
     };
     let mut builder = ScreenPlanBuilder::new();
     let exact = MacosExactPublicationShared::default();
-    *lock(&exact.hub) = Some(builder.publication_hub());
+    exact.install_hub(builder.publication_hub());
     let mut runtimes = Vec::new();
     let base_frame = frame();
     let sdr_source = source(&base_frame);
@@ -1648,7 +1648,7 @@ fn publish_native_fixture(
     let exact = MacosExactPublicationShared::default();
     exact.replace_source(Some(source.clone()));
     let mut builder = ScreenPlanBuilder::new();
-    *lock(&exact.hub) = Some(builder.publication_hub());
+    exact.install_hub(builder.publication_hub());
     let revision = InputPublicationDemandRevision::new(1);
     let graph = ScreenInputGraphGeneration::new(1);
     let mut preparing = builder
@@ -1666,7 +1666,7 @@ fn publish_native_fixture(
     let (token, runtime) =
         prepare_macos_exact_runtime(ticket, Some(source), &exact).expect("native runtime prepares");
     let (runtime, owned_source) = runtime.expect("native branch owns a runtime");
-    exact.register_owned_source(owned_source);
+    exact.register_owned_source(ExactBoxList::boxed_node(owned_source));
     let mut runtimes = vec![runtime];
     preparing
         .acknowledge(token)
@@ -2010,7 +2010,7 @@ fn rgba16float_cpu_publication_matches_the_shared_scalar_oracle() {
     let native_source = source(&native_frame);
     let mut builder = ScreenPlanBuilder::new();
     let exact = MacosExactPublicationShared::default();
-    *lock(&exact.hub) = Some(builder.publication_hub());
+    exact.install_hub(builder.publication_hub());
     exact.replace_source(Some(native_source.clone()));
     let resolved =
         resolve_macos_publication_branch(&native_source, &cpu_demand(transition_profile(true)))
@@ -2055,7 +2055,7 @@ fn malformed_native_planes_fail_before_cpu_publication() {
     let native_source = source(&native_frame);
     let mut builder = ScreenPlanBuilder::new();
     let exact = MacosExactPublicationShared::default();
-    *lock(&exact.hub) = Some(builder.publication_hub());
+    exact.install_hub(builder.publication_hub());
     exact.replace_source(Some(native_source.clone()));
     let resolved = resolve_macos_publication_branch(
         &native_source,
@@ -2263,7 +2263,7 @@ fn assert_scalar_publication_matches_oracle(frame: &Arc<MacosCaptureFrame>) {
     let hdr = native_source.colorimetry.dynamic_range() == Some(CaptureDynamicRange::High);
     let mut builder = ScreenPlanBuilder::new();
     let exact = MacosExactPublicationShared::default();
-    *lock(&exact.hub) = Some(builder.publication_hub());
+    exact.install_hub(builder.publication_hub());
     exact.replace_source(Some(native_source.clone()));
     let resolved =
         resolve_macos_publication_branch(&native_source, &cpu_demand(transition_profile(hdr)))

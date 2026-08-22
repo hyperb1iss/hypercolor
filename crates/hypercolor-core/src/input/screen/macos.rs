@@ -1,6 +1,7 @@
 #[cfg(feature = "macos-capture-fixtures")]
 use std::num::NonZeroUsize;
 use std::num::{NonZeroU32, NonZeroU64};
+use std::ops::Deref;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, mpsc};
 use std::thread;
@@ -36,24 +37,25 @@ use super::{
     AdmittedScreenNativeTargetPreparation, BoundScreenNativeTargetPreparation, CaptureCadence,
     CaptureColorSpace, CaptureColorimetry, CaptureConfig, CaptureDynamicRange, CaptureEpoch,
     CaptureLuminanceContext, CapturePixelFormat, CapturePositiveScalar, CaptureRotation,
-    CaptureSourceId, CaptureTransferFunction, LedToneMapCalibration, PixelExtent, PixelRect,
-    PlatformGpuApi, PlatformGpuSurface, PlatformGpuSurfaceTimingSink, RegisteredScreenBranchDemand,
-    ResolvedScreenBranchDemand, ResolvedScreenPublicationDescriptor, ResolvedScreenSource,
-    ResolvedScreenSourceConfig, ScreenAnalysisComputeCapacity, ScreenAnalysisResourcePlan,
-    ScreenAnalysisWorkPlan, ScreenBackendResourceIdentity, ScreenBranchPayload,
-    ScreenBranchPublisher, ScreenByteAdmissionCoordinator, ScreenCaptureBackend,
-    ScreenCaptureCadence, ScreenCaptureDemand, ScreenComputeCapacityPolicy,
-    ScreenCursorCapabilities, ScreenCursorPolicy, ScreenExecutorColorCapabilities,
-    ScreenGpuSurfacePayload, ScreenNativeExecutionTargetId, ScreenNativeExecutionUnavailableReason,
-    ScreenNativePreparationPayload, ScreenNativeWorkPayload, ScreenPhysicalGpuDeviceIdentity,
-    ScreenPreparedWorkerToken, ScreenPublicationColorimetry, ScreenPublicationError,
-    ScreenPublicationExecutor, ScreenPublicationExecutorFallbackReason,
-    ScreenPublicationExecutorRequest, ScreenPublicationHealth, ScreenPublicationHub,
-    ScreenPublicationHubError, ScreenPublicationMetadata, ScreenPublicationRequest,
-    ScreenRendererExecutionState, ScreenRequiredResourceMinimum, ScreenResourceApi,
-    ScreenResourceKind, ScreenResourceLifetime, ScreenSourceReflection, ScreenSourceSelector,
-    ScreenWorkerBinding, ScreenWorkerBindingState, ScreenWorkerExactLedgerBuilder,
-    ScreenWorkerPreparation, ScreenWorkerPreparationTicket, ScreenWorkerRetirement, SourceScale,
+    CaptureSourceId, CaptureTransferFunction, ExactBoxList, LedToneMapCalibration, PixelExtent,
+    PixelRect, PlatformGpuApi, PlatformGpuSurface, PlatformGpuSurfaceTimingSink,
+    RegisteredScreenBranchDemand, ResolvedScreenBranchDemand, ResolvedScreenPublicationDescriptor,
+    ResolvedScreenSource, ResolvedScreenSourceConfig, ScreenAnalysisComputeCapacity,
+    ScreenAnalysisResourcePlan, ScreenAnalysisWorkPlan, ScreenBackendResourceIdentity,
+    ScreenBranchPayload, ScreenBranchPublisher, ScreenByteAdmissionCoordinator,
+    ScreenCaptureBackend, ScreenCaptureCadence, ScreenCaptureDemand, ScreenCommittedState,
+    ScreenComputeCapacityPolicy, ScreenCursorCapabilities, ScreenCursorPolicy,
+    ScreenExecutorColorCapabilities, ScreenGpuSurfacePayload, ScreenNativeExecutionTargetId,
+    ScreenNativeExecutionUnavailableReason, ScreenNativePreparationPayload,
+    ScreenNativeWorkPayload, ScreenPhysicalGpuDeviceIdentity, ScreenPreparedWorkerToken,
+    ScreenPublicationColorimetry, ScreenPublicationError, ScreenPublicationExecutor,
+    ScreenPublicationExecutorFallbackReason, ScreenPublicationExecutorRequest,
+    ScreenPublicationHealth, ScreenPublicationHub, ScreenPublicationHubError,
+    ScreenPublicationMetadata, ScreenPublicationRequest, ScreenRendererExecutionState,
+    ScreenRequiredResourceMinimum, ScreenResourceApi, ScreenResourceKind, ScreenResourceLifetime,
+    ScreenSourceReflection, ScreenSourceSelector, ScreenWorkerBinding, ScreenWorkerBindingState,
+    ScreenWorkerExactLedgerBuilder, ScreenWorkerPreparation, ScreenWorkerPreparationTicket,
+    ScreenWorkerRetirement, SourceScale,
 };
 #[cfg(feature = "macos-capture-fixtures")]
 use super::{
@@ -70,6 +72,8 @@ use crate::input::traits::{
     SourceCapabilityContext, SourceDiagnosticArtifactAction, SourceRoleBinding,
 };
 use crate::input::{SourceIssue, SourceStatusHandle, SourceStatusReporter};
+
+use super::adapter::{CaptureExactPublicationShared, CaptureOwnedSource, CapturePublicationSource};
 
 #[cfg(target_os = "macos")]
 mod surface_pool;
@@ -230,22 +234,43 @@ struct MacosPublicationSource {
     cursor_composed: bool,
 }
 
+impl CapturePublicationSource for MacosPublicationSource {
+    fn source_id(&self) -> &CaptureSourceId {
+        &self.epoch.source_id
+    }
+}
+
 struct MacosOwnedSource {
     source_id: CaptureSourceId,
     binding: ScreenWorkerBinding,
     _runtime_lifetime: ScreenResourceLifetime,
 }
 
+impl CaptureOwnedSource for MacosOwnedSource {
+    fn source_id(&self) -> &CaptureSourceId {
+        &self.source_id
+    }
+
+    fn belongs_to_authority(&self, authority: &ScreenCommittedState) -> bool {
+        authority.owns_runtime_binding(&self.binding)
+    }
+}
+
 #[derive(Default)]
 struct MacosExactPublicationShared {
-    source: Mutex<Option<MacosPublicationSource>>,
-    owned_sources: Mutex<Vec<MacosOwnedSource>>,
-    hub: Mutex<Option<Arc<ScreenPublicationHub>>>,
+    common: CaptureExactPublicationShared<MacosPublicationSource, MacosOwnedSource>,
     #[cfg(feature = "macos-capture-fixtures")]
     cpu_executor: Mutex<Option<Arc<CpuReductionExecutor>>>,
     #[cfg(feature = "macos-capture-fixtures")]
     compute_capacity_policy: ScreenComputeCapacityPolicy,
-    resolution_revision: AtomicU64,
+}
+
+impl Deref for MacosExactPublicationShared {
+    type Target = CaptureExactPublicationShared<MacosPublicationSource, MacosOwnedSource>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.common
+    }
 }
 
 struct MacosNativeRoute {

@@ -1,7 +1,7 @@
 use super::admission::prepare_macos_exact_runtime;
 use super::publication::{capture_source_id, publish_frame};
 use super::{
-    Arc, AtomicBool, CaptureWorker, MacosCaptureControl, MacosExactPublicationShared,
+    Arc, AtomicBool, CaptureWorker, ExactBoxList, MacosCaptureControl, MacosExactPublicationShared,
     MacosExactRuntime, MacosFrameEvent, MacosFrameMailbox, MacosFrameStatus, MacosPublication,
     MacosScreenRuntimeTelemetry, Mutex, Ordering, PreparedWorker, ResourceState,
     ScreenPublicationHealth, ScreenPublicationHub, ScreenPublicationHubError, ScreenWorkerBinding,
@@ -71,7 +71,7 @@ pub(super) fn handle_worker_commands(
                 match prepare_macos_exact_runtime(ticket, source.as_ref(), exact) {
                     Ok((token, runtime)) if !cancelled.load(Ordering::Acquire) => {
                         if let Some((runtime, owned_source)) = runtime {
-                            exact.register_owned_source(owned_source);
+                            exact.register_owned_source(ExactBoxList::boxed_node(owned_source));
                             runtimes.push(runtime);
                         }
                         if completion.send(Ok(token)).is_err() {

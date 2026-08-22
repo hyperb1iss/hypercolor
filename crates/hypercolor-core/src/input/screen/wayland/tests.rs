@@ -341,7 +341,7 @@ fn exact_publication_source_is_stable_until_capture_identity_changes() {
     .expect("test analysis extent allocates");
 
     let first = capture_legacy(&mut worker, 4, 2, 7);
-    let first_revision = settings.exact.resolution_revision.load(Ordering::Acquire);
+    let first_revision = settings.exact.resolution_revision();
     let publication = settings
         .exact
         .source()
@@ -375,13 +375,13 @@ fn exact_publication_source_is_stable_until_capture_identity_changes() {
 
     capture_legacy(&mut worker, 4, 2, 8);
     assert_eq!(
-        settings.exact.resolution_revision.load(Ordering::Acquire),
+        settings.exact.resolution_revision(),
         first_revision,
         "pixel contents and sequence changes do not invalidate prepared resources"
     );
 
     capture_legacy(&mut worker, 2, 1, 9);
-    assert!(settings.exact.resolution_revision.load(Ordering::Acquire) > first_revision);
+    assert!(settings.exact.resolution_revision() > first_revision);
 }
 
 #[test]
@@ -445,11 +445,7 @@ fn exact_runtime_publishes_surface_and_zones_from_one_captured_frame() {
     let mixed_demands = demands.clone();
     let mut builder = ScreenPlanBuilder::new();
     let hub = builder.publication_hub();
-    *settings
-        .exact
-        .hub
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&hub));
+    settings.exact.install_hub(Arc::clone(&hub));
     let revision = InputPublicationDemandRevision::new(1);
     let graph_generation = ScreenInputGraphGeneration::new(1);
     let mut preparing = builder
@@ -805,16 +801,7 @@ fn already_cancelled_exact_preparation_never_creates_runtime_state() {
         .expect_err("cancelled preparation cannot return a worker token");
     assert!(error.to_string().contains("was cancelled"));
     assert_eq!(worker.exact_runtimes.iter().count(), 0);
-    assert_eq!(
-        settings
-            .exact
-            .owned_sources
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .iter()
-            .count(),
-        0
-    );
+    assert_eq!(settings.exact.owned_source_count(), 0);
 }
 
 #[test]

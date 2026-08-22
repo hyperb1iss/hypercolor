@@ -9,6 +9,7 @@ use std::cell::Cell;
 use std::collections::VecDeque;
 use std::fmt::Write as _;
 use std::num::{NonZeroU32, NonZeroUsize};
+use std::ops::Deref;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::thread;
@@ -40,10 +41,10 @@ use crate::input::screen::{
     ScreenAnalysisAdmissionError, ScreenAnalysisComputeCapacity, ScreenAnalysisResourcePlan,
     ScreenAnalysisWorkPlan, ScreenBackendResourceIdentity, ScreenByteAdmissionCoordinator,
     ScreenByteLease, ScreenCaptureBackend, ScreenCaptureDemand, ScreenCaptureInput,
-    ScreenColorTransformCapabilities, ScreenComputeCapacityPolicy, ScreenPreparedWorkerToken,
-    ScreenPublicationHealth, ScreenPublicationHub, ScreenRequiredResourceMinimum,
-    ScreenResourceApi, ScreenResourceKind, ScreenResourceLifetime, ScreenSourceReflection,
-    ScreenSourceSelector, ScreenWorkerBinding, ScreenWorkerBindingState,
+    ScreenColorTransformCapabilities, ScreenCommittedState, ScreenComputeCapacityPolicy,
+    ScreenPreparedWorkerToken, ScreenPublicationHealth, ScreenPublicationHub,
+    ScreenRequiredResourceMinimum, ScreenResourceApi, ScreenResourceKind, ScreenResourceLifetime,
+    ScreenSourceReflection, ScreenSourceSelector, ScreenWorkerBinding, ScreenWorkerBindingState,
     ScreenWorkerExactLedgerBuilder, ScreenWorkerPreparation, ScreenWorkerPreparationTicket,
     ScreenWorkerRetirement, SourceScale, analyze_screen_frame,
 };
@@ -56,6 +57,8 @@ use crate::input::{
     SourceStatusReporter,
 };
 use hypercolor_worker_retention::{retain_worker, spawn_worker};
+
+use super::adapter::{CaptureExactPublicationShared, CaptureOwnedSource, CapturePublicationSource};
 
 const WORKER_READY_TIMEOUT: Duration = Duration::from_secs(1);
 const WORKER_STOP_TIMEOUT: Duration = Duration::from_secs(1);
@@ -562,6 +565,12 @@ impl WaylandPublicationSource {
     }
 }
 
+impl CapturePublicationSource for WaylandPublicationSource {
+    fn source_id(&self) -> &CaptureSourceId {
+        &self.epoch.source_id
+    }
+}
+
 struct WaylandOwnedSource {
     source_id: CaptureSourceId,
     session_generation: u64,
@@ -569,91 +578,31 @@ struct WaylandOwnedSource {
     _runtime_lifetime: ScreenResourceLifetime,
 }
 
+impl CaptureOwnedSource for WaylandOwnedSource {
+    fn source_id(&self) -> &CaptureSourceId {
+        &self.source_id
+    }
+
+    fn belongs_to_authority(&self, authority: &ScreenCommittedState) -> bool {
+        authority.owns_runtime_binding(&self.binding)
+    }
+}
+
 #[derive(Default)]
 struct WaylandExactPublicationShared {
-    source: Mutex<Option<WaylandPublicationSource>>,
-    owned_sources: Mutex<ExactBoxList<WaylandOwnedSource>>,
-    hub: Mutex<Option<Arc<ScreenPublicationHub>>>,
+    common: CaptureExactPublicationShared<WaylandPublicationSource, WaylandOwnedSource>,
     cpu_executor: Mutex<Option<Arc<CpuReductionExecutor>>>,
-    resolution_revision: AtomicU64,
+}
+
+impl Deref for WaylandExactPublicationShared {
+    type Target = CaptureExactPublicationShared<WaylandPublicationSource, WaylandOwnedSource>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.common
+    }
 }
 
 impl WaylandExactPublicationShared {
-    fn replace_source(&self, next: Option<WaylandPublicationSource>) {
-        let mut source = self
-            .source
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if *source == next {
-            return;
-        }
-        *source = next;
-        self.resolution_revision
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |revision| {
-                revision.checked_add(1)
-            })
-            .expect("Wayland screen publication resolution revision exhausted");
-    }
-
-    fn source(&self) -> Option<WaylandPublicationSource> {
-        self.source
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-    }
-
-    fn hub(&self) -> Option<Arc<ScreenPublicationHub>> {
-        self.hub
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-    }
-
-    fn owns_source(&self, source_id: &CaptureSourceId) -> bool {
-        self.source()
-            .is_some_and(|source| &source.epoch.source_id == source_id)
-            || self
-                .owned_sources
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .iter()
-                .any(|owned| &owned.source_id == source_id)
-    }
-
-    fn register_owned_source(&self, source: Box<ExactBoxNode<WaylandOwnedSource>>) {
-        self.owned_sources
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push_boxed(source);
-    }
-
-    fn reap_owned_sources(&self) {
-        let authority = self.hub().map(|hub| hub.committed_state());
-        let mut sources = self
-            .owned_sources
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        sources.retain(|source| {
-            authority
-                .as_ref()
-                .is_some_and(|authority| authority.owns_runtime_binding(&source.binding))
-        });
-    }
-
-    fn clear_owned_sources_for_session(&self, session_generation: u64) {
-        self.owned_sources
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .retain(|source| source.session_generation != session_generation);
-    }
-
-    fn clear_owned_sources(&self) {
-        self.owned_sources
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clear();
-    }
-
     fn cpu_executor(&self) -> anyhow::Result<Arc<CpuReductionExecutor>> {
         let mut executor = self
             .cpu_executor
@@ -2352,19 +2301,11 @@ impl ScreenSource for WaylandScreenCaptureInput {
     }
 
     fn set_screen_publication_hub(&mut self, hub: Arc<ScreenPublicationHub>) {
-        *self
-            .settings
-            .exact
-            .hub
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(hub);
+        self.settings.exact.install_hub(hub);
     }
 
     fn screen_publication_resolution_revision(&self) -> u64 {
-        self.settings
-            .exact
-            .resolution_revision
-            .load(Ordering::Acquire)
+        self.settings.exact.resolution_revision()
     }
 
     fn resolve_screen_publication_branch(
@@ -3956,9 +3897,9 @@ impl WaylandAnalysisState {
 
 impl Drop for WaylandAnalysisState {
     fn drop(&mut self) {
-        self.settings
-            .exact
-            .clear_owned_sources_for_session(self.source.session_generation);
+        self.settings.exact.retain_owned_sources(|source| {
+            source.session_generation != self.source.session_generation
+        });
     }
 }
 

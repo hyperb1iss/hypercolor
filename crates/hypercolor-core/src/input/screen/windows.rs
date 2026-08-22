@@ -15,6 +15,7 @@
 use std::alloc::Layout;
 use std::collections::HashMap;
 use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
+use std::ops::Deref;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::thread;
@@ -53,9 +54,9 @@ use crate::input::screen::{
     ScreenAnalysisWorkPlan, ScreenBackendResourceIdentity, ScreenBranchPayload,
     ScreenBranchPublisher, ScreenByteAdmissionCoordinator, ScreenByteLease, ScreenByteReservation,
     ScreenCaptureBackend, ScreenCaptureDemand, ScreenCaptureInput,
-    ScreenColorTransformCapabilities, ScreenComputeCapacityPolicy, ScreenCursorCapabilities,
-    ScreenCursorPolicy, ScreenExecutorColorCapabilities, ScreenGpuSurfacePayload,
-    ScreenNativePreparationPayload, ScreenPhysicalGpuDeviceIdentity,
+    ScreenColorTransformCapabilities, ScreenCommittedState, ScreenComputeCapacityPolicy,
+    ScreenCursorCapabilities, ScreenCursorPolicy, ScreenExecutorColorCapabilities,
+    ScreenGpuSurfacePayload, ScreenNativePreparationPayload, ScreenPhysicalGpuDeviceIdentity,
     ScreenPhysicalReductionDescriptor, ScreenPreparedWorkerToken, ScreenPublicationColorimetry,
     ScreenPublicationExecutor, ScreenPublicationExecutorRequest, ScreenPublicationHealth,
     ScreenPublicationHub, ScreenPublicationKind, ScreenPublicationMetadata, ScreenReductionFilter,
@@ -76,7 +77,11 @@ use crate::input::{
 };
 use hypercolor_worker_retention::{retain_worker, spawn_worker};
 
-use super::adapter::{CapturePublication as AdapterCapturePublication, CapturePublicationEpoch};
+use super::adapter::{
+    CaptureExactPublicationShared, CaptureOwnedSource,
+    CapturePublication as AdapterCapturePublication, CapturePublicationEpoch,
+    CapturePublicationSource,
+};
 
 /// How long a worker waits on DXGI before checking its command channel.
 ///
@@ -396,90 +401,44 @@ impl WindowsPublicationSource {
     }
 }
 
+impl CapturePublicationSource for WindowsPublicationSource {
+    fn source_id(&self) -> &CaptureSourceId {
+        &self.epoch.source_id
+    }
+}
+
 struct WindowsOwnedSource {
     source_id: CaptureSourceId,
     binding: ScreenWorkerBinding,
     _runtime_lifetime: ScreenResourceLifetime,
 }
 
+impl CaptureOwnedSource for WindowsOwnedSource {
+    fn source_id(&self) -> &CaptureSourceId {
+        &self.source_id
+    }
+
+    fn belongs_to_authority(&self, authority: &ScreenCommittedState) -> bool {
+        authority.owns_runtime_binding(&self.binding)
+    }
+}
+
 #[derive(Default)]
 struct ExactPublicationShared {
-    source: Mutex<Option<WindowsPublicationSource>>,
-    owned_sources: Mutex<ExactBoxList<WindowsOwnedSource>>,
-    hub: Mutex<Option<Arc<ScreenPublicationHub>>>,
+    common: CaptureExactPublicationShared<WindowsPublicationSource, WindowsOwnedSource>,
     cpu_executor: Mutex<Option<Arc<CpuReductionExecutor>>>,
-    resolution_revision: AtomicU64,
     next_descriptor_id: AtomicU64,
 }
 
+impl Deref for ExactPublicationShared {
+    type Target = CaptureExactPublicationShared<WindowsPublicationSource, WindowsOwnedSource>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.common
+    }
+}
+
 impl ExactPublicationShared {
-    fn replace_source(&self, next: Option<WindowsPublicationSource>) {
-        let mut source = self
-            .source
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if *source == next {
-            return;
-        }
-        *source = next;
-        self.resolution_revision
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |revision| {
-                revision.checked_add(1)
-            })
-            .expect("Windows screen publication resolution revision exhausted");
-    }
-
-    fn source(&self) -> Option<WindowsPublicationSource> {
-        self.source
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-    }
-
-    fn hub(&self) -> Option<Arc<ScreenPublicationHub>> {
-        self.hub
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-    }
-
-    fn owns_source(&self, source_id: &CaptureSourceId) -> bool {
-        self.source()
-            .is_some_and(|source| &source.epoch.source_id == source_id)
-            || self
-                .owned_sources
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .iter()
-                .any(|owned| &owned.source_id == source_id)
-    }
-
-    fn register_owned_source(&self, source: Box<ExactBoxNode<WindowsOwnedSource>>) {
-        self.owned_sources
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push_boxed(source);
-    }
-
-    fn reap_owned_sources(&self) {
-        let authority = self.hub().map(|hub| hub.committed_state());
-        self.owned_sources
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .retain(|source| {
-                authority
-                    .as_ref()
-                    .is_some_and(|authority| authority.owns_runtime_binding(&source.binding))
-            });
-    }
-
-    fn clear_owned_sources(&self) {
-        self.owned_sources
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clear();
-    }
-
     fn cpu_executor(&self) -> anyhow::Result<Arc<CpuReductionExecutor>> {
         let mut executor = self
             .cpu_executor
@@ -1581,15 +1540,11 @@ impl ScreenSource for WindowsScreenCaptureInput {
     }
 
     fn set_screen_publication_hub(&mut self, hub: Arc<ScreenPublicationHub>) {
-        *self
-            .exact
-            .hub
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(hub);
+        self.exact.install_hub(hub);
     }
 
     fn screen_publication_resolution_revision(&self) -> u64 {
-        self.exact.resolution_revision.load(Ordering::Acquire)
+        self.exact.resolution_revision()
     }
 
     fn resolve_screen_publication_branch(
@@ -2774,10 +2729,7 @@ fn prepare_exact_command(
     runtimes: &mut WindowsExactRuntimes,
 ) {
     let result = exact
-        .hub
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone()
+        .hub()
         .ok_or_else(|| anyhow!("Windows exact publication hub is unavailable"))
         .and_then(|hub| {
             let source = exact.source();

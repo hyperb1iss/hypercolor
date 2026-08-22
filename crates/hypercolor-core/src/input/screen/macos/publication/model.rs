@@ -1,14 +1,14 @@
-use super::super::{
-    Arc, CaptureEpoch, CaptureRotation, CaptureSourceId, Instant, MacosCaptureFrame,
-    MacosExactPublicationShared, MacosExactRuntime, MacosOwnedSource, MacosPublicationSource,
-    Ordering, PixelExtent, PixelRect, PlatformGpuApi, ResolvedScreenSource,
-    ResolvedScreenSourceConfig, ScreenBackendResourceIdentity, ScreenCaptureBackend,
-    ScreenComputeCapacityPolicy, ScreenCursorCapabilities, ScreenPhysicalGpuDeviceIdentity,
-    ScreenPublicationHub, ScreenResourceApi, ScreenSourceReflection, ScreenSourceSelector,
-    ScreenWorkerBindingState, SourceScale, anyhow, lock,
-};
 #[cfg(feature = "macos-capture-fixtures")]
-use super::super::{CpuReductionExecutor, NonZeroU32, NonZeroUsize, thread};
+use super::super::{Arc, CpuReductionExecutor, NonZeroU32, NonZeroUsize, lock, thread};
+use super::super::{
+    CaptureEpoch, CaptureRotation, CaptureSourceId, Instant, MacosCaptureFrame,
+    MacosExactPublicationShared, MacosExactRuntime, MacosPublicationSource, PixelExtent, PixelRect,
+    PlatformGpuApi, ResolvedScreenSource, ResolvedScreenSourceConfig,
+    ScreenBackendResourceIdentity, ScreenCaptureBackend, ScreenComputeCapacityPolicy,
+    ScreenCursorCapabilities, ScreenPhysicalGpuDeviceIdentity, ScreenPublicationHub,
+    ScreenResourceApi, ScreenSourceReflection, ScreenSourceSelector, ScreenWorkerBindingState,
+    SourceScale, anyhow,
+};
 use super::metadata::{capture_colorimetry, capture_origin, capture_pixel_format};
 
 impl MacosPublicationSource {
@@ -148,61 +148,21 @@ impl MacosExactPublicationShared {
     }
 
     pub(in crate::input::screen::macos) fn advance_resolution_revision(&self) {
-        self.resolution_revision
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |revision| {
-                revision.checked_add(1)
-            })
-            .expect("macOS screen publication resolution revision exhausted");
+        self.common.advance_resolution_revision();
     }
 
     pub(in crate::input::screen::macos) fn replace_source(
         &self,
         next: Option<MacosPublicationSource>,
     ) {
-        let mut source = lock(&self.source);
-        if *source == next {
-            return;
+        let installed = next.is_some();
+        if self.common.replace_source(next) {
+            tracing::debug!(
+                shared = ?std::ptr::from_ref(self),
+                installed,
+                "macOS exact publication source changed"
+            );
         }
-        tracing::debug!(
-            shared = ?std::ptr::from_ref(self),
-            installed = next.is_some(),
-            "macOS exact publication source changed"
-        );
-        *source = next;
-        self.advance_resolution_revision();
-    }
-
-    pub(in crate::input::screen::macos) fn source(&self) -> Option<MacosPublicationSource> {
-        lock(&self.source).clone()
-    }
-
-    pub(in crate::input::screen::macos) fn hub(&self) -> Option<Arc<ScreenPublicationHub>> {
-        lock(&self.hub).clone()
-    }
-
-    pub(in crate::input::screen::macos) fn owns_source(&self, source_id: &CaptureSourceId) -> bool {
-        self.source()
-            .is_some_and(|source| &source.epoch.source_id == source_id)
-            || lock(&self.owned_sources)
-                .iter()
-                .any(|source| &source.source_id == source_id)
-    }
-
-    pub(in crate::input::screen::macos) fn register_owned_source(&self, source: MacosOwnedSource) {
-        lock(&self.owned_sources).push(source);
-    }
-
-    pub(in crate::input::screen::macos) fn reap_owned_sources(&self) {
-        let authority = self.hub().map(|hub| hub.committed_state());
-        lock(&self.owned_sources).retain(|source| {
-            authority
-                .as_ref()
-                .is_some_and(|authority| authority.owns_runtime_binding(&source.binding))
-        });
-    }
-
-    pub(in crate::input::screen::macos) fn clear_owned_sources(&self) {
-        lock(&self.owned_sources).clear();
     }
 
     #[cfg(feature = "macos-capture-fixtures")]

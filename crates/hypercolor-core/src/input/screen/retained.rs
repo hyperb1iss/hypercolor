@@ -32,6 +32,7 @@ impl<T> ExactBoxList<T> {
         })
     }
 
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = &mut T> {
         let mut next = self.head.as_deref_mut();
         std::iter::from_fn(move || {
