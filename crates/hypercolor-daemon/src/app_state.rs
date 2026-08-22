@@ -59,7 +59,9 @@ use crate::playlist_runtime::PlaylistRuntimeState;
 use crate::preview_runtime::PreviewRuntime;
 use crate::render_thread::{ConfiguredFpsTier, InputPublicationDemandHandle};
 use crate::scene_store::SceneStore;
-use crate::scene_transactions::{LayoutPublicationTestExecutor, SceneTransactionQueue};
+#[cfg(feature = "persistence-test-hooks")]
+use crate::scene_transactions::LayoutPublicationTestExecutor;
+use crate::scene_transactions::SceneTransactionQueue;
 use crate::session::OutputPowerState;
 use crate::simulators::{SimulatedDisplayBackend, SimulatedDisplayRuntime, SimulatedDisplayStore};
 use crate::zone_layout_preview::ZoneLayoutPreviewStore;
@@ -732,6 +734,7 @@ impl AppState {
             .install_macos_daemon_session(attestation);
     }
 
+    #[cfg(feature = "persistence-test-hooks")]
     #[doc(hidden)]
     #[must_use]
     pub fn layout_publication_test_executor(&self) -> LayoutPublicationTestExecutor {

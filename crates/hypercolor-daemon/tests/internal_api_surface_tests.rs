@@ -253,7 +253,10 @@ fn layout_mutation_capabilities_have_named_visibility_boundaries() {
     let library = source("lib.rs");
     assert!(library.contains("pub(crate) mod scene_transactions;"));
     assert!(!library.contains("pub mod scene_transactions;"));
-    assert!(library.contains("LayoutPublicationTestExecutor"));
+    assert!(library.contains(
+        "#[cfg(feature = \"persistence-test-hooks\")]\n#[doc(hidden)]\npub use scene_transactions::{LayoutPublicationTestExecutor, LayoutTransactionRejection};"
+    ));
+    assert!(!library.contains("SceneTransactionConsumer"));
     assert!(library.contains("SceneTransactionQueue"));
 
     let layout_store = source("layout_store.rs");
@@ -266,15 +269,38 @@ fn layout_mutation_capabilities_have_named_visibility_boundaries() {
     let app_state = source("app_state.rs");
     assert!(app_state.contains("pub(crate) scene_transactions: SceneTransactionQueue"));
     assert!(!app_state.contains("pub scene_transactions: SceneTransactionQueue"));
-    assert!(app_state.contains("pub fn layout_publication_test_executor("));
+    assert!(app_state.contains(
+        "#[cfg(feature = \"persistence-test-hooks\")]\n    #[doc(hidden)]\n    #[must_use]\n    pub fn layout_publication_test_executor("
+    ));
+
+    let layout = source("domain/layout.rs");
+    for gated_capability in [
+        "#[cfg(feature = \"persistence-test-hooks\")]\n#[doc(hidden)]\npub struct LayoutTestWorkflows",
+        "#[cfg(feature = \"persistence-test-hooks\")]\nimpl LayoutTestWorkflows",
+        "#[cfg(feature = \"persistence-test-hooks\")]\n    #[doc(hidden)]\n    #[must_use]\n    pub const fn test_workflows(",
+        "#[cfg(feature = \"persistence-test-hooks\")]\n    #[doc(hidden)]\n    #[must_use]\n    pub fn layout_publication_test_executor(",
+    ] {
+        assert!(
+            layout.contains(gated_capability),
+            "layout test capability is not feature-gated: {gated_capability}"
+        );
+    }
 
     let transactions = source("scene_transactions.rs");
-    assert!(transactions.contains("pub struct LayoutPublicationTestExecutor"));
+    assert!(transactions.contains(
+        "#[cfg(feature = \"persistence-test-hooks\")]\n#[doc(hidden)]\npub struct LayoutPublicationTestExecutor"
+    ));
     assert!(
         transactions.contains(
-            "impl LayoutPublicationTestExecutor {\n    #[must_use]\n    pub(crate) fn new("
+            "#[cfg(feature = \"persistence-test-hooks\")]\nimpl LayoutPublicationTestExecutor {\n    #[must_use]\n    pub(crate) fn new("
         )
     );
+    assert!(transactions.contains("pub(crate) struct SceneTransactionConsumer"));
+    assert!(!transactions.contains("\npub struct SceneTransactionConsumer"));
+    assert!(transactions.contains("pub(crate) fn consumer(&self)"));
+    assert!(!transactions.contains("pub fn consumer(&self)"));
+    assert!(transactions.contains("pub(crate) fn close(&self)"));
+    assert!(!transactions.contains("pub fn close(&self)"));
     assert!(transactions.contains("pub(crate) struct LayoutTransactionAuthority"));
     assert!(transactions.contains("\nstruct PreparedLayoutUpdate"));
     assert!(!transactions.contains("pub(crate) struct PreparedLayoutUpdate"));
@@ -294,12 +320,27 @@ fn layout_mutation_capabilities_have_named_visibility_boundaries() {
         );
     }
     assert!(transactions.contains("pub async fn execute_next_layout_publication("));
-    assert!(
-        transactions.contains(
-            "#[cfg(feature = \"persistence-test-hooks\")]\n    pub async fn execute_next_layout_publication_with_hook"
-        )
-    );
-    assert!(transactions.contains(
-        "#[cfg(feature = \"persistence-test-hooks\")]\n    pub fn reject_next_layout_publication"
-    ));
+    assert!(transactions.contains("pub async fn execute_next_layout_publication_with_hook"));
+    assert!(transactions.contains("pub fn reject_next_layout_publication"));
+
+    let manifest =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"))
+            .expect("daemon manifest should read");
+    for test_target in [
+        "api_tests",
+        "attachment_api_tests",
+        "discovery_tests",
+        "display_output_tests",
+        "domain_scene_service_tests",
+        "render_thread_tests",
+        "simulator_tests",
+    ] {
+        let gate = format!(
+            "[[test]]\nname = \"{test_target}\"\nrequired-features = [\"persistence-test-hooks\"]"
+        );
+        assert!(
+            manifest.contains(&gate),
+            "layout integration target is not feature-gated: {test_target}"
+        );
+    }
 }

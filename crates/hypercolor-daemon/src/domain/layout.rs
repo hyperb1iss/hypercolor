@@ -31,9 +31,11 @@ use crate::domain::spatial::SpatialService;
 use crate::domain::{DomainError, ResourceKind};
 use crate::layout_auto_exclusions;
 use crate::network::DaemonDriverHost;
+#[cfg(feature = "persistence-test-hooks")]
+use crate::scene_transactions::LayoutPublicationTestExecutor;
 use crate::scene_transactions::{
-    LayoutPublicationTestExecutor, LayoutTransactionRejection, LayoutUpdateError,
-    LayoutUpdateGuard, SceneActivationGuard, SceneTransactionQueue,
+    LayoutTransactionRejection, LayoutUpdateError, LayoutUpdateGuard, SceneActivationGuard,
+    SceneTransactionQueue,
 };
 
 use self::catalog::LayoutCatalog;
@@ -126,6 +128,7 @@ pub struct LayoutTestFixture<'a> {
 }
 
 /// Narrow test composition facade for exercising complete layout workflows.
+#[cfg(feature = "persistence-test-hooks")]
 #[doc(hidden)]
 pub struct LayoutTestWorkflows<'a> {
     context: &'a LayoutContext,
@@ -180,6 +183,7 @@ impl<'a> LayoutTestFixture<'a> {
     }
 }
 
+#[cfg(feature = "persistence-test-hooks")]
 impl LayoutTestWorkflows<'_> {
     pub async fn publish(&self, layout: SpatialLayout) -> Result<(), String> {
         let guard = self.context.acquire_update_guard().await;
@@ -427,12 +431,14 @@ impl LayoutContext {
     }
 
     /// Create a narrow facade that drives the production layout workflows.
+    #[cfg(feature = "persistence-test-hooks")]
     #[doc(hidden)]
     #[must_use]
     pub const fn test_workflows(&self) -> LayoutTestWorkflows<'_> {
         LayoutTestWorkflows { context: self }
     }
 
+    #[cfg(feature = "persistence-test-hooks")]
     #[doc(hidden)]
     #[must_use]
     pub fn layout_publication_test_executor(&self) -> LayoutPublicationTestExecutor {

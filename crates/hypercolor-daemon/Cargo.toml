@@ -17,6 +17,34 @@ name = "persistence_flush_tests"
 required-features = ["persistence-test-hooks"]
 
 [[test]]
+name = "api_tests"
+required-features = ["persistence-test-hooks"]
+
+[[test]]
+name = "attachment_api_tests"
+required-features = ["persistence-test-hooks"]
+
+[[test]]
+name = "discovery_tests"
+required-features = ["persistence-test-hooks"]
+
+[[test]]
+name = "display_output_tests"
+required-features = ["persistence-test-hooks"]
+
+[[test]]
+name = "domain_scene_service_tests"
+required-features = ["persistence-test-hooks"]
+
+[[test]]
+name = "render_thread_tests"
+required-features = ["persistence-test-hooks"]
+
+[[test]]
+name = "simulator_tests"
+required-features = ["persistence-test-hooks"]
+
+[[test]]
 name = "macos_tcc_canary_tests"
 required-features = ["macos-tcc-canary"]
 

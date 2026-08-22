@@ -139,6 +139,7 @@ impl PrepareLayoutTransaction {
         let _ = self.acknowledgment.send(Ok(()));
     }
 
+    #[cfg(feature = "persistence-test-hooks")]
     async fn accept_and_publish<F, Fut>(
         self,
         spatial_engine: &SpatialService,
@@ -339,6 +340,7 @@ impl LayoutTransactionAuthority {
             .await
     }
 
+    #[cfg(feature = "persistence-test-hooks")]
     pub(crate) fn test_executor(&self) -> LayoutPublicationTestExecutor {
         LayoutPublicationTestExecutor::new(
             self.scene_transactions.clone(),
@@ -458,7 +460,7 @@ impl LayoutTransactionAuthority {
     }
 }
 
-pub struct SceneTransactionConsumer {
+pub(crate) struct SceneTransactionConsumer {
     queue: SceneTransactionQueue,
 }
 
@@ -533,6 +535,7 @@ impl SceneTransactionQueue {
             .collect()
     }
 
+    #[cfg(feature = "persistence-test-hooks")]
     fn take_next_layout_preparation(&self) -> Option<PrepareLayoutTransaction> {
         let mut state = self
             .inner
@@ -550,6 +553,7 @@ impl SceneTransactionQueue {
         }
     }
 
+    #[cfg(feature = "persistence-test-hooks")]
     fn pending_layout_preparation_count(&self) -> usize {
         self.inner
             .lock()
@@ -565,7 +569,7 @@ impl SceneTransactionQueue {
     /// Lets an idle render loop skip the servicing path entirely on the ticks
     /// where there is nothing queued.
     #[must_use]
-    pub fn has_pending(&self) -> bool {
+    pub(crate) fn has_pending(&self) -> bool {
         !self
             .inner
             .lock()
@@ -575,7 +579,7 @@ impl SceneTransactionQueue {
     }
 
     #[must_use]
-    pub fn consumer(&self) -> SceneTransactionConsumer {
+    pub(crate) fn consumer(&self) -> SceneTransactionConsumer {
         SceneTransactionConsumer {
             queue: self.clone(),
         }
@@ -593,7 +597,7 @@ impl SceneTransactionQueue {
         }
     }
 
-    pub fn close(&self) {
+    pub(crate) fn close(&self) {
         let pending = {
             let mut state = self
                 .inner
@@ -613,7 +617,8 @@ impl SceneTransactionQueue {
     }
 
     #[must_use]
-    pub fn is_closed(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn is_closed(&self) -> bool {
         self.inner
             .lock()
             .expect("scene transaction queue should lock")
@@ -631,6 +636,7 @@ impl SceneTransactionQueue {
 }
 
 #[derive(Clone)]
+#[cfg(feature = "persistence-test-hooks")]
 #[doc(hidden)]
 pub struct LayoutPublicationTestExecutor {
     queue: SceneTransactionQueue,
@@ -638,6 +644,7 @@ pub struct LayoutPublicationTestExecutor {
     scene_manager: SceneService,
 }
 
+#[cfg(feature = "persistence-test-hooks")]
 impl LayoutPublicationTestExecutor {
     #[must_use]
     pub(crate) fn new(

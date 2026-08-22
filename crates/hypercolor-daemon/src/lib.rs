@@ -40,10 +40,10 @@ pub mod runtime_state;
 pub mod scene_store;
 pub(crate) mod scene_transactions;
 #[doc(hidden)]
-pub use scene_transactions::{
-    LayoutPublicationTestExecutor, LayoutTransactionRejection, SceneTransactionConsumer,
-    SceneTransactionQueue,
-};
+pub use scene_transactions::SceneTransactionQueue;
+#[cfg(feature = "persistence-test-hooks")]
+#[doc(hidden)]
+pub use scene_transactions::{LayoutPublicationTestExecutor, LayoutTransactionRejection};
 pub mod session;
 pub mod simulators;
 pub mod startup;

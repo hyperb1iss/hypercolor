@@ -13,10 +13,11 @@ use crate::domain::spatial::SpatialService;
 use crate::network::DaemonDriverHost;
 use crate::persistence::{AtomicFileWriter, AtomicWriteOutcome};
 use crate::runtime_state::RuntimeSessionError;
+#[cfg(feature = "persistence-test-hooks")]
+use crate::scene_transactions::LayoutPublicationTestExecutor;
 use crate::scene_transactions::{
-    LayoutPersistenceOutcome, LayoutPersistencePhase, LayoutPublicationTestExecutor,
-    LayoutTransactionAuthority, LayoutUpdateError, LayoutUpdateGuard, SceneActivationGuard,
-    SceneTransactionQueue,
+    LayoutPersistenceOutcome, LayoutPersistencePhase, LayoutTransactionAuthority,
+    LayoutUpdateError, LayoutUpdateGuard, SceneActivationGuard, SceneTransactionQueue,
 };
 
 use super::LayoutPersistenceStatus;
@@ -61,6 +62,7 @@ impl LayoutPublication {
         &self.scenes
     }
 
+    #[cfg(feature = "persistence-test-hooks")]
     pub(super) fn test_executor(&self) -> LayoutPublicationTestExecutor {
         self.transactions.test_executor()
     }
