@@ -835,9 +835,7 @@ fn run_prepared_macos_daemon(
             let _run_loop_stop = MainRunLoopStop;
             let result = runtime.block_on(async move {
                 let shutdown_rx = install_signal_handlers();
-                prepared
-                    .run_with_extensions(shutdown_rx, extension_installers)
-                    .await
+                Box::pin(prepared.run_with_extensions(shutdown_rx, extension_installers)).await
             });
             let _ = result_tx.send(result);
         })

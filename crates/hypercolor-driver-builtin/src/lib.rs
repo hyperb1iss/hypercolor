@@ -72,7 +72,12 @@ pub fn register_driver_modules(
         feature = "hal"
     )))]
     let _ = registry;
-    #[cfg(not(any(feature = "wled", feature = "hue", feature = "nanoleaf")))]
+    #[cfg(not(any(
+        feature = "wled",
+        feature = "hue",
+        feature = "nanoleaf",
+        all(feature = "hal", unix)
+    )))]
     let _ = config;
 
     #[cfg(feature = "wled")]

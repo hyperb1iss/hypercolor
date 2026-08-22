@@ -134,7 +134,7 @@ impl DaemonHarness {
         };
 
         if let Err(error) = wait_for_health(port, HEALTH_WAIT_TIMEOUT).await {
-            return match harness.shutdown().await {
+            return match Box::pin(harness.shutdown()).await {
                 Ok(()) => Err(error),
                 Err(cleanup_error) => Err(error.context(format!(
                     "daemon health failure cleanup also failed: {cleanup_error:#}"
@@ -265,7 +265,7 @@ async fn run_hyper_json(port: u16, args: &[&str]) -> Result<serde_json::Value> {
 
 #[tokio::test]
 async fn cli_e2e_status_and_effect_lifecycle_round_trip() -> Result<()> {
-    let harness = DaemonHarness::start().await?;
+    let harness = Box::pin(DaemonHarness::start()).await?;
     let port = harness.port();
 
     let test_result = async {
@@ -319,6 +319,6 @@ async fn cli_e2e_status_and_effect_lifecycle_round_trip() -> Result<()> {
     }
     .await;
 
-    let shutdown_result = harness.shutdown().await;
+    let shutdown_result = Box::pin(harness.shutdown()).await;
     test_result.and(shutdown_result)
 }
