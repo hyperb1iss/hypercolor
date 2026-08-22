@@ -4083,7 +4083,7 @@ async fn list_devices_returns_empty_list() {
         .as_array()
         .expect("items should be an array");
     assert!(items.is_empty());
-    assert_eq!(json["data"]["pagination"]["total"], 0);
+    assert_eq!(json["data"]["total"], 0);
 }
 
 #[tokio::test]
@@ -6605,7 +6605,7 @@ async fn library_favorites_crud_lifecycle() {
         .expect("failed to execute request");
     assert_eq!(list_response.status(), StatusCode::OK);
     let list_json = body_json(list_response).await;
-    assert_eq!(list_json["data"]["pagination"]["total"], 1);
+    assert_eq!(list_json["data"]["total"], 1);
 
     let delete_response = app
         .clone()
@@ -6631,7 +6631,7 @@ async fn library_favorites_crud_lifecycle() {
         .expect("failed to execute request");
     assert_eq!(list_response.status(), StatusCode::OK);
     let list_json = body_json(list_response).await;
-    assert_eq!(list_json["data"]["pagination"]["total"], 0);
+    assert_eq!(list_json["data"]["total"], 0);
 }
 
 #[tokio::test]
@@ -7253,7 +7253,7 @@ async fn list_scenes_excludes_default_scene() {
         .expect("failed to execute request");
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
-    assert_eq!(json["data"]["pagination"]["total"], 0);
+    assert_eq!(json["data"]["total"], 0);
 
     let response = app
         .oneshot(
@@ -7280,7 +7280,7 @@ async fn list_scenes_excludes_default_scene() {
         .expect("failed to execute request");
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
-    assert_eq!(json["data"]["pagination"]["total"], 1);
+    assert_eq!(json["data"]["total"], 1);
     let items = json["data"]["items"]
         .as_array()
         .expect("scene list should serialize as an array");
@@ -7700,7 +7700,7 @@ async fn layout_crud_lifecycle() {
 
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
-    assert_eq!(json["data"]["pagination"]["total"], 1);
+    assert_eq!(json["data"]["total"], 1);
 
     // Update layout
     let app = test_app_with_state(Arc::clone(&state));
@@ -7891,7 +7891,7 @@ async fn layout_apply_updates_active_layout() {
         .expect("failed to execute request");
     assert_eq!(list_response.status(), StatusCode::OK);
     let list_json = body_json(list_response).await;
-    assert_eq!(list_json["data"]["pagination"]["total"], 1);
+    assert_eq!(list_json["data"]["total"], 1);
     assert_eq!(list_json["data"]["items"][0]["id"], layout_id);
     assert_eq!(list_json["data"]["items"][0]["is_active"], true);
 
@@ -9660,10 +9660,15 @@ async fn layout_preview_rejects_invalid_geometry_without_mutating() {
 // ── Effect Layout Associations ──────────────────────────────────────────
 
 fn test_state_with_temp_layout_and_runtime_store() -> (Arc<AppState>, tempfile::TempDir) {
-    let mut state = isolated_state();
     let dir = tempfile::tempdir().expect("tempdir should be created");
-    state.layouts_path = dir.path().join("layouts.json");
-    state.runtime_state_path = dir.path().join("runtime-state.json");
+    let data_dir = dir.path().join("data");
+    std::fs::create_dir_all(&data_dir).expect("test data directory should be created");
+    let state = AppState::new_with_composition_overrides(
+        data_dir,
+        None,
+        None,
+        Some(dir.path().join("runtime-state.json")),
+    );
     (Arc::new(state), dir)
 }
 
@@ -10026,7 +10031,13 @@ async fn update_device_persists_name_enabled_and_brightness_state() {
         .expect("device settings file should exist");
     let persisted_json: serde_json::Value =
         serde_json::from_str(&persisted_raw).expect("device settings file should be valid json");
-    let persisted_device = &persisted_json["devices"][device_id.to_string()];
+    let settings_key = hypercolor_daemon::device_settings::device_settings_keys(
+        &state.device_registry,
+        device_id,
+    )
+    .await
+    .canonical;
+    let persisted_device = &persisted_json["devices"][settings_key.as_str()];
     assert_eq!(persisted_device["name"], "Desk Strip Renamed");
     assert_eq!(persisted_device["disabled"], true);
     assert_eq!(persisted_device["brightness"], serde_json::json!(0.27));
@@ -10283,7 +10294,13 @@ async fn patch_device_control_surface_updates_user_settings() {
         .expect("device settings file should exist");
     let persisted_json: serde_json::Value =
         serde_json::from_str(&persisted_raw).expect("device settings file should be valid json");
-    let persisted_device = &persisted_json["devices"][device_id.to_string()];
+    let settings_key = hypercolor_daemon::device_settings::device_settings_keys(
+        &state.device_registry,
+        device_id,
+    )
+    .await
+    .canonical;
+    let persisted_device = &persisted_json["devices"][settings_key.as_str()];
     assert_eq!(persisted_device["name"], "Desk Strip Controls");
     assert_eq!(persisted_device["disabled"], true);
     assert_eq!(persisted_device["brightness"], serde_json::json!(0.5));
@@ -10923,7 +10940,7 @@ async fn patch_face_controls_updates_display_group() {
     assert_eq!(patch_response.status(), StatusCode::OK);
     let patch_json = body_json(patch_response).await;
     assert_eq!(
-        patch_json["data"]["zone"]["controls"]["label"]["text"],
+        patch_json["data"]["zone"]["layers"][0]["source"]["controls"]["label"]["text"],
         "gpu"
     );
 
@@ -11225,7 +11242,7 @@ async fn list_devices_supports_filters() {
         .expect("failed to execute request");
     assert_eq!(disabled_response.status(), StatusCode::OK);
     let disabled_json = body_json(disabled_response).await;
-    assert_eq!(disabled_json["data"]["pagination"]["total"], 1);
+    assert_eq!(disabled_json["data"]["total"], 1);
     assert_eq!(disabled_json["data"]["items"][0]["name"], "Ceiling Panel");
 
     let query_response = app
@@ -11240,7 +11257,7 @@ async fn list_devices_supports_filters() {
         .expect("failed to execute request");
     assert_eq!(query_response.status(), StatusCode::OK);
     let query_json = body_json(query_response).await;
-    assert_eq!(query_json["data"]["pagination"]["total"], 1);
+    assert_eq!(query_json["data"]["total"], 1);
     assert_eq!(query_json["data"]["items"][0]["name"], "Desk Strip");
 
     let backend_response = app
@@ -11255,7 +11272,7 @@ async fn list_devices_supports_filters() {
         .expect("failed to execute request");
     assert_eq!(backend_response.status(), StatusCode::OK);
     let backend_json = body_json(backend_response).await;
-    assert_eq!(backend_json["data"]["pagination"]["total"], 1);
+    assert_eq!(backend_json["data"]["total"], 1);
     assert_eq!(backend_json["data"]["items"][0]["name"], "Aura GPU");
 
     let driver_response = app
@@ -11269,7 +11286,7 @@ async fn list_devices_supports_filters() {
         .expect("failed to execute request");
     assert_eq!(driver_response.status(), StatusCode::OK);
     let driver_json = body_json(driver_response).await;
-    assert_eq!(driver_json["data"]["pagination"]["total"], 1);
+    assert_eq!(driver_json["data"]["total"], 1);
     assert_eq!(
         driver_json["data"]["items"][0]["origin"]["backend_id"],
         "smbus"
