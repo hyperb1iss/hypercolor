@@ -355,11 +355,13 @@ impl ScreenCaptureDemand {
 }
 
 #[derive(Clone)]
+#[cfg(any(not(target_os = "macos"), feature = "macos-capture-fixtures"))]
 pub(crate) struct AnalyzedScreenSnapshot {
     geometry_frame: CaptureFrame<GeometryNormalizedCaptureSurface>,
     data: ScreenData,
 }
 
+#[cfg(any(not(target_os = "macos"), feature = "macos-capture-fixtures"))]
 impl AnalyzedScreenSnapshot {
     pub(crate) const fn geometry_frame(&self) -> &CaptureFrame<GeometryNormalizedCaptureSurface> {
         &self.geometry_frame
@@ -370,6 +372,7 @@ impl AnalyzedScreenSnapshot {
     }
 }
 
+#[cfg(any(not(target_os = "macos"), feature = "macos-capture-fixtures"))]
 pub(crate) fn analyze_screen_frame(
     analyzer: &mut ScreenCaptureInput,
     frame: CaptureFrame<RawCaptureSurface>,
@@ -397,6 +400,7 @@ pub(crate) fn analyze_screen_frame(
     })
 }
 
+#[cfg(any(not(target_os = "macos"), feature = "macos-capture-fixtures"))]
 pub(crate) fn validate_legacy_screen_colorimetry(
     colorimetry: CaptureColorimetry,
 ) -> Result<(), CaptureFrameError> {
@@ -830,6 +834,7 @@ pub struct ScreenCaptureInput {
     /// Temporal smoother for flicker reduction.
     smoother: TemporalSmoother,
 
+    #[cfg(any(not(target_os = "macos"), feature = "macos-capture-fixtures"))]
     capture_processor: CaptureFrameProcessor,
 
     analysis_grid: SectorGrid,
@@ -992,6 +997,7 @@ impl ScreenCaptureInput {
         Ok(Self {
             config,
             smoother,
+            #[cfg(any(not(target_os = "macos"), feature = "macos-capture-fixtures"))]
             capture_processor: CaptureFrameProcessor::default(),
             analysis_grid,
             policy_grid,
@@ -1182,6 +1188,7 @@ impl ScreenCaptureInput {
         &self.config
     }
 
+    #[cfg(any(not(target_os = "macos"), feature = "macos-capture-fixtures"))]
     pub(crate) fn set_led_tone_map_calibration(&mut self, calibration: LedToneMapCalibration) {
         self.config.target_led_white_x = calibration.target_white_x();
         self.config.target_led_white_y = calibration.target_white_y();

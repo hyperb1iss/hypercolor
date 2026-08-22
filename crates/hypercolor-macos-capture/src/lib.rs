@@ -4,6 +4,7 @@
 //! boundary contains only plain Rust metadata plus an opaque retained surface.
 
 mod clock;
+#[cfg(feature = "capture-fixtures")]
 mod cpu;
 mod diagnostics;
 mod frame;
@@ -33,6 +34,7 @@ pub use screenshot::{
 };
 
 pub use clock::{MacosDisplayClock, MacosDisplayClockError};
+#[cfg(feature = "capture-fixtures")]
 pub use cpu::MacosCpuSourceView;
 pub use diagnostics::{MacosCaptureCallbackDiagnostics, MacosFrameDropReason};
 #[cfg(target_os = "macos")]

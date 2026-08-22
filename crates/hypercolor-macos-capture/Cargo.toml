@@ -105,3 +105,8 @@ objc2-screen-capture-kit = { workspace = true, features = [
 name = "capture_contract_tests"
 path = "tests/capture_contract_tests.rs"
 required-features = ["capture-fixtures"]
+
+[[example]]
+name = "dump_macos_frame"
+path = "examples/dump_macos_frame.rs"
+required-features = ["capture-fixtures"]

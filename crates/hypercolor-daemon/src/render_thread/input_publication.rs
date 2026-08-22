@@ -75,6 +75,10 @@ pub struct InputPublicationDemand {
     sensors: u32,
     #[cfg(target_os = "macos")]
     macos_screen_renderer_execution: ScreenRendererExecutionState,
+    #[cfg(target_os = "macos")]
+    macos_screen_renderer_target: Option<ScreenNativeExecutionTarget>,
+    #[cfg(target_os = "macos")]
+    macos_renderer_screen: Arc<[InputScreenBranchRequest]>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -85,6 +89,7 @@ pub struct InputScreenBranchDemand {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct InputScreenBranchRequest {
+    selector: ScreenSourceSelector,
     requested_hz: NonZeroU32,
     legacy_extent: PixelExtent,
     kind: ScreenPublicationKind,
@@ -94,6 +99,26 @@ pub(crate) struct InputScreenBranchRequest {
 }
 
 impl InputScreenBranchRequest {
+    pub(crate) fn new(
+        selector: ScreenSourceSelector,
+        kind: ScreenPublicationKind,
+        extent: ScreenExtentRequest,
+        aspect: ScreenAspectPolicy,
+        processing_profile: Arc<ScreenProcessingProfile>,
+        requested_hz: NonZeroU32,
+        legacy_extent: PixelExtent,
+    ) -> Self {
+        Self {
+            selector,
+            requested_hz,
+            legacy_extent,
+            kind,
+            extent,
+            aspect,
+            processing_profile,
+        }
+    }
+
     pub(crate) fn surface(requested_hz: u32, requested_extent: PixelExtent) -> Option<Self> {
         let requested_hz = NonZeroU32::new(requested_hz)?;
         let extent = ScreenExtentRequest::bounded(
@@ -114,14 +139,15 @@ impl InputScreenBranchRequest {
             )),
             ..ScreenProcessingProfileConfig::default()
         });
-        Some(Self {
-            requested_hz,
-            legacy_extent: requested_extent,
-            kind: ScreenPublicationKind::Surface,
+        Some(Self::new(
+            ScreenSourceSelector::Configured,
+            ScreenPublicationKind::Surface,
             extent,
-            aspect: ScreenAspectPolicy::Contain,
-            processing_profile: Arc::new(profile),
-        })
+            ScreenAspectPolicy::Contain,
+            Arc::new(profile),
+            requested_hz,
+            requested_extent,
+        ))
     }
 
     pub(crate) fn bind(
@@ -129,7 +155,7 @@ impl InputScreenBranchRequest {
         executor: ScreenPublicationExecutorRequest,
     ) -> InputScreenBranchDemand {
         let request = ScreenPublicationRequest::new(
-            ScreenSourceSelector::Configured,
+            self.selector,
             self.kind,
             executor,
             self.extent,
@@ -140,6 +166,20 @@ impl InputScreenBranchRequest {
             RegisteredScreenBranchDemand::new(request, self.requested_hz),
             self.legacy_extent,
         )
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn from_registered(demand: &InputScreenBranchDemand) -> Self {
+        let request = demand.branch.request();
+        Self {
+            selector: request.selector().clone(),
+            requested_hz: demand.branch.requested_hz(),
+            legacy_extent: demand.legacy_extent,
+            kind: request.kind(),
+            extent: request.extent(),
+            aspect: request.aspect(),
+            processing_profile: Arc::clone(request.processing_profile()),
+        }
     }
 
     #[cfg(target_os = "macos")]
@@ -167,7 +207,6 @@ impl InputScreenBranchRequest {
         &self.processing_profile
     }
 
-    #[cfg(test)]
     pub(crate) const fn requested_hz(&self) -> NonZeroU32 {
         self.requested_hz
     }
@@ -213,23 +252,15 @@ impl InputPublicationDemand {
     /// Request the same rate for every typed source.
     #[must_use]
     pub fn all_sources(requested_hz: u32, screen_extent: PixelExtent) -> Self {
-        Self {
+        let demand = Self {
             audio: requested_hz,
-            screen: InputScreenBranchDemand::surface(
-                requested_hz,
-                screen_extent,
-                ScreenPublicationExecutorRequest::Cpu,
-            )
-            .into_iter()
-            .collect::<Vec<_>>()
-            .into(),
             interaction: requested_hz,
             media: requested_hz,
             network: requested_hz,
             sensors: requested_hz,
-            #[cfg(target_os = "macos")]
-            macos_screen_renderer_execution: ScreenRendererExecutionState::Inactive,
-        }
+            ..Self::default()
+        };
+        demand.with_screen(requested_hz, screen_extent)
     }
 
     /// Set one scalar source rate, preserving the other source rates.
@@ -263,14 +294,26 @@ impl InputPublicationDemand {
     /// Set screen publication cadence and extent together.
     #[must_use]
     pub fn with_screen(mut self, requested_hz: u32, requested_extent: PixelExtent) -> Self {
-        self.screen = InputScreenBranchDemand::surface(
-            requested_hz,
-            requested_extent,
-            ScreenPublicationExecutorRequest::Cpu,
-        )
-        .into_iter()
-        .collect::<Vec<_>>()
-        .into();
+        #[cfg(target_os = "macos")]
+        {
+            self.screen = Arc::default();
+            self.macos_renderer_screen =
+                InputScreenBranchRequest::surface(requested_hz, requested_extent)
+                    .into_iter()
+                    .collect::<Vec<_>>()
+                    .into();
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            self.screen = InputScreenBranchDemand::surface(
+                requested_hz,
+                requested_extent,
+                ScreenPublicationExecutorRequest::Cpu,
+            )
+            .into_iter()
+            .collect::<Vec<_>>()
+            .into();
+        }
         self
     }
 
@@ -282,6 +325,10 @@ impl InputPublicationDemand {
         requested_extent: PixelExtent,
         executor: ScreenPublicationExecutorRequest,
     ) -> Self {
+        #[cfg(target_os = "macos")]
+        if matches!(executor, ScreenPublicationExecutorRequest::Cpu) {
+            return self.with_screen(requested_hz, requested_extent);
+        }
         self.screen = InputScreenBranchDemand::surface(requested_hz, requested_extent, executor)
             .into_iter()
             .collect::<Vec<_>>()
@@ -295,7 +342,80 @@ impl InputPublicationDemand {
         mut self,
         branches: impl IntoIterator<Item = InputScreenBranchDemand>,
     ) -> Self {
+        #[cfg(target_os = "macos")]
+        {
+            let mut exact = Vec::new();
+            let mut renderer = Vec::new();
+            for branch in branches {
+                if matches!(
+                    branch.branch.request().executor(),
+                    ScreenPublicationExecutorRequest::Cpu
+                ) {
+                    renderer.push(InputScreenBranchRequest::from_registered(&branch));
+                } else {
+                    exact.push(branch);
+                }
+            }
+            self.screen = exact.into();
+            self.macos_renderer_screen = renderer.into();
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            self.screen = branches.into_iter().collect::<Vec<_>>().into();
+        }
+        self
+    }
+
+    #[cfg(test)]
+    fn with_fixture_screen(mut self, requested_hz: u32, requested_extent: PixelExtent) -> Self {
+        self.screen = InputScreenBranchDemand::surface(
+            requested_hz,
+            requested_extent,
+            ScreenPublicationExecutorRequest::Cpu,
+        )
+        .into_iter()
+        .collect::<Vec<_>>()
+        .into();
+        #[cfg(target_os = "macos")]
+        {
+            self.macos_renderer_screen = Arc::default();
+        }
+        self
+    }
+
+    #[cfg(test)]
+    fn with_fixture_screen_branches(
+        mut self,
+        branches: impl IntoIterator<Item = InputScreenBranchDemand>,
+    ) -> Self {
         self.screen = branches.into_iter().collect::<Vec<_>>().into();
+        #[cfg(target_os = "macos")]
+        {
+            self.macos_renderer_screen = Arc::default();
+        }
+        self
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn with_macos_renderer_screen_requests(
+        mut self,
+        requests: impl IntoIterator<Item = InputScreenBranchRequest>,
+    ) -> Self {
+        self.macos_renderer_screen = requests.into_iter().collect::<Vec<_>>().into();
+        self
+    }
+
+    #[cfg(all(test, target_os = "macos"))]
+    pub(crate) fn macos_renderer_screen_requests(&self) -> &[InputScreenBranchRequest] {
+        &self.macos_renderer_screen
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn with_macos_screen_renderer_target(
+        mut self,
+        target: Option<&ScreenNativeExecutionTarget>,
+    ) -> Self {
+        self.macos_screen_renderer_target = target.cloned();
         self
     }
 
@@ -318,12 +438,28 @@ impl InputPublicationDemand {
     pub(crate) fn requested_hz(&self, source: SourceKind) -> u32 {
         match source {
             SourceKind::Audio => self.audio,
-            SourceKind::Screen => self
-                .screen
-                .iter()
-                .map(InputScreenBranchDemand::requested_hz)
-                .max()
-                .unwrap_or(0),
+            SourceKind::Screen => {
+                let exact = self
+                    .screen
+                    .iter()
+                    .map(InputScreenBranchDemand::requested_hz)
+                    .max()
+                    .unwrap_or(0);
+                #[cfg(target_os = "macos")]
+                {
+                    exact.max(
+                        self.macos_renderer_screen
+                            .iter()
+                            .map(|request| request.requested_hz().get())
+                            .max()
+                            .unwrap_or(0),
+                    )
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    exact
+                }
+            }
             SourceKind::Interaction => self.interaction,
             SourceKind::Media => self.media,
             SourceKind::Network => self.network,
@@ -366,6 +502,12 @@ struct InputPublicationDemandEntry {
     demand: InputPublicationDemand,
 }
 
+struct ResolvedInputScreenDemand {
+    entry_id: u64,
+    consumer: InputPublicationConsumer,
+    screen: InputScreenBranchDemand,
+}
+
 #[derive(Clone, Debug, Default)]
 struct InputPublicationDemandSnapshot {
     entries: Arc<[InputPublicationDemandEntry]>,
@@ -385,55 +527,68 @@ impl InputPublicationDemandSnapshot {
         revision: InputPublicationDemandRevision,
     ) -> Self {
         let mut cadence = InputPublicationCadence::default();
-        let mut screen_branches = Vec::new();
-        let mut compatibility_screen: Option<(
-            &InputPublicationDemandEntry,
-            &InputScreenBranchDemand,
-        )> = None;
-        let mut compatibility_surface = None;
-        let mut compatibility_zones = None;
+        #[cfg(target_os = "macos")]
+        let renderer_target = entries
+            .iter()
+            .find(|entry| entry.consumer == InputPublicationConsumer::Authoritative)
+            .and_then(|entry| entry.demand.macos_screen_renderer_target.as_ref());
+        let mut resolved_screens = Vec::new();
         for entry in &entries {
             cadence.merge_demand(&entry.demand);
-            for screen in entry.demand.screen.iter() {
-                screen_branches.push(screen.branch.clone());
-                if compatibility_screen
-                    .as_ref()
-                    .is_none_or(|(selected_entry, selected_screen)| {
-                        compatibility_screen_precedes(
-                            entry,
-                            screen,
-                            selected_entry,
-                            selected_screen,
-                        )
-                    })
-                {
-                    compatibility_screen = Some((entry, screen));
+            resolved_screens.extend(entry.demand.screen.iter().cloned().map(|screen| {
+                ResolvedInputScreenDemand {
+                    entry_id: entry.id,
+                    consumer: entry.consumer,
+                    screen,
                 }
-                let selected = match screen.branch.request().kind() {
-                    ScreenPublicationKind::Surface => &mut compatibility_surface,
-                    ScreenPublicationKind::Zones { .. } => &mut compatibility_zones,
-                };
-                if selected.as_ref().is_none_or(
-                    |(selected_entry, selected_screen): &(
-                        &InputPublicationDemandEntry,
-                        &InputScreenBranchDemand,
-                    )| {
-                        compatibility_screen_precedes(
-                            entry,
-                            screen,
-                            selected_entry,
-                            selected_screen,
-                        )
+            }));
+            #[cfg(target_os = "macos")]
+            if let Some(target) = renderer_target {
+                resolved_screens.extend(entry.demand.macos_renderer_screen.iter().cloned().map(
+                    |request| ResolvedInputScreenDemand {
+                        entry_id: entry.id,
+                        consumer: entry.consumer,
+                        screen: request.bind_macos_native_required(target),
                     },
-                ) {
-                    *selected = Some((entry, screen));
-                }
+                ));
+            }
+        }
+        cadence = cadence.with_source(
+            SourceKind::Screen,
+            resolved_screens
+                .iter()
+                .map(|screen| screen.screen.requested_hz())
+                .max()
+                .unwrap_or(0),
+        );
+        let mut screen_branches = Vec::new();
+        let mut compatibility_screen: Option<&ResolvedInputScreenDemand> = None;
+        let mut compatibility_surface: Option<&ResolvedInputScreenDemand> = None;
+        let mut compatibility_zones: Option<&ResolvedInputScreenDemand> = None;
+        for resolved in &resolved_screens {
+            screen_branches.push(resolved.screen.branch.clone());
+            if compatibility_screen
+                .is_none_or(|selected| compatibility_screen_precedes(resolved, selected))
+            {
+                compatibility_screen = Some(resolved);
+            }
+            let selected = match resolved.screen.branch.request().kind() {
+                ScreenPublicationKind::Surface => &mut compatibility_surface,
+                ScreenPublicationKind::Zones { .. } => &mut compatibility_zones,
+            };
+            if selected
+                .as_ref()
+                .is_none_or(|selected| compatibility_screen_precedes(resolved, selected))
+            {
+                *selected = Some(resolved);
             }
         }
         let compatibility_screen_extent =
-            compatibility_screen.map(|(_, screen)| screen.legacy_extent);
-        let compatibility_surface = compatibility_surface.map(|(_, screen)| screen.branch.clone());
-        let compatibility_zones = compatibility_zones.map(|(_, screen)| screen.branch.clone());
+            compatibility_screen.map(|resolved| resolved.screen.legacy_extent);
+        let compatibility_surface =
+            compatibility_surface.map(|resolved| resolved.screen.branch.clone());
+        let compatibility_zones =
+            compatibility_zones.map(|resolved| resolved.screen.branch.clone());
         #[cfg(target_os = "macos")]
         let macos_screen_renderer_execution = entries
             .iter()
@@ -516,31 +671,29 @@ impl InputPublicationDemandSnapshot {
 }
 
 fn compatibility_screen_precedes(
-    candidate: &InputPublicationDemandEntry,
-    candidate_screen: &InputScreenBranchDemand,
-    selected: &InputPublicationDemandEntry,
-    selected_screen: &InputScreenBranchDemand,
+    candidate: &ResolvedInputScreenDemand,
+    selected: &ResolvedInputScreenDemand,
 ) -> bool {
     let candidate_rank = consumer_rank(candidate.consumer);
     let selected_rank = consumer_rank(selected.consumer);
     if candidate_rank != selected_rank {
         return candidate_rank < selected_rank;
     }
-    let candidate_kind = publication_kind_rank(candidate_screen.branch.request().kind());
-    let selected_kind = publication_kind_rank(selected_screen.branch.request().kind());
+    let candidate_kind = publication_kind_rank(candidate.screen.branch.request().kind());
+    let selected_kind = publication_kind_rank(selected.screen.branch.request().kind());
     if candidate_kind != selected_kind {
         return candidate_kind < selected_kind;
     }
-    let candidate_pixels = u64::from(candidate_screen.legacy_extent.width())
-        * u64::from(candidate_screen.legacy_extent.height());
-    let selected_pixels = u64::from(selected_screen.legacy_extent.width())
-        * u64::from(selected_screen.legacy_extent.height());
+    let candidate_pixels = u64::from(candidate.screen.legacy_extent.width())
+        * u64::from(candidate.screen.legacy_extent.height());
+    let selected_pixels = u64::from(selected.screen.legacy_extent.width())
+        * u64::from(selected.screen.legacy_extent.height());
     candidate_pixels > selected_pixels
         || (candidate_pixels == selected_pixels
-            && candidate_screen.requested_hz() > selected_screen.requested_hz())
+            && candidate.screen.requested_hz() > selected.screen.requested_hz())
         || (candidate_pixels == selected_pixels
-            && candidate_screen.requested_hz() == selected_screen.requested_hz()
-            && candidate.id < selected.id)
+            && candidate.screen.requested_hz() == selected.screen.requested_hz()
+            && candidate.entry_id < selected.entry_id)
 }
 
 const fn publication_kind_rank(kind: ScreenPublicationKind) -> u8 {

@@ -64,6 +64,8 @@ use tokio::sync::{Mutex, RwLock, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
+#[cfg(target_os = "macos")]
+pub(crate) use self::input_publication::InputScreenBranchRequest;
 pub use self::input_publication::{
     InputPublicationConsumer, InputPublicationDemand, InputPublicationDemandHandle,
     InputPublicationDemandRegistration, InputPublicationStatus, InputScreenBranchDemand,

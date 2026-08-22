@@ -5,11 +5,13 @@ use super::{
     MacosFrameDropReason, MacosHostArchitecture, MacosScreenRuntimeTelemetry,
     MacosScreenTahoeSelectionStatus, MacosScreenTahoeStatus, MacosSourceTimingStatus,
     NativeCaptureCapabilities, NativeProtectedSourceState, NativeTahoeSelectionCapabilities,
-    Ordering, PUBLICATION_PATH_CPU, PUBLICATION_PATH_CPU_FALLBACK, PUBLICATION_PATH_NATIVE,
-    PUBLICATION_PATH_NATIVE_UNAVAILABLE, PUBLICATION_PATH_UNKNOWN, PlatformGpuSurfaceTimingSink,
-    ScreenNativeExecutionUnavailableReason, ScreenPublicationExecutorFallbackReason,
-    ScreenRendererExecutionState, SourceIssue, TIMING_BUCKET_COUNT, TIMING_BUCKET_WIDTH_NS, lock,
+    Ordering, PUBLICATION_PATH_NATIVE, PUBLICATION_PATH_NATIVE_UNAVAILABLE,
+    PUBLICATION_PATH_UNKNOWN, PlatformGpuSurfaceTimingSink, ScreenNativeExecutionUnavailableReason,
+    ScreenPublicationExecutorFallbackReason, ScreenRendererExecutionState, SourceIssue,
+    TIMING_BUCKET_COUNT, TIMING_BUCKET_WIDTH_NS, lock,
 };
+#[cfg(feature = "macos-capture-fixtures")]
+use super::{PUBLICATION_PATH_CPU, PUBLICATION_PATH_CPU_FALLBACK};
 
 impl AtomicTimingHistogram {
     pub(super) fn record(&self, elapsed: Duration) {
@@ -137,6 +139,7 @@ impl MacosScreenRuntimeTelemetry {
         }
     }
 
+    #[cfg(feature = "macos-capture-fixtures")]
     pub(super) fn set_cpu(&self) {
         if self.renderer_authoritative {
             return;
@@ -168,6 +171,7 @@ impl MacosScreenRuntimeTelemetry {
         *lock(&self.fallback_reason) = None;
     }
 
+    #[cfg(feature = "macos-capture-fixtures")]
     pub(super) fn set_cpu_fallback(&self, reason: &'static str) {
         if self.renderer_authoritative {
             return;
@@ -222,8 +226,10 @@ impl MacosScreenRuntimeTelemetry {
 
     pub(super) fn publication_path(&self) -> Option<Arc<str>> {
         match self.publication_path.load(Ordering::Acquire) {
+            #[cfg(feature = "macos-capture-fixtures")]
             PUBLICATION_PATH_CPU => Some(Arc::from("cpu")),
             PUBLICATION_PATH_NATIVE => Some(Arc::from("native")),
+            #[cfg(feature = "macos-capture-fixtures")]
             PUBLICATION_PATH_CPU_FALLBACK => Some(Arc::from("cpu_fallback")),
             PUBLICATION_PATH_NATIVE_UNAVAILABLE => Some(Arc::from("native_unavailable")),
             PUBLICATION_PATH_UNKNOWN => None,
@@ -231,6 +237,7 @@ impl MacosScreenRuntimeTelemetry {
         }
     }
 
+    #[cfg(feature = "macos-capture-fixtures")]
     pub(super) fn record_cpu_reduction(&self, elapsed: Duration) {
         self.cpu_reduction_timing.record(elapsed);
     }
@@ -240,6 +247,7 @@ impl MacosScreenRuntimeTelemetry {
             .record(Instant::now().saturating_duration_since(captured_at));
     }
 
+    #[cfg(feature = "macos-capture-fixtures")]
     pub(super) fn record_converted_publication(&self, captured_at: Instant) {
         self.capture_to_converted_publication_timing
             .record(Instant::now().saturating_duration_since(captured_at));
@@ -454,4 +462,31 @@ pub(super) fn frame_drop_counters(
         })
         .collect::<Vec<_>>()
         .into()
+}
+
+#[cfg(all(test, not(feature = "macos-capture-fixtures")))]
+mod production_tests {
+    use std::num::NonZeroU64;
+
+    use super::*;
+    use crate::input::screen::ScreenNativeExecutionTargetId;
+
+    #[test]
+    fn production_publication_telemetry_has_only_native_states() {
+        let telemetry = MacosScreenRuntimeTelemetry::renderer_authoritative();
+        assert_eq!(telemetry.publication_path(), None);
+
+        let target_id = ScreenNativeExecutionTargetId::new(NonZeroU64::MIN);
+        telemetry
+            .set_renderer_execution_state(ScreenRendererExecutionState::NativeReady(target_id));
+        assert_eq!(telemetry.publication_path().as_deref(), Some("native"));
+
+        telemetry.set_renderer_execution_state(ScreenRendererExecutionState::NativeUnavailable(
+            ScreenNativeExecutionUnavailableReason::MissingTarget,
+        ));
+        assert_eq!(
+            telemetry.publication_path().as_deref(),
+            Some("native_unavailable")
+        );
+    }
 }

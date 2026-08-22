@@ -127,6 +127,7 @@ jobs:
               - 'scripts/cargo-cache-build.*'
               - 'scripts/cargo-cache-cargo-shim.sh'
               - 'scripts/cargo-target-gc.sh'
+              - 'scripts/check-macos-gpu-only.sh'
               - 'scripts/tests/cargo-cache-build-tests.sh'
               - 'scripts/tests/cargo-target-gc-tests.sh'
               - 'scripts/sign-macos-artifacts.sh'
@@ -234,6 +235,9 @@ jobs:
 
       - name: Check formatting
         run: cargo fmt --all --check
+
+      - name: Check macOS GPU-only architecture
+        run: ./scripts/check-macos-gpu-only.sh
 
       - name: Test local build fabric
         run: |

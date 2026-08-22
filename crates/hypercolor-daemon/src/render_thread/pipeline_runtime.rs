@@ -1308,6 +1308,7 @@ fn authoritative_input_demand(
     #[cfg(target_os = "macos")]
     {
         demand = demand
+            .with_macos_screen_renderer_target(screen_target)
             .with_macos_screen_renderer_execution(macos_screen_native.renderer_execution_state());
     }
     AuthoritativeInputDemand {
@@ -3056,7 +3057,8 @@ mod tests {
             )
             .with_macos_screen_renderer_execution(ScreenRendererExecutionState::NativeReady(
                 target.id(),
-            ));
+            ))
+            .with_macos_screen_renderer_target(Some(&target));
         #[cfg(not(target_os = "macos"))]
         let expected = InputPublicationDemand::default().with_screen_executor(
             144,

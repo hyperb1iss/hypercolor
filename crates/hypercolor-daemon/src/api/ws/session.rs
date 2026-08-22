@@ -32,9 +32,12 @@ use tracing::{debug, warn};
 use uuid::Uuid;
 
 use hypercolor_core::input::screen::{
-    PixelExtent, RegisteredScreenBranchDemand, ScreenAspectPolicy, ScreenExtentRequest,
-    ScreenProcessingProfile, ScreenPublicationExecutorRequest, ScreenPublicationKind,
-    ScreenPublicationRequest, ScreenSourceSelector, ScreenUpscalePolicy,
+    PixelExtent, ScreenAspectPolicy, ScreenExtentRequest, ScreenProcessingProfile,
+    ScreenPublicationKind, ScreenSourceSelector, ScreenUpscalePolicy,
+};
+#[cfg(not(target_os = "macos"))]
+use hypercolor_core::input::screen::{
+    RegisteredScreenBranchDemand, ScreenPublicationExecutorRequest, ScreenPublicationRequest,
 };
 use hypercolor_core::input::{
     BrowserConnectionIncarnation, BrowserInputAttachment, BrowserInputChildKey, BrowserInputHandle,
@@ -76,9 +79,13 @@ use crate::interactive_preview::{
     InteractivePreviewTarget as RuntimeInteractivePreviewTarget,
 };
 use crate::preview_runtime::PreviewPixelFormat;
+#[cfg(not(target_os = "macos"))]
+use crate::render_thread::InputScreenBranchDemand;
+#[cfg(target_os = "macos")]
+use crate::render_thread::InputScreenBranchRequest;
 use crate::render_thread::{
     InputPublicationConsumer, InputPublicationDemand, InputPublicationDemandHandle,
-    InputPublicationDemandRegistration, InputScreenBranchDemand,
+    InputPublicationDemandRegistration,
 };
 use crate::session::current_global_brightness;
 use crate::zone_layout_preview::ZoneLayoutPreviewOwner;
@@ -673,10 +680,12 @@ impl WsInputDemandLeases {
             }
             let requested_extent =
                 requested_extent.expect("an active screen subscription has an extent");
-            (
-                Some(InputPublicationDemand::default().with_screen_branches(branches)),
-                Some(requested_extent),
-            )
+            #[cfg(target_os = "macos")]
+            let demand =
+                InputPublicationDemand::default().with_macos_renderer_screen_requests(branches);
+            #[cfg(not(target_os = "macos"))]
+            let demand = InputPublicationDemand::default().with_screen_branches(branches);
+            (Some(demand), Some(requested_extent))
         } else {
             (None, None)
         };
@@ -771,6 +780,25 @@ pub(super) struct ProjectedInputDemand {
     screen_requested_extent: Option<PixelExtent>,
 }
 
+#[cfg(target_os = "macos")]
+fn screen_branch_demand(
+    kind: ScreenPublicationKind,
+    extent: ScreenExtentRequest,
+    requested_hz: NonZeroU32,
+    legacy_extent: PixelExtent,
+) -> InputScreenBranchRequest {
+    InputScreenBranchRequest::new(
+        ScreenSourceSelector::Configured,
+        kind,
+        extent,
+        ScreenAspectPolicy::Contain,
+        Arc::new(ScreenProcessingProfile::default()),
+        requested_hz,
+        legacy_extent,
+    )
+}
+
+#[cfg(not(target_os = "macos"))]
 fn screen_branch_demand(
     kind: ScreenPublicationKind,
     extent: ScreenExtentRequest,

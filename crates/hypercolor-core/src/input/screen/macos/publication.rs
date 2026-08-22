@@ -1,29 +1,35 @@
+#[cfg(not(feature = "macos-capture-fixtures"))]
+use super::ScreenColorTransformCapabilities;
 use super::{
-    Arc, CaptureColorSpace, CaptureColorimetry, CaptureCursor, CaptureCursorContent, CaptureDamage,
-    CaptureDynamicRange, CaptureEpoch, CaptureFrame, CaptureFrameMetadata, CaptureLuminanceContext,
-    CapturePixelFormat, CapturePositiveScalar, CaptureRotation, CaptureSourceId, CaptureStorage,
-    CaptureTransferFunction, CpuCaptureStorage, CpuPublicationFanoutError, CpuReductionExecutor,
-    CpuSamplingError, CpuScalarSource, DEFAULT_HDR_SOURCE_CONTENT_HEADROOM,
-    DEFAULT_HDR_SOURCE_REFERENCE_WHITE_NITS, Duration, InputData, Instant, KnownCaptureColorimetry,
+    Arc, CaptureColorSpace, CaptureColorimetry, CaptureDynamicRange, CaptureEpoch,
+    CaptureLuminanceContext, CapturePixelFormat, CapturePositiveScalar, CaptureRotation,
+    CaptureSourceId, CaptureTransferFunction, DEFAULT_HDR_SOURCE_CONTENT_HEADROOM,
+    DEFAULT_HDR_SOURCE_REFERENCE_WHITE_NITS, Duration, Instant, MacosCaptureContentStyle,
+    MacosCaptureControl, MacosCaptureDynamicRange, MacosCaptureFrame, MacosCapturePixelFormat,
+    MacosCaptureSelection, MacosColorPrimaries, MacosExactDelivery, MacosExactPublicationShared,
+    MacosExactRuntime, MacosNativeTargetManifest, MacosOwnedSource, MacosPublication,
+    MacosPublicationSource, MacosScreenRuntimeTelemetry, MacosTransferFunction, Mutex, NonZeroU64,
+    Ordering, PixelExtent, PixelRect, PlatformGpuApi, PlatformGpuSurface, PreparedWorker,
+    RegisteredScreenBranchDemand, ResolvedScreenBranchDemand, ResolvedScreenPublicationDescriptor,
+    ResolvedScreenSource, ResolvedScreenSourceConfig, ResourceDescriptor, ResourceState,
+    ScreenBackendResourceIdentity, ScreenBranchPayload, ScreenCaptureBackend,
+    ScreenComputeCapacityPolicy, ScreenCursorCapabilities, ScreenExecutorColorCapabilities,
+    ScreenGpuSurfacePayload, ScreenNativeWorkPayload, ScreenPhysicalGpuDeviceIdentity,
+    ScreenPublicationColorimetry, ScreenPublicationError, ScreenPublicationExecutor,
+    ScreenPublicationExecutorFallbackReason, ScreenPublicationExecutorRequest,
+    ScreenPublicationHealth, ScreenPublicationHub, ScreenPublicationHubError,
+    ScreenPublicationMetadata, ScreenResourceApi, ScreenSourceReflection, ScreenSourceSelector,
+    ScreenWorkerBindingState, SourceScale, SourceSessionSlot, TopologyDescriptor, TopologyState,
+    anyhow, lock,
+};
+#[cfg(feature = "macos-capture-fixtures")]
+use super::{
+    CaptureCursor, CaptureCursorContent, CaptureDamage, CaptureFrame, CaptureFrameMetadata,
+    CaptureStorage, CpuCaptureStorage, CpuPublicationFanoutError, CpuReductionExecutor,
+    CpuSamplingError, CpuScalarSource, InputData, KnownCaptureColorimetry,
     LEGACY_ANALYSIS_MAX_HEIGHT, LEGACY_ANALYSIS_MAX_WIDTH, LedToneMapCalibration,
-    MacosCaptureContentStyle, MacosCaptureControl, MacosCaptureDynamicRange, MacosCaptureFrame,
-    MacosCapturePixelFormat, MacosCaptureSelection, MacosColorPrimaries, MacosCpuSourceView,
-    MacosExactDelivery, MacosExactPublicationShared, MacosExactRuntime, MacosNativeTargetManifest,
-    MacosOwnedSource, MacosPublication, MacosPublicationSource, MacosScreenRuntimeTelemetry,
-    MacosTransferFunction, Mutex, NonZeroU32, NonZeroU64, NonZeroUsize, Ordering, PixelExtent,
-    PixelRect, PlatformGpuApi, PlatformGpuSurface, PreparedLedToneMap, PreparedWorker,
-    RawCaptureSurface, RegisteredScreenBranchDemand, ResolvedScreenBranchDemand,
-    ResolvedScreenPublicationDescriptor, ResolvedScreenSource, ResolvedScreenSourceConfig,
-    ResourceDescriptor, ResourceState, ScreenBackendResourceIdentity, ScreenBranchPayload,
-    ScreenCaptureBackend, ScreenComputeCapacityPolicy, ScreenCursorCapabilities,
-    ScreenExecutorColorCapabilities, ScreenGpuSurfacePayload, ScreenNativeWorkPayload,
-    ScreenPhysicalGpuDeviceIdentity, ScreenPublicationColorimetry, ScreenPublicationError,
-    ScreenPublicationExecutor, ScreenPublicationExecutorFallbackReason,
-    ScreenPublicationExecutorRequest, ScreenPublicationHealth, ScreenPublicationHub,
-    ScreenPublicationHubError, ScreenPublicationMetadata, ScreenResourceApi,
-    ScreenSourceReflection, ScreenSourceSelector, ScreenWorkerBindingState, SourceScale,
-    SourceSessionSlot, TopologyDescriptor, TopologyState, analyze_screen_frame, anyhow, lock,
-    thread,
+    MacosCpuSourceView, NonZeroU32, NonZeroUsize, PreparedLedToneMap, RawCaptureSurface,
+    analyze_screen_frame, thread,
 };
 
 impl MacosNativeTargetManifest {
@@ -128,6 +134,7 @@ impl MacosPublicationSource {
         }
     }
 
+    #[cfg(feature = "macos-capture-fixtures")]
     pub(super) fn cpu_source(&self, selector: ScreenSourceSelector) -> ResolvedScreenSource {
         ResolvedScreenSource::new(
             selector,
@@ -189,7 +196,10 @@ impl MacosPublicationSource {
 impl MacosExactPublicationShared {
     #[cfg(any(target_os = "macos", feature = "macos-capture-fixtures"))]
     pub(super) fn with_compute_capacity_policy(policy: ScreenComputeCapacityPolicy) -> Self {
+        #[cfg(not(feature = "macos-capture-fixtures"))]
+        let _ = policy;
         Self {
+            #[cfg(feature = "macos-capture-fixtures")]
             compute_capacity_policy: policy,
             ..Self::default()
         }
@@ -250,6 +260,7 @@ impl MacosExactPublicationShared {
         lock(&self.owned_sources).clear();
     }
 
+    #[cfg(feature = "macos-capture-fixtures")]
     pub(super) fn cpu_executor(&self) -> anyhow::Result<Arc<CpuReductionExecutor>> {
         let mut executor = lock(&self.cpu_executor);
         if let Some(executor) = executor.as_ref() {
@@ -283,6 +294,7 @@ impl MacosExactRuntime {
                     Some(authority.publisher_for_runtime(&route.descriptor, &self.binding)?);
             }
         }
+        #[cfg(feature = "macos-capture-fixtures")]
         if self.fanout.is_none()
             && let Some(candidate) = self.fanout_candidate.take()
         {
@@ -292,10 +304,18 @@ impl MacosExactRuntime {
     }
 
     pub(super) fn is_bound(&self) -> bool {
-        self.native_routes
+        let native_bound = self
+            .native_routes
             .iter()
-            .all(|route| route.publisher.is_some())
-            && self.fanout_candidate.is_none()
+            .all(|route| route.publisher.is_some());
+        #[cfg(feature = "macos-capture-fixtures")]
+        {
+            native_bound && self.fanout_candidate.is_none()
+        }
+        #[cfg(not(feature = "macos-capture-fixtures"))]
+        {
+            native_bound
+        }
     }
 }
 
@@ -305,6 +325,8 @@ pub(super) fn bind_current_macos_exact_runtime<'a>(
     hub: &ScreenPublicationHub,
     captured_at: Instant,
 ) -> anyhow::Result<Option<&'a mut MacosExactRuntime>> {
+    #[cfg(not(feature = "macos-capture-fixtures"))]
+    let _ = captured_at;
     let authority = hub.committed_state();
     let Some(current_binding) = authority.runtime_binding(&source.epoch.source_id) else {
         return Ok(None);
@@ -315,9 +337,11 @@ pub(super) fn bind_current_macos_exact_runtime<'a>(
     else {
         return Ok(None);
     };
+    #[cfg(feature = "macos-capture-fixtures")]
     let should_inherit = runtimes[current_index].fanout.is_none()
         && runtimes[current_index].fanout_candidate.is_some();
     runtimes[current_index].bind_if_current(hub)?;
+    #[cfg(feature = "macos-capture-fixtures")]
     if should_inherit
         && let Some(previous_index) =
             runtimes
@@ -363,6 +387,7 @@ pub(super) fn resolve_macos_publication_branch(
     resolve_macos_publication_branch_with_telemetry(source, demand, &telemetry)
 }
 
+#[cfg(feature = "macos-capture-fixtures")]
 pub(super) fn resolve_macos_publication_branch_with_telemetry(
     source: &MacosPublicationSource,
     demand: &RegisteredScreenBranchDemand,
@@ -444,6 +469,62 @@ pub(super) fn resolve_macos_publication_branch_with_telemetry(
     )?))
 }
 
+#[cfg(not(feature = "macos-capture-fixtures"))]
+pub(super) fn resolve_macos_publication_branch_with_telemetry(
+    source: &MacosPublicationSource,
+    demand: &RegisteredScreenBranchDemand,
+    telemetry: &Arc<MacosScreenRuntimeTelemetry>,
+) -> anyhow::Result<Option<ResolvedScreenBranchDemand>> {
+    let selector = demand.request().selector();
+    if !source.matches_selector(selector) {
+        return Ok(None);
+    }
+    let (target, native_required) = match demand.request().executor() {
+        ScreenPublicationExecutorRequest::SourceNative(target) => (target, false),
+        ScreenPublicationExecutorRequest::SourceNativeRequired(target) => (target, true),
+        ScreenPublicationExecutorRequest::Cpu => return Ok(None),
+    };
+    let unavailable = |reason| {
+        telemetry.set_native_unavailable(reason, target.id());
+        if native_required {
+            Err(ScreenPublicationError::RequiredNativeUnavailable(reason).into())
+        } else {
+            Ok(None)
+        }
+    };
+    if target.accepted_api() != &PlatformGpuApi::Metal {
+        return unavailable(ScreenPublicationExecutorFallbackReason::PlatformApiMismatch);
+    }
+    let Ok(native_source) =
+        source.gpu_source(selector.clone(), target.physical_gpu_device().clone())
+    else {
+        return unavailable(ScreenPublicationExecutorFallbackReason::PhysicalGpuDeviceMismatch);
+    };
+    let capabilities = ScreenExecutorColorCapabilities::new(
+        ScreenColorTransformCapabilities::NONE,
+        target.color_capabilities(),
+    );
+    match demand.resolve_with_executor_capabilities(&native_source, capabilities) {
+        Ok(resolved)
+            if matches!(
+                resolved.descriptor().executor(),
+                ScreenPublicationExecutor::SourceNative(_)
+            ) && MacosNativeTargetManifest::new(resolved.descriptor()).is_ok() =>
+        {
+            telemetry.set_native(native_required, target.id());
+            Ok(Some(resolved))
+        }
+        Ok(_) => {
+            unavailable(ScreenPublicationExecutorFallbackReason::NativeColorContractUnsupported)
+        }
+        Err(ScreenPublicationError::RequiredNativeUnavailable(reason)) => unavailable(reason),
+        Err(error) if native_required => Err(error.into()),
+        Err(_) => {
+            unavailable(ScreenPublicationExecutorFallbackReason::NativeColorContractUnsupported)
+        }
+    }
+}
+
 pub(super) fn macos_native_descriptor_is_identity(
     descriptor: &ResolvedScreenPublicationDescriptor,
 ) -> bool {
@@ -512,6 +593,7 @@ pub(super) fn publish_frame(
     if exact_delivery.stale {
         return Ok(());
     }
+    #[cfg(feature = "macos-capture-fixtures")]
     if exact_delivery.cpu {
         let capture =
             native_cpu_capture_frame(&frame, captured_at, fresh_until, &source, source_id.clone())?;
@@ -521,56 +603,69 @@ pub(super) fn publish_frame(
         }
         publish_macos_scalar_exact(&frame, &capture, &source, exact, exact_runtimes, telemetry)?;
     }
-    // The exact lane feeds native compositing only; HTML effects read the
-    // analyzed ScreenData that flows through the legacy slot publication.
-    // Treating the lanes as exclusive turns every HTML screen effect black
-    // the moment an exact plan commits, so the legacy analysis always runs
-    // alongside exact deliveries.
-    let capture = legacy_cpu_capture_frame(
-        prepared,
-        &frame,
-        captured_at,
-        fresh_until,
-        &source,
-        source_id,
-        topology_generation,
-    )?;
-    if Instant::now() > fresh_until {
-        telemetry.stale_frames.fetch_add(1, Ordering::Relaxed);
-        return Ok(());
-    }
-    if frame.pixel_format == MacosCapturePixelFormat::Bgra8 {
-        publish_macos_cpu_exact(&capture, &source, exact, exact_runtimes, telemetry)?;
-    }
-    let reduction_started = Instant::now();
-    let snapshot = analyze_screen_frame(&mut prepared.analyzer, capture);
-    telemetry.record_cpu_reduction(reduction_started.elapsed());
-    let snapshot = snapshot?;
-    if Instant::now() > fresh_until {
-        telemetry.stale_frames.fetch_add(1, Ordering::Relaxed);
-        return Ok(());
-    }
-    if snapshot.geometry_frame().metadata().topology_generation != topology_generation {
-        return Err(anyhow!("macOS analysis changed topology generation"));
-    }
-    let data = Arc::new(InputData::Screen(snapshot.data().clone()));
-    if lock(publication).worker_generation != worker_generation {
-        return Ok(());
-    }
-    if let Some(status) = status_session.load() {
-        status.record_sample(captured_at, fresh_until, 1)?;
-    }
+    #[cfg(feature = "macos-capture-fixtures")]
     {
-        let mut publication = lock(publication);
-        if publication.worker_generation != worker_generation {
+        // The exact lane feeds native compositing only; HTML effects read the
+        // analyzed ScreenData that flows through the legacy slot publication.
+        // Treating the lanes as exclusive turns every HTML screen effect black
+        // the moment an exact plan commits, so the legacy analysis always runs
+        // alongside exact deliveries.
+        let capture = legacy_cpu_capture_frame(
+            prepared,
+            &frame,
+            captured_at,
+            fresh_until,
+            &source,
+            source_id,
+            topology_generation,
+        )?;
+        if Instant::now() > fresh_until {
+            telemetry.stale_frames.fetch_add(1, Ordering::Relaxed);
             return Ok(());
         }
-        publication.latest = Some(data);
+        if frame.pixel_format == MacosCapturePixelFormat::Bgra8 {
+            publish_macos_cpu_exact(&capture, &source, exact, exact_runtimes, telemetry)?;
+        }
+        let reduction_started = Instant::now();
+        let snapshot = analyze_screen_frame(&mut prepared.analyzer, capture);
+        telemetry.record_cpu_reduction(reduction_started.elapsed());
+        let snapshot = snapshot?;
+        if Instant::now() > fresh_until {
+            telemetry.stale_frames.fetch_add(1, Ordering::Relaxed);
+            return Ok(());
+        }
+        if snapshot.geometry_frame().metadata().topology_generation != topology_generation {
+            return Err(anyhow!("macOS analysis changed topology generation"));
+        }
+        let data = Arc::new(InputData::Screen(snapshot.data().clone()));
+        if lock(publication).worker_generation != worker_generation {
+            return Ok(());
+        }
+        if let Some(status) = status_session.load() {
+            status.record_sample(captured_at, fresh_until, 1)?;
+        }
+        {
+            let mut publication = lock(publication);
+            if publication.worker_generation != worker_generation {
+                return Ok(());
+            }
+            publication.latest = Some(data);
+        }
+        telemetry.record_converted_publication(captured_at);
     }
-    telemetry.record_converted_publication(captured_at);
+    #[cfg(not(feature = "macos-capture-fixtures"))]
+    {
+        let _ = (prepared, publication, worker_generation);
+        if exact_delivery.native
+            && let Some(status) = status_session.load()
+        {
+            status.record_sample(captured_at, fresh_until, 1)?;
+        }
+    }
     Ok(())
 }
 
+#[cfg(feature = "macos-capture-fixtures")]
 pub(super) fn legacy_analysis_decimation(extent: PixelExtent) -> u32 {
     extent
         .width()
@@ -579,6 +674,7 @@ pub(super) fn legacy_analysis_decimation(extent: PixelExtent) -> u32 {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(feature = "macos-capture-fixtures")]
 pub(super) fn legacy_cpu_capture_frame(
     prepared: &mut PreparedWorker,
     frame: &MacosCaptureFrame,
@@ -736,6 +832,7 @@ pub(super) fn legacy_cpu_capture_frame(
     )?)
 }
 
+#[cfg(feature = "macos-capture-fixtures")]
 pub(super) fn native_cpu_capture_frame(
     frame: &Arc<MacosCaptureFrame>,
     captured_at: Instant,
@@ -836,6 +933,7 @@ pub(super) fn publish_macos_native_exact_with_telemetry(
     };
     let delivery = MacosExactDelivery {
         native: !runtime.native_routes.is_empty(),
+        #[cfg(feature = "macos-capture-fixtures")]
         cpu: runtime.fanout.is_some(),
         stale: false,
     };
@@ -919,6 +1017,7 @@ pub(super) fn publish_macos_native_exact_with_telemetry(
     Ok(delivery)
 }
 
+#[cfg(feature = "macos-capture-fixtures")]
 pub(super) fn publish_macos_cpu_exact(
     frame: &CaptureFrame<RawCaptureSurface>,
     source: &MacosPublicationSource,
@@ -951,6 +1050,7 @@ pub(super) fn publish_macos_cpu_exact(
     Ok(())
 }
 
+#[cfg(feature = "macos-capture-fixtures")]
 pub(super) fn publish_macos_scalar_exact(
     native_frame: &MacosCaptureFrame,
     frame: &CaptureFrame<RawCaptureSurface>,
@@ -1166,6 +1266,7 @@ pub(super) const fn capture_pixel_format(format: MacosCapturePixelFormat) -> Cap
     }
 }
 
+#[cfg(feature = "macos-capture-fixtures")]
 impl CpuScalarSource for MacosCpuSourceView<'_> {
     fn storage_extent(&self) -> PixelExtent {
         let extent = (*self).extent();

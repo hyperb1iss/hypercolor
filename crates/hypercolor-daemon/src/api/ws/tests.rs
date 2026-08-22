@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+#[cfg(not(target_os = "macos"))]
 use std::num::NonZeroU32;
 use std::sync::{Arc, LazyLock, Mutex as StdMutex, PoisonError};
 use std::time::{Duration, SystemTime};
@@ -11,8 +12,10 @@ use tokio_util::sync::CancellationToken;
 
 use hypercolor_core::bus::{CanvasFrame, HypercolorBus, ZonePreviewFrame};
 use hypercolor_core::effect::EffectRegistry;
+use hypercolor_core::input::screen::PixelExtent;
+#[cfg(not(target_os = "macos"))]
 use hypercolor_core::input::screen::{
-    PixelExtent, ScreenExtentRequest, ScreenPublicationExecutorRequest, ScreenPublicationKind,
+    ScreenExtentRequest, ScreenPublicationExecutorRequest, ScreenPublicationKind,
 };
 use hypercolor_core::input::{
     BrowserConnectionIncarnation, BrowserInputChildKey, BrowserInputHandle, BrowserInputSource,
@@ -227,16 +230,21 @@ fn websocket_input_demand_leases_follow_subscription_lifetime() {
         PixelExtent::new(5_120, 2_880).ok()
     );
     let canvas_only = demands.screen_branches();
-    assert_eq!(canvas_only.len(), 1);
-    assert_eq!(
-        canvas_only[0].request().executor(),
-        &ScreenPublicationExecutorRequest::Cpu
-    );
-    let ScreenExtentRequest::Bounded(canvas_bounds) = canvas_only[0].request().extent() else {
-        panic!("width-only canvas request remains bounded");
-    };
-    assert_eq!(canvas_bounds.max_width().map(NonZeroU32::get), Some(5_120));
-    assert_eq!(canvas_bounds.max_height(), None);
+    #[cfg(target_os = "macos")]
+    assert!(canvas_only.is_empty());
+    #[cfg(not(target_os = "macos"))]
+    {
+        assert_eq!(canvas_only.len(), 1);
+        assert_eq!(
+            canvas_only[0].request().executor(),
+            &ScreenPublicationExecutorRequest::Cpu
+        );
+        let ScreenExtentRequest::Bounded(canvas_bounds) = canvas_only[0].request().extent() else {
+            panic!("width-only canvas request remains bounded");
+        };
+        assert_eq!(canvas_bounds.max_width().map(NonZeroU32::get), Some(5_120));
+        assert_eq!(canvas_bounds.max_height(), None);
+    }
     // A refused cadence never reaches the config store, and the lease
     // it would have moved stays exactly where it was.
     let canvas_revision = demands.revision();
@@ -270,28 +278,35 @@ fn websocket_input_demand_leases_follow_subscription_lifetime() {
         3
     );
     assert_eq!(demands.requested_hz(SourceKind::Audio), 24);
+    #[cfg(target_os = "macos")]
+    assert_eq!(demands.requested_hz(SourceKind::Screen), 0);
+    #[cfg(not(target_os = "macos"))]
     assert_eq!(demands.requested_hz(SourceKind::Screen), 15);
     assert_eq!(
         leases.screen_requested_extent(),
         PixelExtent::new(5_120, 720).ok()
     );
     let mixed_branches = demands.screen_branches();
-    assert_eq!(mixed_branches.len(), 2);
-    assert!(
-        mixed_branches.iter().all(|branch| {
+    #[cfg(target_os = "macos")]
+    assert!(mixed_branches.is_empty());
+    #[cfg(not(target_os = "macos"))]
+    {
+        assert_eq!(mixed_branches.len(), 2);
+        assert!(mixed_branches.iter().all(|branch| {
             branch.request().executor() == &ScreenPublicationExecutorRequest::Cpu
-        })
-    );
-    let ScreenExtentRequest::Bounded(canvas_bounds) = mixed_branches[0].request().extent() else {
-        panic!("two-axis canvas request remains bounded");
-    };
-    assert_eq!(canvas_bounds.max_width().map(NonZeroU32::get), Some(5_120));
-    assert_eq!(canvas_bounds.max_height().map(NonZeroU32::get), Some(720));
-    assert!(matches!(
-        mixed_branches[1].request().kind(),
-        ScreenPublicationKind::Zones { columns, rows }
-            if columns.get() == 8 && rows.get() == 6
-    ));
+        }));
+        let ScreenExtentRequest::Bounded(canvas_bounds) = mixed_branches[0].request().extent()
+        else {
+            panic!("two-axis canvas request remains bounded");
+        };
+        assert_eq!(canvas_bounds.max_width().map(NonZeroU32::get), Some(5_120));
+        assert_eq!(canvas_bounds.max_height().map(NonZeroU32::get), Some(720));
+        assert!(matches!(
+            mixed_branches[1].request().kind(),
+            ScreenPublicationKind::Zones { columns, rows }
+                if columns.get() == 8 && rows.get() == 6
+        ));
+    }
     assert_eq!(demands.requested_hz(SourceKind::Interaction), 60);
 
     subscriptions = subscriptions
@@ -302,14 +317,22 @@ fn websocket_input_demand_leases_follow_subscription_lifetime() {
         .synchronize(&subscriptions)
         .expect("screen zone demand synchronizes");
     assert_eq!(demands.requested_hz(SourceKind::Audio), 48);
+    #[cfg(target_os = "macos")]
+    assert_eq!(demands.requested_hz(SourceKind::Screen), 0);
+    #[cfg(not(target_os = "macos"))]
     assert_eq!(demands.requested_hz(SourceKind::Screen), 15);
     assert_eq!(leases.screen_requested_extent(), Some(base_screen_extent));
     let zone_only = demands.screen_branches();
-    assert_eq!(zone_only.len(), 1);
-    assert!(matches!(
-        zone_only[0].request().kind(),
-        ScreenPublicationKind::Zones { .. }
-    ));
+    #[cfg(target_os = "macos")]
+    assert!(zone_only.is_empty());
+    #[cfg(not(target_os = "macos"))]
+    {
+        assert_eq!(zone_only.len(), 1);
+        assert!(matches!(
+            zone_only[0].request().kind(),
+            ScreenPublicationKind::Zones { .. }
+        ));
+    }
 
     subscriptions = subscriptions.unsubscribed_unkeyed(&["screen_zones", "input_events"]);
     leases

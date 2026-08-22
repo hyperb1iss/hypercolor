@@ -513,7 +513,8 @@ fn demand_snapshot_uses_the_highest_typed_consumer_rate() {
     let demands = InputPublicationDemandHandle::new();
     let _authoritative = demands.register(
         InputPublicationConsumer::Authoritative,
-        InputPublicationDemand::all_sources(60, extent(640, 480)),
+        InputPublicationDemand::all_sources(60, extent(640, 480))
+            .with_fixture_screen(60, extent(640, 480)),
     );
     let _preview = demands.register(
         InputPublicationConsumer::Preview,
@@ -521,7 +522,7 @@ fn demand_snapshot_uses_the_highest_typed_consumer_rate() {
     );
     let _diagnostic = demands.register(
         InputPublicationConsumer::Diagnostic,
-        InputPublicationDemand::default().with_screen(144, extent(5_120, 720)),
+        InputPublicationDemand::default().with_fixture_screen(144, extent(5_120, 720)),
     );
 
     let snapshot = demands.snapshot();
@@ -546,16 +547,52 @@ fn demand_snapshot_uses_the_highest_typed_consumer_rate() {
     assert_eq!(snapshot.requested_hz(SourceKind::Audio), 60);
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn passive_screen_demand_without_renderer_target_has_no_execution_branch() {
+    let demands = InputPublicationDemandHandle::new();
+    let _passive = demands.register(
+        InputPublicationConsumer::PassiveStream,
+        InputPublicationDemand::default().with_screen(60, extent(1_280, 720)),
+    );
+
+    assert_eq!(demands.requested_hz(SourceKind::Screen), 0);
+    assert!(demands.screen_branches().is_empty());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn passive_screen_demand_binds_to_the_authoritative_renderer_target() {
+    let target = observation_target(41);
+    let demands = InputPublicationDemandHandle::new();
+    let _passive = demands.register(
+        InputPublicationConsumer::PassiveStream,
+        InputPublicationDemand::default().with_screen(60, extent(1_280, 720)),
+    );
+    let _authority = demands.register(
+        InputPublicationConsumer::Authoritative,
+        InputPublicationDemand::default().with_macos_screen_renderer_target(Some(&target)),
+    );
+
+    let branches = demands.screen_branches();
+    assert_eq!(branches.len(), 1);
+    assert_eq!(branches[0].requested_hz().get(), 60);
+    assert!(matches!(
+        branches[0].request().executor(),
+        ScreenPublicationExecutorRequest::SourceNativeRequired(bound) if bound.id() == target.id()
+    ));
+}
+
 #[test]
 fn incompatible_screen_demands_remain_exact_and_never_form_an_envelope() {
     let demands = InputPublicationDemandHandle::new();
     let ultrawide = demands.register(
         InputPublicationConsumer::Authoritative,
-        InputPublicationDemand::default().with_screen(60, extent(5_120, 720)),
+        InputPublicationDemand::default().with_fixture_screen(60, extent(5_120, 720)),
     );
     let portrait = demands.register(
         InputPublicationConsumer::Preview,
-        InputPublicationDemand::default().with_screen(144, extent(1_920, 2_160)),
+        InputPublicationDemand::default().with_fixture_screen(144, extent(1_920, 2_160)),
     );
 
     let snapshot = demands.snapshot();
@@ -598,12 +635,13 @@ fn demand_revision_advances_on_register_update_and_release() {
     let initial = demands.snapshot().revision();
     let registration = demands.register(
         InputPublicationConsumer::Preview,
-        InputPublicationDemand::default().with_screen(60, extent(1_280, 720)),
+        InputPublicationDemand::default().with_fixture_screen(60, extent(1_280, 720)),
     );
     let registered = demands.snapshot().revision();
     assert!(registered > initial);
 
-    registration.update(InputPublicationDemand::default().with_screen(120, extent(3_840, 2_160)));
+    registration
+        .update(InputPublicationDemand::default().with_fixture_screen(120, extent(3_840, 2_160)));
     let updated = demands.snapshot().revision();
     assert!(updated > registered);
 
@@ -636,7 +674,7 @@ async fn demand_revision_wakes_independent_coordinators() {
     let mut plan_revision = demands.subscribe_revision();
     let _registration = demands.register(
         InputPublicationConsumer::Authoritative,
-        InputPublicationDemand::default().with_screen(60, extent(1_920, 1_080)),
+        InputPublicationDemand::default().with_fixture_screen(60, extent(1_920, 1_080)),
     );
 
     pump_revision
@@ -656,10 +694,11 @@ fn delayed_revision_publication_cannot_regress_or_repeat_watch_state() {
     let demands = InputPublicationDemandHandle::new();
     let registration = demands.register(
         InputPublicationConsumer::Authoritative,
-        InputPublicationDemand::default().with_screen(60, extent(1_920, 1_080)),
+        InputPublicationDemand::default().with_fixture_screen(60, extent(1_920, 1_080)),
     );
     let stale_revision = demands.revision();
-    registration.update(InputPublicationDemand::default().with_screen(120, extent(3_840, 2_160)));
+    registration
+        .update(InputPublicationDemand::default().with_fixture_screen(120, extent(3_840, 2_160)));
     let current_revision = demands.revision();
     let mut pump_revision = demands.subscribe_revision();
     let mut plan_revision = demands.subscribe_revision();
@@ -687,7 +726,8 @@ fn delayed_revision_publication_cannot_regress_or_repeat_watch_state() {
 #[test]
 fn identical_updates_preserve_revision_and_older_snapshots() {
     let demands = InputPublicationDemandHandle::new();
-    let initial_demand = InputPublicationDemand::default().with_screen(60, extent(1_280, 720));
+    let initial_demand =
+        InputPublicationDemand::default().with_fixture_screen(60, extent(1_280, 720));
     let registration = demands.register(InputPublicationConsumer::Preview, initial_demand.clone());
     let held = demands.snapshot();
 
@@ -696,7 +736,8 @@ fn identical_updates_preserve_revision_and_older_snapshots() {
     assert_eq!(unchanged.revision(), held.revision());
     assert!(Arc::ptr_eq(&unchanged, &held));
 
-    registration.update(InputPublicationDemand::default().with_screen(120, extent(3_840, 2_160)));
+    registration
+        .update(InputPublicationDemand::default().with_fixture_screen(120, extent(3_840, 2_160)));
     let updated = demands.snapshot();
     assert!(updated.revision() > held.revision());
     assert_eq!(branch_extent(&held.screen_branches[0]), extent(1_280, 720));
@@ -747,7 +788,7 @@ fn one_registration_preserves_every_screen_request_shape() {
     let _registration = demands.register(
         InputPublicationConsumer::Preview,
         InputPublicationDemand::default()
-            .with_screen_branches([native, width_only, upscaled, zones]),
+            .with_fixture_screen_branches([native, width_only, upscaled, zones]),
     );
 
     let branches = demands.screen_branches();
@@ -810,7 +851,7 @@ fn concurrent_preview_registrations_union_and_drop_independently() {
         InputPublicationConsumer::Preview,
         InputPublicationDemand::default()
             .with_source(SourceKind::Interaction, 240)
-            .with_screen(90, extent(1_920, 1_080)),
+            .with_fixture_screen(90, extent(1_920, 1_080)),
     );
 
     assert_eq!(
@@ -838,7 +879,7 @@ fn authoritative_registration_does_not_blanket_unrequested_source_types() {
     let demands = InputPublicationDemandHandle::new();
     let _authoritative = demands.register(
         InputPublicationConsumer::Authoritative,
-        InputPublicationDemand::default().with_screen(60, extent(640, 480)),
+        InputPublicationDemand::default().with_fixture_screen(60, extent(640, 480)),
     );
 
     let snapshot = demands.snapshot();
@@ -1095,11 +1136,12 @@ async fn pump_propagates_screen_extent_changes_even_while_cadence_stays_active()
     let small = ScreenCaptureDemand::active(extent(1_280, 720));
     let registration = demands.register(
         InputPublicationConsumer::Authoritative,
-        InputPublicationDemand::default().with_screen(60, extent(5_120, 2_160)),
+        InputPublicationDemand::default().with_fixture_screen(60, extent(5_120, 2_160)),
     );
     wait_for_screen_demand(&transitions, large).await;
 
-    registration.update(InputPublicationDemand::default().with_screen(60, extent(1_280, 720)));
+    registration
+        .update(InputPublicationDemand::default().with_fixture_screen(60, extent(1_280, 720)));
     wait_for_screen_demand(&transitions, small).await;
 
     drop(registration);
@@ -1125,7 +1167,7 @@ async fn pump_propagates_exact_branches_with_revision_and_graph_fences() {
     let publications = pump.reader().screen_publications();
     let registration = demands.register(
         InputPublicationConsumer::Authoritative,
-        InputPublicationDemand::default().with_screen(144, extent(7_680, 4_320)),
+        InputPublicationDemand::default().with_fixture_screen(144, extent(7_680, 4_320)),
     );
 
     tokio::time::timeout(Duration::from_millis(500), async {
@@ -1187,7 +1229,7 @@ async fn reader_applies_platform_execution_policy_to_passive_cpu_surface() {
     let output_extent = extent(16, 9);
     let registration = demands.register(
         InputPublicationConsumer::PassiveStream,
-        InputPublicationDemand::default().with_screen(60, output_extent),
+        InputPublicationDemand::default().with_fixture_screen(60, output_extent),
     );
 
     wait_for_exact_extent(&publications, output_extent).await;
@@ -1283,7 +1325,7 @@ async fn missing_native_authority_reaches_source_alongside_passive_cpu_preview()
     );
     let passive = demands.register(
         InputPublicationConsumer::PassiveStream,
-        InputPublicationDemand::default().with_screen(60, output_extent),
+        InputPublicationDemand::default().with_fixture_screen(60, output_extent),
     );
 
     wait_for_exact_extent(&pump.reader().screen_publications(), output_extent).await;
@@ -1334,12 +1376,13 @@ async fn failed_exact_replacement_preserves_retirement_barrier_across_demand_cha
     let publications = pump.reader().screen_publications();
     let registration = demands.register(
         InputPublicationConsumer::Authoritative,
-        InputPublicationDemand::default().with_screen(60, extent(1_920, 1_080)),
+        InputPublicationDemand::default().with_fixture_screen(60, extent(1_920, 1_080)),
     );
 
     wait_for_exact_extent(&publications, extent(1_920, 1_080)).await;
     preparation_failures.store(1, Ordering::Release);
-    registration.update(InputPublicationDemand::default().with_screen(60, extent(3_840, 2_160)));
+    registration
+        .update(InputPublicationDemand::default().with_fixture_screen(60, extent(3_840, 2_160)));
 
     tokio::time::timeout(Duration::from_millis(500), retirement_started.notified())
         .await
@@ -1359,7 +1402,8 @@ async fn failed_exact_replacement_preserves_retirement_barrier_across_demand_cha
     tokio::time::sleep(Duration::from_millis(25)).await;
     assert_eq!(publications.committed_state().branch_count(), 0);
 
-    registration.update(InputPublicationDemand::default().with_screen(60, extent(5_120, 2_160)));
+    registration
+        .update(InputPublicationDemand::default().with_fixture_screen(60, extent(5_120, 2_160)));
     tokio::time::sleep(Duration::from_millis(25)).await;
     assert_eq!(publications.committed_state().branch_count(), 0);
 
@@ -1391,7 +1435,7 @@ async fn persistent_exact_failure_uses_bounded_retry_cadence_after_retirement() 
         .expect("publication pump starts");
     let _registration = demands.register(
         InputPublicationConsumer::Authoritative,
-        InputPublicationDemand::default().with_screen(60, extent(1_920, 1_080)),
+        InputPublicationDemand::default().with_fixture_screen(60, extent(1_920, 1_080)),
     );
 
     tokio::time::timeout(Duration::from_millis(500), async {
@@ -1436,7 +1480,7 @@ async fn pump_samples_unrelated_sources_while_exact_workers_prepare() {
     let registration = demands.register(
         InputPublicationConsumer::Authoritative,
         InputPublicationDemand::default()
-            .with_screen(144, extent(7_680, 4_320))
+            .with_fixture_screen(144, extent(7_680, 4_320))
             .with_source(SourceKind::Interaction, 120),
     );
 
@@ -1502,7 +1546,7 @@ async fn exact_screen_busy_commit_retains_one_preparation_until_lifecycle_releas
     let publications = pump.reader().screen_publications();
     let registration = demands.register(
         InputPublicationConsumer::Authoritative,
-        InputPublicationDemand::default().with_screen(60, extent(1_920, 1_080)),
+        InputPublicationDemand::default().with_fixture_screen(60, extent(1_920, 1_080)),
     );
 
     tokio::time::timeout(Duration::from_millis(500), preparation_started.notified())
@@ -1559,7 +1603,7 @@ async fn demand_revision_fence_rejects_update_after_final_snapshot_check() {
     let demands = InputPublicationDemandHandle::new();
     let registration = demands.register(
         InputPublicationConsumer::Authoritative,
-        InputPublicationDemand::default().with_screen(60, extent(7_680, 4_320)),
+        InputPublicationDemand::default().with_fixture_screen(60, extent(7_680, 4_320)),
     );
     let stale = demands.snapshot().exact_screen_demand(graph_generation);
     let stale_revision = stale.revision();
@@ -1577,7 +1621,8 @@ async fn demand_revision_fence_rejects_update_after_final_snapshot_check() {
     )
     .await
     .expect("stale transition should reach its final commit boundary");
-    registration.update(InputPublicationDemand::default().with_screen(60, extent(1_280, 720)));
+    registration
+        .update(InputPublicationDemand::default().with_fixture_screen(60, extent(1_280, 720)));
     assert!(demands.revision() > stale_revision);
     assert_eq!(publications.committed_state().branch_count(), 0);
     commit_pause.release();
@@ -1628,7 +1673,7 @@ async fn pump_rejects_a_superseded_demand_while_lifecycle_is_busy() {
     let current_extent = extent(1_280, 720);
     let registration = demands.register(
         InputPublicationConsumer::Authoritative,
-        InputPublicationDemand::default().with_screen(60, stale_extent),
+        InputPublicationDemand::default().with_fixture_screen(60, stale_extent),
     );
     tokio::time::sleep(Duration::from_millis(20)).await;
     assert!(
@@ -1638,7 +1683,7 @@ async fn pump_rejects_a_superseded_demand_while_lifecycle_is_busy() {
             .is_empty(),
         "busy capture reconciliation must wait without applying demand"
     );
-    registration.update(InputPublicationDemand::default().with_screen(60, current_extent));
+    registration.update(InputPublicationDemand::default().with_fixture_screen(60, current_extent));
     release_tx.send(()).expect("startup should resume");
     starter
         .join()
@@ -1688,7 +1733,7 @@ async fn pump_cancellation_while_lifecycle_is_busy_prevents_late_mutation() {
     let demands = InputPublicationDemandHandle::new();
     let _registration = demands.register(
         InputPublicationConsumer::Authoritative,
-        InputPublicationDemand::default().with_screen(60, extent(1_280, 720)),
+        InputPublicationDemand::default().with_fixture_screen(60, extent(1_280, 720)),
     );
     let mut pump = InputPublicationPump::start(manager, demands)
         .await
@@ -1738,7 +1783,7 @@ async fn pump_shutdown_releases_active_capture_demand() {
     let _registration = demands.register(
         InputPublicationConsumer::Authoritative,
         InputPublicationDemand::default()
-            .with_screen(60, extent(1_280, 720))
+            .with_fixture_screen(60, extent(1_280, 720))
             .with_source(SourceKind::Interaction, 120),
     );
     let mut pump = InputPublicationPump::start(manager, demands)

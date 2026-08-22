@@ -1,13 +1,15 @@
 use super::admission::prepare_macos_exact_runtime;
 use super::publication::{capture_source_id, publish_frame};
 use super::{
-    Arc, AtomicBool, CaptureWorker, InputSource, MacosCaptureControl, MacosExactPublicationShared,
+    Arc, AtomicBool, CaptureWorker, MacosCaptureControl, MacosExactPublicationShared,
     MacosExactRuntime, MacosFrameEvent, MacosFrameMailbox, MacosFrameStatus, MacosPublication,
     MacosScreenRuntimeTelemetry, Mutex, Ordering, PreparedWorker, ResourceState,
     ScreenPublicationHealth, ScreenPublicationHub, ScreenPublicationHubError, ScreenWorkerBinding,
     SourceSessionSlot, StagedCaptureWorker, TopologyState, WORKER_WAIT, WorkerCommand, anyhow,
-    lock, mpsc,
+    mpsc,
 };
+#[cfg(feature = "macos-capture-fixtures")]
+use super::{InputSource, lock};
 
 impl StagedCaptureWorker {
     pub(super) fn commit(mut self) -> CaptureWorker {
@@ -50,6 +52,8 @@ pub(super) fn handle_worker_commands(
     runtimes: &mut Vec<MacosExactRuntime>,
     exact: &MacosExactPublicationShared,
 ) {
+    #[cfg(not(feature = "macos-capture-fixtures"))]
+    let _ = prepared;
     while let Ok(command) = command_rx.try_recv() {
         match command {
             WorkerCommand::PrepareExact {
@@ -90,6 +94,7 @@ pub(super) fn handle_worker_commands(
                     let _ = completion.send(Ok(()));
                 }
             }
+            #[cfg(feature = "macos-capture-fixtures")]
             WorkerCommand::ReconfigureProcessing {
                 calibration,
                 completion,
@@ -173,11 +178,16 @@ pub(super) fn synchronize_macos_invalidation_generation(
     exact: &MacosExactPublicationShared,
     runtimes: &[MacosExactRuntime],
 ) -> anyhow::Result<bool> {
+    #[cfg(not(feature = "macos-capture-fixtures"))]
+    let _ = publication;
     if delivered < *observed {
         return Ok(false);
     }
     if delivered > *observed {
-        lock(publication).latest = None;
+        #[cfg(feature = "macos-capture-fixtures")]
+        {
+            lock(publication).latest = None;
+        }
         invalidate_macos_worker(exact, runtimes)?;
         *observed = delivered;
     }
@@ -258,6 +268,7 @@ pub(super) fn run_worker(
     exact.clear_owned_sources();
     exact_runtimes.clear();
     telemetry.pinned_generations.store(0, Ordering::Release);
+    #[cfg(feature = "macos-capture-fixtures")]
     prepared.analyzer.stop();
     result?;
     invalidation

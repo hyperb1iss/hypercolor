@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+#[cfg(target_os = "macos")]
+use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -377,17 +379,38 @@ fn screen_preview_demands_the_resolved_scene_extent() {
 
     let demand = preview_input_demand(&scene, 45);
 
-    assert_eq!(
-        demand.requested_hz(hypercolor_core::input::SourceKind::Screen),
-        45
-    );
-    assert_eq!(
-        demand.screen_requested_extent(),
-        Some(
-            hypercolor_core::input::screen::PixelExtent::new(5_120, 720)
-                .expect("test screen extent should be non-empty")
-        )
-    );
+    #[cfg(target_os = "macos")]
+    {
+        assert_eq!(
+            demand.requested_hz(hypercolor_core::input::SourceKind::Screen),
+            45
+        );
+        assert_eq!(demand.screen_requested_extent(), None);
+        let requests = demand.macos_renderer_screen_requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].requested_hz().get(), 45);
+        let hypercolor_core::input::screen::ScreenExtentRequest::Bounded(bounds) =
+            requests[0].extent()
+        else {
+            panic!("preview request should preserve bounded renderer dimensions");
+        };
+        assert_eq!(bounds.max_width().map(NonZeroU32::get), Some(5_120));
+        assert_eq!(bounds.max_height().map(NonZeroU32::get), Some(720));
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        assert_eq!(
+            demand.requested_hz(hypercolor_core::input::SourceKind::Screen),
+            45
+        );
+        assert_eq!(
+            demand.screen_requested_extent(),
+            Some(
+                hypercolor_core::input::screen::PixelExtent::new(5_120, 720)
+                    .expect("test screen extent should be non-empty")
+            )
+        );
+    }
 }
 
 #[test]

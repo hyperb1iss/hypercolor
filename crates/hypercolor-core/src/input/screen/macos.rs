@@ -1,4 +1,6 @@
-use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
+#[cfg(feature = "macos-capture-fixtures")]
+use std::num::NonZeroUsize;
+use std::num::{NonZeroU32, NonZeroU64};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, mpsc};
 use std::thread;
@@ -9,8 +11,8 @@ use hypercolor_macos_capture::{
     MacosCaptureCadence, MacosCaptureCallbackDiagnostics,
     MacosCaptureCapabilities as NativeCaptureCapabilities, MacosCaptureContentStyle,
     MacosCaptureDynamicRange, MacosCaptureFrame, MacosCapturePixelFormat, MacosCaptureSelection,
-    MacosColorPrimaries, MacosCpuSourceView, MacosFrameDropReason, MacosFrameEvent,
-    MacosFrameMailbox, MacosFrameStatus, MacosHostArchitecture,
+    MacosColorPrimaries, MacosFrameDropReason, MacosFrameEvent, MacosFrameMailbox,
+    MacosFrameStatus, MacosHostArchitecture,
     MacosProtectedSourceState as NativeProtectedSourceState, MacosScreenAuthorizationState,
     MacosScreenOwnerConflict, MacosScreenSelectionSnapshot, MacosScreenStatusSnapshot,
     MacosScreenTahoeSelectionStatus, MacosScreenTahoeStatus, MacosScreenTimingStatus,
@@ -18,7 +20,9 @@ use hypercolor_macos_capture::{
     MacosTahoeSelectionCapabilities as NativeTahoeSelectionCapabilities, MacosTransferFunction,
 };
 #[cfg(feature = "macos-capture-fixtures")]
-use hypercolor_macos_capture::{MacosRuntimeCapability, MacosTahoeRuntimeProbes};
+use hypercolor_macos_capture::{
+    MacosCpuSourceView, MacosRuntimeCapability, MacosTahoeRuntimeProbes,
+};
 use hypercolor_macos_input::{MacosCapabilityOwner, MacosDaemonOwnerConflict};
 use tokio::sync::oneshot;
 
@@ -28,33 +32,38 @@ use hypercolor_macos_capture::{
     MacosScreenshotReferenceCapture,
 };
 
+#[cfg(not(feature = "macos-capture-fixtures"))]
+use super::ScreenColorTransformCapabilities;
 use super::{
     AdmittedScreenNativeTargetPreparation, BoundScreenNativeTargetPreparation, CaptureCadence,
-    CaptureColorSpace, CaptureColorimetry, CaptureConfig, CaptureCursor, CaptureCursorContent,
-    CaptureDamage, CaptureDynamicRange, CaptureEpoch, CaptureFrame, CaptureFrameMetadata,
-    CaptureLuminanceContext, CapturePixelFormat, CapturePlanePool, CapturePositiveScalar,
-    CaptureRotation, CaptureSourceId, CaptureStorage, CaptureTransferFunction, CpuCaptureStorage,
-    CpuExactReductionWorkPlan, CpuPublicationFanoutError, CpuReductionExecutor, CpuSamplingError,
-    CpuScalarSource, KnownCaptureColorimetry, LedToneMapCalibration, PixelExtent, PixelRect,
-    PlatformGpuApi, PlatformGpuSurface, PlatformGpuSurfaceTimingSink, PreparedCpuPublicationFanout,
-    PreparedCpuPublicationFanoutCandidate, PreparedLedToneMap, RawCaptureSurface,
-    RegisteredScreenBranchDemand, ResolvedScreenBranchDemand, ResolvedScreenPublicationDescriptor,
-    ResolvedScreenSource, ResolvedScreenSourceConfig, ScreenAnalysisComputeCapacity,
-    ScreenAnalysisResourcePlan, ScreenAnalysisWorkPlan, ScreenBackendResourceIdentity,
-    ScreenBranchPayload, ScreenBranchPublisher, ScreenByteAdmissionCoordinator,
-    ScreenCaptureBackend, ScreenCaptureCadence, ScreenCaptureDemand, ScreenCaptureInput,
-    ScreenComputeCapacityPolicy, ScreenCursorCapabilities, ScreenCursorPolicy,
-    ScreenExecutorColorCapabilities, ScreenGpuSurfacePayload, ScreenNativeExecutionTargetId,
-    ScreenNativeExecutionUnavailableReason, ScreenNativePreparationPayload,
-    ScreenNativeWorkPayload, ScreenPhysicalGpuDeviceIdentity, ScreenPreparedWorkerToken,
-    ScreenPublicationColorimetry, ScreenPublicationError, ScreenPublicationExecutor,
-    ScreenPublicationExecutorFallbackReason, ScreenPublicationExecutorRequest,
-    ScreenPublicationHealth, ScreenPublicationHub, ScreenPublicationHubError,
-    ScreenPublicationMetadata, ScreenPublicationRequest, ScreenRendererExecutionState,
-    ScreenRequiredResourceMinimum, ScreenResourceApi, ScreenResourceKind, ScreenResourceLifetime,
-    ScreenSourceReflection, ScreenSourceSelector, ScreenWorkerBinding, ScreenWorkerBindingState,
-    ScreenWorkerExactLedgerBuilder, ScreenWorkerPreparation, ScreenWorkerPreparationTicket,
-    ScreenWorkerRetirement, SourceScale, analyze_screen_frame,
+    CaptureColorSpace, CaptureColorimetry, CaptureConfig, CaptureDynamicRange, CaptureEpoch,
+    CaptureLuminanceContext, CapturePixelFormat, CapturePositiveScalar, CaptureRotation,
+    CaptureSourceId, CaptureTransferFunction, LedToneMapCalibration, PixelExtent, PixelRect,
+    PlatformGpuApi, PlatformGpuSurface, PlatformGpuSurfaceTimingSink, RegisteredScreenBranchDemand,
+    ResolvedScreenBranchDemand, ResolvedScreenPublicationDescriptor, ResolvedScreenSource,
+    ResolvedScreenSourceConfig, ScreenAnalysisComputeCapacity, ScreenAnalysisResourcePlan,
+    ScreenAnalysisWorkPlan, ScreenBackendResourceIdentity, ScreenBranchPayload,
+    ScreenBranchPublisher, ScreenByteAdmissionCoordinator, ScreenCaptureBackend,
+    ScreenCaptureCadence, ScreenCaptureDemand, ScreenComputeCapacityPolicy,
+    ScreenCursorCapabilities, ScreenCursorPolicy, ScreenExecutorColorCapabilities,
+    ScreenGpuSurfacePayload, ScreenNativeExecutionTargetId, ScreenNativeExecutionUnavailableReason,
+    ScreenNativePreparationPayload, ScreenNativeWorkPayload, ScreenPhysicalGpuDeviceIdentity,
+    ScreenPreparedWorkerToken, ScreenPublicationColorimetry, ScreenPublicationError,
+    ScreenPublicationExecutor, ScreenPublicationExecutorFallbackReason,
+    ScreenPublicationExecutorRequest, ScreenPublicationHealth, ScreenPublicationHub,
+    ScreenPublicationHubError, ScreenPublicationMetadata, ScreenPublicationRequest,
+    ScreenRendererExecutionState, ScreenRequiredResourceMinimum, ScreenResourceApi,
+    ScreenResourceKind, ScreenResourceLifetime, ScreenSourceReflection, ScreenSourceSelector,
+    ScreenWorkerBinding, ScreenWorkerBindingState, ScreenWorkerExactLedgerBuilder,
+    ScreenWorkerPreparation, ScreenWorkerPreparationTicket, ScreenWorkerRetirement, SourceScale,
+};
+#[cfg(feature = "macos-capture-fixtures")]
+use super::{
+    CaptureCursor, CaptureCursorContent, CaptureDamage, CaptureFrame, CaptureFrameMetadata,
+    CapturePlanePool, CaptureStorage, CpuCaptureStorage, CpuExactReductionWorkPlan,
+    CpuPublicationFanoutError, CpuReductionExecutor, CpuSamplingError, CpuScalarSource,
+    KnownCaptureColorimetry, PreparedCpuPublicationFanout, PreparedCpuPublicationFanoutCandidate,
+    PreparedLedToneMap, RawCaptureSurface, ScreenCaptureInput, analyze_screen_frame,
 };
 #[cfg(any(target_os = "macos", feature = "macos-capture-fixtures"))]
 use crate::input::SourceKind;
@@ -107,8 +116,10 @@ const DEFAULT_HDR_SOURCE_REFERENCE_WHITE_NITS: f32 = 203.0;
 const DEFAULT_HDR_SOURCE_CONTENT_HEADROOM: f32 = 2.0;
 
 const PUBLICATION_PATH_UNKNOWN: u8 = 0;
+#[cfg(feature = "macos-capture-fixtures")]
 const PUBLICATION_PATH_CPU: u8 = 1;
 const PUBLICATION_PATH_NATIVE: u8 = 2;
+#[cfg(feature = "macos-capture-fixtures")]
 const PUBLICATION_PATH_CPU_FALLBACK: u8 = 3;
 const PUBLICATION_PATH_NATIVE_UNAVAILABLE: u8 = 4;
 const TIMING_BUCKET_WIDTH_NS: u64 = 100_000;
@@ -204,6 +215,7 @@ struct NativeCaptureControl {
 #[derive(Default)]
 struct MacosPublication {
     worker_generation: u64,
+    #[cfg(feature = "macos-capture-fixtures")]
     latest: Option<Arc<InputData>>,
 }
 
@@ -231,7 +243,9 @@ struct MacosExactPublicationShared {
     source: Mutex<Option<MacosPublicationSource>>,
     owned_sources: Mutex<Vec<MacosOwnedSource>>,
     hub: Mutex<Option<Arc<ScreenPublicationHub>>>,
+    #[cfg(feature = "macos-capture-fixtures")]
     cpu_executor: Mutex<Option<Arc<CpuReductionExecutor>>>,
+    #[cfg(feature = "macos-capture-fixtures")]
     compute_capacity_policy: ScreenComputeCapacityPolicy,
     resolution_revision: AtomicU64,
 }
@@ -251,7 +265,9 @@ struct MacosExactRuntime {
     binding: ScreenWorkerBinding,
     _lifetimes: Box<[ScreenResourceLifetime]>,
     native_routes: Box<[MacosNativeRoute]>,
+    #[cfg(feature = "macos-capture-fixtures")]
     fanout_candidate: Option<PreparedCpuPublicationFanoutCandidate>,
+    #[cfg(feature = "macos-capture-fixtures")]
     fanout: Option<PreparedCpuPublicationFanout>,
 }
 
@@ -264,6 +280,7 @@ enum WorkerCommand {
     ReapExact {
         completion: Option<oneshot::Sender<anyhow::Result<()>>>,
     },
+    #[cfg(feature = "macos-capture-fixtures")]
     ReconfigureProcessing {
         calibration: LedToneMapCalibration,
         completion: mpsc::SyncSender<anyhow::Result<()>>,
@@ -271,7 +288,9 @@ enum WorkerCommand {
 }
 
 struct PreparedWorker {
+    #[cfg(feature = "macos-capture-fixtures")]
     analyzer: ScreenCaptureInput,
+    #[cfg(feature = "macos-capture-fixtures")]
     plane_pool: CapturePlanePool,
     target_fps: u32,
 }
@@ -293,7 +312,9 @@ struct StagedCaptureWorker {
 pub struct MacosScreenCaptureInput {
     config: CaptureConfig,
     control: Arc<dyn MacosCaptureControl>,
+    #[cfg(feature = "macos-capture-fixtures")]
     admission: ScreenByteAdmissionCoordinator,
+    #[cfg(feature = "macos-capture-fixtures")]
     compute_capacity_policy: ScreenComputeCapacityPolicy,
     publication: Arc<Mutex<MacosPublication>>,
     exact: Arc<MacosExactPublicationShared>,
@@ -378,12 +399,16 @@ impl MacosScreenCaptureInput {
         telemetry: Arc<MacosScreenRuntimeTelemetry>,
         backend: &'static str,
     ) -> Self {
+        #[cfg(not(feature = "macos-capture-fixtures"))]
+        let _ = (&admission, compute_capacity_policy);
         let consented = control.authorization() == MacosScreenAuthorizationState::Authorized;
         let authorization = control.authorization();
         let mut source = Self {
             config,
             control,
+            #[cfg(feature = "macos-capture-fixtures")]
             admission,
+            #[cfg(feature = "macos-capture-fixtures")]
             compute_capacity_policy,
             publication: Arc::new(Mutex::new(MacosPublication::default())),
             exact: Arc::new(MacosExactPublicationShared::with_compute_capacity_policy(
@@ -598,6 +623,14 @@ impl MacosScreenCaptureInput {
         Ok(())
     }
 
+    #[cfg(not(feature = "macos-capture-fixtures"))]
+    fn prepare_worker(&self, _extent: PixelExtent) -> PreparedWorker {
+        PreparedWorker {
+            target_fps: self.config.target_fps,
+        }
+    }
+
+    #[cfg(feature = "macos-capture-fixtures")]
     fn prepare_worker(&self, extent: PixelExtent) -> anyhow::Result<PreparedWorker> {
         let mut analyzer = match self.compute_capacity_policy.analysis() {
             Some(capacity) => {
@@ -694,13 +727,17 @@ impl MacosScreenCaptureInput {
         let generation = staged.generation;
         let start = Arc::clone(&staged.start);
         let worker = staged.commit();
+        #[cfg(feature = "macos-capture-fixtures")]
         let previous_latest = lock(&self.publication).latest.clone();
         self.stop_worker();
         self.worker_generation = generation;
         {
             let mut publication = lock(&self.publication);
             publication.worker_generation = generation;
-            publication.latest = previous_latest;
+            #[cfg(feature = "macos-capture-fixtures")]
+            {
+                publication.latest = previous_latest;
+            }
         }
         self.worker = Some(worker);
         start.store(true, Ordering::Release);
@@ -721,7 +758,10 @@ impl MacosScreenCaptureInput {
         if let Some(join) = worker.join.take() {
             let _ = join.join();
         }
-        lock(&self.publication).latest = None;
+        #[cfg(feature = "macos-capture-fixtures")]
+        {
+            lock(&self.publication).latest = None;
+        }
         self.exact.replace_source(None);
     }
 
@@ -761,7 +801,10 @@ impl InputSource for MacosScreenCaptureInput {
         }
         self.refresh_policy()?;
         if let Some(extent) = self.demand.requested_extent() {
+            #[cfg(feature = "macos-capture-fixtures")]
             let prepared = self.stage_worker(self.prepare_worker(extent)?)?;
+            #[cfg(not(feature = "macos-capture-fixtures"))]
+            let prepared = self.stage_worker(self.prepare_worker(extent))?;
             let session = self.status.begin_session()?;
             self.install_worker(prepared);
             if let Some(session) = session {
@@ -791,15 +834,23 @@ impl InputSource for MacosScreenCaptureInput {
         if !self.running || !self.demand.is_active() {
             return Ok(InputData::None);
         }
-        let publication = lock(&self.publication);
-        if publication.worker_generation != self.worker_generation {
-            return Ok(InputData::None);
+        #[cfg(feature = "macos-capture-fixtures")]
+        {
+            let publication = lock(&self.publication);
+            if publication.worker_generation == self.worker_generation {
+                Ok(publication
+                    .latest
+                    .as_deref()
+                    .cloned()
+                    .unwrap_or(InputData::None))
+            } else {
+                Ok(InputData::None)
+            }
         }
-        Ok(publication
-            .latest
-            .as_deref()
-            .cloned()
-            .unwrap_or(InputData::None))
+        #[cfg(not(feature = "macos-capture-fixtures"))]
+        {
+            Ok(InputData::None)
+        }
     }
 
     fn sample_shared_and_drain_into(
@@ -812,10 +863,17 @@ impl InputSource for MacosScreenCaptureInput {
         if !self.running || !self.demand.is_active() {
             return Ok(None);
         }
-        let publication = lock(&self.publication);
-        Ok((publication.worker_generation == self.worker_generation)
-            .then(|| publication.latest.clone())
-            .flatten())
+        #[cfg(feature = "macos-capture-fixtures")]
+        {
+            let publication = lock(&self.publication);
+            Ok((publication.worker_generation == self.worker_generation)
+                .then(|| publication.latest.clone())
+                .flatten())
+        }
+        #[cfg(not(feature = "macos-capture-fixtures"))]
+        {
+            Ok(None)
+        }
     }
 
     fn is_running(&self) -> bool {
@@ -858,34 +916,57 @@ impl ScreenSource for MacosScreenCaptureInput {
         &self,
         demand: ScreenCaptureDemand,
     ) -> anyhow::Result<Option<ScreenAnalysisResourcePlan>> {
-        let Some(extent) = demand.requested_extent() else {
-            return Ok(None);
-        };
-        Ok(Some(ScreenAnalysisResourcePlan::try_new_for_extent(
-            self.config.grid_cols,
-            self.config.grid_rows,
-            self.config.target_fps,
-            extent,
-            u64::MAX,
-        )?))
+        #[cfg(feature = "macos-capture-fixtures")]
+        {
+            let Some(extent) = demand.requested_extent() else {
+                return Ok(None);
+            };
+            Ok(Some(ScreenAnalysisResourcePlan::try_new_for_extent(
+                self.config.grid_cols,
+                self.config.grid_rows,
+                self.config.target_fps,
+                extent,
+                u64::MAX,
+            )?))
+        }
+        #[cfg(not(feature = "macos-capture-fixtures"))]
+        {
+            let _ = demand;
+            Ok(None)
+        }
     }
 
     fn screen_analysis_work_plan(
         &self,
         demand: ScreenCaptureDemand,
     ) -> anyhow::Result<Option<ScreenAnalysisWorkPlan>> {
-        let Some(extent) = demand.requested_extent() else {
-            return Ok(None);
-        };
-        Ok(Some(ScreenAnalysisWorkPlan::try_new(
-            extent,
-            extent,
-            &self.config,
-        )?))
+        #[cfg(feature = "macos-capture-fixtures")]
+        {
+            let Some(extent) = demand.requested_extent() else {
+                return Ok(None);
+            };
+            Ok(Some(ScreenAnalysisWorkPlan::try_new(
+                extent,
+                extent,
+                &self.config,
+            )?))
+        }
+        #[cfg(not(feature = "macos-capture-fixtures"))]
+        {
+            let _ = demand;
+            Ok(None)
+        }
     }
 
     fn screen_analysis_compute_capacity(&self) -> Option<ScreenAnalysisComputeCapacity> {
-        self.compute_capacity_policy.analysis()
+        #[cfg(feature = "macos-capture-fixtures")]
+        {
+            self.compute_capacity_policy.analysis()
+        }
+        #[cfg(not(feature = "macos-capture-fixtures"))]
+        {
+            None
+        }
     }
 
     fn set_screen_capture_demand(&mut self, demand: ScreenCaptureDemand) -> anyhow::Result<()> {
@@ -903,10 +984,17 @@ impl ScreenSource for MacosScreenCaptureInput {
         }
         let request =
             production_stream_request(&self.config, demand, self.control.host_capabilities())?;
+        #[cfg(feature = "macos-capture-fixtures")]
         let prepared = demand
             .requested_extent()
             .map(|extent| self.prepare_worker(extent))
             .transpose()?
+            .map(|prepared| self.stage_worker(prepared))
+            .transpose()?;
+        #[cfg(not(feature = "macos-capture-fixtures"))]
+        let prepared = demand
+            .requested_extent()
+            .map(|extent| self.prepare_worker(extent))
             .map(|prepared| self.stage_worker(prepared))
             .transpose()?;
         if !self.running {
@@ -1066,6 +1154,9 @@ impl ScreenSource for MacosScreenCaptureInput {
             .demand
             .requested_extent()
             .map(|extent| {
+                #[cfg(not(feature = "macos-capture-fixtures"))]
+                let _ = extent;
+                #[cfg(feature = "macos-capture-fixtures")]
                 let mut analyzer = match self.compute_capacity_policy.analysis() {
                     Some(capacity) => {
                         ScreenCaptureInput::with_requested_extent_admission_and_compute_capacity(
@@ -1081,9 +1172,12 @@ impl ScreenSource for MacosScreenCaptureInput {
                         self.admission.clone(),
                     )?,
                 };
+                #[cfg(feature = "macos-capture-fixtures")]
                 analyzer.start()?;
                 Ok::<_, anyhow::Error>(PreparedWorker {
+                    #[cfg(feature = "macos-capture-fixtures")]
                     analyzer,
+                    #[cfg(feature = "macos-capture-fixtures")]
                     plane_pool: CapturePlanePool::with_admission_coordinator(
                         self.admission.clone(),
                     ),
@@ -1122,6 +1216,7 @@ impl ScreenSource for MacosScreenCaptureInput {
         if current == next {
             return Ok(());
         }
+        #[cfg(feature = "macos-capture-fixtures")]
         if let Some(worker) = self.worker.as_ref() {
             let (completion_tx, completion_rx) = mpsc::sync_channel(1);
             worker
@@ -1202,12 +1297,15 @@ struct PendingMacosNativeRoute {
 /// whatever it receives into the coarse ScreenData grid, so tone-mapping every
 /// pixel of a native 4K HDR frame is wasted work that blows the publication
 /// freshness budget and starves every HTML screen effect.
+#[cfg(feature = "macos-capture-fixtures")]
 const LEGACY_ANALYSIS_MAX_WIDTH: u32 = 640;
+#[cfg(feature = "macos-capture-fixtures")]
 const LEGACY_ANALYSIS_MAX_HEIGHT: u32 = 480;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct MacosExactDelivery {
     native: bool,
+    #[cfg(feature = "macos-capture-fixtures")]
     cpu: bool,
     stale: bool,
 }
