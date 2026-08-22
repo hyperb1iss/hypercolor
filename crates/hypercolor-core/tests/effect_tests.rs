@@ -27,7 +27,7 @@ static EMPTY_SENSORS: LazyLock<SystemSnapshot> = LazyLock::new(SystemSnapshot::e
 struct MockRenderer {
     initialized: bool,
     destroyed: bool,
-    tick_count: u64,
+    render_count: u64,
     init_error: Option<String>,
     fill_color: [u8; 4],
 }
@@ -37,7 +37,7 @@ impl MockRenderer {
         Self {
             initialized: false,
             destroyed: false,
-            tick_count: 0,
+            render_count: 0,
             init_error: None,
             fill_color: [255, 0, 128, 255],
         }
@@ -59,7 +59,7 @@ impl EffectRenderer for MockRenderer {
     }
 
     fn render_into(&mut self, input: &FrameInput<'_>, canvas: &mut Canvas) -> anyhow::Result<()> {
-        self.tick_count += 1;
+        self.render_count += 1;
         if canvas.width() != input.canvas_width || canvas.height() != input.canvas_height {
             *canvas = Canvas::new(input.canvas_width, input.canvas_height);
         }
@@ -230,7 +230,7 @@ fn renderer_initializes_renders_and_destroys_through_the_public_trait() {
         .expect("renderer should produce a frame");
 
     assert!(renderer.initialized);
-    assert_eq!(renderer.tick_count, 1);
+    assert_eq!(renderer.render_count, 1);
     assert_eq!(canvas.as_rgba_bytes().as_ptr(), allocation);
     assert_eq!(canvas.get_pixel(0, 0).r, 255);
     assert_eq!(canvas.get_pixel(0, 0).b, 128);

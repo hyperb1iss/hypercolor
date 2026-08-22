@@ -71,7 +71,7 @@ pub struct FrameDataSources<'a> {
     pub lighting: Option<&'a LightingState>,
 }
 
-/// Per-frame input data passed to the active renderer on every tick.
+/// Per-frame input data passed to the active renderer on every render.
 ///
 /// Contains timing information, the current audio analysis snapshot,
 /// and the target canvas dimensions. Control values are delivered
@@ -226,20 +226,6 @@ pub trait EffectRenderer: Send {
     fn advance_output(&mut self, input: &FrameInput<'_>) -> anyhow::Result<()> {
         let _ = input;
         Ok(())
-    }
-
-    /// Produce a single frame.
-    ///
-    /// Legacy convenience wrapper that allocates a fresh target canvas and
-    /// delegates to [`render_into`](Self::render_into).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the frame cannot be produced.
-    fn tick(&mut self, input: &FrameInput<'_>) -> anyhow::Result<Canvas> {
-        let mut canvas = Canvas::new(input.canvas_width, input.canvas_height);
-        self.render_into(input, &mut canvas)?;
-        Ok(canvas)
     }
 
     /// Initialize derived renderer state from the authoritative snapshot.

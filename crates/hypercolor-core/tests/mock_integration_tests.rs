@@ -20,7 +20,7 @@ use hypercolor_core::device::{
 use hypercolor_core::effect::EffectRenderer;
 use hypercolor_core::spatial::{SpatialEngine, generate_positions};
 use hypercolor_types::audio::AudioData;
-use hypercolor_types::canvas::Rgba;
+use hypercolor_types::canvas::{Canvas, Rgba};
 use hypercolor_types::device::{DeviceFingerprint, DeviceId, DeviceState};
 use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::spatial::{
@@ -504,7 +504,7 @@ fn effect_renderer_lifecycle_tracking() {
 
     assert!(!renderer.initialized);
     assert!(!renderer.destroyed);
-    assert_eq!(renderer.tick_count, 0);
+    assert_eq!(renderer.render_count, 0);
 
     renderer.init(&meta).expect("init should succeed");
     assert!(renderer.initialized);
@@ -523,9 +523,14 @@ fn effect_renderer_lifecycle_tracking() {
         canvas_width: 10,
         canvas_height: 10,
     };
-    let _ = renderer.tick(&input).expect("tick");
-    let _ = renderer.tick(&input).expect("tick");
-    assert_eq!(renderer.tick_count, 2);
+    let mut canvas = Canvas::new(input.canvas_width, input.canvas_height);
+    renderer
+        .render_into(&input, &mut canvas)
+        .expect("first frame should render");
+    renderer
+        .render_into(&input, &mut canvas)
+        .expect("second frame should render");
+    assert_eq!(renderer.render_count, 2);
 
     renderer.destroy();
     assert!(renderer.destroyed);

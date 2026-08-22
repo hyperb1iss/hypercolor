@@ -42,6 +42,16 @@ static SILENCE: LazyLock<AudioData> = LazyLock::new(AudioData::silence);
 static DEFAULT_INTERACTION: LazyLock<InteractionData> = LazyLock::new(InteractionData::default);
 static EMPTY_SENSORS: LazyLock<SystemSnapshot> = LazyLock::new(SystemSnapshot::empty);
 
+trait RenderFrameExt: EffectRenderer {
+    fn render_frame(&mut self, input: &FrameInput<'_>) -> anyhow::Result<Canvas> {
+        let mut canvas = Canvas::new(input.canvas_width, input.canvas_height);
+        self.render_into(input, &mut canvas)?;
+        Ok(canvas)
+    }
+}
+
+impl<T: EffectRenderer + ?Sized> RenderFrameExt for T {}
+
 fn make_metadata(name: &str) -> EffectMetadata {
     EffectMetadata {
         id: EffectId::new(Uuid::now_v7()),
@@ -162,13 +172,13 @@ fn top_left(canvas: &hypercolor_types::canvas::Canvas) -> Rgba {
     canvas.get_pixel(0, 0)
 }
 
-fn tick_color_wave(renderer: &mut ColorWaveRenderer, frames: u64) -> Canvas {
-    let mut canvas = renderer.tick(&frame(0.0, 0)).expect("tick");
+fn render_color_wave(renderer: &mut ColorWaveRenderer, frames: u64) -> Canvas {
+    let mut canvas = renderer.render_frame(&frame(0.0, 0)).expect("render");
 
     for i in 1..frames {
         #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
         let t = i as f64 / 60.0;
-        canvas = renderer.tick(&frame(t, i)).expect("tick");
+        canvas = renderer.render_frame(&frame(t, i)).expect("render");
     }
 
     canvas
@@ -291,7 +301,7 @@ fn hardware_visual_color_zones_stay_vivid_after_led_sampling() {
     r.apply_test_control("zone_1", &ControlValue::Color([1.0, 0.0, 0.0, 1.0]));
     r.apply_test_control("zone_2", &ControlValue::Color([0.0, 0.0, 1.0, 1.0]));
 
-    let canvas = r.tick(&frame(0.0, 0)).expect("tick");
+    let canvas = r.render_frame(&frame(0.0, 0)).expect("render");
     for led_count in [8, 96] {
         let colors = sample_strip(&canvas, led_count);
         assert!(
@@ -318,7 +328,7 @@ fn hardware_visual_color_wave_preserves_dark_space_after_led_sampling() {
     r.apply_test_control("speed", &ControlValue::Float(100.0));
     r.apply_test_control("trail", &ControlValue::Float(0.0));
 
-    let canvas = r.tick(&frame(0.0, 0)).expect("tick");
+    let canvas = r.render_frame(&frame(0.0, 0)).expect("render");
     for led_count in [8, 96] {
         let colors = sample_strip(&canvas, led_count);
         assert!(
@@ -345,11 +355,15 @@ fn hardware_visual_color_wave_retained_frames_do_not_flicker() {
     r.apply_test_control("speed", &ControlValue::Float(35.0));
     r.apply_test_control("trail", &ControlValue::Float(80.0));
 
-    let mut previous = sample_strip(&r.tick(&frame(0.0, 0)).expect("tick"), 32);
+    let mut previous = sample_strip(&r.render_frame(&frame(0.0, 0)).expect("render"), 32);
     for frame_number in 1..12 {
         #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
         let time_secs = frame_number as f64 / 60.0;
-        let current = sample_strip(&r.tick(&frame(time_secs, frame_number)).expect("tick"), 32);
+        let current = sample_strip(
+            &r.render_frame(&frame(time_secs, frame_number))
+                .expect("render"),
+            32,
+        );
         assert!(
             changed_led_ratio(&previous, &current) <= 0.35,
             "retained color-wave frames should evolve smoothly at frame {frame_number}"
@@ -415,7 +429,7 @@ fn calibration_initializes() {
 fn solid_color_produces_non_black() {
     let mut r = SolidColorRenderer::new();
     r.init(&make_metadata("solid_color")).expect("init");
-    let canvas = r.tick(&frame(0.0, 0)).expect("tick");
+    let canvas = r.render_frame(&frame(0.0, 0)).expect("render");
     assert!(
         has_non_black_pixels(&canvas),
         "solid color should produce non-black pixels"
@@ -426,7 +440,7 @@ fn solid_color_produces_non_black() {
 fn gradient_produces_non_black() {
     let mut r = GradientRenderer::new();
     r.init(&make_metadata("gradient")).expect("init");
-    let canvas = r.tick(&frame(0.0, 0)).expect("tick");
+    let canvas = r.render_frame(&frame(0.0, 0)).expect("render");
     assert!(
         has_non_black_pixels(&canvas),
         "gradient should produce non-black pixels"
@@ -437,7 +451,7 @@ fn gradient_produces_non_black() {
 fn rainbow_produces_non_black() {
     let mut r = RainbowRenderer::new();
     r.init(&make_metadata("rainbow")).expect("init");
-    let canvas = r.tick(&frame(0.0, 0)).expect("tick");
+    let canvas = r.render_frame(&frame(0.0, 0)).expect("render");
     assert!(
         has_non_black_pixels(&canvas),
         "rainbow should produce non-black pixels"
@@ -449,7 +463,7 @@ fn breathing_produces_non_black() {
     let mut r = BreathingRenderer::new();
     r.init(&make_metadata("breathing")).expect("init");
     // At t=0, sine wave is at midpoint, so we get some brightness
-    let canvas = r.tick(&frame(0.5, 30)).expect("tick");
+    let canvas = r.render_frame(&frame(0.5, 30)).expect("render");
     assert!(
         has_non_black_pixels(&canvas),
         "breathing should produce non-black pixels at t=0.5"
@@ -462,7 +476,9 @@ fn audio_pulse_produces_non_black_with_audio() {
     r.init(&make_metadata("audio_pulse")).expect("init");
     let mut audio = AudioData::silence();
     audio.rms_level = 0.8;
-    let canvas = r.tick(&frame_with_audio(0.0, &audio)).expect("tick");
+    let canvas = r
+        .render_frame(&frame_with_audio(0.0, &audio))
+        .expect("render");
     assert!(
         has_non_black_pixels(&canvas),
         "audio pulse should produce non-black pixels with audio"
@@ -480,7 +496,7 @@ fn color_wave_produces_non_black() {
     r.apply_test_control("wave_width", &ControlValue::Float(8.0));
     r.apply_test_control("speed", &ControlValue::Float(100.0));
     r.apply_test_control("trail", &ControlValue::Float(0.0));
-    let canvas = tick_color_wave(&mut r, 1);
+    let canvas = render_color_wave(&mut r, 1);
     assert!(
         has_non_black_pixels(&canvas),
         "color wave should produce non-black pixels"
@@ -491,7 +507,7 @@ fn color_wave_produces_non_black() {
 fn calibration_produces_non_black() {
     let mut r = CalibrationRenderer::new();
     r.init(&make_metadata("calibration")).expect("init");
-    let canvas = r.tick(&frame(0.5, 30)).expect("tick");
+    let canvas = r.render_frame(&frame(0.5, 30)).expect("render");
     assert!(has_non_black_pixels(&canvas));
 }
 
@@ -503,12 +519,12 @@ fn solid_color_changes_with_control() {
     r.init(&make_metadata("solid_color")).expect("init");
 
     // Default is white
-    let canvas1 = r.tick(&frame(0.0, 0)).expect("tick");
+    let canvas1 = r.render_frame(&frame(0.0, 0)).expect("render");
     let p1 = top_left(&canvas1);
 
     // Change to pure red
     r.apply_test_control("color", &ControlValue::Color([1.0, 0.0, 0.0, 1.0]));
-    let canvas2 = r.tick(&frame(0.0, 1)).expect("tick");
+    let canvas2 = r.render_frame(&frame(0.0, 1)).expect("render");
     let p2 = top_left(&canvas2);
 
     assert_ne!(p1, p2, "changing color control should change output");
@@ -524,7 +540,7 @@ fn solid_color_brightness_control() {
 
     r.apply_test_control("color", &ControlValue::Color([1.0, 1.0, 1.0, 1.0]));
     r.apply_test_control("brightness", &ControlValue::Float(0.5));
-    let canvas = r.tick(&frame(0.0, 0)).expect("tick");
+    let canvas = r.render_frame(&frame(0.0, 0)).expect("render");
     let p = top_left(&canvas);
 
     // At 50% linear brightness, the sRGB-encoded canvas value is around 188.
@@ -543,7 +559,7 @@ fn gradient_angle_control() {
     // Horizontal gradient: pixels across X should differ
     r.apply_test_control("angle", &ControlValue::Float(0.0));
     r.apply_test_control("speed", &ControlValue::Float(0.0)); // freeze animation
-    let canvas = r.tick(&frame(0.0, 0)).expect("tick");
+    let canvas = r.render_frame(&frame(0.0, 0)).expect("render");
     let left = canvas.get_pixel(0, 0);
     let right = canvas.get_pixel(W - 1, 0);
     assert_ne!(left, right, "horizontal gradient endpoints should differ");
@@ -562,7 +578,7 @@ fn solid_color_split_pattern_uses_secondary_color() {
         &ControlValue::Color([0.0, 0.0, 1.0, 1.0]),
     );
 
-    let canvas = r.tick(&frame(0.0, 0)).expect("tick");
+    let canvas = r.render_frame(&frame(0.0, 0)).expect("render");
     let left = canvas.get_pixel(0, 0);
     let right = canvas.get_pixel(W - 1, 0);
 
@@ -579,8 +595,8 @@ fn rainbow_speed_control() {
     r.init(&make_metadata("rainbow")).expect("init");
 
     r.apply_test_control("speed", &ControlValue::Float(0.0));
-    let canvas1 = r.tick(&frame(0.0, 0)).expect("tick t=0");
-    let canvas2 = r.tick(&frame(10.0, 600)).expect("tick t=10");
+    let canvas1 = r.render_frame(&frame(0.0, 0)).expect("render t=0");
+    let canvas2 = r.render_frame(&frame(10.0, 600)).expect("render t=10");
 
     // With speed=0, frames at different times should be identical
     let p1 = top_left(&canvas1);
@@ -599,9 +615,9 @@ fn breathing_speed_control() {
     r.apply_test_control("max_brightness", &ControlValue::Float(1.0));
 
     // At t=0 sine is 0, brightness is midpoint
-    let canvas_start = r.tick(&frame(0.0, 0)).expect("tick t=0");
+    let canvas_start = r.render_frame(&frame(0.0, 0)).expect("render t=0");
     // At t=0.25 sine is 1 (peak)
-    let canvas_peak = r.tick(&frame(0.25, 15)).expect("tick t=0.25");
+    let canvas_peak = r.render_frame(&frame(0.25, 15)).expect("render t=0.25");
 
     let p_start = top_left(&canvas_start);
     let p_peak = top_left(&canvas_peak);
@@ -621,14 +637,16 @@ fn audio_pulse_responds_to_silence_vs_loud() {
 
     // Silence
     let canvas_silent = r
-        .tick(&frame_with_audio(0.0, &AudioData::silence()))
-        .expect("tick silent");
+        .render_frame(&frame_with_audio(0.0, &AudioData::silence()))
+        .expect("render silent");
     let p_silent = top_left(&canvas_silent);
 
     // Loud audio
     let mut loud = AudioData::silence();
     loud.rms_level = 1.0;
-    let canvas_loud = r.tick(&frame_with_audio(0.0, &loud)).expect("tick loud");
+    let canvas_loud = r
+        .render_frame(&frame_with_audio(0.0, &loud))
+        .expect("render loud");
     let p_loud = top_left(&canvas_loud);
 
     assert_ne!(
@@ -646,15 +664,15 @@ fn audio_pulse_responds_to_beat() {
     let mut steady = AudioData::silence();
     steady.rms_level = 0.5;
     let canvas_no_beat = r
-        .tick(&frame_with_audio(0.0, &steady))
-        .expect("tick no beat");
+        .render_frame(&frame_with_audio(0.0, &steady))
+        .expect("render no beat");
 
     let mut beat_audio = AudioData::silence();
     beat_audio.beat_detected = true;
     beat_audio.rms_level = 0.5;
     let canvas_beat = r
-        .tick(&frame_with_audio(0.0, &beat_audio))
-        .expect("tick with beat");
+        .render_frame(&frame_with_audio(0.0, &beat_audio))
+        .expect("render with beat");
 
     let center_no_beat = canvas_no_beat.get_pixel(W / 2, H / 2);
     let center_beat = canvas_beat.get_pixel(W / 2, H / 2);
@@ -674,15 +692,15 @@ fn audio_pulse_beat_does_not_brighten_far_field() {
     let mut steady = AudioData::silence();
     steady.rms_level = 0.5;
     let canvas_no_beat = r
-        .tick(&frame_with_audio(0.0, &steady))
-        .expect("tick no beat");
+        .render_frame(&frame_with_audio(0.0, &steady))
+        .expect("render no beat");
 
     let mut beat_audio = AudioData::silence();
     beat_audio.beat_detected = true;
     beat_audio.rms_level = 0.5;
     let canvas_beat = r
-        .tick(&frame_with_audio(0.0, &beat_audio))
-        .expect("tick with beat");
+        .render_frame(&frame_with_audio(0.0, &beat_audio))
+        .expect("render with beat");
 
     // The freshly spawned ring sits near the center; the far corner must be
     // untouched — beat energy drives ring motion, never a canvas-wide
@@ -706,7 +724,7 @@ fn gradient_has_spatial_variation() {
     r.apply_test_control("color_start", &ControlValue::Color([1.0, 0.0, 0.0, 1.0]));
     r.apply_test_control("color_end", &ControlValue::Color([0.0, 0.0, 1.0, 1.0]));
 
-    let canvas = r.tick(&frame(0.0, 0)).expect("tick");
+    let canvas = r.render_frame(&frame(0.0, 0)).expect("render");
     let left = canvas.get_pixel(0, 0);
     let right = canvas.get_pixel(W - 1, 0);
 
@@ -728,7 +746,7 @@ fn gradient_vertical_varies_along_y() {
     r.apply_test_control("angle", &ControlValue::Float(90.0));
     r.apply_test_control("speed", &ControlValue::Float(0.0));
 
-    let canvas = r.tick(&frame(0.0, 0)).expect("tick");
+    let canvas = r.render_frame(&frame(0.0, 0)).expect("render");
     let top = canvas.get_pixel(0, 0);
     let bottom = canvas.get_pixel(0, H - 1);
 
@@ -750,7 +768,7 @@ fn gradient_middle_color_changes_midpoint_output() {
     r.apply_test_control("color_end", &ControlValue::Color([0.0, 0.0, 1.0, 1.0]));
     r.apply_test_control("midpoint", &ControlValue::Float(0.5));
 
-    let canvas = r.tick(&frame(0.0, 0)).expect("tick");
+    let canvas = r.render_frame(&frame(0.0, 0)).expect("render");
     let center = canvas.get_pixel(W / 2, H / 2);
 
     assert!(
@@ -767,10 +785,10 @@ fn gradient_repeat_mode_wraps_offset() {
     r.apply_test_control("speed", &ControlValue::Float(0.0));
     r.apply_test_control("repeat_mode", &ControlValue::Enum("Repeat".into()));
     r.apply_test_control("offset", &ControlValue::Float(1.0));
-    let wrapped = r.tick(&frame(0.0, 0)).expect("wrapped tick");
+    let wrapped = r.render_frame(&frame(0.0, 0)).expect("wrapped render");
 
     r.apply_test_control("offset", &ControlValue::Float(0.0));
-    let baseline = r.tick(&frame(0.0, 1)).expect("baseline tick");
+    let baseline = r.render_frame(&frame(0.0, 1)).expect("baseline render");
 
     assert_eq!(
         top_left(&wrapped),
@@ -786,8 +804,8 @@ fn rainbow_changes_over_time() {
     let mut r = RainbowRenderer::new();
     r.init(&make_metadata("rainbow")).expect("init");
 
-    let canvas0 = r.tick(&frame(0.0, 0)).expect("tick frame 0");
-    let canvas100 = r.tick(&frame(5.0, 100)).expect("tick frame 100");
+    let canvas0 = r.render_frame(&frame(0.0, 0)).expect("render frame 0");
+    let canvas100 = r.render_frame(&frame(5.0, 100)).expect("render frame 100");
 
     let p0 = top_left(&canvas0);
     let p100 = top_left(&canvas100);
@@ -800,7 +818,7 @@ fn rainbow_has_spatial_variation() {
     let mut r = RainbowRenderer::new();
     r.init(&make_metadata("rainbow")).expect("init");
 
-    let canvas = r.tick(&frame(0.0, 0)).expect("tick");
+    let canvas = r.render_frame(&frame(0.0, 0)).expect("render");
     let left = canvas.get_pixel(0, 0);
     let right = canvas.get_pixel(W - 1, 0);
 
@@ -815,7 +833,7 @@ fn rainbow_horizontal_is_uniform_down_each_column() {
     let mut r = RainbowRenderer::new();
     r.init(&make_metadata("rainbow")).expect("init");
 
-    let canvas = r.tick(&frame(0.0, 0)).expect("tick");
+    let canvas = r.render_frame(&frame(0.0, 0)).expect("render");
     assert_eq!(
         canvas.get_pixel(W / 2, 0),
         canvas.get_pixel(W / 2, H - 1),
@@ -829,7 +847,7 @@ fn rainbow_vertical_direction_varies_by_row() {
     r.init(&make_metadata("rainbow")).expect("init");
     r.apply_test_control("direction", &ControlValue::Enum("Vertical".into()));
 
-    let canvas = r.tick(&frame(0.0, 0)).expect("tick");
+    let canvas = r.render_frame(&frame(0.0, 0)).expect("render");
     assert_ne!(
         canvas.get_pixel(0, 0),
         canvas.get_pixel(0, H - 1),
@@ -848,7 +866,7 @@ fn rainbow_diagonal_direction_varies_along_both_axes() {
     r.init(&make_metadata("rainbow")).expect("init");
     r.apply_test_control("direction", &ControlValue::Enum("Diagonal".into()));
 
-    let canvas = r.tick(&frame(0.0, 0)).expect("tick");
+    let canvas = r.render_frame(&frame(0.0, 0)).expect("render");
     assert_ne!(
         canvas.get_pixel(0, 0),
         canvas.get_pixel(W - 1, 0),
@@ -866,7 +884,7 @@ fn rainbow_defaults_to_vivid_red_at_origin() {
     let mut r = RainbowRenderer::new();
     r.init(&make_metadata("rainbow")).expect("init");
 
-    let canvas = r.tick(&frame(0.0, 0)).expect("tick");
+    let canvas = r.render_frame(&frame(0.0, 0)).expect("render");
     let origin = top_left(&canvas);
 
     assert!(
@@ -887,7 +905,7 @@ fn rainbow_saturation_control_desaturates_to_grayscale() {
     r.apply_test_control("speed", &ControlValue::Float(0.0));
     r.apply_test_control("saturation", &ControlValue::Float(0.0));
 
-    let canvas = r.tick(&frame(0.0, 0)).expect("tick");
+    let canvas = r.render_frame(&frame(0.0, 0)).expect("render");
     let origin = top_left(&canvas);
 
     assert_eq!(
@@ -914,7 +932,7 @@ fn solid_color_full_lifecycle() {
     for i in 0..10 {
         #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
         let t = i as f64 / 60.0;
-        let canvas = r.tick(&frame(t, i)).expect("tick");
+        let canvas = r.render_frame(&frame(t, i)).expect("render");
         assert_eq!(canvas.width(), W);
         assert_eq!(canvas.height(), H);
     }
@@ -926,7 +944,9 @@ fn solid_color_full_lifecycle() {
     for i in 10..20 {
         #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
         let t = i as f64 / 60.0;
-        let canvas = r.tick(&frame(t, i)).expect("tick after control change");
+        let canvas = r
+            .render_frame(&frame(t, i))
+            .expect("render after control change");
         let p = top_left(&canvas);
         assert_eq!(p.g, 255, "should be green after control change");
     }
@@ -943,7 +963,7 @@ fn gradient_full_lifecycle() {
     for i in 0..10 {
         #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
         let t = i as f64 / 60.0;
-        r.tick(&frame(t, i)).expect("tick");
+        r.render_frame(&frame(t, i)).expect("render");
     }
 
     r.apply_test_control("mode", &ControlValue::Enum("Radial".into()));
@@ -951,7 +971,8 @@ fn gradient_full_lifecycle() {
     for i in 10..20 {
         #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
         let t = i as f64 / 60.0;
-        r.tick(&frame(t, i)).expect("tick after control change");
+        r.render_frame(&frame(t, i))
+            .expect("render after control change");
     }
 
     r.destroy();
@@ -965,7 +986,7 @@ fn rainbow_full_lifecycle() {
     for i in 0..10 {
         #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
         let t = i as f64 / 60.0;
-        r.tick(&frame(t, i)).expect("tick");
+        r.render_frame(&frame(t, i)).expect("render");
     }
 
     r.apply_test_control("scale", &ControlValue::Float(2.0));
@@ -973,7 +994,8 @@ fn rainbow_full_lifecycle() {
     for i in 10..20 {
         #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
         let t = i as f64 / 60.0;
-        r.tick(&frame(t, i)).expect("tick after control change");
+        r.render_frame(&frame(t, i))
+            .expect("render after control change");
     }
 
     r.destroy();
@@ -987,7 +1009,7 @@ fn breathing_full_lifecycle() {
     for i in 0..10 {
         #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
         let t = i as f64 / 60.0;
-        r.tick(&frame(t, i)).expect("tick");
+        r.render_frame(&frame(t, i)).expect("render");
     }
 
     r.apply_test_control("speed", &ControlValue::Float(30.0));
@@ -995,7 +1017,8 @@ fn breathing_full_lifecycle() {
     for i in 10..20 {
         #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
         let t = i as f64 / 60.0;
-        r.tick(&frame(t, i)).expect("tick after control change");
+        r.render_frame(&frame(t, i))
+            .expect("render after control change");
     }
 
     r.destroy();
@@ -1010,7 +1033,7 @@ fn audio_pulse_full_lifecycle() {
     for i in 0..10 {
         #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
         let t = i as f64 / 60.0;
-        r.tick(&frame(t, i)).expect("tick");
+        r.render_frame(&frame(t, i)).expect("render");
     }
 
     // Change sensitivity
@@ -1037,7 +1060,7 @@ fn audio_pulse_full_lifecycle() {
             canvas_width: W,
             canvas_height: H,
         };
-        r.tick(&input).expect("tick with audio");
+        r.render_frame(&input).expect("render with audio");
     }
 
     r.destroy();
@@ -1048,13 +1071,13 @@ fn color_wave_full_lifecycle() {
     let mut r = ColorWaveRenderer::new();
     r.init(&make_metadata("color_wave")).expect("init");
 
-    tick_color_wave(&mut r, 10);
+    render_color_wave(&mut r, 10);
 
     r.apply_test_control("direction", &ControlValue::Enum("left".into()));
     r.apply_test_control("wave_width", &ControlValue::Float(24.0));
     r.apply_test_control("spawn_delay", &ControlValue::Float(80.0));
 
-    tick_color_wave(&mut r, 10);
+    render_color_wave(&mut r, 10);
 
     r.destroy();
 }
@@ -1073,7 +1096,7 @@ fn color_wave_has_spatial_variation() {
     r.apply_test_control("speed", &ControlValue::Float(100.0));
     r.apply_test_control("trail", &ControlValue::Float(0.0));
 
-    let canvas = tick_color_wave(&mut r, 1);
+    let canvas = render_color_wave(&mut r, 1);
 
     // Collect unique brightness values across the top row
     let mut seen_values = std::collections::HashSet::new();
@@ -1100,10 +1123,10 @@ fn color_wave_wave_width_accepts_float_slider_values() {
     r.apply_test_control("speed", &ControlValue::Float(100.0));
     r.apply_test_control("trail", &ControlValue::Float(0.0));
     r.apply_test_control("wave_width", &ControlValue::Float(24.0));
-    let wide = tick_color_wave(&mut r, 1);
+    let wide = render_color_wave(&mut r, 1);
 
     r.apply_test_control("wave_width", &ControlValue::Float(8.0));
-    let narrow = tick_color_wave(&mut r, 1);
+    let narrow = render_color_wave(&mut r, 1);
 
     assert!(
         count_non_black_pixels_in_row(&wide, 0) > count_non_black_pixels_in_row(&narrow, 0),
@@ -1125,7 +1148,7 @@ fn color_wave_direction_accepts_vertical_pass() {
     r.apply_test_control("trail", &ControlValue::Float(0.0));
     r.apply_test_control("direction", &ControlValue::Enum("Vertical Pass".into()));
 
-    let canvas = tick_color_wave(&mut r, 1);
+    let canvas = render_color_wave(&mut r, 1);
     let mut seen_values = std::collections::HashSet::new();
     for y in 0..H {
         let p = canvas.get_pixel(0, y);
@@ -1151,7 +1174,9 @@ fn screen_cast_renders_capture_frame() {
     r.init(&make_metadata("screen_cast")).expect("init");
     let screen = make_screen_data();
 
-    let canvas = r.tick(&frame_with_screen(0.0, &screen)).expect("tick");
+    let canvas = r
+        .render_frame(&frame_with_screen(0.0, &screen))
+        .expect("render");
 
     assert_eq!(canvas.get_pixel(0, 0), Rgba::new(255, 0, 0, 255));
     assert_eq!(canvas.get_pixel(W - 1, 0), Rgba::new(0, 0, 255, 255));
@@ -1220,7 +1245,7 @@ fn screen_analysis_consumers_share_letterbox_smoothing_and_tuning_policy() {
         .init(&make_metadata("screen_cast"))
         .expect("screen cast should initialize");
     let rendered = renderer
-        .tick(&frame_with_screen(0.0, &screen))
+        .render_frame(&frame_with_screen(0.0, &screen))
         .expect("screen cast should render policy pixels");
     assert_eq!(rendered.get_pixel(W / 2, H / 2), first);
 }
@@ -1236,7 +1261,9 @@ fn screen_cast_frame_controls_crop_region() {
     r.apply_test_control("fit_mode", &ControlValue::Enum("Stretch".into()));
     let screen = make_screen_data();
 
-    let canvas = r.tick(&frame_with_screen(0.0, &screen)).expect("tick");
+    let canvas = r
+        .render_frame(&frame_with_screen(0.0, &screen))
+        .expect("render");
 
     // Interior samples: with a 4-pixel source and the crop flush against
     // the red/blue boundary, half-pixel-centered bilinear at output x=0
@@ -1504,7 +1531,7 @@ fn calibration_sweep_direction_moves_the_band_origin() {
     );
 
     r.apply_test_control("direction", &ControlValue::Enum("Left to Right".to_owned()));
-    let left_origin = r.tick(&frame(0.0, 0)).expect("left sweep");
+    let left_origin = r.render_frame(&frame(0.0, 0)).expect("left sweep");
     let left_edge = left_origin.get_pixel(0, H / 2);
     let right_edge = left_origin.get_pixel(W - 1, H / 2);
     assert_ne!(
@@ -1513,7 +1540,7 @@ fn calibration_sweep_direction_moves_the_band_origin() {
     );
 
     r.apply_test_control("direction", &ControlValue::Enum("Right to Left".to_owned()));
-    let right_origin = r.tick(&frame(0.0, 1)).expect("right sweep");
+    let right_origin = r.render_frame(&frame(0.0, 1)).expect("right sweep");
     let left_edge_reversed = right_origin.get_pixel(0, H / 2);
     let right_edge_reversed = right_origin.get_pixel(W - 1, H / 2);
     assert_ne!(
@@ -1533,7 +1560,7 @@ fn calibration_quadrant_cycle_uses_distinct_orientation_colors() {
     r.apply_test_control("pattern", &ControlValue::Enum("Quadrant Cycle".to_owned()));
     r.apply_test_control("speed", &ControlValue::Float(0.0));
 
-    let canvas = r.tick(&frame(0.0, 0)).expect("tick");
+    let canvas = r.render_frame(&frame(0.0, 0)).expect("render");
     let top_left = canvas.get_pixel(0, 0);
     let top_right = canvas.get_pixel(W - 1, 0);
     let bottom_left = canvas.get_pixel(0, H - 1);
@@ -1549,7 +1576,7 @@ fn calibration_corner_cycle_uses_distinct_corner_colors() {
     r.apply_test_control("pattern", &ControlValue::Enum("Corner Cycle".to_owned()));
     r.apply_test_control("speed", &ControlValue::Float(0.0));
 
-    let canvas = r.tick(&frame(0.0, 0)).expect("tick");
+    let canvas = r.render_frame(&frame(0.0, 0)).expect("render");
     let top_left = canvas.get_pixel(0, 0);
     let top_right = canvas.get_pixel(W - 1, 0);
     let bottom_left = canvas.get_pixel(0, H - 1);
@@ -1567,11 +1594,11 @@ fn calibration_grid_overlay_changes_output() {
     r.apply_test_control("direction", &ControlValue::Enum("Left to Right".to_owned()));
 
     r.apply_test_control("show_grid", &ControlValue::Boolean(false));
-    let without_grid = r.tick(&frame(0.0, 0)).expect("without grid");
+    let without_grid = r.render_frame(&frame(0.0, 0)).expect("without grid");
 
     r.apply_test_control("show_grid", &ControlValue::Boolean(true));
     r.apply_test_control("grid_scale", &ControlValue::Float(4.0));
-    let with_grid = r.tick(&frame(0.0, 1)).expect("with grid");
+    let with_grid = r.render_frame(&frame(0.0, 1)).expect("with grid");
 
     assert_ne!(
         without_grid.as_rgba_bytes(),
@@ -1642,7 +1669,7 @@ fn color_zones_initializes() {
 fn color_zones_produces_non_black() {
     let mut r = ColorZonesRenderer::new();
     r.init(&make_metadata("color_zones")).expect("init");
-    let canvas = r.tick(&frame(0.0, 0)).expect("tick");
+    let canvas = r.render_frame(&frame(0.0, 0)).expect("render");
     assert!(has_non_black_pixels(&canvas));
 }
 
@@ -1651,7 +1678,7 @@ fn color_zones_has_spatial_variation() {
     let mut r = ColorZonesRenderer::new();
     r.init(&make_metadata("color_zones")).expect("init");
     // Default: 3 columns
-    let canvas = r.tick(&frame(0.0, 0)).expect("tick");
+    let canvas = r.render_frame(&frame(0.0, 0)).expect("render");
     let left = canvas.get_pixel(0, 0);
     let right = canvas.get_pixel(W - 1, 0);
     assert_ne!(
@@ -1671,12 +1698,14 @@ fn color_zones_blended_path_reflects_zone_color_updates() {
     r.apply_test_control("zone_1", &ControlValue::Color([1.0, 0.0, 0.0, 1.0]));
     r.apply_test_control("zone_2", &ControlValue::Color([0.0, 0.0, 1.0, 1.0]));
 
-    let before = r.tick(&frame(0.0, 0)).expect("tick");
+    let before = r.render_frame(&frame(0.0, 0)).expect("render");
     let left_before = top_left(&before);
     assert!(left_before.r > left_before.g, "zone 1 should start red");
 
     r.apply_test_control("zone_1", &ControlValue::Color([0.0, 1.0, 0.0, 1.0]));
-    let after = r.tick(&frame(0.0, 1)).expect("tick after recolor");
+    let after = r
+        .render_frame(&frame(0.0, 1))
+        .expect("render after recolor");
     let left_after = top_left(&after);
     assert!(
         left_after.g > left_after.r,
@@ -1696,7 +1725,7 @@ fn color_zones_responds_to_zone_count() {
     // With 2 zones, the midpoint must collapse into one of the two active zones.
     r.apply_test_control("zone_count", &ControlValue::Enum("2".to_owned()));
     r.apply_test_control("blend", &ControlValue::Float(0.0));
-    let canvas = r.tick(&frame(0.0, 0)).expect("tick");
+    let canvas = r.render_frame(&frame(0.0, 0)).expect("render");
     let left = canvas.get_pixel(0, 0);
     let middle = canvas.get_pixel(W / 2, 0);
     let right = canvas.get_pixel(W - 1, 0);
@@ -1714,7 +1743,7 @@ fn color_zones_layout_rows_varies_vertically() {
     r.apply_test_control("layout", &ControlValue::Enum("Rows".to_owned()));
     r.apply_test_control("blend", &ControlValue::Float(0.0));
 
-    let canvas = r.tick(&frame(0.0, 0)).expect("tick");
+    let canvas = r.render_frame(&frame(0.0, 0)).expect("render");
     let top = canvas.get_pixel(0, 0);
     let bottom = canvas.get_pixel(0, H - 1);
     assert_ne!(top, bottom, "row layout should vary vertically");
@@ -1730,12 +1759,12 @@ fn color_zones_blend_produces_intermediate_colors() {
 
     // Hard boundary: mid pixel should be one of the two zone colors.
     r.apply_test_control("blend", &ControlValue::Float(0.0));
-    let canvas_hard = r.tick(&frame(0.0, 0)).expect("tick");
+    let canvas_hard = r.render_frame(&frame(0.0, 0)).expect("render");
     let mid_hard = canvas_hard.get_pixel(W / 2, 0);
 
     // Soft boundary: mid pixel should be an interpolated color.
     r.apply_test_control("blend", &ControlValue::Float(1.0));
-    let canvas_soft = r.tick(&frame(0.0, 0)).expect("tick");
+    let canvas_soft = r.render_frame(&frame(0.0, 0)).expect("render");
     let mid_soft = canvas_soft.get_pixel(W / 2, 0);
 
     assert_ne!(
@@ -1753,7 +1782,7 @@ fn color_zones_zone_color_control_updates() {
 
     // Set zone 1 to pure white.
     r.apply_test_control("zone_1", &ControlValue::Color([1.0, 1.0, 1.0, 1.0]));
-    let canvas = r.tick(&frame(0.0, 0)).expect("tick");
+    let canvas = r.render_frame(&frame(0.0, 0)).expect("render");
     let left = canvas.get_pixel(0, 0);
     assert_eq!(
         left,
@@ -1768,11 +1797,11 @@ fn color_zones_brightness_dims_output() {
     r.init(&make_metadata("color_zones")).expect("init");
     r.apply_test_control("zone_1", &ControlValue::Color([1.0, 1.0, 1.0, 1.0]));
 
-    let canvas_full = r.tick(&frame(0.0, 0)).expect("tick");
+    let canvas_full = r.render_frame(&frame(0.0, 0)).expect("render");
     let pixel_full = canvas_full.get_pixel(0, 0);
 
     r.apply_test_control("brightness", &ControlValue::Float(0.5));
-    let canvas_dim = r.tick(&frame(0.0, 0)).expect("tick");
+    let canvas_dim = r.render_frame(&frame(0.0, 0)).expect("render");
     let pixel_dim = canvas_dim.get_pixel(0, 0);
 
     assert!(
@@ -1790,7 +1819,7 @@ fn color_zones_full_lifecycle() {
     r.apply_test_control("zone_count", &ControlValue::Enum("4".to_owned()));
     r.apply_test_control("layout", &ControlValue::Enum("Grid".to_owned()));
     r.apply_test_control("blend", &ControlValue::Float(0.2));
-    let canvas = r.tick(&frame(0.0, 0)).expect("tick");
+    let canvas = r.render_frame(&frame(0.0, 0)).expect("render");
     assert!(has_non_black_pixels(&canvas));
     r.destroy();
 }
@@ -1807,12 +1836,12 @@ fn gradient_vivid_interpolation_preserves_chroma() {
     r.apply_test_control("color_end", &ControlValue::Color([0.0, 0.0, 1.0, 1.0]));
     r.apply_test_control("interpolation", &ControlValue::Enum("Vivid".to_owned()));
 
-    let canvas_vivid = r.tick(&frame(0.0, 0)).expect("tick");
+    let canvas_vivid = r.render_frame(&frame(0.0, 0)).expect("render");
     let mid_vivid = canvas_vivid.get_pixel(W / 2, 0);
 
     // Same gradient but with Smooth (Oklab) — midpoint should be more desaturated.
     r.apply_test_control("interpolation", &ControlValue::Enum("Smooth".to_owned()));
-    let canvas_smooth = r.tick(&frame(0.0, 0)).expect("tick");
+    let canvas_smooth = r.render_frame(&frame(0.0, 0)).expect("render");
     let mid_smooth = canvas_smooth.get_pixel(W / 2, 0);
 
     // Vivid midpoint should be more chromatic (less gray) than Smooth.
@@ -1838,12 +1867,12 @@ fn gradient_saturation_boost_increases_chroma() {
 
     // Normal saturation.
     r.apply_test_control("saturation", &ControlValue::Float(1.0));
-    let canvas_normal = r.tick(&frame(0.0, 0)).expect("tick");
+    let canvas_normal = r.render_frame(&frame(0.0, 0)).expect("render");
     let mid_normal = canvas_normal.get_pixel(W / 2, 0);
 
     // Boosted saturation.
     r.apply_test_control("saturation", &ControlValue::Float(1.5));
-    let canvas_boosted = r.tick(&frame(0.0, 0)).expect("tick");
+    let canvas_boosted = r.render_frame(&frame(0.0, 0)).expect("render");
     let mid_boosted = canvas_boosted.get_pixel(W / 2, 0);
 
     assert_ne!(
@@ -1861,12 +1890,12 @@ fn gradient_easing_redistributes_colors() {
 
     // Linear easing: mid should be ~50% gray.
     r.apply_test_control("easing", &ControlValue::Enum("Linear".to_owned()));
-    let canvas_linear = r.tick(&frame(0.0, 0)).expect("tick");
+    let canvas_linear = r.render_frame(&frame(0.0, 0)).expect("render");
     let mid_linear = canvas_linear.get_pixel(W / 2, 0);
 
     // Ease In: mid should be darker (t^2 < t for t<1).
     r.apply_test_control("easing", &ControlValue::Enum("Ease In".to_owned()));
-    let canvas_ease_in = r.tick(&frame(0.0, 0)).expect("tick");
+    let canvas_ease_in = r.render_frame(&frame(0.0, 0)).expect("render");
     let mid_ease_in = canvas_ease_in.get_pixel(W / 2, 0);
 
     assert!(
@@ -1885,11 +1914,11 @@ fn gradient_direct_interpolation_differs_from_vivid() {
     r.apply_test_control("color_end", &ControlValue::Color([0.0, 1.0, 0.0, 1.0]));
 
     r.apply_test_control("interpolation", &ControlValue::Enum("Vivid".to_owned()));
-    let canvas_vivid = r.tick(&frame(0.0, 0)).expect("tick");
+    let canvas_vivid = r.render_frame(&frame(0.0, 0)).expect("render");
     let mid_vivid = canvas_vivid.get_pixel(W / 2, 0);
 
     r.apply_test_control("interpolation", &ControlValue::Enum("Direct".to_owned()));
-    let canvas_direct = r.tick(&frame(0.0, 0)).expect("tick");
+    let canvas_direct = r.render_frame(&frame(0.0, 0)).expect("render");
     let mid_direct = canvas_direct.get_pixel(W / 2, 0);
 
     assert_ne!(

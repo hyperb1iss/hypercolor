@@ -121,11 +121,12 @@ fn render_until(
     predicate: impl Fn(&Canvas, Option<&Canvas>) -> bool,
 ) -> (Canvas, Option<Canvas>) {
     let mut last_preview = None::<Canvas>;
+    let mut canvas = Canvas::new(OUTPUT_WIDTH, OUTPUT_HEIGHT);
 
     for frame_number in 0..60 {
-        let canvas = renderer
-            .tick(&frame(frame_number))
-            .expect("tick should succeed");
+        renderer
+            .render_into(&frame(frame_number), &mut canvas)
+            .expect("frame should render");
         let preview = renderer.preview_canvas();
         if predicate(&canvas, preview.as_ref()) {
             return (canvas, preview);

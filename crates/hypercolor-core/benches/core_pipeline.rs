@@ -307,10 +307,6 @@ fn synthetic_beat_frame(frame_number: u64) -> BeatFrame {
     }
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "the benchmark wires up a representative matrix of renderer entry points"
-)]
 fn bench_builtin_renderers(c: &mut Criterion) {
     let mut group = c.benchmark_group("core_render");
     group.throughput(Throughput::Elements(
@@ -322,38 +318,17 @@ fn bench_builtin_renderers(c: &mut Criterion) {
         .init(&ambient_metadata("solid_color"))
         .expect("solid color renderer should initialize");
     let mut solid_frame = 0_u64;
+    let mut solid_canvas = Canvas::new(CANVAS_WIDTH, CANVAS_HEIGHT);
     group.bench_function(
         BenchmarkId::new("solid_color", format!("{CANVAS_WIDTH}x{CANVAS_HEIGHT}")),
         |b| {
             b.iter(|| {
                 let input = frame_input(frame_time(solid_frame), solid_frame, &SILENCE);
                 solid_frame += 1;
-                let canvas = solid
-                    .tick(black_box(&input))
-                    .expect("solid color renderer should tick");
-                black_box(canvas);
-            });
-        },
-    );
-    let mut solid_into = SolidColorRenderer::new();
-    solid_into
-        .init(&ambient_metadata("solid_color"))
-        .expect("solid color renderer should initialize");
-    let mut solid_into_frame = 0_u64;
-    let mut solid_into_canvas = Canvas::new(CANVAS_WIDTH, CANVAS_HEIGHT);
-    group.bench_function(
-        BenchmarkId::new(
-            "solid_color_render_into",
-            format!("{CANVAS_WIDTH}x{CANVAS_HEIGHT}"),
-        ),
-        |b| {
-            b.iter(|| {
-                let input = frame_input(frame_time(solid_into_frame), solid_into_frame, &SILENCE);
-                solid_into_frame += 1;
-                solid_into
-                    .render_into(black_box(&input), black_box(&mut solid_into_canvas))
+                solid
+                    .render_into(black_box(&input), black_box(&mut solid_canvas))
                     .expect("solid color renderer should render into target");
-                black_box(solid_into_canvas.as_rgba_bytes());
+                black_box(solid_canvas.as_rgba_bytes());
             });
         },
     );
@@ -363,42 +338,17 @@ fn bench_builtin_renderers(c: &mut Criterion) {
         .init(&ambient_metadata("gradient"))
         .expect("gradient renderer should initialize");
     let mut gradient_frame = 0_u64;
+    let mut gradient_canvas = Canvas::new(CANVAS_WIDTH, CANVAS_HEIGHT);
     group.bench_function(
         BenchmarkId::new("gradient", format!("{CANVAS_WIDTH}x{CANVAS_HEIGHT}")),
         |b| {
             b.iter(|| {
                 let input = frame_input(frame_time(gradient_frame), gradient_frame, &SILENCE);
                 gradient_frame += 1;
-                let canvas = gradient
-                    .tick(black_box(&input))
-                    .expect("gradient renderer should tick");
-                black_box(canvas);
-            });
-        },
-    );
-    let mut gradient_into = GradientRenderer::new();
-    gradient_into
-        .init(&ambient_metadata("gradient"))
-        .expect("gradient renderer should initialize");
-    let mut gradient_into_frame = 0_u64;
-    let mut gradient_into_canvas = Canvas::new(CANVAS_WIDTH, CANVAS_HEIGHT);
-    group.bench_function(
-        BenchmarkId::new(
-            "gradient_render_into",
-            format!("{CANVAS_WIDTH}x{CANVAS_HEIGHT}"),
-        ),
-        |b| {
-            b.iter(|| {
-                let input = frame_input(
-                    frame_time(gradient_into_frame),
-                    gradient_into_frame,
-                    &SILENCE,
-                );
-                gradient_into_frame += 1;
-                gradient_into
-                    .render_into(black_box(&input), black_box(&mut gradient_into_canvas))
+                gradient
+                    .render_into(black_box(&input), black_box(&mut gradient_canvas))
                     .expect("gradient renderer should render into target");
-                black_box(gradient_into_canvas.as_rgba_bytes());
+                black_box(gradient_canvas.as_rgba_bytes());
             });
         },
     );
@@ -408,39 +358,17 @@ fn bench_builtin_renderers(c: &mut Criterion) {
         .init(&ambient_metadata("rainbow"))
         .expect("rainbow renderer should initialize");
     let mut rainbow_frame = 0_u64;
+    let mut rainbow_canvas = Canvas::new(CANVAS_WIDTH, CANVAS_HEIGHT);
     group.bench_function(
         BenchmarkId::new("rainbow", format!("{CANVAS_WIDTH}x{CANVAS_HEIGHT}")),
         |b| {
             b.iter(|| {
                 let input = frame_input(frame_time(rainbow_frame), rainbow_frame, &SILENCE);
                 rainbow_frame += 1;
-                let canvas = rainbow
-                    .tick(black_box(&input))
-                    .expect("rainbow renderer should tick");
-                black_box(canvas);
-            });
-        },
-    );
-    let mut rainbow_into = RainbowRenderer::new();
-    rainbow_into
-        .init(&ambient_metadata("rainbow"))
-        .expect("rainbow renderer should initialize");
-    let mut rainbow_into_frame = 0_u64;
-    let mut rainbow_into_canvas = Canvas::new(CANVAS_WIDTH, CANVAS_HEIGHT);
-    group.bench_function(
-        BenchmarkId::new(
-            "rainbow_render_into",
-            format!("{CANVAS_WIDTH}x{CANVAS_HEIGHT}"),
-        ),
-        |b| {
-            b.iter(|| {
-                let input =
-                    frame_input(frame_time(rainbow_into_frame), rainbow_into_frame, &SILENCE);
-                rainbow_into_frame += 1;
-                rainbow_into
-                    .render_into(black_box(&input), black_box(&mut rainbow_into_canvas))
+                rainbow
+                    .render_into(black_box(&input), black_box(&mut rainbow_canvas))
                     .expect("rainbow renderer should render into target");
-                black_box(rainbow_into_canvas.as_rgba_bytes());
+                black_box(rainbow_canvas.as_rgba_bytes());
             });
         },
     );
@@ -449,10 +377,11 @@ fn bench_builtin_renderers(c: &mut Criterion) {
     color_wave
         .init(&ambient_metadata("color_wave"))
         .expect("color wave renderer should initialize");
+    let mut color_wave_canvas = Canvas::new(CANVAS_WIDTH, CANVAS_HEIGHT);
     for warmup_frame in 0..60_u64 {
         let input = frame_input(frame_time(warmup_frame), warmup_frame, &SILENCE);
-        let _ = color_wave
-            .tick(&input)
+        color_wave
+            .render_into(&input, &mut color_wave_canvas)
             .expect("color wave warmup frame should render");
     }
     let mut color_wave_frame = 60_u64;
@@ -462,10 +391,10 @@ fn bench_builtin_renderers(c: &mut Criterion) {
             b.iter(|| {
                 let input = frame_input(frame_time(color_wave_frame), color_wave_frame, &SILENCE);
                 color_wave_frame += 1;
-                let canvas = color_wave
-                    .tick(black_box(&input))
-                    .expect("color wave renderer should tick");
-                black_box(canvas);
+                color_wave
+                    .render_into(black_box(&input), black_box(&mut color_wave_canvas))
+                    .expect("color wave renderer should render into target");
+                black_box(color_wave_canvas.as_rgba_bytes());
             });
         },
     );

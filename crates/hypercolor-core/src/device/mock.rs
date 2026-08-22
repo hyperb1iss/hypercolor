@@ -360,8 +360,8 @@ pub struct MockEffectRenderer {
     /// Whether `destroy()` has been called.
     pub destroyed: bool,
 
-    /// Total number of `tick()` calls.
-    pub tick_count: u64,
+    /// Total number of rendered frames.
+    pub render_count: u64,
 
     /// Current control values.
     pub controls: HashMap<String, ControlValue>,
@@ -378,7 +378,7 @@ impl MockEffectRenderer {
             mode,
             initialized: false,
             destroyed: false,
-            tick_count: 0,
+            render_count: 0,
             controls: HashMap::new(),
             init_error: None,
         }
@@ -439,7 +439,7 @@ impl EffectRenderer for MockEffectRenderer {
     }
 
     fn render_into(&mut self, input: &FrameInput<'_>, canvas: &mut Canvas) -> Result<()> {
-        self.tick_count += 1;
+        self.render_count += 1;
         if canvas.width() != input.canvas_width || canvas.height() != input.canvas_height {
             *canvas = Canvas::new(input.canvas_width, input.canvas_height);
         }

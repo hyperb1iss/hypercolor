@@ -364,43 +364,6 @@ impl EffectRenderer for ColorWaveRenderer {
         Ok(())
     }
 
-    fn tick(&mut self, input: &FrameInput<'_>) -> anyhow::Result<Canvas> {
-        let mut canvas = match self.framebuffer.take() {
-            Some(existing)
-                if existing.width() == input.canvas_width
-                    && existing.height() == input.canvas_height =>
-            {
-                existing
-            }
-            _ => {
-                let mut fresh = Canvas::new(input.canvas_width, input.canvas_height);
-                fresh.fill(self.background_fill());
-                fresh
-            }
-        };
-
-        self.fade_canvas(&mut canvas);
-
-        let spawn_interval = self.spawn_interval_secs();
-        self.spawn_accumulator += input.delta_secs.max(0.0);
-        while self.spawn_accumulator >= spawn_interval {
-            self.spawn_wave(input.canvas_width, input.canvas_height);
-            self.spawn_accumulator -= spawn_interval;
-        }
-
-        self.advance_waves(input.delta_secs);
-        self.retain_visible_waves(input.canvas_width, input.canvas_height);
-        self.draw_waves(
-            &mut canvas,
-            input.time_secs,
-            input.canvas_width,
-            input.canvas_height,
-        );
-
-        self.framebuffer = Some(canvas.clone());
-        Ok(canvas)
-    }
-
     fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> Result<(), ControlError> {
         for (control_id, value) in batch.changes {
             match control_id.as_str() {
