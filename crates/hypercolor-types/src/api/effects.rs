@@ -4,7 +4,6 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString, VariantNames};
-use utoipa::ToSchema;
 
 use crate::api::envelope::ListResponse;
 use crate::control::ControlValue;
@@ -27,8 +26,8 @@ use crate::effect::{ControlDefinition, EffectSource, PresetTemplate};
     EnumString,
     Display,
     VariantNames,
-    ToSchema,
 )]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
 pub enum EffectSourceKind {
@@ -60,7 +59,8 @@ impl From<&EffectSource> for EffectSourceKind {
 }
 
 /// Origin of a preset in an effect's unified preset stack.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum EffectPresetOrigin {
     Bundled,
@@ -68,7 +68,8 @@ pub enum EffectPresetOrigin {
 }
 
 /// One bundled or saved preset projected through an effect-scoped API.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct EffectPresetSummary {
     pub id: String,
     pub name: String,
@@ -93,7 +94,8 @@ pub type EffectListResponse = ListResponse<EffectSummary>;
 /// request asked for them via `include=controls,presets`, so the default
 /// list shape is unchanged and a client that ignores the parameter sees
 /// exactly the payload it saw before.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct EffectSummary {
     pub id: String,
     pub name: String,
@@ -119,7 +121,8 @@ pub struct EffectSummary {
 }
 
 /// Typed source requirements declared by an effect.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct EffectCapabilitySet {
     #[serde(default)]
     pub audio_reactive: bool,
@@ -130,7 +133,8 @@ pub struct EffectCapabilitySet {
 }
 
 /// Response for `GET /api/v1/effects/{id}`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct EffectDetailResponse {
     pub id: String,
     pub name: String,
@@ -151,7 +155,8 @@ pub struct EffectDetailResponse {
 }
 
 /// Response for `POST /api/v1/effects/install`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct InstalledEffectResponse {
     pub id: String,
     pub name: String,
@@ -164,7 +169,8 @@ pub struct InstalledEffectResponse {
 ///
 /// Counts describe what the rescan changed in the registry, so an
 /// all-zero response means the effect directories were already current.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct RescanResponse {
     pub added: usize,
     pub removed: usize,

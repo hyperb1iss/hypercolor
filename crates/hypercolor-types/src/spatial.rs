@@ -5,7 +5,6 @@
 //! bridging beautiful pixels and physical photons.
 
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
 
 // ── NormalizedPosition ──────────────────────────────────────────────────────
 
@@ -20,7 +19,8 @@ use utoipa::ToSchema;
 ///
 /// Used for zone positions and sizes on the canvas, LED positions within
 /// a zone's bounding box, and space regions in multi-room layouts.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct NormalizedPosition {
     /// Horizontal position. 0.0 = left edge, 1.0 = right edge.
     pub x: f32,
@@ -130,7 +130,8 @@ impl Default for NormalizedPosition {
 /// Normalized rectangle in `[0.0, 1.0]` canvas space.
 ///
 /// Used for space regions in multi-room layouts.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct NormalizedRect {
     /// Left edge x-coordinate.
     pub x: f32,
@@ -149,7 +150,8 @@ pub struct NormalizedRect {
 /// Each variant computes zone-local positions in normalized `[0.0, 1.0]` space.
 /// The topology determines how many LEDs exist and where they sit within
 /// the zone's rectangular bounds.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum LedTopology {
     /// Linear strip: LEDs in a straight line across the zone.
@@ -253,7 +255,8 @@ impl LedTopology {
 }
 
 /// Direction for strip LED indexing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum StripDirection {
     /// LED 0 at the left, ascending rightward.
@@ -267,7 +270,8 @@ pub enum StripDirection {
 }
 
 /// Corner for matrix start position.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Corner {
     /// Origin at top-left.
@@ -281,7 +285,8 @@ pub enum Corner {
 }
 
 /// Winding direction for circular topologies.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Winding {
     /// LED indices increase clockwise.
@@ -291,7 +296,8 @@ pub enum Winding {
 }
 
 /// Definition for a single ring within [`LedTopology::ConcentricRings`].
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct RingDef {
     /// Number of LEDs in this ring.
     pub count: u32,
@@ -304,7 +310,8 @@ pub struct RingDef {
 }
 
 /// Attachment metadata carried by imported layout zones.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct OutputComponent {
     /// Bound attachment template identifier.
     pub template_id: String,
@@ -333,7 +340,8 @@ pub struct OutputComponent {
 /// `size` (width, height), both in normalized `[0.0, 1.0]` canvas coordinates.
 /// LED positions within the zone are computed from the `topology` and stored
 /// in `led_positions` as zone-local normalized coordinates.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct Output {
     // ── Identity ──────────────────────────────────────────────────────
     /// Unique identifier within the layout.
@@ -423,7 +431,8 @@ fn default_scale() -> f32 {
 }
 
 /// Visual shape of the zone in the editor.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(tag = "shape_type", rename_all = "snake_case")]
 pub enum ZoneShape {
     /// Rectangular bounding box (default for strips, matrices).
@@ -445,7 +454,8 @@ pub enum ZoneShape {
 }
 
 /// Orientation hint for the editor.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Orientation {
     /// Wider than tall.
@@ -465,7 +475,8 @@ pub enum Orientation {
 /// Defines the complete mapping from a 2D effect canvas to the physical LED
 /// positions of every connected device. All coordinates use normalized
 /// `[0.0, 1.0]` space where `(0,0)` is top-left and `(1,1)` is bottom-right.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct SpatialLayout {
     // ── Identity ──────────────────────────────────────────────────────
     /// Unique layout identifier (UUID or slug).
@@ -518,7 +529,8 @@ fn default_edge_behavior() -> EdgeBehavior {
 // ── SamplingMode ────────────────────────────────────────────────────────────
 
 /// Sampling algorithm for canvas-to-LED color extraction.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SamplingMode {
     /// Snap to nearest integer pixel. O(1), 1 pixel read.
@@ -547,7 +559,8 @@ pub enum SamplingMode {
 // ── EdgeBehavior ────────────────────────────────────────────────────────────
 
 /// Edge behavior for out-of-bounds LED positions.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum EdgeBehavior {
     /// Clamp coordinates to canvas bounds (default).
@@ -571,7 +584,8 @@ pub enum EdgeBehavior {
 /// A physical space (room) containing a subset of zones.
 ///
 /// Used for multi-room orchestration and per-room canvas rendering.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct SpaceDefinition {
     /// Unique space identifier.
     pub id: String,
@@ -593,7 +607,8 @@ pub struct SpaceDefinition {
 }
 
 /// Physical room dimensions in centimeters.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct RoomDimensions {
     /// X-axis (left to right).
     pub width: f64,
@@ -604,7 +619,8 @@ pub struct RoomDimensions {
 }
 
 /// Declares adjacency between two rooms for cross-room effects.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct RoomAdjacency {
     /// ID of the neighboring space.
     pub neighbor_id: String,
@@ -615,7 +631,8 @@ pub struct RoomAdjacency {
 }
 
 /// Cardinal wall for room adjacency.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Wall {
     /// Top wall.

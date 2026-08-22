@@ -1,19 +1,20 @@
 //! Driver module API contracts for `/api/v1/drivers/*`.
 
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
 
 use crate::config::DriverConfigEntry;
 use crate::device::{DriverModuleDescriptor, DriverPresentation, DriverProtocolDescriptor};
 
 /// Response for `GET /api/v1/drivers`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct DriverListResponse {
     pub items: Vec<DriverSummary>,
 }
 
 /// One registered driver module.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct DriverSummary {
     pub descriptor: DriverModuleDescriptor,
     pub presentation: DriverPresentation,
@@ -28,7 +29,8 @@ pub struct DriverSummary {
 }
 
 /// Response for `GET /api/v1/drivers/{id}/config`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct DriverConfigResponse {
     pub driver_id: String,
     pub config_key: String,

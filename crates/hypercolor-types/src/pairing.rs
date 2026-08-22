@@ -7,10 +7,10 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
 
 /// Summary of whether a device needs authentication before it can be used.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum DeviceAuthState {
     /// Device does not require credentials.
@@ -24,7 +24,8 @@ pub enum DeviceAuthState {
 }
 
 /// How the UI or CLI should present a pairing flow.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum PairingFlowKind {
     /// User must perform a physical action, then confirm.
@@ -34,7 +35,8 @@ pub enum PairingFlowKind {
 }
 
 /// Descriptor for one pairing form field.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct PairingFieldDescriptor {
     pub key: String,
     pub label: String,
@@ -45,7 +47,8 @@ pub struct PairingFieldDescriptor {
 }
 
 /// Backend-provided pairing UI/CLI descriptor.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct PairingDescriptor {
     pub kind: PairingFlowKind,
     pub title: String,
@@ -56,7 +59,8 @@ pub struct PairingDescriptor {
 }
 
 /// Driver-owned authentication summary for one tracked device.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct DeviceAuthSummary {
     pub state: DeviceAuthState,
     pub can_pair: bool,

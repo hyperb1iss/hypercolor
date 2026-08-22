@@ -46,7 +46,7 @@ sccache/ccache, clang+lld linking on Linux, and Servo build state.
 ```
 crates/
   hypercolor-color/                # Color kernel: pixel types, conversions, hex, blending, device encoding; bottom of the graph
-  hypercolor-types/                # Zero-dependency shared data vocabulary; every crate depends on it
+  hypercolor-types/                # Shared data vocabulary above the color kernel; every crate depends on it
   hypercolor-core/                 # Engine: render loop, device backends, Servo effect renderer, event bus, spatial sampler, input pipeline, scene/session management
   hypercolor-hal/                  # Hardware abstraction: USB/HID/SMBus protocol encoding and transport for the local driver families
   hypercolor-linux-gpu-interop/    # Linux GL/Vulkan texture import boundary for Servo frames
@@ -91,7 +91,8 @@ docs/content/              # Public documentation (Zola site at https://hyperb1i
 
 ```mermaid
 graph TD
-    T[hypercolor-types] --> HAL[hypercolor-hal]
+    C[hypercolor-color] --> T[hypercolor-types]
+    T --> HAL[hypercolor-hal]
     T --> CORE[hypercolor-core]
     HAL --> CORE
     LGI[hypercolor-linux-gpu-interop] --> CORE

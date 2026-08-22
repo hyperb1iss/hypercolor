@@ -2,15 +2,17 @@
 
 *Shared data vocabulary for the entire Hypercolor workspace.*
 
-Every data structure that crosses a crate boundary lives here. The crate
-is intentionally narrow: pure structs, enums, and serde derives — no
-logic, no I/O, no async. All other workspace crates can depend on it
-without pulling in any runtime cost.
+Every domain structure that crosses a crate boundary lives here. The crate
+is intentionally narrow: serializable vocabulary plus the validation and
+canonicalization that keep those values coherent, with no I/O or async
+runtime. Other workspace crates can depend on it without pulling in
+application services.
 
 ## Workspace position
 
-**Depends on:** `serde`, `serde_json`, `thiserror`, `uuid`, `strum`,
-`utoipa` — no workspace crates.
+**Depends on:** `hypercolor-color`, `serde`, `serde_json`, `thiserror`,
+`uuid`, and `strum`. The optional `schema` feature also enables `utoipa`
+and schema support in `hypercolor-color`.
 
 **Depended on by:** most workspace crates — `hypercolor-core`,
 `hypercolor-hal`, `hypercolor-driver-api`, all network driver crates,
@@ -45,7 +47,8 @@ the domain you are working in.
 
 ## Feature flags
 
-None. The crate has no optional feature gates.
+`schema` enables OpenAPI schema derives for the daemon. Other consumers use
+the shared runtime vocabulary without pulling in `utoipa`.
 
 ---
 

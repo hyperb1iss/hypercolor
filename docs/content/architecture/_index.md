@@ -24,7 +24,8 @@ The project is split into focused crates with strict one-way dependency boundari
 
 {% <mermaid> %}
 graph TD
-    T[hypercolor-types] --> HAL[hypercolor-hal]
+    C[hypercolor-color] --> T[hypercolor-types]
+    T --> HAL[hypercolor-hal]
     T --> CORE[hypercolor-core]
     T --> LGI[hypercolor-linux-gpu-interop]
     T --> WPI[hypercolor-windows-pawnio]
@@ -51,7 +52,7 @@ graph TD
 
 | Crate | Role |
 |---|---|
-| `hypercolor-types` | Zero-dependency shared vocabulary: canvas, effect, color, and API types |
+| `hypercolor-types` | Shared vocabulary above `hypercolor-color`: canvas, effect, control, and API types |
 | `hypercolor-core` | Engine: render loop, effect registry, spatial sampler, input pipeline, scene management |
 | `hypercolor-hal` | Hardware abstraction: USB/HID/SMBus protocol encoding and transport |
 | `hypercolor-linux-gpu-interop` | Linux zero-copy GL to wgpu texture import; stubbed on other platforms |

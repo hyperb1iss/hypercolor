@@ -5,11 +5,11 @@
 //! error body.
 
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
 
 /// Response metadata included in every envelope.
 ///
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
 pub struct ResponseMeta {
     /// API version string.
@@ -21,7 +21,8 @@ pub struct ResponseMeta {
 }
 
 /// Standard success envelope: `{ data, meta }`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
 pub struct ApiResponse<T> {
     /// The response payload.
@@ -31,7 +32,8 @@ pub struct ApiResponse<T> {
 }
 
 /// Standard error envelope: `{ error: { code, message, details }, meta }`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
 pub struct ApiErrorBody {
     /// The error payload.
@@ -41,7 +43,8 @@ pub struct ApiErrorBody {
 }
 
 /// The error payload inside [`ApiErrorBody`].
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
 pub struct ApiErrorDetail {
     /// Stable machine-readable error code (snake_case).
@@ -59,7 +62,8 @@ pub struct ApiErrorDetail {
 /// `page: None` means the response is complete — no fabricated
 /// `limit`/`has_more` block pretending a paging contract that doesn't
 /// exist. `page: Some` means the endpoint genuinely pages.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct ListResponse<T> {
     /// The items.
     pub items: Vec<T>,
@@ -71,7 +75,8 @@ pub struct ListResponse<T> {
 }
 
 /// Paging state for endpoints that genuinely page.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct PageInfo {
     /// Offset of the first item in this page.
     pub offset: u64,

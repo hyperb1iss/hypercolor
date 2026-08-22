@@ -14,7 +14,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use hypercolor_color::DevicePixelLayout;
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::spatial::{LedTopology, NormalizedPosition, ZoneShape};
@@ -374,7 +373,8 @@ pub enum ConnectionType {
 // ── Driver Metadata ──────────────────────────────────────────────────────
 
 /// High-level module category used for driver registry introspection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum DriverModuleKind {
     /// Driver owns network discovery, pairing, and output.
@@ -397,7 +397,8 @@ pub enum DriverModuleKind {
 pub const DRIVER_MODULE_API_SCHEMA_VERSION: u32 = 2;
 
 /// API-facing transport category for a driver module.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum DriverTransportKind {
     /// IP network transport.
@@ -475,7 +476,8 @@ impl From<ConnectionType> for DriverTransportKind {
 }
 
 /// Capability flags exposed by a driver module.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct DriverCapabilitySet {
     /// Exposes driver-scoped configuration.
     pub config: bool,
@@ -525,7 +527,8 @@ impl DriverCapabilitySet {
 }
 
 /// Presentation hint for devices owned by a driver module.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum DeviceClassHint {
     /// Keyboard-like device.
@@ -554,7 +557,8 @@ pub enum DeviceClassHint {
 }
 
 /// API and UI presentation metadata for a driver module.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct DriverPresentation {
     /// Human-readable driver label.
     pub label: String,
@@ -581,7 +585,8 @@ pub struct DriverPresentation {
 }
 
 /// Stable module descriptor for native and future Wasm driver registries.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct DriverModuleDescriptor {
     /// Stable driver identifier.
     pub id: String,
@@ -613,7 +618,8 @@ pub struct DriverModuleDescriptor {
 }
 
 /// Protocol descriptor contributed by a driver module.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct DriverProtocolDescriptor {
     /// Driver module that owns this protocol.
     pub driver_id: String,
@@ -651,7 +657,8 @@ pub struct DriverProtocolDescriptor {
 }
 
 /// Origin metadata that separates device ownership from output routing.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct DeviceOrigin {
     /// Driver module that owns discovery, semantics, and presentation.
     pub driver_id: String,
@@ -776,7 +783,8 @@ fn sanitize_family_id(value: &str) -> String {
 ///
 /// Transitions are enforced by `DeviceStateMachine` in `hypercolor-core`.
 /// This enum is the serializable snapshot used by frontends and persistence.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub enum DeviceState {
     /// Discovered but not yet connected.
     Known,

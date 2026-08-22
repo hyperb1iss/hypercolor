@@ -145,7 +145,7 @@ Subject lines: imperative mood, 76 characters or fewer, no trailing period. Body
 
 The dependency graph has hard rules. Violating them produces circular dependencies that break the workspace.
 
-- **`hypercolor-types`** depends on nothing. All shared vocabulary types live here.
+- **`hypercolor-types`** depends on `hypercolor-color` plus foundational external crates. Cross-crate domain vocabulary lives here; the color kernel remains in `hypercolor-color`.
 - **`hypercolor-hal`** depends on `types` only. It must never depend on `core`.
 - **`hypercolor-core`** depends on `types` and `hal`. Engine logic and traits live here.
 - **`hypercolor-daemon`** is the binary; it depends on `core`, `driver-api`, `network`, and `driver-builtin`. Nothing imports it.

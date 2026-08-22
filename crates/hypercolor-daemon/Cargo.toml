@@ -82,7 +82,7 @@ servo = ["hypercolor-core/servo"]
 
 [dependencies]
 hypercolor-color = { workspace = true }
-hypercolor-types = { workspace = true }
+hypercolor-types = { workspace = true, features = ["schema"] }
 hypercolor-core = { path = "../hypercolor-core", default-features = false }
 hypercolor-macos-owner = { workspace = true }
 hypercolor-driver-api = { workspace = true }

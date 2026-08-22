@@ -8,7 +8,6 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use utoipa::ToSchema;
 
 /// Current `window.hypercolor.display` contract version.
 pub const DISPLAY_DESCRIPTOR_API_VERSION: u32 = 1;
@@ -17,7 +16,8 @@ pub const DISPLAY_DESCRIPTOR_API_VERSION: u32 = 1;
 pub const WIDE_ASPECT_THRESHOLD: f64 = 2.0;
 
 /// Broad shape classification a face adapts its layout to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum DisplayShape {
     /// Circular panel (e.g., Corsair pump cap LCD).
@@ -31,7 +31,8 @@ pub enum DisplayShape {
 }
 
 /// Device family the display belongs to, for layout idiom selection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum DisplayClass {
     /// Small round/square LCD on a cooler pump cap.
@@ -43,7 +44,8 @@ pub enum DisplayClass {
 }
 
 /// Pixel rectangle within a display surface.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct DisplayRect {
     pub x: u32,
     pub y: u32,
@@ -70,7 +72,8 @@ impl DisplayRect {
 }
 
 /// Pixel format the device transport expects.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum DisplayPixelFormat {
     Rgb,
@@ -78,7 +81,8 @@ pub enum DisplayPixelFormat {
 }
 
 /// Everything a face needs to know about the surface it renders on.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct DisplayDescriptor {
     /// Contract version for the injected JS view; additive-only.
     pub api_version: u32,

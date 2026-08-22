@@ -3,7 +3,6 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
 
 use crate::control::ControlValue;
 use crate::display::DisplayDescriptor;
@@ -16,7 +15,8 @@ use crate::scene::Zone;
 /// `default` persists across scenes (the display's own face); `scene`
 /// writes into the active scene's display zone, which always wins while
 /// that scene is active.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum DisplayFaceScope {
     #[default]
@@ -37,7 +37,8 @@ impl DisplayFaceScope {
 }
 
 /// Summary row from `GET /api/v1/displays`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct DisplaySummary {
     pub id: String,
     pub name: String,
@@ -53,12 +54,13 @@ pub struct DisplaySummary {
 
 /// Response from `GET /api/v1/displays/{id}/face` and every face mutation
 /// route.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct DisplayFaceResponse {
     pub device_id: String,
     pub scene_id: String,
     pub effect: EffectMetadata,
-    #[schema(value_type = Object)]
+    #[cfg_attr(feature = "schema", schema(value_type = Object))]
     pub zone: Zone,
     /// Which layer the returned assignment lives on.
     #[serde(default)]
@@ -72,7 +74,8 @@ pub struct DisplayFaceResponse {
 }
 
 /// Request body for `PUT /api/v1/displays/{id}/face`.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct SetDisplayFaceRequest {
     pub effect_id: String,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
@@ -86,17 +89,17 @@ pub struct SetDisplayFaceRequest {
 }
 
 /// Query parameters for `DELETE /api/v1/displays/{id}/face`.
-#[derive(
-    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema, utoipa::IntoParams,
-)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema, utoipa::IntoParams))]
 pub struct DisplayFaceScopeQuery {
     #[serde(default)]
-    #[param(required = false)]
+    #[cfg_attr(feature = "schema", param(required = false))]
     pub scope: DisplayFaceScope,
 }
 
 /// Response from `DELETE /api/v1/displays/{id}/face`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct DeleteDisplayFaceResponse {
     pub device_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -106,7 +109,8 @@ pub struct DeleteDisplayFaceResponse {
 }
 
 /// Request body for `PATCH /api/v1/displays/{id}/face/composition`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct UpdateDisplayFaceCompositionRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blend_mode: Option<BlendMode>,

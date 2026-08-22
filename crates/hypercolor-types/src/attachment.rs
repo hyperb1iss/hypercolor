@@ -10,7 +10,6 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use utoipa::ToSchema;
 
 use crate::device::{DeviceInfo, DeviceTopologyHint};
 use crate::spatial::LedTopology;
@@ -111,7 +110,8 @@ fn slot_alias_key(raw: &str) -> String {
 }
 
 /// Template category used for filtering and UI grouping.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub enum ComponentCategory {
     /// Standard fan lighting ring or fan frame.
     Fan,
@@ -201,7 +201,8 @@ impl<'de> Deserialize<'de> for ComponentCategory {
 }
 
 /// Where an attachment template came from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ComponentOrigin {
     /// Shipped by Hypercolor.
@@ -212,7 +213,8 @@ pub enum ComponentOrigin {
 }
 
 /// Default visual footprint for placing an attachment in the layout editor.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct ComponentCanvasSize {
     /// Width as a normalized fraction of the canvas.
     pub width: f32,
@@ -233,7 +235,8 @@ impl Default for ComponentCanvasSize {
 ///
 /// Empty matcher fields are wildcards. If a template has no compatibility
 /// entries at all, it is considered globally compatible.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct ComponentCompatibility {
     /// Controller driver or protocol identifiers.
     #[serde(default)]
@@ -262,7 +265,8 @@ impl ComponentCompatibility {
 }
 
 /// Reusable attachment layout template.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct ComponentTemplate {
     /// Stable template identifier.
     pub id: String,
@@ -301,7 +305,7 @@ pub struct ComponentTemplate {
     pub image_url: Option<String>,
     /// Optional physical dimensions in millimeters.
     #[serde(default)]
-    #[schema(value_type = Option<Vec<f32>>, min_items = 2, max_items = 2)]
+    #[cfg_attr(feature = "schema", schema(value_type = Option<Vec<f32>>, min_items = 2, max_items = 2))]
     pub physical_size_mm: Option<(f32, f32)>,
 }
 
@@ -329,7 +333,8 @@ impl ComponentTemplate {
 }
 
 /// TOML-friendly manifest wrapper for one template file.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct ComponentTemplateManifest {
     /// Schema version for migrations.
     #[serde(default = "current_attachment_schema_version")]
@@ -364,7 +369,8 @@ impl Default for ComponentTemplateManifest {
 }
 
 /// One physical controller attachment point.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct ComponentSlot {
     /// Stable slot identifier.
     pub id: String,
@@ -419,7 +425,8 @@ impl ComponentSlot {
 }
 
 /// Binding from a controller slot to a chosen attachment template.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct ComponentBinding {
     /// Slot receiving the attachment.
     pub slot_id: String,
@@ -450,7 +457,8 @@ impl ComponentBinding {
 }
 
 /// Attachment-derived zone suggestion for layout import and preview flows.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct ComponentSuggestedZone {
     /// Source slot ID on the physical controller.
     pub slot_id: String,
@@ -478,7 +486,8 @@ pub struct ComponentSuggestedZone {
 }
 
 /// Per-controller attachment state persisted in TOML.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct DeviceComponentProfile {
     /// Schema version for migrations.
     #[serde(default = "current_attachment_schema_version")]

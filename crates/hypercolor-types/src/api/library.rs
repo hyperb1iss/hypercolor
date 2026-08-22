@@ -1,13 +1,13 @@
 //! Library API contracts — `/api/v1/library/*`.
 
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
 
 use crate::api::envelope::ListResponse;
 use crate::library::{EffectPlaylist, EffectPreset};
 
 /// Request body for `POST /api/v1/library/favorites`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct AddFavoriteRequest {
     /// Effect id to favorite.
     pub effect: String,
@@ -17,7 +17,8 @@ pub struct AddFavoriteRequest {
 ///
 /// `effect_name` is resolved from the registry at request time and falls
 /// back to the id when the effect is no longer installed.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct FavoriteSummary {
     pub effect_id: String,
     #[serde(default)]
@@ -33,21 +34,24 @@ pub type FavoriteListResponse = ListResponse<FavoriteSummary>;
 ///
 /// `created` is false when the effect was already favorited, which
 /// re-stamps `added_at_ms` rather than erroring.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct AddFavoriteResponse {
     pub favorite: FavoriteSummary,
     pub created: bool,
 }
 
 /// Response for `DELETE /api/v1/library/favorites/{effect}`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct DeleteFavoriteResponse {
     pub effect_id: String,
     pub deleted: bool,
 }
 
 /// What one playlist item plays.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PlaylistTargetRequest {
     Effect { effect: String },
@@ -55,7 +59,8 @@ pub enum PlaylistTargetRequest {
 }
 
 /// One item in a saved playlist.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct PlaylistItemRequest {
     pub target: PlaylistTargetRequest,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -66,7 +71,8 @@ pub struct PlaylistItemRequest {
 
 /// Request body for `POST /api/v1/library/playlists` and
 /// `PUT /api/v1/library/playlists/{id}`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct SavePlaylistRequest {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -79,7 +85,8 @@ pub struct SavePlaylistRequest {
 
 /// Request body for `POST /api/v1/library/presets` and
 /// `PUT /api/v1/library/presets/{id}`.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct SavePresetRequest {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -99,7 +106,8 @@ pub type PresetListResponse = ListResponse<EffectPreset>;
 ///
 /// `id` is the resolved preset id, which differs from the path segment
 /// when the caller addressed the preset by name.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct DeletePresetResponse {
     pub id: String,
     pub deleted: bool,
@@ -114,7 +122,8 @@ pub struct DeletePresetResponse {
 pub type PlaylistListResponse = ListResponse<EffectPlaylist>;
 
 /// Response for `DELETE /api/v1/library/playlists/{id}`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct DeletePlaylistResponse {
     pub id: String,
     pub deleted: bool,
@@ -125,7 +134,8 @@ pub struct DeletePlaylistResponse {
 /// This is the live runtime's view, not the stored playlist: the item
 /// list is reduced to `item_count`, and `started_at_ms` is when playback
 /// began rather than when the playlist was saved.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct ActivePlaylistResponse {
     pub id: String,
     pub name: String,
@@ -135,7 +145,8 @@ pub struct ActivePlaylistResponse {
 }
 
 /// Response for `POST /api/v1/library/playlists/{id}/activate`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct ActivatePlaylistResponse {
     pub playlist: ActivePlaylistResponse,
     pub active: bool,
@@ -145,7 +156,8 @@ pub struct ActivatePlaylistResponse {
 ///
 /// The route answers 404 when nothing is playing, so `state` is always
 /// `"running"` on a success.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct ActivePlaylistStateResponse {
     pub playlist: ActivePlaylistResponse,
     #[serde(default)]
@@ -153,7 +165,8 @@ pub struct ActivePlaylistStateResponse {
 }
 
 /// Response for `POST /api/v1/library/playlists/deactivate`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct DeactivatePlaylistResponse {
     /// The playlist as it stood when playback was deactivated.
     pub playlist: ActivePlaylistResponse,

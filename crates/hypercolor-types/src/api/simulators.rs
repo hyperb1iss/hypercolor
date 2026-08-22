@@ -1,12 +1,12 @@
 //! Simulated-display API contracts — `/api/v1/simulators/*`.
 
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
 
 use crate::device::DeviceId;
 
 /// Request body for `POST /api/v1/simulators/displays`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct CreateSimulatedDisplayRequest {
     pub name: String,
     pub width: u32,
@@ -20,7 +20,8 @@ pub struct CreateSimulatedDisplayRequest {
 /// Request body for `PATCH /api/v1/simulators/displays/{id}`.
 ///
 /// Omitted fields leave the simulated display untouched.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct UpdateSimulatedDisplayRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -35,7 +36,8 @@ pub struct UpdateSimulatedDisplayRequest {
 }
 
 /// Response from `DELETE /api/v1/simulators/displays/{id}`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct DeleteSimulatedDisplayResponse {
     pub id: DeviceId,
     pub deleted: bool,

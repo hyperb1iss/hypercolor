@@ -1,7 +1,6 @@
 //! Shared viewport primitives for effect controls and sampling.
 
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
 
 use crate::spatial::NormalizedRect;
 
@@ -9,7 +8,8 @@ use crate::spatial::NormalizedRect;
 pub const MIN_VIEWPORT_EDGE: f32 = 0.02;
 
 /// Normalized viewport rectangle in `[0.0, 1.0]` source space.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct ViewportRect {
     pub x: f32,
     pub y: f32,
@@ -123,7 +123,8 @@ pub struct PixelRect {
 }
 
 /// How a cropped viewport maps into a destination canvas.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum FitMode {
     #[default]

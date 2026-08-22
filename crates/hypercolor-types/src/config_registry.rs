@@ -22,7 +22,6 @@
 //! ([`ApplyPolicy::Inert`]).
 
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
 
 /// What a descriptor's pattern matches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,7 +78,8 @@ impl KeyPattern {
 }
 
 /// The daemon subsystem a live-applied key re-configures.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum LiveSection {
     /// Audio input pipeline rebuild.
@@ -93,7 +93,8 @@ pub enum LiveSection {
 }
 
 /// How a change to a key takes effect.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case", tag = "kind", content = "section")]
 pub enum ApplyPolicy {
     /// The daemon actively re-applies the change through the named
@@ -113,7 +114,8 @@ pub enum ApplyPolicy {
 
 /// How a key's value renders on read surfaces (config GET, schema,
 /// events).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Redaction {
     /// Rendered verbatim.
@@ -299,7 +301,8 @@ pub fn is_redacted(key: &str) -> bool {
 
 /// One schema row as served to clients (`GET /config/schema`,
 /// wave 4.3) — the wire projection of a descriptor.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct ConfigKeySchemaEntry {
     /// The pattern text: an exact key, a section root, a namespace
     /// root suffixed `.*`, or `*` for the extensions catch-all.

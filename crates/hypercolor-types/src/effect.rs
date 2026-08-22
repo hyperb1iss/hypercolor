@@ -6,7 +6,6 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString, VariantNames};
-use utoipa::ToSchema;
 use uuid::Uuid;
 
 use hypercolor_color::LinearRgba;
@@ -21,7 +20,8 @@ use crate::spatial::NormalizedRect;
 /// The effect source owns its generation policy. Loaders may derive a stable
 /// UUID from source identity or accept an explicitly authored UUID; callers
 /// must not infer UUID version or creation time from this type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct EffectId(pub Uuid);
 
 impl EffectId {
@@ -69,8 +69,8 @@ impl From<Uuid> for EffectId {
     Display,
     VariantNames,
     Default,
-    ToSchema,
 )]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
 pub enum EffectCategory {
@@ -121,25 +121,26 @@ impl EffectCategory {
 /// Identifies the rendering path and source location for an effect.
 ///
 /// Determines which renderer handles the effect (wgpu vs. Servo).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum EffectSource {
     /// Native WGSL/GLSL shader rendered by `WgpuRenderer`.
     Native {
         /// Path to the shader file, relative to the effects root.
-        #[schema(value_type = String)]
+        #[cfg_attr(feature = "schema", schema(value_type = String))]
         path: PathBuf,
     },
     /// HTML/Canvas/WebGL effect rendered by `ServoRenderer`.
     Html {
         /// Path to the `.html` file on disk.
-        #[schema(value_type = String)]
+        #[cfg_attr(feature = "schema", schema(value_type = String))]
         path: PathBuf,
     },
     /// GPU compute or fragment shader in raw SPIR-V or WGSL.
     Shader {
         /// Path to the shader source file.
-        #[schema(value_type = String)]
+        #[cfg_attr(feature = "schema", schema(value_type = String))]
         path: PathBuf,
     },
 }
@@ -166,7 +167,8 @@ impl EffectSource {
 ///
 /// Tracks the effect from initial discovery through rendering and teardown.
 /// Only one effect (or composition) can be `Running` at a time per render loop.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum EffectState {
     /// Source files discovered, metadata being parsed and validated.
@@ -188,10 +190,11 @@ pub enum EffectState {
 ///
 /// Position is normalized `0.0..=1.0` along the gradient axis.
 /// Color is stored as linear RGBA (`[f32; 4]`).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct GradientStop {
     /// Position along the gradient axis, `0.0` = start, `1.0` = end.
-    #[schema(minimum = 0.0, maximum = 1.0)]
+    #[cfg_attr(feature = "schema", schema(minimum = 0.0, maximum = 1.0))]
     pub position: f32,
     /// Linear RGBA color at this stop.
     pub color: [f32; 4],
@@ -202,7 +205,8 @@ pub struct GradientStop {
 /// Widget kind for a user-facing effect control.
 ///
 /// Each variant maps to a specific UI component in the control panel.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ControlType {
     /// Numeric slider with optional step quantization.
@@ -229,7 +233,8 @@ pub enum ControlType {
 ///
 /// This keeps `LightScript` metadata semantics intact even when
 /// multiple kinds map to the same UI widget type.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ControlKind {
     /// Generic numeric value.
@@ -336,7 +341,8 @@ fn clamp_normalized_rect(rect: NormalizedRect) -> NormalizedRect {
 // ── ControlBinding ────────────────────────────────────────────────────────────
 
 /// Live mapping from a system sensor reading into a control value.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct ControlBinding {
     /// Stable sensor label to sample from the current system snapshot.
     pub sensor: String,
@@ -381,7 +387,8 @@ impl ControlBinding {
 }
 
 /// Live preview stream a control should bind to in the UI.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum PreviewSource {
     ScreenCapture,
@@ -396,7 +403,8 @@ pub enum PreviewSource {
 /// The UI generates widgets from these definitions. Admitted control
 /// changes enter renderer state at a frame boundary; unchanged values
 /// remain in that state without repeated control-plane injection.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct ControlDefinition {
     /// Stable control identifier used in API payloads and renderer globals.
     #[serde(default)]
@@ -614,10 +622,11 @@ impl ControlDefinition {
 /// An effect-defined preset — a named snapshot of control values bundled
 /// with the effect itself. Unlike user-created [`super::library::EffectPreset`]s,
 /// these are authored by the effect developer and are read-only at runtime.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct PresetTemplate {
     /// Stable identifier authored by the effect or derived from its name.
-    #[schema(value_type = String)]
+    #[cfg_attr(feature = "schema", schema(value_type = String))]
     pub id: super::library::PresetId,
     /// Human-readable preset name (e.g. "Sunset Glow", "Deep Ocean").
     pub name: String,
@@ -636,7 +645,8 @@ pub struct PresetTemplate {
 /// Serialized as TOML for native effects and as JSON for the REST API
 /// and WebSocket protocol. This is the canonical metadata attached to
 /// every effect regardless of rendering path.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct EffectMetadata {
     /// Stable unique identifier.
     pub id: EffectId,

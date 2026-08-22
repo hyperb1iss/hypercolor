@@ -4,6 +4,7 @@ use std::time::Duration;
 use hypercolor_color::{LinearRgba, Rgb, Rgba};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Value, json};
+#[cfg(feature = "schema")]
 use utoipa::{PartialSchema, ToSchema};
 
 use crate::effect::GradientStop;
@@ -61,9 +62,10 @@ enum ControlValueRef<'a> {
     Unknown,
 }
 
-#[derive(Deserialize, ToSchema)]
+#[cfg(feature = "schema")]
+#[derive(Deserialize, utoipa::ToSchema)]
 #[allow(dead_code)]
-#[schema(no_recursion)]
+#[cfg_attr(feature = "schema", schema(no_recursion))]
 #[serde(rename_all = "snake_case", tag = "kind", content = "value")]
 enum ControlValueWire {
     Null,
@@ -87,6 +89,7 @@ enum ControlValueWire {
     Unknown,
 }
 
+#[cfg(feature = "schema")]
 impl utoipa::__dev::ComposeSchema for ControlValue {
     fn compose(
         _new_generics: Vec<utoipa::openapi::RefOr<utoipa::openapi::schema::Schema>>,
@@ -95,6 +98,7 @@ impl utoipa::__dev::ComposeSchema for ControlValue {
     }
 }
 
+#[cfg(feature = "schema")]
 impl ToSchema for ControlValue {
     fn name() -> std::borrow::Cow<'static, str> {
         std::borrow::Cow::Borrowed("ControlValue")

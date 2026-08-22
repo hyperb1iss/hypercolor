@@ -1,7 +1,6 @@
 //! Media asset API contracts — `/api/v1/assets/*`.
 
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
 
 use crate::api::envelope::ListResponse;
 use crate::asset::AssetId;
@@ -14,7 +13,8 @@ pub type AssetListResponse = ListResponse<MediaAssetRecord>;
 ///
 /// `duplicate` reports that the bytes already existed in the library, in
 /// which case `record` is the pre-existing asset rather than a new one.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct AssetUploadResponse {
     #[serde(flatten)]
     pub record: MediaAssetRecord,
@@ -22,14 +22,13 @@ pub struct AssetUploadResponse {
 }
 
 /// Query parameters for `POST /api/v1/assets` (multipart upload).
-#[derive(
-    Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema, utoipa::IntoParams,
-)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema, utoipa::IntoParams))]
 pub struct AssetUploadQuery {
     /// Store a byte-identical upload under a fresh name instead of
     /// returning the existing record.
     #[serde(default)]
-    #[param(required = false)]
+    #[cfg_attr(feature = "schema", param(required = false))]
     pub rename_duplicate: bool,
     /// Explicit asset type hint, overriding sniffing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -39,7 +38,8 @@ pub struct AssetUploadQuery {
 /// Request body for `PUT /api/v1/assets/{id}`.
 ///
 /// Omitted fields leave the stored metadata untouched.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct AssetUpdateRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -48,7 +48,8 @@ pub struct AssetUpdateRequest {
 }
 
 /// Response from `DELETE /api/v1/assets/{id}`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct DeleteAssetResponse {
     pub removed: AssetId,
 }

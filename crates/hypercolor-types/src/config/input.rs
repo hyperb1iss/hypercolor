@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
 
 use super::defaults;
 
@@ -45,7 +44,8 @@ impl Default for InputConfig {
 }
 
 /// Which interaction sources one effect consumer receives.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum InteractionRoutePolicy {
     /// Host keyboard and pointer sources only.

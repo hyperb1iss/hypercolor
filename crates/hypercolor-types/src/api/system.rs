@@ -1,9 +1,9 @@
 //! System API contracts for daemon identity, operational status, and inputs.
 
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct SystemStatus {
     pub running: bool,
     pub version: String,
@@ -34,13 +34,15 @@ pub struct SystemStatus {
     pub capabilities: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct SessionPerformanceStatus {
     pub input_stage: LatencyPercentilesStatus,
     pub full_frame_cpu_copies: FullFrameCopySessionStatus,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct LatencyPercentilesStatus {
     pub sample_count: u64,
     pub avg_ms: f64,
@@ -51,7 +53,8 @@ pub struct LatencyPercentilesStatus {
     pub cumulative_histogram: Option<LatencyHistogramStatus>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct LatencyHistogramStatus {
     pub bucket_width_us: u32,
     pub overflow_bucket_index: u32,
@@ -60,13 +63,15 @@ pub struct LatencyHistogramStatus {
     pub buckets: Vec<LatencyHistogramBucketStatus>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct LatencyHistogramBucketStatus {
     pub bucket_index: u32,
     pub count: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct FullFrameCopySessionStatus {
     pub count: u64,
     pub frames: u64,
@@ -74,7 +79,8 @@ pub struct FullFrameCopySessionStatus {
 }
 
 /// Installed byte fences for transactional screen publication admission.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct ScreenCaptureCapacityStatus {
     pub admission_enforced: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -151,7 +157,8 @@ impl ScreenCaptureCapacityStatus {
 /// per-device denial to count: either the process has a visible window station
 /// and sees input, or it does not, and that is a session-level fact rather than
 /// a per-node one.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct InputStatus {
     pub enabled: bool,
     pub host_capture_registered: bool,
@@ -166,7 +173,8 @@ pub struct InputStatus {
 }
 
 /// Structured source issue safe for operational status surfaces.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct InputSourceIssueStatus {
     pub code: String,
     pub message: String,
@@ -175,7 +183,8 @@ pub struct InputSourceIssueStatus {
     pub retryable: bool,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum MacosProtectedSourceState {
     #[default]
@@ -192,7 +201,8 @@ pub enum MacosProtectedSourceState {
     Failed,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum MacosAuthorizationState {
     #[default]
@@ -202,7 +212,8 @@ pub enum MacosAuthorizationState {
     Authorized,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum MacosCapabilityOwner {
     AppSidecar,
@@ -228,14 +239,16 @@ impl MacosCapabilityOwner {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct MacosDaemonOwnerConflictStatus {
     pub active: MacosCapabilityOwner,
     pub contender: MacosCapabilityOwner,
     pub observed_at_ms: u64,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum MacosDaemonHandoverPhase {
     #[default]
@@ -261,14 +274,16 @@ pub enum MacosDaemonHandoverPhase {
     RolledBack,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct MacosDaemonOwnerRecoveryRequiredStatus {
     pub requested_owner: MacosCapabilityOwner,
     pub prior_owner: MacosCapabilityOwner,
     pub phase: MacosDaemonHandoverPhase,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct MacosDaemonOwnershipStatus {
     pub active_owner: MacosCapabilityOwner,
     pub owner_epoch: u64,
@@ -278,7 +293,8 @@ pub struct MacosDaemonOwnershipStatus {
     pub recovery_required: Option<MacosDaemonOwnerRecoveryRequiredStatus>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum MacosSelectionState {
     #[default]
@@ -291,7 +307,8 @@ pub enum MacosSelectionState {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct MacosTahoeSelectionCapabilities {
     pub source_id: String,
     pub capture_session_generation: u64,
@@ -299,7 +316,8 @@ pub struct MacosTahoeSelectionCapabilities {
     pub dual_range_screenshots: bool,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum MacosArchitecture {
     AppleSilicon,
@@ -307,7 +325,8 @@ pub enum MacosArchitecture {
     Intel,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct MacosTahoeCapabilities {
     pub host_architecture: MacosArchitecture,
     pub translated_process: bool,
@@ -315,7 +334,8 @@ pub struct MacosTahoeCapabilities {
     pub metal4: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct MacosInputTelemetry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub authorization_last_transition_age_ms: Option<u64>,
@@ -352,7 +372,8 @@ pub struct MacosInputTelemetry {
     pub callback_to_publication_timing: Option<MacosTiming>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct MacosTiming {
     pub sample_count: u64,
     pub total_ns: u64,
@@ -361,7 +382,8 @@ pub struct MacosTiming {
     pub p99_ns: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct MacosScreenTiming {
     pub callback: MacosTiming,
     pub retain: MacosTiming,
@@ -375,13 +397,15 @@ pub struct MacosScreenTiming {
     pub capture_to_converted_publication: MacosTiming,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct MacosFrameDrop {
     pub reason: String,
     pub count: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct MacosScreenTelemetry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub authorization_last_transition_age_ms: Option<u64>,
@@ -445,7 +469,8 @@ pub struct MacosScreenTelemetry {
     pub publication_max_ns: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum InputSourcePlatformStatus {
     MacosInput {
@@ -474,7 +499,8 @@ pub enum InputSourcePlatformStatus {
 }
 
 /// Lock-free lifecycle and freshness status for one input source.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[allow(
     clippy::struct_excessive_bools,
     reason = "source policy and lifecycle flags are independent diagnostics"
@@ -508,7 +534,8 @@ pub struct InputSourceStatus {
     pub platform: Option<InputSourcePlatformStatus>,
     pub retired: bool,
 }
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct RenderLoopStatus {
     pub state: String,
     pub fps_tier: String,
@@ -521,7 +548,8 @@ pub struct RenderLoopStatus {
     pub total_frames: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct RenderAccelerationStatus {
     pub requested_mode: String,
     pub effective_mode: String,
@@ -531,7 +559,8 @@ pub struct RenderAccelerationStatus {
     pub gpu_probe: Option<GpuCompositorProbeStatus>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct GpuCompositorProbeStatus {
     pub adapter_name: String,
     pub adapter_device_type: String,
@@ -546,7 +575,8 @@ pub struct GpuCompositorProbeStatus {
     pub linux_servo_gpu_import_backend_reason: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct LatestFrameStatus {
     pub frame_token: u64,
     pub compositor_backend: String,
@@ -604,7 +634,8 @@ pub struct LatestFrameStatus {
     pub render_surfaces: RenderSurfaceStatus,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct RenderSurfaceStatus {
     pub canvas_receivers: u32,
     pub scene_pool_slot_count: u32,
@@ -625,7 +656,8 @@ pub struct RenderSurfaceStatus {
     pub compositor_pool_dequeued_slots: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct EffectHealthStatus {
     pub errors_total: u64,
     pub fallbacks_applied_total: u64,
@@ -699,7 +731,8 @@ pub struct EffectHealthStatus {
     pub servo_render_frame_max_ms: f64,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct PreviewRuntimeStatus {
     pub canvas_receivers: u32,
     pub scene_canvas_receivers: u32,
@@ -719,7 +752,8 @@ pub struct PreviewRuntimeStatus {
     pub zone_preview_demand: PreviewDemandStatus,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct PreviewDemandStatus {
     pub subscribers: u32,
     pub max_fps: u32,
@@ -731,7 +765,8 @@ pub struct PreviewDemandStatus {
     pub any_jpeg: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct HealthResponse {
     pub status: String,
     pub version: String,
@@ -739,14 +774,16 @@ pub struct HealthResponse {
     pub checks: HealthChecks,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct HealthChecks {
     pub render_loop: String,
     pub device_backends: String,
     pub event_bus: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct ServerInfo {
     pub instance_id: String,
     pub instance_name: String,
@@ -757,14 +794,16 @@ pub struct ServerInfo {
     pub auth_required: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct SystemResource {
     pub identity: ServerInfo,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<SystemStatus>,
 }
 /// One selectable audio input source.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct AudioDeviceInfo {
     pub id: String,
     pub name: String,
@@ -772,7 +811,8 @@ pub struct AudioDeviceInfo {
 }
 
 /// The audio input inventory plus the configured selection.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct AudioDevicesResponse {
     pub devices: Vec<AudioDeviceInfo>,
     pub current: String,

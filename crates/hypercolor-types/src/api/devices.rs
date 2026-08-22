@@ -1,7 +1,6 @@
 //! Device API contracts — `/api/v1/devices/*`.
 
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
 
 use crate::api::envelope::ListResponse;
 use crate::attachment::{ComponentBinding, ComponentSlot, ComponentSuggestedZone};
@@ -10,9 +9,8 @@ use crate::event::DeviceRef;
 use crate::pairing::{DeviceAuthSummary, PairDeviceStatus};
 
 /// Query parameters for `GET /api/v1/devices`.
-#[derive(
-    Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema, utoipa::IntoParams,
-)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema, utoipa::IntoParams))]
 pub struct ListDevicesQuery {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub offset: Option<usize>,
@@ -37,7 +35,8 @@ pub struct ListDevicesQuery {
 pub type DeviceListResponse = ListResponse<DeviceSummary>;
 
 /// One device in the list/detail responses.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct DeviceSummary {
     pub id: String,
     pub layout_device_id: String,
@@ -60,7 +59,8 @@ pub struct DeviceSummary {
 }
 
 /// Transport details for one device.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct DeviceConnectionSummary {
     #[serde(default)]
     pub transport: String,
@@ -75,7 +75,8 @@ pub struct DeviceConnectionSummary {
 }
 
 /// One LED segment of a device (hardware topology, not scene render zones).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct SegmentSummary {
     pub id: String,
     pub name: String,
@@ -86,7 +87,8 @@ pub struct SegmentSummary {
 }
 
 /// Structured topology hint for a device segment.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SegmentTopologySummary {
     Strip,
@@ -107,7 +109,8 @@ pub enum SegmentTopologySummary {
 }
 
 /// Request body for `PATCH /api/v1/devices/{id}`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct UpdateDeviceRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -121,14 +124,16 @@ pub struct UpdateDeviceRequest {
 ///
 /// `id` echoes the resolved device id, which may differ from the name or
 /// prefix the caller addressed the device by.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct DeleteDeviceResponse {
     pub id: String,
     pub removed: bool,
 }
 
 /// Request body for `POST /api/v1/devices/{id}/identify`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct IdentifyRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
@@ -141,7 +146,8 @@ pub struct IdentifyRequest {
 /// The blink runs in the background, so the response only acknowledges
 /// that it started and echoes the parameters actually used. `color` is
 /// `null` when the caller sent no color and the daemon used its default.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct IdentifyDeviceResponse {
     pub device_id: String,
     pub identifying: bool,
@@ -150,7 +156,8 @@ pub struct IdentifyDeviceResponse {
 }
 
 /// Response for `POST /api/v1/devices/{id}/segments/{segment}/identify`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct IdentifySegmentResponse {
     pub device_id: String,
     pub segment: String,
@@ -165,7 +172,8 @@ pub struct IdentifySegmentResponse {
 ///
 /// Carries the base identify parameters plus the selectors that narrow
 /// the blink to one attached component instance.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct IdentifyAttachmentRequest {
     #[serde(flatten)]
     pub base: IdentifyRequest,
@@ -180,7 +188,8 @@ pub struct IdentifyAttachmentRequest {
 ///
 /// `instance` is `null` when the request blinked every instance of the
 /// binding rather than one of them.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct IdentifyAttachmentResponse {
     pub device_id: String,
     pub slot_id: String,
@@ -194,7 +203,8 @@ pub struct IdentifyAttachmentResponse {
 /// Request body for `PUT /api/v1/devices/{id}/attachments`.
 ///
 /// The binding list replaces the device's attachments wholesale.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct UpdateAttachmentsRequest {
     #[serde(default)]
     pub bindings: Vec<ComponentBinding>,
@@ -208,7 +218,8 @@ pub struct UpdateAttachmentsRequest {
 /// `slots` are the controller's physical attachment points, `bindings`
 /// what is attached to them, and `suggested_zones` the layout zones the
 /// attachments imply.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct DeviceComponentsResponse {
     pub device_id: String,
     pub device_name: String,
@@ -225,7 +236,8 @@ pub struct DeviceComponentsResponse {
 /// Same body as the GET plus `needs_layout_update`, which reports that
 /// the active layout targets this device and no longer matches the LED
 /// ranges the new bindings describe.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct DeviceComponentsUpdateResponse {
     pub device_id: String,
     pub device_name: String,
@@ -240,7 +252,8 @@ pub struct DeviceComponentsUpdateResponse {
 
 /// One resolved attachment binding, with the template it instantiates and
 /// the LED range it occupies on the controller.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct ComponentBindingSummary {
     pub slot_id: String,
     pub template_id: String,
@@ -257,14 +270,16 @@ pub struct ComponentBindingSummary {
 ///
 /// `deleted` is false when the device had no stored profile to remove,
 /// which is a success rather than a 404.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct DeleteAttachmentsResponse {
     pub device_id: String,
     pub deleted: bool,
 }
 
 /// Optional body for `POST /api/v1/devices/discover`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct DiscoverRequest {
     /// Discovery targets to scan; omitted scans every enabled target.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -277,7 +292,8 @@ pub struct DiscoverRequest {
 }
 
 /// Per-scanner diagnostics from a completed discovery scan.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct DiscoveryScannerResult {
     pub scanner: String,
     pub duration_ms: u64,
@@ -287,7 +303,8 @@ pub struct DiscoveryScannerResult {
 }
 
 /// Detailed result from a completed discovery scan.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct DiscoveryScanResult {
     pub targets: Vec<String>,
     pub timeout_ms: u64,
@@ -300,7 +317,8 @@ pub struct DiscoveryScanResult {
 }
 
 /// Immediate acknowledgement for an asynchronous discovery scan.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct DiscoveryStartedResponse {
     pub scan_id: String,
     pub status: String,
@@ -309,7 +327,8 @@ pub struct DiscoveryStartedResponse {
 }
 
 /// Completed response for a synchronous discovery scan.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct DiscoveryCompletedResponse {
     pub scan_id: String,
     pub status: String,
@@ -317,7 +336,8 @@ pub struct DiscoveryCompletedResponse {
 }
 
 /// Response from `POST /api/v1/devices/discover`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(untagged)]
 pub enum DiscoverResponse {
     Started(DiscoveryStartedResponse),
@@ -328,9 +348,10 @@ pub enum DiscoverResponse {
 ///
 /// `device` carries the device's refreshed summary when pairing changed
 /// its state enough to be worth re-rendering, and is omitted otherwise.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct PairDeviceResponse {
-    #[schema(value_type = String)]
+    #[cfg_attr(feature = "schema", schema(value_type = String))]
     pub status: PairDeviceStatus,
     pub message: String,
     /// Whether the device was connected and started rendering as part of
@@ -342,7 +363,8 @@ pub struct PairDeviceResponse {
 }
 
 /// Response for `DELETE /api/v1/devices/{id}/pair`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct DeletePairingResponse {
     #[serde(default)]
     pub status: String,

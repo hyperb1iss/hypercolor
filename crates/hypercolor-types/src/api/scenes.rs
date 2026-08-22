@@ -3,7 +3,6 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
 
 use crate::api::envelope::ListResponse;
 use crate::api::scene::{SceneDocument, SideEffectOutcome, ZoneLayoutResource, ZoneMember};
@@ -20,7 +19,8 @@ use crate::scene::{
 pub type SceneListResponse = ListResponse<SceneSummary>;
 
 /// One saved scene as listed by `GET /api/v1/scenes`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct SceneSummary {
     pub id: String,
     pub name: String,
@@ -35,7 +35,7 @@ pub struct SceneSummary {
     /// Live vs snapshot-locked. Lets scene pickers mark locked scenes
     /// without inferring lock state from the live scene kind.
     #[serde(default)]
-    #[schema(value_type = String)]
+    #[cfg_attr(feature = "schema", schema(value_type = String))]
     pub mutation_mode: SceneMutationMode,
 }
 
@@ -43,14 +43,16 @@ pub struct SceneSummary {
 ///
 /// `id` echoes the identifier the caller sent, which may be a scene name
 /// rather than the resolved id.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct DeleteSceneResponse {
     pub id: String,
     pub deleted: bool,
 }
 
 /// Response for `POST /api/v1/scenes/{id}/activate`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct ActivateSceneResponse {
     pub scene: ActivatedSceneRef,
     pub activated: bool,
@@ -59,7 +61,8 @@ pub struct ActivateSceneResponse {
 }
 
 /// Request for `POST /api/v1/scenes/{id}/activate`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct ActivateSceneRequest {
     /// Override the scene's authored transition duration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -67,7 +70,8 @@ pub struct ActivateSceneRequest {
 }
 
 /// Post-commit outcome for a scene's optional named layout.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct SceneLayoutActivationOutcome {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layout_id: Option<LayoutId>,
@@ -77,14 +81,16 @@ pub struct SceneLayoutActivationOutcome {
 }
 
 /// The scene an activation resolved to, by id and name.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct ActivatedSceneRef {
     pub id: String,
     pub name: String,
 }
 
 /// Request body for `POST /api/v1/scenes`.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct CreateSceneRequest {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -92,12 +98,13 @@ pub struct CreateSceneRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schema(value_type = Option<String>)]
+    #[cfg_attr(feature = "schema", schema(value_type = Option<String>))]
     pub mutation_mode: Option<SceneMutationMode>,
 }
 
 /// Request body for `POST /api/v1/scenes/snapshot`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
 pub struct SnapshotSceneRequest {
     pub name: String,
@@ -106,56 +113,58 @@ pub struct SnapshotSceneRequest {
 }
 
 /// Whole-document replacement body for `PUT /api/v1/scenes/{id}`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
 pub struct ReplaceSceneRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schema(value_type = Option<String>)]
+    #[cfg_attr(feature = "schema", schema(value_type = Option<String>))]
     pub id: Option<SceneId>,
     pub name: String,
     #[serde(default)]
     pub description: Option<String>,
-    #[schema(value_type = String)]
+    #[cfg_attr(feature = "schema", schema(value_type = String))]
     pub kind: SceneKind,
     #[serde(default)]
-    #[schema(value_type = String)]
+    #[cfg_attr(feature = "schema", schema(value_type = String))]
     pub unassigned_behavior: UnassignedBehavior,
     #[serde(default)]
     pub layout_id: Option<LayoutId>,
     #[serde(default)]
     pub activation_brightness: Option<f32>,
-    #[schema(value_type = Object)]
+    #[cfg_attr(feature = "schema", schema(value_type = Object))]
     pub transition: TransitionSpec,
-    #[schema(value_type = u8)]
+    #[cfg_attr(feature = "schema", schema(value_type = u8))]
     pub priority: ScenePriority,
     pub enabled: bool,
     #[serde(default)]
     pub metadata: HashMap<String, String>,
     #[serde(default)]
-    #[schema(value_type = String)]
+    #[cfg_attr(feature = "schema", schema(value_type = String))]
     pub mutation_mode: SceneMutationMode,
     #[serde(default)]
     pub zones: Vec<ReplaceZoneRequest>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
 pub struct ReplaceZoneRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schema(value_type = Option<String>)]
+    #[cfg_attr(feature = "schema", schema(value_type = Option<String>))]
     pub id: Option<ZoneId>,
     pub name: String,
     #[serde(default)]
     pub description: Option<String>,
     #[serde(default)]
-    #[schema(value_type = String)]
+    #[cfg_attr(feature = "schema", schema(value_type = String))]
     pub role: ZoneRole,
     pub enabled: bool,
     pub brightness: f32,
     #[serde(default)]
     pub color: Option<String>,
     #[serde(default)]
-    #[schema(value_type = Option<Object>)]
+    #[cfg_attr(feature = "schema", schema(value_type = Option<Object>))]
     pub display_target: Option<DisplayFaceTarget>,
     #[serde(default)]
     pub members: Vec<ZoneMember>,
@@ -165,7 +174,8 @@ pub struct ReplaceZoneRequest {
     pub layers: Vec<ReplaceSceneLayerRequest>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
 pub struct ReplaceSceneLayerRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]

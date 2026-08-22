@@ -1,7 +1,6 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
 
 use super::defaults;
 
@@ -11,7 +10,8 @@ use super::defaults;
 pub type DriverConfigs = BTreeMap<String, DriverConfigEntry>;
 
 /// Host-owned wrapper around one driver's settings.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct DriverConfigEntry {
     #[serde(default = "defaults::bool_true")]
     pub enabled: bool,
