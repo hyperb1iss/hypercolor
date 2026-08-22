@@ -106,6 +106,7 @@ pub struct ScenePlanReader(Arc<SceneServiceInner>);
 #[derive(Clone)]
 pub struct SceneLibraryContext {
     scene: SceneContext,
+    effects: crate::domain::effect::EffectContext,
     layout: LayoutContext,
     output: OutputContext,
     event_bus: Arc<HypercolorBus>,
@@ -114,12 +115,14 @@ pub struct SceneLibraryContext {
 impl SceneLibraryContext {
     pub(crate) fn new(
         scene: SceneContext,
+        effects: crate::domain::effect::EffectContext,
         layout: LayoutContext,
         output: OutputContext,
         event_bus: Arc<HypercolorBus>,
     ) -> Self {
         Self {
             scene,
+            effects,
             layout,
             output,
             event_bus,
@@ -2122,6 +2125,18 @@ pub async fn replace_scene(
             "scene id must match the route path",
         ));
     }
+
+    let _effect_admission = ctx
+        .effects
+        .admit_layer_sources(
+            command
+                .document
+                .zones
+                .iter()
+                .flat_map(|zone| zone.layers.iter())
+                .map(|layer| &layer.source),
+        )
+        .await?;
 
     let default_layout = ctx.layout.current();
     let mut mutation = ctx.scene.begin_mutation().await;

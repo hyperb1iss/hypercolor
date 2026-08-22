@@ -283,7 +283,7 @@ async fn handle_default_scope(
             .map_err(|error| ToolError::Internal(error.to_string()))?;
     }
     let Some(group) =
-        crate::api::displays::apply_display_preference_overlay(state, device_id).await
+        crate::api::displays::apply_display_preference_overlay_admitted(state, device_id).await
     else {
         return Err(ToolError::Internal(
             "failed to install the default face overlay".into(),

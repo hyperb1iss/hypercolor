@@ -84,6 +84,7 @@ impl DomainContexts {
         );
         let scene_library = SceneLibraryContext::new(
             scene.clone(),
+            effects.clone(),
             layout.clone(),
             output.clone(),
             resources.event_bus,

@@ -186,7 +186,7 @@ async fn active_targets_follow_the_candidate_scene_for_every_deferred_service() 
     assert_eq!(updated.zone.name, "candidate zone renamed");
 
     let inserted = insert_layer(
-        &state.domains.scene,
+        &state.domains.effects,
         shared_zone_id,
         inserted_layer,
         None,
@@ -322,7 +322,7 @@ async fn active_targets_refuse_every_deferred_service_in_snapshot_mode() {
     );
     assert_conflict(
         insert_layer(
-            &state.domains.scene,
+            &state.domains.effects,
             zone_id,
             color_layer(SceneLayerId::new(), 2),
             None,

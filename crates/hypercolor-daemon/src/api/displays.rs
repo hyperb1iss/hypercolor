@@ -238,7 +238,8 @@ pub async fn set_display_face(
                 .into_response();
             }
         }
-        let Some(zone) = apply_display_preference_overlay(state.as_ref(), device_id).await else {
+        let Some(zone) = apply_display_preference_overlay_admitted(state.as_ref(), device_id).await
+        else {
             return DomainError::Internal(anyhow::anyhow!(
                 "Failed to install the default face overlay"
             ))
@@ -835,6 +836,14 @@ fn build_default_display_zone(
 /// stored preference. Removes the overlay when the preference is gone or
 /// its effect no longer resolves. Returns the installed zone, if any.
 pub(crate) async fn apply_display_preference_overlay(
+    state: &AppState,
+    device_id: DeviceId,
+) -> Option<Zone> {
+    let _effect_admission = state.domains.effects.admit_current().await;
+    apply_display_preference_overlay_admitted(state, device_id).await
+}
+
+pub(crate) async fn apply_display_preference_overlay_admitted(
     state: &AppState,
     device_id: DeviceId,
 ) -> Option<Zone> {

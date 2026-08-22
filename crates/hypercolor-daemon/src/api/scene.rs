@@ -351,12 +351,12 @@ pub async fn create_layer(
         Ok(parts) => parts,
         Err(error) => return error.into_response(),
     };
-    let layer = match build_layer(state.as_ref(), body).await {
+    let layer = match build_layer(body) {
         Ok(layer) => layer,
         Err(error) => return error.into_response(),
     };
     let inserted =
-        crate::domain::layer::insert_layer(&state.domains.scene, zone_id, layer, None, expected)
+        crate::domain::layer::insert_layer(&state.domains.effects, zone_id, layer, None, expected)
             .await;
 
     match inserted {
@@ -417,7 +417,7 @@ pub async fn replace_layer(
         Ok(expected) => expected,
         Err(error) => return error.into_response(),
     };
-    let replacement = match build_layer(state.as_ref(), body.into()).await {
+    let replacement = match build_layer(body.into()) {
         Ok(layer) => layer,
         Err(error) => return error.into_response(),
     };
@@ -600,15 +600,7 @@ fn parse_layer_id(raw: &str) -> Result<SceneLayerId, DomainError> {
 
 /// Turn a creation request into a validated layer carrying a freshly
 /// minted id (Spec 78 §1.4).
-#[allow(
-    clippy::unused_async,
-    reason = "the layer factory stays async so effect-registry normalization can land without churning every call site"
-)]
-async fn build_layer(
-    state: &AppState,
-    request: CreateLayerRequest,
-) -> Result<SceneLayer, DomainError> {
-    let _ = state;
+fn build_layer(request: CreateLayerRequest) -> Result<SceneLayer, DomainError> {
     let layer = SceneLayer {
         id: SceneLayerId::new(),
         name: request.name,

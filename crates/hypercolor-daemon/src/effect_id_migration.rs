@@ -323,10 +323,18 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
 
+    use axum::Json;
+    use axum::extract::{Path as AxumPath, State};
+    use axum::http::{HeaderMap, StatusCode};
     use hypercolor_core::scene::SceneManager;
-    use hypercolor_types::device::DeviceId;
+    use hypercolor_types::api::scene::CreateLayerRequest;
+    use hypercolor_types::api::scenes::ReplaceSceneRequest;
+    use hypercolor_types::device::{
+        ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
+        DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, SegmentInfo,
+    };
     use hypercolor_types::effect::EffectId;
-    use hypercolor_types::layer::{SceneLayer, SceneLayerId};
+    use hypercolor_types::layer::{LayerSource, SceneLayer, SceneLayerId};
     use hypercolor_types::library::{
         EffectPlaylist, EffectPreset, PlaylistId, PlaylistItem, PlaylistItemId, PlaylistItemTarget,
         PresetId,
@@ -342,6 +350,7 @@ mod tests {
     };
     use crate::app_state::AppState;
     use crate::display_preferences::DisplayPreference;
+    use crate::domain::DomainError;
     use crate::library::JsonLibraryStore;
     use crate::playlist_runtime::ActivePlaylistRuntime;
 
@@ -351,6 +360,7 @@ mod tests {
         legacy_id: EffectId,
         canonical_id: EffectId,
         device_id: DeviceId,
+        named_scene_id: SceneId,
         preset_id: PresetId,
         playlist_id: PlaylistId,
     }
@@ -425,7 +435,8 @@ mod tests {
             .get(&SceneId::DEFAULT)
             .cloned()
             .expect("default scene should exist");
-        named_scene.id = SceneId::new();
+        let named_scene_id = SceneId::new();
+        named_scene.id = named_scene_id;
         named_scene.name = "Imported Legacy".to_owned();
         named_scene.kind = SceneKind::Named;
         named_scene.mutation_mode = SceneMutationMode::Live;
@@ -525,9 +536,91 @@ mod tests {
             legacy_id,
             canonical_id,
             device_id,
+            named_scene_id,
             preset_id,
             playlist_id,
         }
+    }
+
+    fn effect_layer_request(effect_id: EffectId) -> CreateLayerRequest {
+        CreateLayerRequest {
+            source: LayerSource::Effect {
+                effect_id,
+                controls: HashMap::new(),
+                control_bindings: HashMap::new(),
+                preset_id: None,
+            },
+            name: None,
+            blend: None,
+            opacity: None,
+            transform: None,
+            adjust: None,
+            bindings: None,
+            enabled: None,
+        }
+    }
+
+    async fn register_display_device(state: &AppState, device_id: DeviceId) {
+        let info = DeviceInfo {
+            id: device_id,
+            name: "Migration Display".to_owned(),
+            vendor: "test-vendor".to_owned(),
+            family: DeviceFamily::new_static("test-display", "Test Display"),
+            model: Some("LCD".to_owned()),
+            connection_type: ConnectionType::Usb,
+            origin: DeviceOrigin::native("test-display", "usb", ConnectionType::Usb),
+            segments: vec![SegmentInfo {
+                name: "LCD".to_owned(),
+                led_count: 320 * 320,
+                topology: DeviceTopologyHint::Display {
+                    width: 320,
+                    height: 320,
+                    circular: false,
+                },
+                color_format: DeviceColorFormat::Rgb,
+                layout_hint: None,
+            }],
+            firmware_version: None,
+            capabilities: DeviceCapabilities {
+                led_count: 320 * 320,
+                supports_direct: true,
+                supports_brightness: true,
+                has_display: true,
+                display_resolution: Some((320, 320)),
+                max_fps: 30,
+                color_space: hypercolor_types::device::DeviceColorSpace::default(),
+                features: DeviceFeatures::default(),
+            },
+        };
+        state.device_registry.add(info).await;
+    }
+
+    async fn assert_migration_is_blocked(
+        state: Arc<AppState>,
+    ) -> tokio::task::JoinHandle<Result<hypercolor_core::effect::RescanReport, DomainError>> {
+        let migration = tokio::spawn(async move { rescan_registry(state.as_ref()).await });
+        tokio::task::yield_now().await;
+        assert!(
+            !migration.is_finished(),
+            "effect migration must wait for the admitted scene write"
+        );
+        migration
+    }
+
+    async fn assert_scene_effects_are_canonical(state: &AppState, canonical_id: EffectId) {
+        let manager = state.scene_manager.snapshot().await;
+        let effect_ids = manager
+            .list()
+            .into_iter()
+            .flat_map(|scene| &scene.zones)
+            .flat_map(hypercolor_types::scene::Zone::effect_ids)
+            .collect::<Vec<_>>();
+        assert!(!effect_ids.is_empty());
+        assert!(
+            effect_ids
+                .into_iter()
+                .all(|effect_id| effect_id == canonical_id)
+        );
     }
 
     #[test]
@@ -929,6 +1022,244 @@ mod tests {
                 .flat_map(hypercolor_types::scene::Zone::effect_ids)
                 .all(|effect_id| effect_id == canonical_id)
         );
+    }
+
+    #[tokio::test]
+    async fn layer_create_holds_effect_admission_through_scene_commit() {
+        let temp = TempDir::new().expect("tempdir");
+        let fixture = late_migration_fixture(&temp).await;
+        let legacy_id = fixture.legacy_id;
+        let canonical_id = fixture.canonical_id;
+        let state = Arc::new(fixture.state);
+        let zone_id = state
+            .scene_manager
+            .snapshot()
+            .await
+            .get(&SceneId::DEFAULT)
+            .and_then(|scene| scene.zones.first())
+            .map(|zone| zone.id)
+            .expect("default scene should have a zone");
+        let barrier = state.domains.effects.pause_next_resolution_for_test();
+        let create_state = Arc::clone(&state);
+        let create = tokio::spawn(async move {
+            crate::api::scene::create_layer(
+                State(create_state),
+                AxumPath(zone_id.to_string()),
+                HeaderMap::new(),
+                Json(effect_layer_request(legacy_id)),
+            )
+            .await
+        });
+
+        barrier.wait_until_entered().await;
+        let migration = assert_migration_is_blocked(Arc::clone(&state)).await;
+        barrier.release();
+
+        assert_eq!(
+            create
+                .await
+                .expect("layer create should not panic")
+                .status(),
+            StatusCode::CREATED
+        );
+        migration
+            .await
+            .expect("migration should not panic")
+            .expect("migration should publish after layer create");
+        assert_scene_effects_are_canonical(state.as_ref(), canonical_id).await;
+    }
+
+    #[tokio::test]
+    async fn layer_replace_holds_effect_admission_through_scene_commit() {
+        let temp = TempDir::new().expect("tempdir");
+        let fixture = late_migration_fixture(&temp).await;
+        let legacy_id = fixture.legacy_id;
+        let canonical_id = fixture.canonical_id;
+        let state = Arc::new(fixture.state);
+        let (zone_id, layer_id) = state
+            .scene_manager
+            .snapshot()
+            .await
+            .get(&SceneId::DEFAULT)
+            .and_then(|scene| scene.zones.first())
+            .and_then(|zone| zone.layers.first().map(|layer| (zone.id, layer.id)))
+            .expect("default scene should have the legacy layer");
+        let barrier = state.domains.effects.pause_next_resolution_for_test();
+        let replace_state = Arc::clone(&state);
+        let replace = tokio::spawn(async move {
+            crate::api::scene::replace_layer(
+                State(replace_state),
+                AxumPath((zone_id.to_string(), layer_id.to_string())),
+                HeaderMap::new(),
+                Json(effect_layer_request(legacy_id)),
+            )
+            .await
+        });
+
+        barrier.wait_until_entered().await;
+        let migration = assert_migration_is_blocked(Arc::clone(&state)).await;
+        barrier.release();
+
+        assert_eq!(
+            replace
+                .await
+                .expect("layer replacement should not panic")
+                .status(),
+            StatusCode::OK
+        );
+        migration
+            .await
+            .expect("migration should not panic")
+            .expect("migration should publish after layer replacement");
+        assert_scene_effects_are_canonical(state.as_ref(), canonical_id).await;
+    }
+
+    #[tokio::test]
+    async fn whole_scene_put_holds_effect_admission_through_scene_commit() {
+        let temp = TempDir::new().expect("tempdir");
+        let fixture = late_migration_fixture(&temp).await;
+        let scene_id = fixture.named_scene_id;
+        let canonical_id = fixture.canonical_id;
+        let state = Arc::new(fixture.state);
+        let document = {
+            let manager = state.scene_manager.snapshot().await;
+            crate::domain::scene_tree::scene_document(
+                manager.get(&scene_id).expect("named scene should exist"),
+                state.scene_manager.revision(),
+            )
+        };
+        let barrier = state.domains.effects.pause_next_resolution_for_test();
+        let replace_state = Arc::clone(&state);
+        let replace = tokio::spawn(async move {
+            crate::api::scenes::update_scene(
+                State(replace_state),
+                AxumPath(scene_id.to_string()),
+                HeaderMap::new(),
+                Json(ReplaceSceneRequest::from(&document)),
+            )
+            .await
+        });
+
+        barrier.wait_until_entered().await;
+        let migration = assert_migration_is_blocked(Arc::clone(&state)).await;
+        barrier.release();
+
+        assert_eq!(
+            replace
+                .await
+                .expect("whole-scene PUT should not panic")
+                .status(),
+            StatusCode::OK
+        );
+        migration
+            .await
+            .expect("migration should not panic")
+            .expect("migration should publish after whole-scene PUT");
+        assert_scene_effects_are_canonical(state.as_ref(), canonical_id).await;
+    }
+
+    #[tokio::test]
+    async fn default_overlay_reconciliation_holds_admission_through_scene_commit() {
+        let temp = TempDir::new().expect("tempdir");
+        let fixture = late_migration_fixture(&temp).await;
+        let device_id = fixture.device_id;
+        let canonical_id = fixture.canonical_id;
+        register_display_device(&fixture.state, device_id).await;
+        let state = Arc::new(fixture.state);
+        let barrier = state.domains.effects.pause_next_resolution_for_test();
+        let overlay_state = Arc::clone(&state);
+        let overlay = tokio::spawn(async move {
+            crate::api::displays::apply_display_preference_overlay(
+                overlay_state.as_ref(),
+                device_id,
+            )
+            .await
+        });
+
+        barrier.wait_until_entered().await;
+        let migration = assert_migration_is_blocked(Arc::clone(&state)).await;
+        barrier.release();
+
+        assert!(
+            overlay
+                .await
+                .expect("overlay reconciliation should not panic")
+                .is_some()
+        );
+        migration
+            .await
+            .expect("migration should not panic")
+            .expect("migration should publish after overlay reconciliation");
+        let manager = state.scene_manager.snapshot().await;
+        assert!(
+            manager
+                .default_display_groups()
+                .iter()
+                .flat_map(hypercolor_types::scene::Zone::effect_ids)
+                .all(|effect_id| effect_id == canonical_id)
+        );
+    }
+
+    #[tokio::test]
+    async fn scene_effect_writes_reject_unknown_and_retired_ids() {
+        let temp = TempDir::new().expect("tempdir");
+        let fixture = late_migration_fixture(&temp).await;
+        let legacy_id = fixture.legacy_id;
+        let named_scene_id = fixture.named_scene_id;
+        rescan_registry(&fixture.state)
+            .await
+            .expect("migration should retire the legacy ID");
+        let state = Arc::new(fixture.state);
+        let (zone_id, layer_id) = state
+            .scene_manager
+            .snapshot()
+            .await
+            .get(&SceneId::DEFAULT)
+            .and_then(|scene| scene.zones.first())
+            .and_then(|zone| zone.layers.first().map(|layer| (zone.id, layer.id)))
+            .expect("default scene should retain its migrated layer");
+        let revision = state.scene_manager.revision();
+
+        for effect_id in [legacy_id, EffectId::new(uuid::Uuid::now_v7())] {
+            let response = crate::api::scene::create_layer(
+                State(Arc::clone(&state)),
+                AxumPath(zone_id.to_string()),
+                HeaderMap::new(),
+                Json(effect_layer_request(effect_id)),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        }
+
+        let response = crate::api::scene::replace_layer(
+            State(Arc::clone(&state)),
+            AxumPath((zone_id.to_string(), layer_id.to_string())),
+            HeaderMap::new(),
+            Json(effect_layer_request(legacy_id)),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        let mut document = {
+            let manager = state.scene_manager.snapshot().await;
+            let document = crate::domain::scene_tree::scene_document(
+                manager
+                    .get(&named_scene_id)
+                    .expect("named scene should remain stored"),
+                revision,
+            );
+            ReplaceSceneRequest::from(&document)
+        };
+        document.zones[0].layers[0].source = effect_layer_request(legacy_id).source;
+        let response = crate::api::scenes::update_scene(
+            State(Arc::clone(&state)),
+            AxumPath(named_scene_id.to_string()),
+            HeaderMap::new(),
+            Json(document),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(state.scene_manager.revision(), revision);
     }
 
     #[cfg(feature = "persistence-test-hooks")]

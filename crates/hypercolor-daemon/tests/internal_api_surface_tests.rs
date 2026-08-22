@@ -204,6 +204,34 @@ fn effect_mutations_require_generation_qualified_admission() {
     assert!(effect_api.contains("resolve_for_mutation(&id)"));
     let display_api = source("api/displays.rs");
     assert!(display_api.contains("resolve_for_mutation(&body.effect_id)"));
+    assert!(
+        display_api
+            .contains("apply_display_preference_overlay_admitted(state.as_ref(), device_id)")
+    );
     let mcp_tools = source("mcp/tools/mod.rs");
     assert!(mcp_tools.contains("all_for_mutation()"));
+    let mcp_displays = source("mcp/tools/displays.rs");
+    assert!(mcp_displays.contains("apply_display_preference_overlay_admitted(state, device_id)"));
+
+    let layer_domain = source("domain/layer.rs");
+    assert!(layer_domain.contains("admit_layer_sources"));
+    let scene_tree_domain = source("domain/scene_tree.rs");
+    assert!(scene_tree_domain.contains("admit_layer_sources"));
+    let scene_domain = source("domain/scene.rs");
+    assert!(scene_domain.contains("admit_layer_sources"));
+
+    let scene_api = source("api/scene.rs");
+    assert!(scene_api.contains("insert_layer(&state.domains.effects"));
+    assert!(!scene_api.contains("insert_layer(&state.domains.scene"));
+
+    let admission = display_api
+        .find("let _effect_admission = state.domains.effects.admit_current().await;")
+        .expect("display overlay should acquire effect admission");
+    let preference = display_api[admission..]
+        .find("state.display_preferences.read().await")
+        .expect("display overlay should read the admitted preference");
+    let scene_commit = display_api[admission..]
+        .find("domain::display::set_default_display_overlay")
+        .expect("display overlay should commit under effect admission");
+    assert!(preference < scene_commit);
 }

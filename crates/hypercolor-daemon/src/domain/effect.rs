@@ -20,6 +20,7 @@ use hypercolor_types::effect::{
     ControlValue, EffectCategory, EffectId, EffectMetadata, EffectSource,
 };
 use hypercolor_types::event::{EffectRef, ZoneChangeKind};
+use hypercolor_types::layer::LayerSource;
 use hypercolor_types::library::PresetId;
 use hypercolor_types::scene::{SceneId, Zone, ZoneId};
 use hypercolor_types::spatial::SpatialLayout;
@@ -118,7 +119,11 @@ impl EffectContext {
     /// Resolve one effect schema for scene-tree control validation.
     pub async fn metadata(&self, effect_id: EffectId) -> Option<EffectMetadata> {
         let registry = self.registry.read().await;
-        registry.get(&effect_id).map(|entry| entry.metadata.clone())
+        let metadata = registry.get(&effect_id).map(|entry| entry.metadata.clone());
+        drop(registry);
+        #[cfg(test)]
+        self.pause_after_resolution_for_test().await;
+        metadata
     }
 
     /// Resolve an effect by canonical id or catalog lookup name.
@@ -218,6 +223,43 @@ impl EffectContext {
         EffectMutationAdmission {
             _guard: Arc::clone(&self.update_gate).read_owned().await,
         }
+    }
+
+    /// Validate every effect layer against one catalog generation and retain
+    /// that generation through the caller's scene commit.
+    pub(crate) async fn admit_layer_sources<'a>(
+        &self,
+        sources: impl IntoIterator<Item = &'a LayerSource>,
+    ) -> Result<Option<EffectMutationAdmission>, DomainError> {
+        let effect_ids = sources
+            .into_iter()
+            .filter_map(|source| match source {
+                LayerSource::Effect { effect_id, .. } => Some(*effect_id),
+                LayerSource::Media { .. }
+                | LayerSource::ScreenRegion { .. }
+                | LayerSource::WebViewport { .. }
+                | LayerSource::ColorFill { .. } => None,
+            })
+            .collect::<Vec<_>>();
+        if effect_ids.is_empty() {
+            return Ok(None);
+        }
+
+        let guard = Arc::clone(&self.update_gate).read_owned().await;
+        let registry = self.registry.read().await;
+        if let Some(effect_id) = effect_ids
+            .into_iter()
+            .find(|effect_id| registry.get(effect_id).is_none())
+        {
+            return Err(DomainError::not_found(
+                crate::domain::ResourceKind::Effect,
+                effect_id,
+            ));
+        }
+        drop(registry);
+        #[cfg(test)]
+        self.pause_after_resolution_for_test().await;
+        Ok(Some(EffectMutationAdmission { _guard: guard }))
     }
 
     pub(crate) const fn scene_context(&self) -> &SceneContext {
