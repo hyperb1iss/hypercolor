@@ -9142,7 +9142,7 @@ async fn assert_auto_layout_store_failure_rolls_back(saved_layout_present: bool)
     let runtime = state.driver_host.discovery_runtime();
     runtime
         .layout
-        .test_fixture()
+        .test_workflows()
         .sync_active_layout_for_renderable_devices(runtime.clone(), None)
         .await;
 
