@@ -71,6 +71,7 @@ async fn spawn_server(
 async fn effects_activate_serializes_scalar_params() -> Result<()> {
     let captured_body: SharedBody = Arc::new(Mutex::new(None));
     let router = Router::new()
+        .route("/api/v1/effects/{effect}", get(effect_detail_with_color))
         .route("/api/v1/effects/{effect}/apply", post(capture_effect_apply))
         .with_state(Arc::clone(&captured_body));
     let (port, shutdown_tx, task) = spawn_server(router).await?;
@@ -113,6 +114,157 @@ async fn effects_activate_serializes_scalar_params() -> Result<()> {
         serde_json::json!({ "kind": "text", "value": "aurora" })
     );
     assert!(body.get("transition").is_none());
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn effects_activate_uses_color_schema_for_four_channel_params() -> Result<()> {
+    let captured_body: SharedBody = Arc::new(Mutex::new(None));
+    let router = Router::new()
+        .route("/api/v1/effects/{effect}", get(effect_detail_with_color))
+        .route("/api/v1/effects/{effect}/apply", post(capture_effect_apply))
+        .with_state(Arc::clone(&captured_body));
+    let (port, shutdown_tx, task) = spawn_server(router).await?;
+
+    let cli_result = run_hyper(
+        port,
+        &[
+            "effects",
+            "activate",
+            "demo",
+            "--param",
+            "accent=[0.125,0.25,0.5,1.0]",
+        ],
+    )
+    .await;
+
+    let _ = shutdown_tx.send(());
+    task.await.context("test server task join failed")?;
+    cli_result?;
+
+    let body = captured_body
+        .lock()
+        .await
+        .clone()
+        .context("server did not capture effect apply request body")?;
+    assert_eq!(
+        body["controls"]["accent"],
+        serde_json::json!({
+            "kind": "color_linear",
+            "value": {"r": 0.125, "g": 0.25, "b": 0.5, "a": 1.0}
+        })
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn effects_activate_rejects_ambiguous_arrays_without_color_schema() -> Result<()> {
+    let captured_body: SharedBody = Arc::new(Mutex::new(None));
+    let router = Router::new()
+        .route("/api/v1/effects/{effect}", get(effect_detail_with_color))
+        .route("/api/v1/effects/{effect}/apply", post(capture_effect_apply))
+        .with_state(Arc::clone(&captured_body));
+    let (port, shutdown_tx, task) = spawn_server(router).await?;
+
+    let output = run_hyper_output(
+        port,
+        &[
+            "effects",
+            "activate",
+            "demo",
+            "--param",
+            "unknown=[0.125,0.25,0.5,1.0]",
+        ],
+    )
+    .await?;
+
+    let _ = shutdown_tx.send(());
+    task.await.context("test server task join failed")?;
+
+    assert!(!output.status.success());
+    assert!(captured_body.lock().await.is_none());
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn effects_patch_uses_active_effect_color_schema() -> Result<()> {
+    const SCENE_ID: &str = "0198c5b6-2222-7000-8000-000000000001";
+    const ZONE_ID: &str = "0198c5b6-2222-7000-8000-000000000002";
+    const LAYER_ID: &str = "0198c5b6-2222-7000-8000-000000000003";
+    const EFFECT_ID: &str = "0198c5b6-2222-7000-8000-000000000004";
+
+    let captured_body: SharedBody = Arc::new(Mutex::new(None));
+    let router =
+        Router::new()
+            .route(
+                "/api/v1/scene",
+                get(|| async {
+                    Json(serde_json::json!({
+                        "data": {
+                            "id": SCENE_ID,
+                            "name": "Desk",
+                            "kind": "named",
+                            "is_default": false,
+                            "unassigned_behavior": "off",
+                            "layout_id": null,
+                            "revision": 4,
+                            "zones": [{
+                                "id": ZONE_ID,
+                                "name": "Primary",
+                                "role": "primary",
+                                "enabled": true,
+                                "brightness": 1.0,
+                                "members": [],
+                                "layout": null,
+                                "layers": [{
+                                    "id": LAYER_ID,
+                                    "source": {
+                                        "type": "effect",
+                                        "effect_id": EFFECT_ID,
+                                        "controls": {}
+                                    },
+                                    "blend": "replace",
+                                    "opacity": 1.0
+                                }]
+                            }]
+                        }
+                    }))
+                }),
+            )
+            .route("/api/v1/effects/{effect}", get(effect_detail_with_color))
+            .route(
+                "/api/v1/scene/zones/{zone}/layers/{layer}/controls",
+                patch(
+                    |State(captured_body): State<SharedBody>,
+                     Json(body): Json<serde_json::Value>| async move {
+                        *captured_body.lock().await = Some(body);
+                        Json(serde_json::json!({"data": {}}))
+                    },
+                ),
+            )
+            .with_state(Arc::clone(&captured_body));
+    let (port, shutdown_tx, task) = spawn_server(router).await?;
+
+    let cli_result = run_hyper(
+        port,
+        &["effects", "patch", "--param", "accent=[0.125,0.25,0.5,1.0]"],
+    )
+    .await;
+
+    let _ = shutdown_tx.send(());
+    task.await.context("test server task join failed")?;
+    cli_result?;
+
+    let body = captured_body
+        .lock()
+        .await
+        .clone()
+        .context("server did not capture effect control patch")?;
+    assert_eq!(body["values"]["accent"]["kind"], "color_linear");
+    assert_eq!(body["values"]["accent"]["value"]["b"], 0.5);
 
     Ok(())
 }
@@ -748,6 +900,33 @@ async fn capture_effect_apply(
             "transition": { "type": "cut" },
             "output": { "applied": true },
         },
+    }))
+}
+
+async fn effect_detail_with_color(Path(effect): Path<String>) -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "data": {
+            "id": effect,
+            "name": "Demo",
+            "description": "test",
+            "author": "test",
+            "category": "ambient",
+            "source": "native",
+            "runnable": true,
+            "tags": [],
+            "version": "1",
+            "audio_reactive": false,
+            "controls": [{
+                "id": "accent",
+                "name": "Accent",
+                "kind": "color",
+                "control_type": "color_picker",
+                "default_value": {
+                    "kind": "color_linear",
+                    "value": {"r": 1.0, "g": 1.0, "b": 1.0, "a": 1.0}
+                }
+            }]
+        }
     }))
 }
 

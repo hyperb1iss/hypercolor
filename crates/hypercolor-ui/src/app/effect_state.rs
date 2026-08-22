@@ -219,8 +219,7 @@ fn restore_effect_preferences(ctx: EffectsContext, effect_id: String, prefs: Eff
         }
 
         if !prefs.control_values.is_empty() {
-            let controls_json = serde_json::Value::Object(controls_to_json(&prefs.control_values));
-            if let Err(error) = api::update_controls(&controls_json).await {
+            if let Err(error) = api::update_controls(&prefs.control_values).await {
                 crate::toasts::toast_error(&format!("Couldn't restore saved controls: {error}"));
             }
             if ctx.active_effect_id.get_untracked().as_deref() != Some(effect_id.as_str()) {

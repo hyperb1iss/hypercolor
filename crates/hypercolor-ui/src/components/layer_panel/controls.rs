@@ -76,7 +76,9 @@ pub fn EffectControlsSection(group_id: String, layer: SceneLayer) -> impl IntoVi
 
     let patch: ControlPatchFn = Arc::new({
         let group_id = group_id.clone();
-        move |payload: serde_json::Value, _version: Option<u64>| -> ControlPatchFuture {
+        move |payload: crate::optimistic_controls::ControlValueMap,
+              _version: Option<u64>|
+              -> ControlPatchFuture {
             let group_id = group_id.clone();
             let layer_id = layer_id.clone();
             Box::pin(async move {

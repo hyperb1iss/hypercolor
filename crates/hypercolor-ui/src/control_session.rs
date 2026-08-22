@@ -2,7 +2,7 @@
 //!
 //! Every live control surface (effect controls, display face controls,
 //! Studio layer controls) follows the same shape: an input edit ticks an
-//! optimistic local `ControlValue` map immediately, the raw JSON edit is
+//! optimistic local `ControlValue` map immediately, the admitted value is
 //! queued into a pending batch keyed by control id (last write per key
 //! wins, so a slider drag sends only its final position), and a debounced
 //! flush PATCHes the coalesced batch to the daemon. Versioned routes echo
@@ -25,9 +25,7 @@ use leptos_use::use_debounce_fn;
 
 use crate::api::client::MutationOutcome;
 use crate::async_helpers::spawn_mutation;
-use crate::optimistic_controls::{
-    ControlValueMap, OptimisticControlSession, RawControlUpdates, raw_control_updates_payload,
-};
+use crate::optimistic_controls::{ControlValueMap, OptimisticControlSession};
 
 /// Future returned by a surface's patch function. Not `Send` — it runs on
 /// the single-threaded WASM executor via `spawn_local`.
@@ -40,7 +38,7 @@ pub type ControlPatchFuture =
 /// route returns `Applied(None)`. `Stale { current }` triggers the
 /// session's rebase-and-retry path.
 pub type ControlPatchFn =
-    Arc<dyn Fn(serde_json::Value, Option<u64>) -> ControlPatchFuture + Send + Sync>;
+    Arc<dyn Fn(ControlValueMap, Option<u64>) -> ControlPatchFuture + Send + Sync>;
 
 /// Configuration for [`use_control_patch_session`].
 pub struct ControlPatchConfig {
@@ -117,7 +115,7 @@ pub fn reconcile_outcome(
 /// Newer edits win per key, so a retry never resurrects a value the user
 /// has already moved past.
 #[must_use]
-pub fn merge_retry_batch(failed: RawControlUpdates, newer: RawControlUpdates) -> RawControlUpdates {
+pub fn merge_retry_batch(failed: ControlValueMap, newer: ControlValueMap) -> ControlValueMap {
     let mut merged = failed;
     merged.extend(newer);
     merged
@@ -174,8 +172,7 @@ pub fn use_control_patch_session(config: ControlPatchConfig) -> ControlPatchSess
                 let mut batch = batch;
                 let mut retried = false;
                 loop {
-                    let payload = raw_control_updates_payload(batch.clone());
-                    let outcome = patch(payload, version.get_untracked()).await?;
+                    let outcome = patch(batch.clone(), version.get_untracked()).await?;
                     let is_latest = flush_epoch.get_value() == epoch;
                     match reconcile_outcome(&outcome, retried) {
                         ReconcileAction::Adopt { new_version } => {
@@ -210,8 +207,7 @@ pub fn use_control_patch_session(config: ControlPatchConfig) -> ControlPatchSess
 
     let debounced_flush = use_debounce_fn(flush_core.clone(), debounce_ms);
     let on_change = Callback::new(move |(name, raw): (String, serde_json::Value)| {
-        optimistic.apply_raw_update_to(set_values, &defs.get_untracked(), &name, &raw);
-        optimistic.queue_raw_update(name, raw);
+        optimistic.admit_raw_update_to(set_values, &defs.get_untracked(), &name, &raw);
         debounced_flush();
     });
     let flush_now = Callback::new(move |()| flush_core());

@@ -10,7 +10,7 @@ use hypercolor_types::api::scene::{
     ApplyEffectRequest, ClearSceneRequest, PatchControlsRequest, ReplaceLayerRequest,
 };
 use hypercolor_types::control::ControlValue;
-use hypercolor_types::effect::EffectCategory;
+use hypercolor_types::effect::{ControlDefinition, EffectCategory};
 use hypercolor_types::layer::{LayerSource, SceneLayer};
 use hypercolor_types::scene::{ZoneId, ZoneRole};
 
@@ -205,11 +205,16 @@ async fn execute_activate(
     client: &DaemonClient,
     ctx: &OutputContext,
 ) -> Result<()> {
+    let definitions = if args.param.is_empty() {
+        Vec::new()
+    } else {
+        effect_control_definitions(client, &args.effect).await?
+    };
     let mut controls = BTreeMap::new();
     for (key, value) in &args.param {
         controls.insert(
             key.clone(),
-            control_value_from_json(parse_control_value(value))?,
+            control_value_from_json(key, parse_control_value(value), &definitions)?,
         );
     }
     if let Some(speed) = args.speed {
@@ -328,15 +333,16 @@ async fn execute_patch(
     client: &DaemonClient,
     ctx: &OutputContext,
 ) -> Result<()> {
+    let (zone, layer, effect_id, _) = active_effect_layer(client).await?;
+    let definitions = effect_control_definitions(client, &effect_id).await?;
     let mut values = BTreeMap::new();
     for (key, value) in &args.param {
         values.insert(
             key.clone(),
-            control_value_from_json(parse_control_value(value))?,
+            control_value_from_json(key, parse_control_value(value), &definitions)?,
         );
     }
 
-    let (zone, layer, _, _) = active_effect_layer(client).await?;
     let path = format!("/scene/zones/{zone}/layers/{}/controls", layer.id);
     let response = client
         .patch(
@@ -457,6 +463,28 @@ async fn active_effect_layer(
     Ok((zone.id, layer.0, layer.1, layer.2))
 }
 
-fn control_value_from_json(value: serde_json::Value) -> Result<ControlValue> {
-    ControlValue::try_from_effect_json(&value).map_err(Into::into)
+async fn effect_control_definitions(
+    client: &DaemonClient,
+    effect: &str,
+) -> Result<Vec<ControlDefinition>> {
+    let detail: EffectDetailResponse = serde_json::from_value(
+        client
+            .get(&format!("/effects/{}", urlencoded(effect)))
+            .await?,
+    )?;
+    Ok(detail.controls)
+}
+
+fn control_value_from_json(
+    name: &str,
+    value: serde_json::Value,
+    definitions: &[ControlDefinition],
+) -> Result<ControlValue> {
+    definitions
+        .iter()
+        .find(|definition| definition.control_id().eq_ignore_ascii_case(name))
+        .map_or_else(
+            || ControlValue::try_from_effect_json(&value).map_err(Into::into),
+            |definition| definition.admit_effect_json(&value).map_err(Into::into),
+        )
 }

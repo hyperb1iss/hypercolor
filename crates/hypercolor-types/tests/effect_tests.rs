@@ -664,6 +664,27 @@ fn color_picker_validation_normalizes_hex_text_to_color() {
 }
 
 #[test]
+fn color_picker_admission_disambiguates_four_channel_effect_json() {
+    let admitted = sample_color_picker_control()
+        .admit_effect_json(&serde_json::json!([0.125, 0.25, 0.5, 1.0]))
+        .expect("schema-confirmed color array should be admitted");
+
+    assert_eq!(
+        admitted,
+        ControlValue::linear_color([0.125, 0.25, 0.5, 1.0])
+    );
+}
+
+#[test]
+fn non_color_control_admission_keeps_number_arrays_ambiguous() {
+    assert!(
+        sample_slider_control()
+            .admit_effect_json(&serde_json::json!([0.125, 0.25, 0.5, 1.0]))
+            .is_err()
+    );
+}
+
+#[test]
 fn non_color_picker_color_control_preserves_text_values() {
     let mut control = sample_color_picker_control();
     control.control_type = ControlType::TextInput;

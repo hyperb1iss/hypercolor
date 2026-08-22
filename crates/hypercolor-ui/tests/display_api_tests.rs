@@ -5,12 +5,13 @@ use hypercolor_ui::api::{
     ComponentBinding, DisplayFaceResponse, DisplayFaceScope, PairDeviceRequest,
     SetDisplayFaceRequest,
 };
+use hypercolor_ui::api::layers::control_patch_request;
 use hypercolor_ui::control_value_json::{
     controls_to_json, hex_to_rgba, hex_to_rgba_json, json_to_control_value,
 };
 use hypercolor_ui::display_utils::display_preview_shell_url;
 use hypercolor_ui::optimistic_controls::{
-    apply_raw_control_updates, merge_control_values, raw_control_updates_payload,
+    apply_raw_control_updates, merge_control_values, normalize_raw_control_updates,
 };
 use hypercolor_ui::style_utils::category_style;
 
@@ -367,25 +368,45 @@ fn optimistic_control_updates_apply_raw_values() {
 }
 
 #[test]
-fn optimistic_control_helpers_merge_and_payload_pending_updates() {
+fn live_color_edit_stays_typed_through_the_patch_request() {
+    let controls = vec![color_control("accent")];
+    let raw = serde_json::json!([0.25, 0.5, 0.75, 1.0]);
+    let admitted = normalize_raw_control_updates(
+        &controls,
+        &[("accent".to_owned(), raw.clone())],
+    );
+
+    assert!(matches!(
+        admitted.get("accent"),
+        Some(ControlValue::ColorLinear(_))
+    ));
+    let request = control_patch_request(&admitted, Vec::new());
+    assert_eq!(
+        serde_json::to_value(request).expect("patch request should serialize")["values"]["accent"],
+        serde_json::json!({"kind": "color_linear", "value": {
+            "r": 0.25, "g": 0.5, "b": 0.75, "a": 1.0
+        }})
+    );
+}
+
+#[test]
+fn preference_restore_reuses_canonical_color_values_without_json_reparsing() {
     let mut values = std::collections::HashMap::from([(
-        "mode".to_owned(),
-        ControlValue::Enum("low".to_owned()),
+        "accent".to_owned(),
+        ControlValue::linear_color([0.125, 0.25, 0.5, 1.0]),
     )]);
     let next = std::collections::HashMap::from([(
-        "mode".to_owned(),
-        ControlValue::Enum("high".to_owned()),
+        "speed".to_owned(),
+        ControlValue::Float(0.75),
     )]);
 
     merge_control_values(&mut values, &next);
 
-    assert_eq!(values, next);
-
-    let payload = raw_control_updates_payload(std::collections::HashMap::from([(
-        "mode".to_owned(),
-        serde_json::json!("high"),
-    )]));
-    assert_eq!(payload, serde_json::json!({ "mode": "high" }));
+    let request = control_patch_request(&values, Vec::new());
+    let serialized = serde_json::to_value(request).expect("patch request should serialize");
+    assert_eq!(serialized["values"]["accent"]["kind"], "color_linear");
+    assert_eq!(serialized["values"]["accent"]["value"]["r"], 0.125);
+    assert_eq!(serialized["values"]["speed"]["value"], 0.75);
 }
 
 #[test]

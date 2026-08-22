@@ -259,7 +259,9 @@ fn ZoneControlsPanel(
     // a stale control patch cannot land on a newer effect.
     let patch: ControlPatchFn = Arc::new({
         let zone_id = zone_id.clone();
-        move |payload: serde_json::Value, _version: Option<u64>| -> ControlPatchFuture {
+        move |payload: crate::optimistic_controls::ControlValueMap,
+              _version: Option<u64>|
+              -> ControlPatchFuture {
             let zone_id = zone_id.clone();
             let layer_id = layer_id.clone();
             Box::pin(async move {

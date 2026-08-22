@@ -1,11 +1,9 @@
 //! Effect-related API types and fetch functions.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 
 use gloo_net::http::Method;
-use hypercolor_types::api::scene::{
-    ClearSceneRequest, PatchControlsRequest, ReplaceLayerRequest, SceneDocument,
-};
+use hypercolor_types::api::scene::{ClearSceneRequest, ReplaceLayerRequest, SceneDocument};
 use hypercolor_types::control::ControlValue;
 use hypercolor_types::effect::ControlDefinition;
 use hypercolor_types::layer::LayerSource;
@@ -132,7 +130,7 @@ pub async fn stop_effect() -> Result<(), String> {
 }
 
 /// Update effect control parameters.
-pub async fn update_controls(controls: &serde_json::Value) -> Result<(), String> {
+pub async fn update_controls(controls: &HashMap<String, ControlValue>) -> Result<(), String> {
     let scene: SceneDocument = client::fetch_json("/api/v1/scene").await?;
     let Some((zone_id, layer_id, _, _, _, _)) = effect_target(&scene, None, None) else {
         return Err("The active scene has no effect layer".to_owned());
@@ -143,7 +141,7 @@ pub async fn update_controls(controls: &serde_json::Value) -> Result<(), String>
 /// Patch controls on the live layer running a specific effect.
 pub async fn update_effect_controls(
     effect_id: &str,
-    controls: &serde_json::Value,
+    controls: &HashMap<String, ControlValue>,
 ) -> Result<(), String> {
     let scene: SceneDocument = client::fetch_json("/api/v1/scene").await?;
     let Some((zone_id, layer_id, _, _, _, _)) = effect_target(&scene, None, Some(effect_id)) else {
@@ -272,19 +270,9 @@ fn effect_target_in_zone(
 async fn patch_controls(
     zone_id: &str,
     layer_id: &str,
-    controls: &serde_json::Value,
+    controls: &HashMap<String, ControlValue>,
     clear_bindings: Vec<String>,
 ) -> Result<(), String> {
-    let values = controls
-        .as_object()
-        .ok_or_else(|| "Controls must be a JSON object".to_owned())?
-        .iter()
-        .map(|(name, value)| {
-            ControlValue::try_from_effect_json(value)
-                .map(|value| (name.clone(), value))
-                .map_err(|error| format!("Invalid control value for {name}: {error}"))
-        })
-        .collect::<Result<BTreeMap<_, _>, _>>()?;
     let path = format!(
         "/api/v1/scene/zones/{}/layers/{}/controls",
         path_segment(zone_id),
@@ -292,10 +280,7 @@ async fn patch_controls(
     );
     client::patch_json_discard(
         &path,
-        &PatchControlsRequest {
-            values,
-            clear_bindings,
-        },
+        &super::layers::control_patch_request(controls, clear_bindings),
     )
     .await
     .map_err(Into::into)

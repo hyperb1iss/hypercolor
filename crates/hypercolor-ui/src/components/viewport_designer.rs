@@ -17,13 +17,15 @@
 //!   - `components::control_panel::viewport_picker` for the inline
 //!     quick-adjust picker the modal complements (not replaces)
 
+use std::collections::HashMap;
+
 use leptos::ev;
 use leptos::portal::Portal;
 use leptos::prelude::*;
 use leptos_icons::Icon;
-use serde_json::json;
 
 use hypercolor_leptos_ext::events::{Change, Input};
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::viewport::{FitMode, MIN_VIEWPORT_EDGE, ViewportRect};
 
 use crate::api::effects::update_effect_controls;
@@ -148,7 +150,7 @@ pub fn ViewportDesignerModal(
             let effect_id = effect_id.clone();
             leptos::task::spawn_local(async move {
                 let snapshot = draft.get_untracked();
-                let controls = draft_to_controls_payload(&snapshot);
+                let controls = draft_to_controls(&snapshot);
                 let outcome = update_effect_controls(&effect_id, &controls).await;
                 apply_pending.set(false);
                 match outcome {
@@ -530,24 +532,19 @@ fn FitModeRadio(
 /// Only fields the mode actually carries end up in the payload; scroll
 /// axes and render-size are omitted for Screen Cast, render-size stays
 /// at the current value for Web Viewport unless the user changed it.
-fn draft_to_controls_payload(draft: &ViewportDraft) -> serde_json::Value {
-    let mut controls = serde_json::Map::new();
+fn draft_to_controls(draft: &ViewportDraft) -> HashMap<String, ControlValue> {
+    let mut controls = HashMap::new();
     controls.insert(
         "viewport".to_owned(),
-        json!({
-            "x": draft.common.viewport.x,
-            "y": draft.common.viewport.y,
-            "width": draft.common.viewport.width,
-            "height": draft.common.viewport.height,
-        }),
+        ControlValue::rect(draft.common.viewport),
     );
     controls.insert(
         "fit_mode".to_owned(),
-        json!(fit_mode_label(draft.common.fit_mode)),
+        ControlValue::Enum(fit_mode_label(draft.common.fit_mode).to_owned()),
     );
     controls.insert(
         "brightness".to_owned(),
-        json!(draft.common.brightness),
+        ControlValue::Float(f64::from(draft.common.brightness)),
     );
     if let ModeDraft::WebViewport {
         url,
@@ -557,13 +554,25 @@ fn draft_to_controls_payload(draft: &ViewportDraft) -> serde_json::Value {
         render_height,
     } = &draft.mode
     {
-        controls.insert("url".to_owned(), json!(url));
-        controls.insert("scroll_x".to_owned(), json!(*scroll_x as f32));
-        controls.insert("scroll_y".to_owned(), json!(*scroll_y as f32));
-        controls.insert("render_width".to_owned(), json!(*render_width as f32));
-        controls.insert("render_height".to_owned(), json!(*render_height as f32));
+        controls.insert("url".to_owned(), ControlValue::Text(url.clone()));
+        controls.insert(
+            "scroll_x".to_owned(),
+            ControlValue::Float(f64::from(*scroll_x)),
+        );
+        controls.insert(
+            "scroll_y".to_owned(),
+            ControlValue::Float(f64::from(*scroll_y)),
+        );
+        controls.insert(
+            "render_width".to_owned(),
+            ControlValue::Float(f64::from(*render_width)),
+        );
+        controls.insert(
+            "render_height".to_owned(),
+            ControlValue::Float(f64::from(*render_height)),
+        );
     }
-    serde_json::Value::Object(controls)
+    controls
 }
 
 fn fit_mode_label(fit: FitMode) -> &'static str {

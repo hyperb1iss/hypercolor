@@ -7,11 +7,10 @@ use leptos::prelude::*;
 use crate::control_value_json::json_to_control_value;
 
 pub type ControlValueMap = HashMap<String, ControlValue>;
-pub type RawControlUpdates = HashMap<String, serde_json::Value>;
 
 #[derive(Clone, Copy)]
 pub(crate) struct OptimisticControlSession {
-    pending: StoredValue<RawControlUpdates>,
+    pending: StoredValue<ControlValueMap>,
 }
 
 impl OptimisticControlSession {
@@ -21,44 +20,38 @@ impl OptimisticControlSession {
         }
     }
 
-    pub(crate) fn apply_raw_update_to(
+    pub(crate) fn admit_raw_update_to(
         self,
         set_values: WriteSignal<ControlValueMap>,
         controls: &[ControlDefinition],
         name: &str,
         value: &serde_json::Value,
     ) {
+        let Some(value) = json_to_control_value(name, controls, value) else {
+            return;
+        };
         set_values.update(|values| {
-            apply_raw_control_update(values, controls, name, value);
+            values.insert(name.to_owned(), value.clone());
+        });
+        self.pending.update_value(|pending| {
+            pending.insert(name.to_owned(), value);
         });
     }
 
-    pub(crate) fn apply_raw_updates_to(
+    pub(crate) fn admit_raw_updates_to(
         self,
         set_values: WriteSignal<ControlValueMap>,
         controls: &[ControlDefinition],
         updates: &[(String, serde_json::Value)],
     ) {
-        set_values.update(|values| {
-            apply_raw_control_updates(values, controls, updates);
-        });
-    }
-
-    pub(crate) fn queue_raw_update(self, name: String, value: serde_json::Value) {
+        let admitted = normalize_raw_control_updates(controls, updates);
+        set_values.update(|values| merge_control_values(values, &admitted));
         self.pending.update_value(|pending| {
-            pending.insert(name, value);
+            merge_control_values(pending, &admitted);
         });
     }
 
-    pub(crate) fn queue_raw_updates(self, updates: &[(String, serde_json::Value)]) {
-        self.pending.update_value(|pending| {
-            for (name, value) in updates {
-                pending.insert(name.clone(), value.clone());
-            }
-        });
-    }
-
-    pub(crate) fn take_pending(self) -> RawControlUpdates {
+    pub(crate) fn take_pending(self) -> ControlValueMap {
         self.pending
             .try_update_value(std::mem::take)
             .unwrap_or_default()
@@ -100,12 +93,23 @@ pub fn apply_raw_control_updates(
     }
 }
 
+/// Normalize raw edits once at the schema boundary for optimistic state and
+/// daemon delivery. Rejected values never enter either destination.
+#[must_use]
+pub fn normalize_raw_control_updates(
+    controls: &[ControlDefinition],
+    updates: &[(String, serde_json::Value)],
+) -> ControlValueMap {
+    updates
+        .iter()
+        .filter_map(|(name, value)| {
+            json_to_control_value(name, controls, value).map(|value| (name.clone(), value))
+        })
+        .collect()
+}
+
 pub fn merge_control_values(values: &mut ControlValueMap, next_values: &ControlValueMap) {
     for (name, value) in next_values {
         values.insert(name.clone(), value.clone());
     }
-}
-
-pub fn raw_control_updates_payload(updates: RawControlUpdates) -> serde_json::Value {
-    serde_json::Value::Object(updates.into_iter().collect::<serde_json::Map<_, _>>())
 }

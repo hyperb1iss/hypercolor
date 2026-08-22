@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use hypercolor_color::LinearRgba;
 
-use crate::control::{ControlValue, ControlValueInvalid};
+use crate::control::{ControlValue, ControlValueInvalid, EffectJsonValueError};
 use crate::spatial::NormalizedRect;
 
 // ── EffectId ──────────────────────────────────────────────────────────────────
@@ -282,6 +282,17 @@ pub enum ControlValidationError {
     },
 }
 
+/// Why a raw JSON value cannot enter one schema-defined effect control.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum EffectControlAdmissionError {
+    /// The raw value is not representable by the effect runtime.
+    #[error("{0}")]
+    Json(#[from] EffectJsonValueError),
+    /// The decoded value does not satisfy the addressed control schema.
+    #[error("{0}")]
+    Validation(#[from] ControlValidationError),
+}
+
 fn control_value_kind(value: &ControlValue) -> &'static str {
     value.kind_name()
 }
@@ -427,6 +438,25 @@ impl ControlDefinition {
     #[must_use]
     pub fn control_id(&self) -> &str {
         &self.id
+    }
+
+    /// Decode, validate, and normalize a raw effect-control JSON value.
+    ///
+    /// Bare four-number arrays are admitted only for a schema-confirmed
+    /// color picker. Generic effect JSON remains intentionally ambiguous.
+    pub fn admit_effect_json(
+        &self,
+        value: &serde_json::Value,
+    ) -> Result<ControlValue, EffectControlAdmissionError> {
+        let parsed = if matches!(self.control_type, ControlType::ColorPicker) {
+            ControlValue::try_from_effect_color_json(value)
+                .or_else(|_| ControlValue::try_from_effect_json(value))?
+        } else {
+            ControlValue::try_from_effect_json(value)?
+        };
+        let normalized = self.validate_value(&parsed)?;
+        normalized.try_to_effect_json()?;
+        Ok(normalized)
     }
 
     /// Validate and normalize a control value against this definition.

@@ -20,7 +20,7 @@ use crate::components::section_label::{LabelSize, LabelTone, label_class};
 use crate::components::silk_select::SilkSelect;
 use crate::components::status_banner::{StatusBanner, StatusBannerTone};
 use crate::icons::*;
-use crate::optimistic_controls::{OptimisticControlSession, raw_control_updates_payload};
+use crate::optimistic_controls::OptimisticControlSession;
 use crate::toasts;
 use crate::zones::{ZoneEffectState, ZonesContext};
 use hypercolor_types::control::ControlValue;
@@ -190,7 +190,6 @@ pub fn EffectsPage() -> impl IntoView {
                 return;
             }
 
-            let controls_json = raw_control_updates_payload(updates);
             let request_epoch = control_request_epoch
                 .try_update_value(|epoch| {
                     *epoch = epoch.wrapping_add(1);
@@ -199,7 +198,7 @@ pub fn EffectsPage() -> impl IntoView {
                 .unwrap_or_default();
             let active_effect_id = fx.active_effect_id.get_untracked();
             leptos::task::spawn_local(async move {
-                match api::update_controls(&controls_json).await {
+                match api::update_controls(&updates).await {
                     Ok(()) => {
                         let is_latest_request = control_request_epoch.get_value() == request_epoch;
                         let has_pending_updates = control_session.has_pending();
@@ -487,12 +486,11 @@ pub fn EffectsPage() -> impl IntoView {
             &value,
         );
 
-        control_session.apply_raw_updates_to(
+        control_session.admit_raw_updates_to(
             fx.set_active_control_values,
             &controls_snapshot,
             &updates,
         );
-        control_session.queue_raw_updates(&updates);
 
         flush_control_updates();
     });
