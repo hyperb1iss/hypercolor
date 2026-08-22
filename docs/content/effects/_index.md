@@ -75,7 +75,7 @@ graph TD
   D --> E[ZoneColors written to devices]
 {% </mermaid> %}
 
-`FrameInput` carries `time_secs`, `delta_secs`, `frame_number`, the audio snapshot, interaction and screen data, sensors, and the target canvas dimensions. Control values arrive separately through `set_control`, so a slider change applies on the next frame without restarting the effect.
+`FrameInput` carries `time_secs`, `delta_secs`, `frame_number`, the audio snapshot, interaction and screen data, sensors, and the target canvas dimensions. Control values arrive separately through ordered `apply_controls` batches, so a slider change applies on the next frame without restarting the effect.
 
 ## Before you write anything
 

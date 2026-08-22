@@ -47,10 +47,12 @@ pub trait EffectRenderer: Send {
     fn init(&mut self, metadata: &EffectMetadata) -> anyhow::Result<()>;
     fn render_into(&mut self, input: &FrameInput<'_>, target: &mut Canvas)
         -> anyhow::Result<()>;
-    fn set_control(&mut self, name: &str, value: &ControlValue);
+    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>)
+        -> anyhow::Result<()>;
     fn destroy(&mut self);
     // defaulted: init_with_canvas_size, render_output, advance_output,
-    // tick, bind_asset_library, set_display_descriptor, preview_canvas
+    // initialize_controls, bind_asset_library, set_display_descriptor,
+    // preview_canvas
 }
 ```
 
@@ -66,17 +68,17 @@ The engine drives a renderer through a fixed sequence:
 graph LR
   A[init] --> B[render_into per frame]
   B --> B
-  B --> C[set_control between frames]
+  B --> C[apply_controls between frames]
   C --> B
   B --> D[destroy]
 {% </mermaid> %}
 
 1. **`init`** runs once when the effect activates. Compile, allocate, and read whatever you need from `EffectMetadata`. Return an error and the engine transitions the effect to a failed state.
 2. **`render_into`** runs once per render-loop tick while the effect is running. It writes pixels into a caller-owned `Canvas`.
-3. **`set_control`** can fire at any point between frames when a user moves a slider, a preset loads, or the API pushes a value. Store the new value; apply it on the next `render_into`.
+3. **`apply_controls`** receives an ordered atomic batch between frames when authored or resolved values change. Store the derived values and apply them on the next `render_into`.
 4. **`destroy`** runs on deactivation. Release anything `init` acquired.
 
-The per-frame method is `render_into`, not `tick`. `tick` still exists as a legacy convenience wrapper that allocates a fresh canvas and calls `render_into` for you, but new effects should implement `render_into` and write into the target the engine hands them. That avoids a per-frame allocation and lets the compositor reuse buffers.
+`render_into` is the CPU canvas contract. The engine owns and reuses the target, so renderers resize it with `prepare_target_canvas` and write into the supplied storage instead of allocating a fresh canvas per frame.
 
 ## FrameInput
 
@@ -84,7 +86,7 @@ Every `render_into` call receives a `FrameInput` carrying all per-frame data. Th
 
 ```rust
 pub struct FrameInput<'a> {
-    pub time_secs: f32,            // seconds since the effect activated
+    pub time_secs: f64,            // seconds since the effect activated
     pub delta_secs: f32,          // seconds since the previous frame
     pub frame_number: u64,        // monotonic counter, starts at 0
     pub audio: &'a AudioData,     // always present; silence() when no source
@@ -188,32 +190,35 @@ fn render_into(&mut self, input: &FrameInput<'_>, canvas: &mut Canvas)
 
 ## Handling controls
 
-Controls reach the renderer through `set_control(name, value)`. Match on the control name, narrow the `ControlValue` variant, and store the result. The breathing renderer is a clean template:
+Controls reach the renderer through `apply_controls`. Each batch carries the authoritative set revision, a resolution sequence, and ordered changes that have already passed canonical and effect-definition validation. The breathing renderer is a clean template:
 
 ```rust
-fn set_control(&mut self, name: &str, value: &ControlValue) {
-    match name {
-        "color" => {
-            if let ControlValue::ColorLinear(color) = value {
-                self.color = [color.r, color.g, color.b, color.a];
+fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> anyhow::Result<()> {
+    for (control_id, value) in batch.changes {
+        match control_id.as_str() {
+            "color" => {
+                if let ControlValue::ColorLinear(color) = value {
+                    self.color = [color.r, color.g, color.b, color.a];
+                }
             }
-        }
-        "speed" => {
-            if let Some(v) = value.as_f32() {
-                self.speed_bpm = v.max(0.1);
+            "speed" => {
+                if let Some(value) = value.as_effect_f32() {
+                    self.speed_bpm = value.max(0.1);
+                }
             }
-        }
-        "min_brightness" => {
-            if let Some(v) = value.as_f32() {
-                self.min_brightness = v.clamp(0.0, 1.0);
+            "min_brightness" => {
+                if let Some(value) = value.as_effect_f32() {
+                    self.min_brightness = value.clamp(0.0, 1.0);
+                }
             }
+            _ => {}
         }
-        _ => {}
     }
+    Ok(())
 }
 ```
 
-`ControlValue` variants are `Float(f32)`, `Integer(i32)`, `Boolean(bool)`, `Color([f32; 4])`, `Gradient(Vec<GradientStop>)`, `Enum(String)`, `Text(String)`, and `Rect(ViewportRect)`. The helper `value.as_f32()` returns `Some` only for `Float`. Clamp or sanitize on the way in; an out-of-range value should be tamed here, not in the hot render path.
+Effect controls use the effect-capable members of the canonical `ControlValue` algebra: `Bool`, `Int`, `Float`, `Text`, `ColorLinear`, `Gradient`, `Rect`, and `Enum`. The helper `as_effect_f32()` performs the checked `f64` to `f32` projection used by renderers. Keep only renderer-derived state here; the owning `ControlSet` remains authoritative.
 
 You declare the controls in a `controls()` function using the shared constructors in `common.rs`, so the registry, the UI, and the API all see the same schema:
 
@@ -282,6 +287,7 @@ pub(super) fn metadata() -> EffectMetadata {
         presets: presets(),
         audio_reactive: false,
         screen_reactive: false,
+        input_reactive: false,
         source: EffectSource::Native {
             path: PathBuf::from("builtin/my_effect"),
         },
@@ -315,7 +321,7 @@ renderer.render_into(&input, &mut canvas).expect("render");
 assert_eq!(canvas.width(), 32);
 ```
 
-The test harness provides helpers (`frame`, `frame_with_size`, `frame_with_audio`, `frame_with_screen`) that construct a full `FrameInput` with silence, default interaction, and empty sensors. Cover at least init, a render at default controls, a render after `set_control`, and, for audio effects, a render under synthetic `AudioData`.
+The test harness provides helpers (`frame`, `frame_with_size`, `frame_with_audio`, `frame_with_screen`) that construct a full `FrameInput` with silence, default interaction, and empty sensors. Cover at least init, a render at default controls, a render after `apply_controls`, and, for audio effects, a render under synthetic `AudioData`.
 
 Verify with the workspace gates before you call it done:
 

@@ -43,13 +43,13 @@ crates/hypercolor-core/src/effect/builtin/
 
 Every native effect is a struct that implements `EffectRenderer` from `crates/hypercolor-core/src/effect/traits.rs`. The trait is `Send` but not `Sync`, so keep that in mind if the effect holds non-`Sync` state.
 
-The two methods you must implement are `init` (called once on activation) and `render_into` (called once per frame):
+The four required methods are `init`, `render_into`, `apply_controls`, and `destroy`:
 
 ```rust
 use hypercolor_types::canvas::{Canvas, LinearRgba};
+use hypercolor_types::control::{ControlDeltaBatch, ControlValue};
 use hypercolor_types::effect::{
-    ControlDefinition, ControlValue, EffectCategory, EffectMetadata, EffectSource,
-    PresetTemplate,
+    ControlDefinition, EffectCategory, EffectMetadata, EffectSource, PresetTemplate,
 };
 use crate::effect::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
 use super::common::{builtin_effect_id, slider_control};
@@ -83,16 +83,21 @@ impl EffectRenderer for YourEffectRenderer {
         Ok(())
     }
 
-    fn set_control(&mut self, name: &str, value: &ControlValue) {
-        match name {
-            "speed" => {
-                if let Some(v) = value.as_f32() { self.speed = v.max(0.1); }
+    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> anyhow::Result<()> {
+        for (control_id, value) in batch.changes {
+            match control_id.as_str() {
+                "speed" => {
+                    if let Some(v) = value.as_effect_f32() { self.speed = v.max(0.1); }
+                }
+                "brightness" => {
+                    if let Some(v) = value.as_effect_f32() {
+                        self.brightness = v.clamp(0.0, 1.0);
+                    }
+                }
+                _ => {}
             }
-            "brightness" => {
-                if let Some(v) = value.as_f32() { self.brightness = v.clamp(0.0, 1.0); }
-            }
-            _ => {}
         }
+        Ok(())
     }
 
     fn destroy(&mut self) {}

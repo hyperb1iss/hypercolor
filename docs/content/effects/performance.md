@@ -111,7 +111,7 @@ Audio is sampled once per frame and handed to the effect; reading it is cheap. T
 
 Compiled-in native effects (`crates/hypercolor-core/src/effect/builtin/`) skip Servo entirely and produce a `Canvas` directly in Rust, which makes them the cheapest path per frame. The performance contract is the same budget, with a few Rust-specific notes:
 
-- **Implement `render_into`, not `tick`.** `render_into(&mut self, input, target: &mut Canvas)` writes into caller-owned storage and avoids a per-frame allocation. `tick` is a legacy convenience wrapper that allocates a fresh canvas each call; reach for it only outside the hot loop.
+- **Implement `render_into`.** `render_into(&mut self, input, target: &mut Canvas)` writes into caller-owned storage and avoids a per-frame allocation. The engine no longer exposes an allocating renderer convenience path.
 - **Hold scratch state on the renderer.** The renderer is `&mut self`, so per-effect buffers, lookup tables, and precomputed gradients belong as fields you build once in `init` and reuse every frame.
 - **Stay in the right color space.** The `Canvas` is sRGB `u8`. Color controls arrive as linear RGBA in `[0.0, 1.0]` and must be converted to sRGB before you write pixels. Doing color math in the wrong space is a correctness bug, not a perf one, but the conversion belongs outside the inner loop where you can.
 

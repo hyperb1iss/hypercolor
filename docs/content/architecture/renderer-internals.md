@@ -126,10 +126,12 @@ pub trait EffectRenderer: Send {
         input: &FrameInput<'_>,
     ) -> anyhow::Result<EffectRenderOutput>;  // default wraps render_into
     fn advance_output(&mut self, input: &FrameInput<'_>) -> anyhow::Result<()>;
-    fn tick(&mut self, input: &FrameInput<'_>) -> anyhow::Result<Canvas>;  // legacy
 
     // Control and asset binding
-    fn set_control(&mut self, name: &str, value: &ControlValue);
+    fn initialize_controls(&mut self, controls: &ControlSet)
+        -> anyhow::Result<()>;  // default projects one full delta
+    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>)
+        -> anyhow::Result<()>;
     fn bind_asset_library(&mut self, _library: Arc<RwLock<AssetLibrary>>) {}
     fn set_display_descriptor(&mut self, _descriptor: Option<DisplayDescriptor>) {}
 
@@ -142,9 +144,9 @@ The trait is `Send` but **not `Sync`**. The daemon's `AppState` wraps `EffectEng
 behind a `Mutex`, never `RwLock`. Servo's renderer is pinned to one OS thread, which
 makes `Sync` impossible.
 
-`tick` is a legacy convenience wrapper that allocates a fresh `Canvas` and calls
-`render_into`. Prefer `render_into` for new renderers; it lets the engine pass a
-pre-allocated target and avoids an allocation per frame.
+`render_into` is the canonical CPU path. The engine passes a reusable canvas,
+which avoids allocating a new target for every frame. `render_output` adds the
+GPU-resident path without weakening that contract.
 
 ### `FrameInput` fields
 
@@ -152,7 +154,7 @@ pre-allocated target and avoids an allocation per frame.
 
 ```rust
 pub struct FrameInput<'a> {
-    pub time_secs: f32,            // seconds since effect activation
+    pub time_secs: f64,            // seconds since effect activation
     pub delta_secs: f32,           // time since previous frame
     pub frame_number: u64,         // monotonic counter starting at 0
     pub audio: &'a AudioData,      // always present; AudioData::silence() when no source
@@ -259,7 +261,7 @@ EffectPool
                     metadata              (with live control bindings applied)
                     display_descriptor    (set for Display-category zones)
                     renderer: Box<dyn EffectRenderer>
-                    controls: HashMap<String, ControlValue>
+                    controls: ControlSet
                     binding_state         (sensor→control smoothing state)
                     elapsed_secs / frame_number
 ```
@@ -275,8 +277,10 @@ diffs the desired set against the live slots and:
   a full rebuild.
 
 Sensor bindings (`ControlBinding`) are evaluated each frame in `apply_sensor_bindings`
-and pushed to the renderer via `set_control` only when the mapped value changes. The
-mapping supports configurable deadband and temporal smoothing.
+and delivered through one ordered `apply_controls` batch when mapped values change.
+The mapping supports configurable deadband and temporal smoothing. A renderer that
+rejects a delta receives one authoritative snapshot replay through
+`initialize_controls`.
 
 There are two frame production paths on the pool:
 
