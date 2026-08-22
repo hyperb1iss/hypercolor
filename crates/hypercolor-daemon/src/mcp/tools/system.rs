@@ -142,7 +142,7 @@ pub(super) async fn handle_set_output_power_with_state(
     )
     .await?;
     serialize_result(OutputPowerResult {
-        state: outcome.power,
+        state: outcome.output.power,
     })
 }
 

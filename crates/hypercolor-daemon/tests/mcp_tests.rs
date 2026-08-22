@@ -13,6 +13,7 @@ use hypercolor_core::input::{
 use hypercolor_core::scene::OutputPlacement;
 use hypercolor_daemon::api;
 use hypercolor_daemon::app_state::AppState;
+use hypercolor_daemon::device_settings::DeviceSettingsStore;
 use hypercolor_daemon::mcp;
 use hypercolor_daemon::mcp::prompts::{
     build_prompt_definitions, get_prompt_messages, is_valid_prompt,
@@ -2155,7 +2156,7 @@ async fn stateful_set_output_power_is_reversible_and_idempotent() {
 /// same store the REST route does.
 #[tokio::test]
 async fn set_brightness_tool_projects_the_output_service() {
-    let (state, _tmp) = isolated_state_with_tempdir();
+    let (state, tmp) = isolated_state_with_tempdir();
 
     let response =
         execute_tool_with_state("set_brightness", &json!({ "brightness": 35.0 }), &state)
@@ -2164,8 +2165,11 @@ async fn set_brightness_tool_projects_the_output_service() {
     assert_eq!(response["brightness"], 35);
     assert_eq!(response["previous_brightness"], 100);
     assert!((state.output_power.global_brightness() - 0.35).abs() < 1e-6);
-    assert!(
-        (state.device_settings.read().await.global_brightness() - 0.35).abs() < 1e-6,
+    assert_eq!(
+        DeviceSettingsStore::load(&tmp.path().join("data/device-settings.json"))
+            .expect("device settings should reload")
+            .global_brightness(),
+        0.35,
         "the tool must persist through the same store the REST route writes"
     );
 
@@ -2173,6 +2177,58 @@ async fn set_brightness_tool_projects_the_output_service() {
         .await
         .expect_err("out-of-range brightness should be rejected");
     assert!(matches!(error, ToolError::InvalidParam { .. }));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_brightness_tools_report_serialized_predecessors() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    let first_state = Arc::clone(&state);
+    let second_state = Arc::clone(&state);
+
+    let first = tokio::spawn(async move {
+        execute_tool_with_state(
+            "set_brightness",
+            &json!({ "brightness": 25 }),
+            first_state.as_ref(),
+        )
+        .await
+        .expect("first brightness should succeed")
+    });
+    let second = tokio::spawn(async move {
+        execute_tool_with_state(
+            "set_brightness",
+            &json!({ "brightness": 75 }),
+            second_state.as_ref(),
+        )
+        .await
+        .expect("second brightness should succeed")
+    });
+    let first = first.await.expect("first brightness task should join");
+    let second = second.await.expect("second brightness task should join");
+    let transitions = [
+        (
+            first["previous_brightness"]
+                .as_u64()
+                .expect("first predecessor should be numeric"),
+            first["brightness"]
+                .as_u64()
+                .expect("first brightness should be numeric"),
+        ),
+        (
+            second["previous_brightness"]
+                .as_u64()
+                .expect("second predecessor should be numeric"),
+            second["brightness"]
+                .as_u64()
+                .expect("second brightness should be numeric"),
+        ),
+    ];
+
+    assert!(
+        transitions.contains(&(100, 25)) && transitions.contains(&(25, 75))
+            || transitions.contains(&(100, 75)) && transitions.contains(&(75, 25))
+    );
 }
 
 #[test]

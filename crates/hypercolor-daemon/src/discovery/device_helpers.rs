@@ -32,12 +32,11 @@ pub(crate) async fn apply_persisted_device_settings(
         device_id,
     )
     .await;
-    let persisted_settings = {
-        let store = runtime.device_settings.read().await;
-        store
-            .device_settings_for_key(&key)
-            .map_or(fallback_settings, stored_device_settings_to_user_settings)
-    };
+    let persisted_settings = runtime
+        .device_settings
+        .device_settings_for_key(&key)
+        .await
+        .map_or(fallback_settings, stored_device_settings_to_user_settings);
 
     let _ = runtime
         .device_registry

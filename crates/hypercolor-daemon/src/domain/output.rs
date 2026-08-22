@@ -20,7 +20,7 @@ use hypercolor_core::device::BackendManager;
 use hypercolor_core::engine::{RenderLoop, RenderLoopState};
 use hypercolor_types::api::output::{OutputPatchRequest, OutputPowerMode, OutputResource};
 use hypercolor_types::canvas::{Canvas, Rgba};
-use hypercolor_types::event::{FrameData, HypercolorEvent, ZoneColors};
+use hypercolor_types::event::{FrameData, ZoneColors};
 use hypercolor_types::session::OffOutputBehavior;
 use tokio::sync::{Mutex, RwLock};
 
@@ -197,6 +197,11 @@ enum OutputReconnectScope {
     Network,
 }
 
+pub struct OutputPatchOutcome {
+    pub output: OutputResource,
+    pub previous_brightness: Option<f32>,
+}
+
 /// Read the live output resource.
 pub fn get_output(ctx: &OutputContext) -> OutputResource {
     let power = ctx.output_power.snapshot();
@@ -216,7 +221,7 @@ pub fn get_output(ctx: &OutputContext) -> OutputResource {
 pub async fn patch_output(
     ctx: &OutputContext,
     request: OutputPatchRequest,
-) -> Result<OutputResource, DomainError> {
+) -> Result<OutputPatchOutcome, DomainError> {
     let OutputPatchRequest { power, brightness } = request;
     if power.is_none() && brightness.is_none() {
         return Err(DomainError::validation(
@@ -224,19 +229,24 @@ pub async fn patch_output(
         ));
     }
 
-    if let Some(brightness) = brightness {
-        set_brightness(ctx, brightness).await?;
-    }
+    let previous_brightness = if let Some(brightness) = brightness {
+        Some(set_brightness(ctx, brightness).await?)
+    } else {
+        None
+    };
     if let Some(power) = power {
         set_power(ctx, power).await;
     }
 
-    Ok(get_output(ctx))
+    Ok(OutputPatchOutcome {
+        output: get_output(ctx),
+        previous_brightness,
+    })
 }
 
 /// Set global brightness, persisting it and mirroring it into live
 /// power state.
-pub async fn set_brightness(ctx: &OutputContext, brightness: f32) -> Result<(), DomainError> {
+pub async fn set_brightness(ctx: &OutputContext, brightness: f32) -> Result<f32, DomainError> {
     if !(0.0..=1.0).contains(&brightness) {
         return Err(DomainError::validation_field(
             "brightness",
@@ -244,26 +254,14 @@ pub async fn set_brightness(ctx: &OutputContext, brightness: f32) -> Result<(), 
         ));
     }
 
-    let previous = ctx
-        .output_power
-        .set_global_brightness(brightness)
+    ctx.output_power
+        .set_global_brightness(&ctx.event_bus, brightness)
         .await
-        .map(brightness_percent)
         .map_err(|error| {
             DomainError::Internal(anyhow::anyhow!(
                 "Failed to persist global brightness: {error}"
             ))
-        })?;
-    ctx.event_bus
-        .publish(HypercolorEvent::DeviceSettingsChanged { key: None });
-
-    ctx.event_bus.publish(HypercolorEvent::BrightnessChanged {
-        old: previous,
-        new_value: brightness_percent(brightness),
-    });
-
-    ctx.runtime_session.save().await;
-    Ok(())
+        })
 }
 
 /// Drive global output power to the requested mode.

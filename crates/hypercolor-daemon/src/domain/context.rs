@@ -137,9 +137,7 @@ impl RuntimeSessionService {
             runtime_state::snapshot_from_scene_manager(&manager)
         };
         snapshot.active_layout_id = Some(self.spatial.layout().id.clone());
-        let output_power = self.output_power.snapshot();
-        snapshot.global_brightness = output_power.global_brightness;
-        snapshot.manual_paused = output_power.manually_paused();
+        snapshot.manual_paused = self.output_power.snapshot().manually_paused();
         self.driver_host
             .driver_inventory()
             .refresh(self.driver_registry.as_ref(), self.driver_host.as_ref())

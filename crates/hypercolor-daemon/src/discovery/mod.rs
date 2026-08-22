@@ -27,7 +27,7 @@ use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
 
 use crate::attachment_profiles::ComponentProfileStore;
-use crate::device_settings::DeviceSettingsStore;
+use crate::device_settings::DeviceSettingsAccess;
 use crate::domain::scene::SceneService;
 use crate::domain::spatial::SpatialService;
 use crate::layout_auto_exclusions;
@@ -100,7 +100,7 @@ pub struct DiscoveryRuntime {
     pub attachment_profiles: Arc<RwLock<ComponentProfileStore>>,
 
     /// Persisted global and per-device output settings.
-    pub device_settings: Arc<RwLock<DeviceSettingsStore>>,
+    pub device_settings: DeviceSettingsAccess,
 
     /// Frame-boundary scene changes mirrored into the render thread.
     pub scene_transactions: SceneTransactionQueue,

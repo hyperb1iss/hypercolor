@@ -663,7 +663,6 @@ mod tests {
     use hypercolor_types::viewport::ViewportRect;
 
     use super::{default_display_group_viewport, display_descriptors_for_groups};
-    use crate::device_settings::DeviceSettingsStore;
     use crate::display_output::DISPLAY_FACE_DEFAULT_FPS;
     use crate::output_power::OutputPowerState;
     use crate::performance::PerformanceTracker;
@@ -886,9 +885,6 @@ mod tests {
             input_manager: Arc::new(Mutex::new(InputManager::new())),
             interaction_routing: crate::interaction_routing::InteractionRoutingControl::default(),
             power_state,
-            device_settings: Arc::new(RwLock::new(DeviceSettingsStore::new(PathBuf::from(
-                "device-settings.json",
-            )))),
             scene_transactions: SceneTransactionQueue::default(),
             screen_capture_configured: false,
             canvas_dims: CanvasDims::new(320, 200),

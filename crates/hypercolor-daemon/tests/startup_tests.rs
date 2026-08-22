@@ -309,7 +309,7 @@ async fn daemon_initialization_relocates_machine_state_out_of_data() {
         state.driver_host.driver_inventory().path(),
         guard.state_path("driver-inventory.json")
     );
-    assert_eq!(state.device_settings.read().await.global_brightness(), 0.42);
+    assert_eq!(state.output_power.global_brightness(), 0.42);
     for (file_name, _) in &legacy_documents {
         assert!(guard.state_path(file_name).exists());
         assert!(!guard.legacy_state_path(file_name).exists());
@@ -1397,7 +1397,6 @@ async fn daemon_start_restores_persisted_active_layout_from_disk() {
             active_scene_id: Some(SceneId::DEFAULT.to_string()),
             default_scene_groups: Vec::new(),
             active_layout_id: Some(restored_layout.id.clone()),
-            global_brightness: 1.0,
             manual_paused: false,
         },
     )
@@ -1428,18 +1427,27 @@ async fn daemon_start_restores_persisted_active_layout_from_disk() {
 }
 
 #[tokio::test]
-async fn daemon_start_restores_manual_pause_before_rendering() {
+async fn daemon_start_discards_legacy_runtime_brightness_and_restores_pause() {
     let guard = TestDataDirGuard::new().await;
-    runtime_state::save(
-        &guard.runtime_state_path(),
-        &runtime_state::RuntimeSessionSnapshot {
-            active_scene_id: Some(SceneId::DEFAULT.to_string()),
-            global_brightness: 0.42,
-            manual_paused: true,
-            ..runtime_state::RuntimeSessionSnapshot::default()
-        },
+    let runtime_path = guard.runtime_state_path();
+    std::fs::create_dir_all(
+        runtime_path
+            .parent()
+            .expect("runtime state path should have a parent"),
     )
-    .expect("runtime state should save");
+    .expect("runtime state directory should build");
+    std::fs::write(
+        &runtime_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "active_scene_id": SceneId::DEFAULT.to_string(),
+            "default_scene_groups": [],
+            "active_layout_id": null,
+            "global_brightness": 0.42,
+            "manual_paused": true,
+        }))
+        .expect("legacy runtime snapshot should serialize"),
+    )
+    .expect("legacy runtime snapshot should write");
 
     let mut config = default_config();
     config.daemon.start_scene = "default".into();
@@ -1454,6 +1462,11 @@ async fn daemon_start_restores_manual_pause_before_rendering() {
 
     assert!(state.output_power.snapshot().manually_paused());
     assert_eq!(state.output_power.global_brightness(), 1.0);
+    let rewritten: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&runtime_path).expect("rewritten runtime snapshot should read"),
+    )
+    .expect("rewritten runtime snapshot should parse");
+    assert!(rewritten.get("global_brightness").is_none());
     assert_eq!(
         state.render_loop.read().await.state(),
         RenderLoopState::Paused
@@ -1645,7 +1658,6 @@ async fn daemon_start_restores_named_active_scene_and_default_groups() {
             active_scene_id: Some(named_scene_id.to_string()),
             default_scene_groups: vec![default_group.clone()],
             active_layout_id: None,
-            global_brightness: 1.0,
             manual_paused: false,
         },
     )
@@ -1817,7 +1829,6 @@ async fn default_scene_contents_restore_on_restart() {
                 layers_version: 0,
             }],
             active_layout_id: None,
-            global_brightness: 1.0,
             manual_paused: false,
         },
     )
@@ -1858,7 +1869,6 @@ async fn paused_startup_seeds_and_reasserts_late_connected_device_output() {
         &guard.runtime_state_path(),
         &runtime_state::RuntimeSessionSnapshot {
             active_scene_id: Some(SceneId::DEFAULT.to_string()),
-            global_brightness: 1.0,
             manual_paused: true,
             ..runtime_state::RuntimeSessionSnapshot::default()
         },

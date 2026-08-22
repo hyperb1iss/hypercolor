@@ -54,7 +54,7 @@ use hypercolor_types::spatial::{
 
 use hypercolor_daemon::discovery::DiscoveryRuntime;
 use hypercolor_daemon::logical_devices::LogicalDevice;
-use hypercolor_daemon::output_power::OutputPowerState;
+use hypercolor_daemon::output_power::{OutputPower, OutputPowerState};
 use hypercolor_daemon::performance::PerformanceTracker;
 use hypercolor_daemon::preview_runtime::{PreviewPixelFormat, PreviewRuntime, PreviewStreamDemand};
 use hypercolor_daemon::render_thread::{
@@ -79,6 +79,13 @@ fn test_layout(zones: Vec<Output>) -> SpatialLayout {
         spaces: None,
         version: 1,
     }
+}
+
+fn device_settings_access() -> hypercolor_daemon::device_settings::DeviceSettingsAccess {
+    OutputPower::new(DeviceSettingsStore::new(PathBuf::from(
+        "device-settings.json",
+    )))
+    .device_settings()
 }
 
 fn demand_input(
@@ -1182,9 +1189,6 @@ fn make_render_state(
         interaction_routing:
             hypercolor_daemon::interaction_routing::InteractionRoutingControl::default(),
         power_state,
-        device_settings: Arc::new(RwLock::new(DeviceSettingsStore::new(PathBuf::from(
-            "device-settings.json",
-        )))),
         scene_transactions: SceneTransactionQueue::default(),
         screen_capture_configured: false,
         canvas_dims: CanvasDims::new(320, 200),
@@ -2807,9 +2811,7 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
         attachment_profiles: Arc::new(RwLock::new(ComponentProfileStore::new(PathBuf::from(
             "attachment-profiles.json",
         )))),
-        device_settings: Arc::new(RwLock::new(DeviceSettingsStore::new(PathBuf::from(
-            "device-settings.json",
-        )))),
+        device_settings: device_settings_access(),
         scene_transactions: SceneTransactionQueue::default(),
         runtime_state_path: PathBuf::from("runtime-state.json"),
         device_aliases_path: PathBuf::from("device-aliases.json"),
@@ -2864,9 +2866,6 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
         interaction_routing:
             hypercolor_daemon::interaction_routing::InteractionRoutingControl::default(),
         power_state,
-        device_settings: Arc::new(RwLock::new(DeviceSettingsStore::new(PathBuf::from(
-            "device-settings.json",
-        )))),
         scene_transactions: SceneTransactionQueue::default(),
         screen_capture_configured: false,
         canvas_dims: CanvasDims::new(320, 200),
@@ -3004,9 +3003,7 @@ async fn newer_success_fences_deferred_async_failure_recovery() {
         attachment_profiles: Arc::new(RwLock::new(ComponentProfileStore::new(PathBuf::from(
             "attachment-profiles.json",
         )))),
-        device_settings: Arc::new(RwLock::new(DeviceSettingsStore::new(PathBuf::from(
-            "device-settings.json",
-        )))),
+        device_settings: device_settings_access(),
         scene_transactions: SceneTransactionQueue::default(),
         runtime_state_path: PathBuf::from("runtime-state.json"),
         device_aliases_path: PathBuf::from("device-aliases.json"),
@@ -3197,9 +3194,7 @@ async fn pipeline_keeps_rendering_while_async_write_failure_disconnects() {
         attachment_profiles: Arc::new(RwLock::new(ComponentProfileStore::new(PathBuf::from(
             "attachment-profiles.json",
         )))),
-        device_settings: Arc::new(RwLock::new(DeviceSettingsStore::new(PathBuf::from(
-            "device-settings.json",
-        )))),
+        device_settings: device_settings_access(),
         scene_transactions: SceneTransactionQueue::default(),
         runtime_state_path: PathBuf::from("runtime-state.json"),
         device_aliases_path: PathBuf::from("device-aliases.json"),
@@ -4787,9 +4782,6 @@ async fn release_sleep_clears_published_frame_and_canvas_once() {
         interaction_routing:
             hypercolor_daemon::interaction_routing::InteractionRoutingControl::default(),
         power_state,
-        device_settings: Arc::new(RwLock::new(DeviceSettingsStore::new(PathBuf::from(
-            "device-settings.json",
-        )))),
         scene_transactions: SceneTransactionQueue::default(),
         screen_capture_configured: false,
         canvas_dims: CanvasDims::new(320, 200),

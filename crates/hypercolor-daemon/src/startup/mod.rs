@@ -36,7 +36,7 @@ use hypercolor_types::spatial::SpatialLayout;
 
 use crate::attachment_profiles::ComponentProfileStore;
 use crate::device_metrics::DeviceMetricsSnapshotStore;
-use crate::device_settings::DeviceSettingsStore;
+use crate::device_settings::DeviceSettingsAccess;
 use crate::discovery;
 use crate::display_output::DisplayOutputThread;
 use crate::display_preferences::DisplayPreferencesStore;
@@ -212,7 +212,7 @@ pub struct DaemonState {
     pub display_preferences: Arc<RwLock<DisplayPreferencesStore>>,
 
     /// Persisted global and per-device output settings.
-    pub device_settings: Arc<RwLock<DeviceSettingsStore>>,
+    pub device_settings: DeviceSettingsAccess,
 
     /// Persisted virtual display simulator definitions.
     pub simulated_displays: Arc<RwLock<SimulatedDisplayStore>>,

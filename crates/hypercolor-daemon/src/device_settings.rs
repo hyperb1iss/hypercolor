@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::Context;
 use hypercolor_core::device::DeviceRegistry;
@@ -16,7 +17,10 @@ use tracing::{info, warn};
 use crate::path_migration::{
     MigratedStore, MigrationOutcome, PathMigrationEntry, VersionedDocument, migrate,
 };
-use crate::persistence::{AtomicFileWriter, serialize_json_pretty, write_atomic};
+use crate::persistence::{
+    AtomicFileWriter, AtomicWriteCommitResult, PersistenceError, serialize_json_pretty,
+    write_atomic,
+};
 
 const STORE_SUBJECT: &str = "device settings";
 
@@ -152,6 +156,54 @@ pub struct DeviceSettingsStore {
     refuse_writes: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct DeviceSettingsAccess {
+    store: Arc<RwLock<DeviceSettingsStore>>,
+}
+
+#[derive(Debug)]
+pub(crate) enum BrightnessPersistence {
+    Durable,
+    Retrying(PersistenceError),
+}
+
+impl DeviceSettingsAccess {
+    pub(crate) fn new(store: Arc<RwLock<DeviceSettingsStore>>) -> Self {
+        Self { store }
+    }
+
+    pub async fn device_settings_for_key(&self, key: &str) -> Option<StoredDeviceSettings> {
+        self.store.read().await.device_settings_for_key(key)
+    }
+
+    pub async fn persist_device_settings(
+        &self,
+        key: &str,
+        settings: StoredDeviceSettings,
+    ) -> anyhow::Result<()> {
+        let mut store = self.store.write().await;
+        store.set_device_settings(key, settings);
+        store.save()
+    }
+
+    pub async fn driver_control_values_for_key(
+        &self,
+        key: &str,
+    ) -> anyhow::Result<ControlValueMap> {
+        self.store.read().await.driver_control_values_for_key(key)
+    }
+
+    pub async fn persist_driver_control_values(
+        &self,
+        key: &str,
+        values: ControlValueMap,
+    ) -> anyhow::Result<()> {
+        let mut store = self.store.write().await;
+        store.set_driver_control_values(key, values)?;
+        store.save()
+    }
+}
+
 impl DeviceSettingsStore {
     /// Create an empty store rooted at `path`.
     #[must_use]
@@ -258,9 +310,53 @@ impl DeviceSettingsStore {
         self.snapshot.global_brightness.clamp(0.0, 1.0)
     }
 
-    /// Persist a global brightness scalar.
-    pub(crate) fn set_global_brightness(&mut self, brightness: f32) {
-        self.snapshot.global_brightness = brightness.clamp(0.0, 1.0);
+    pub(crate) fn persist_global_brightness(
+        &mut self,
+        _authority: &crate::output_power::BrightnessMutationAuthority,
+        brightness: f32,
+    ) -> anyhow::Result<BrightnessPersistence> {
+        if let Some(reason) = &self.refuse_writes {
+            anyhow::bail!("device settings were not persisted: {reason}");
+        }
+
+        let mut next = self.snapshot.clone();
+        next.global_brightness = brightness.clamp(0.0, 1.0);
+        let payload = serialize_settings_snapshot(&next)?;
+        let rollback_payload = serialize_settings_snapshot(&self.snapshot)?;
+        let writer = AtomicFileWriter::new(&self.path).with_context(|| {
+            format!(
+                "failed to prepare device settings persistence at {}",
+                self.path.display()
+            )
+        })?;
+        let outcome = writer.reserve().admit(payload).commit_stage_aware();
+
+        match outcome {
+            AtomicWriteCommitResult::DurableWritten => {
+                self.snapshot = next;
+                Ok(BrightnessPersistence::Durable)
+            }
+            AtomicWriteCommitResult::ReplacementVisibleButNotDurable(error) => {
+                self.snapshot = next;
+                Ok(BrightnessPersistence::Retrying(error))
+            }
+            AtomicWriteCommitResult::FailedBeforeReplacement(error) => {
+                let rollback = writer
+                    .reserve()
+                    .admit(rollback_payload)
+                    .commit_stage_aware();
+                if matches!(rollback, AtomicWriteCommitResult::Superseded) {
+                    anyhow::bail!(
+                        "global brightness rollback was superseded after persistence failed: \
+                         {error}"
+                    );
+                }
+                Err(error).context("failed to persist global brightness")
+            }
+            AtomicWriteCommitResult::Superseded => {
+                anyhow::bail!("global brightness persistence was superseded before publication")
+            }
+        }
     }
 
     /// Return stored settings for a persisted device settings key.
@@ -627,12 +723,12 @@ pub async fn device_settings_keys(
 /// attached hardware proves what it is.
 pub async fn resolve_device_settings_key(
     registry: &DeviceRegistry,
-    store: &RwLock<DeviceSettingsStore>,
+    access: &DeviceSettingsAccess,
     device_id: DeviceId,
 ) -> String {
     let keys = device_settings_keys(registry, device_id).await;
     if !keys.legacy.is_empty() {
-        let mut guard = store.write().await;
+        let mut guard = access.store.write().await;
         if guard.adopt_legacy_device_key(&keys.canonical, &keys.legacy)
             && let Err(error) = guard.save()
         {
@@ -763,17 +859,26 @@ mod tests {
         seeded.save().expect("seed saves");
 
         let (registry, device_id, portable_key) = claimed_registry("net:wled:aaa").await;
-        let store = RwLock::new(DeviceSettingsStore::load(&path).expect("store loads"));
+        let access = DeviceSettingsAccess::new(Arc::new(RwLock::new(
+            DeviceSettingsStore::load(&path).expect("store loads"),
+        )));
 
-        let key = resolve_device_settings_key(&registry, &store, device_id).await;
+        let key = resolve_device_settings_key(&registry, &access, device_id).await;
         assert_eq!(key, portable_key);
 
-        let guard = store.read().await;
         assert!(
-            guard.device_settings_for_key(&portable_key).is_some(),
+            access
+                .device_settings_for_key(&portable_key)
+                .await
+                .is_some(),
             "the row follows the device onto its canonical key"
         );
-        assert!(guard.device_settings_for_key("net:wled:aaa").is_none());
+        assert!(
+            access
+                .device_settings_for_key("net:wled:aaa")
+                .await
+                .is_none()
+        );
 
         let persisted = DeviceSettingsStore::load(&path).expect("reload");
         assert!(persisted.device_settings_for_key(&portable_key).is_some());

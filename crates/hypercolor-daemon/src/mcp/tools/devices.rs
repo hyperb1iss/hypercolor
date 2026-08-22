@@ -93,8 +93,6 @@ pub(super) async fn handle_set_brightness_with_state(
         });
     }
 
-    let previous = brightness_percent(state.output_power.global_brightness());
-
     let brightness_u16 = u16::try_from(brightness).unwrap_or(100);
     let normalized = f32::from(brightness_u16) / 100.0;
 
@@ -108,8 +106,12 @@ pub(super) async fn handle_set_brightness_with_state(
     .await?;
 
     serialize_result(BrightnessResult {
-        brightness: brightness_percent(outcome.brightness),
+        brightness: brightness_percent(outcome.output.brightness),
         scope: BrightnessScope::Global,
-        previous_brightness: previous,
+        previous_brightness: brightness_percent(
+            outcome
+                .previous_brightness
+                .expect("brightness patch must return its serialized predecessor"),
+        ),
     })
 }

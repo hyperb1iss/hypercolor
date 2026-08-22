@@ -21,15 +21,23 @@ fn rust_sources(root: &Path) -> Vec<(PathBuf, String)> {
 #[test]
 fn app_and_daemon_state_expose_only_the_output_power_authority() {
     let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let api_state = std::fs::read_to_string(source_root.join("api/mod.rs"))
+    let app_state = std::fs::read_to_string(source_root.join("app_state.rs"))
         .expect("API state source should read");
     let daemon_state = std::fs::read_to_string(source_root.join("startup/mod.rs"))
         .expect("daemon state source should read");
 
-    for (name, source) in [("AppState", api_state), ("DaemonState", daemon_state)] {
+    for (name, source) in [("AppState", app_state), ("DaemonState", daemon_state)] {
         assert!(
             source.contains("pub output_power: OutputPower"),
             "{name} must expose the canonical OutputPower handle"
+        );
+        assert!(
+            source.contains("pub device_settings: DeviceSettingsAccess"),
+            "{name} must expose only the non-brightness settings capability"
+        );
+        assert!(
+            !source.contains("Arc<RwLock<DeviceSettingsStore>>"),
+            "{name} must not expose the raw device settings store"
         );
         assert!(
             !source.contains("pub power_state:"),
@@ -107,6 +115,86 @@ fn transition_mutex_and_brightness_store_mutator_are_private() {
     assert!(!output_power.contains("pub transition: Mutex<()>"));
     assert!(output_power.contains("settings: Arc<RwLock<DeviceSettingsStore>>"));
     assert!(!output_power.contains("pub settings: Arc<RwLock<DeviceSettingsStore>>"));
-    assert!(settings.contains("pub(crate) fn set_global_brightness("));
-    assert!(!settings.contains("pub fn set_global_brightness("));
+    assert!(settings.contains("pub(crate) fn persist_global_brightness("));
+    assert!(!settings.contains("pub fn persist_global_brightness("));
+    assert!(settings.contains("&crate::output_power::BrightnessMutationAuthority"));
+    assert!(output_power.contains("brightness_authority: BrightnessMutationAuthority"));
+    assert!(!output_power.contains("pub brightness_authority: BrightnessMutationAuthority"));
+    assert!(settings.contains("pub struct DeviceSettingsAccess"));
+    assert!(settings.contains("store: Arc<RwLock<DeviceSettingsStore>>"));
+    assert!(!settings.contains("pub store: Arc<RwLock<DeviceSettingsStore>>"));
+    assert!(!settings.contains("pub async fn read("));
+    assert!(!settings.contains("pub async fn write("));
+}
+
+#[test]
+fn brightness_mutation_and_event_publication_stay_inside_output_power() {
+    let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut offenders = Vec::new();
+    for (path, source) in rust_sources(&source_root) {
+        if path.ends_with("output_power.rs") || path.ends_with("device_settings.rs") {
+            continue;
+        }
+        if source.contains("persist_global_brightness(")
+            || source.contains("HypercolorEvent::BrightnessChanged")
+            || source.contains("watch::Sender<OutputPowerState>")
+            || source.contains("Arc<RwLock<DeviceSettingsStore>>")
+        {
+            offenders.push(path);
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "brightness mutation capabilities escaped their owners: {offenders:#?}"
+    );
+}
+
+#[test]
+fn raw_output_power_mutators_stay_private() {
+    let output_power =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/output_power.rs"))
+            .expect("output power source should read");
+
+    for mutator in [
+        "update_for_generation",
+        "update_with_events_for_generation",
+        "update_state",
+        "update_state_with_observer",
+        "update_state_with_events",
+    ] {
+        assert!(
+            !output_power.contains(&format!("pub(crate) fn {mutator}"))
+                && !output_power.contains(&format!("pub fn {mutator}")),
+            "raw OutputPower mutator {mutator} must stay private"
+        );
+    }
+}
+
+#[test]
+fn runtime_state_never_serializes_or_restores_brightness() {
+    let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let runtime_state = std::fs::read_to_string(source_root.join("runtime_state.rs"))
+        .expect("runtime state source should read");
+    let startup = std::fs::read_to_string(source_root.join("startup/lifecycle.rs"))
+        .expect("startup lifecycle source should read");
+    let runtime_session = std::fs::read_to_string(source_root.join("domain/context.rs"))
+        .expect("runtime session source should read");
+
+    assert!(!runtime_state.contains("pub global_brightness:"));
+    assert!(!startup.contains("snapshot.global_brightness"));
+    assert!(!runtime_session.contains("snapshot.global_brightness"));
+}
+
+#[test]
+fn mcp_brightness_uses_the_serialized_mutation_receipt() {
+    let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mcp = std::fs::read_to_string(source_root.join("mcp/tools/devices.rs"))
+        .expect("MCP device tools source should read");
+    let compact = mcp
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect::<String>();
+
+    assert!(!mcp.contains("output_power.global_brightness()"));
+    assert!(compact.contains("outcome.previous_brightness"));
 }

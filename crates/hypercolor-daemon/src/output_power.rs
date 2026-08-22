@@ -7,8 +7,9 @@ use hypercolor_core::bus::HypercolorBus;
 use hypercolor_types::event::HypercolorEvent;
 use hypercolor_types::session::OffOutputBehavior;
 use tokio::sync::{Mutex, MutexGuard, RwLock, watch};
+use tracing::warn;
 
-use crate::device_settings::DeviceSettingsStore;
+use crate::device_settings::{BrightnessPersistence, DeviceSettingsAccess, DeviceSettingsStore};
 
 const FADE_STEP_MS: u64 = 16;
 
@@ -128,7 +129,10 @@ struct OutputPowerInner {
     state: watch::Sender<OutputPowerState>,
     transition: Mutex<()>,
     settings: Arc<RwLock<DeviceSettingsStore>>,
+    brightness_authority: BrightnessMutationAuthority,
 }
+
+pub(crate) struct BrightnessMutationAuthority(());
 
 pub(crate) struct OutputPowerGuard<'a> {
     power: &'a OutputPower,
@@ -148,6 +152,7 @@ impl OutputPower {
                 state,
                 transition: Mutex::new(()),
                 settings: Arc::new(RwLock::new(settings)),
+                brightness_authority: BrightnessMutationAuthority(()),
             }),
         }
     }
@@ -168,27 +173,46 @@ impl OutputPower {
     }
 
     #[must_use]
-    pub fn device_settings(&self) -> Arc<RwLock<DeviceSettingsStore>> {
-        Arc::clone(&self.inner.settings)
+    pub fn device_settings(&self) -> DeviceSettingsAccess {
+        DeviceSettingsAccess::new(Arc::clone(&self.inner.settings))
     }
 
     /// Persist global brightness before publishing it to live consumers.
     ///
-    /// A failed save restores the in-memory store and leaves the watch lane
-    /// unchanged, so the persisted store remains the sole authority.
-    pub async fn set_global_brightness(&self, brightness: f32) -> anyhow::Result<f32> {
+    /// A pre-admission failure leaves the live lane unchanged. Once admitted,
+    /// the retained persistence intent and live projection advance together.
+    pub async fn set_global_brightness(
+        &self,
+        event_bus: &HypercolorBus,
+        brightness: f32,
+    ) -> anyhow::Result<f32> {
+        self.set_global_brightness_with_observer(event_bus, brightness, || {})
+            .await
+    }
+
+    async fn set_global_brightness_with_observer(
+        &self,
+        event_bus: &HypercolorBus,
+        brightness: f32,
+        before_events: impl FnOnce(),
+    ) -> anyhow::Result<f32> {
         let brightness = brightness.clamp(0.0, 1.0);
         let _transition = self.inner.transition.lock().await;
         let previous_live = self.global_brightness();
         let mut settings = self.inner.settings.write().await;
-        let previous_persisted = settings.global_brightness();
-        settings.set_global_brightness(brightness);
-        if let Err(error) = settings.save() {
-            settings.set_global_brightness(previous_persisted);
-            return Err(error);
-        }
+        let persistence =
+            settings.persist_global_brightness(&self.inner.brightness_authority, brightness)?;
         drop(settings);
         self.update_state(|state| state.global_brightness = brightness);
+        before_events();
+        event_bus.publish(HypercolorEvent::DeviceSettingsChanged { key: None });
+        event_bus.publish(HypercolorEvent::BrightnessChanged {
+            old: brightness_percent(previous_live),
+            new_value: brightness_percent(brightness),
+        });
+        if let BrightnessPersistence::Retrying(error) = persistence {
+            warn!(%error, "Global brightness persistence will retry");
+        }
         Ok(previous_live)
     }
 
@@ -290,7 +314,7 @@ impl OutputPower {
         })
     }
 
-    pub(crate) fn update_for_generation(
+    fn update_for_generation(
         &self,
         generation: u64,
         update: impl FnOnce(&mut OutputPowerState),
@@ -375,7 +399,7 @@ impl OutputPowerGuard<'_> {
         })
     }
 
-    pub(crate) fn update_with_events_for_generation(
+    fn update_with_events_for_generation(
         &self,
         event_bus: &HypercolorBus,
         generation: u64,
@@ -428,10 +452,15 @@ fn publish_power_transition(event_bus: &HypercolorBus, transition: OutputPowerTr
     }
 }
 
+fn brightness_percent(brightness: f32) -> u8 {
+    (brightness.clamp(0.0, 1.0) * 100.0).round() as u8
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
     use std::sync::mpsc;
+    use std::time::Duration;
 
     use hypercolor_core::bus::HypercolorBus;
     use hypercolor_types::event::HypercolorEvent;
@@ -564,6 +593,83 @@ mod tests {
             HypercolorEvent::Resumed
         ));
         assert!(!power.snapshot().sleeping());
+    }
+
+    #[test]
+    fn concurrent_brightness_writers_publish_serialized_receipts() {
+        let tempdir = tempfile::tempdir().expect("tempdir should build");
+        let power = Arc::new(OutputPower::new(DeviceSettingsStore::new(
+            tempdir.path().join("device-settings.json"),
+        )));
+        let event_bus = Arc::new(HypercolorBus::new());
+        let mut events = event_bus.subscribe_all();
+        let (first_boundary_tx, first_boundary_rx) = mpsc::channel();
+        let (release_first_tx, release_first_rx) = mpsc::channel();
+
+        let first_power = Arc::clone(&power);
+        let first_event_bus = Arc::clone(&event_bus);
+        let first = std::thread::spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("first runtime should build")
+                .block_on(first_power.set_global_brightness_with_observer(
+                    &first_event_bus,
+                    0.25,
+                    || {
+                        first_boundary_tx
+                            .send(())
+                            .expect("first boundary receiver should remain open");
+                        release_first_rx
+                            .recv()
+                            .expect("first release sender should remain open");
+                    },
+                ))
+                .expect("first brightness should persist")
+        });
+        first_boundary_rx
+            .recv()
+            .expect("first writer should reach the event boundary");
+
+        let second_power = Arc::clone(&power);
+        let second_event_bus = Arc::clone(&event_bus);
+        let (second_started_tx, second_started_rx) = mpsc::channel();
+        let second = std::thread::spawn(move || {
+            second_started_tx
+                .send(())
+                .expect("second start receiver should remain open");
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("second runtime should build")
+                .block_on(second_power.set_global_brightness(&second_event_bus, 0.75))
+                .expect("second brightness should persist")
+        });
+        second_started_rx
+            .recv()
+            .expect("second writer should start while the first holds authority");
+        std::thread::sleep(Duration::from_millis(25));
+
+        assert_eq!(power.global_brightness(), 0.25);
+        assert!(matches!(
+            events.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
+
+        release_first_tx
+            .send(())
+            .expect("first writer should remain blocked");
+        assert_eq!(first.join().expect("first writer should not panic"), 1.0);
+        assert_eq!(second.join().expect("second writer should not panic"), 0.25);
+
+        let mut brightness_events = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            if let HypercolorEvent::BrightnessChanged { old, new_value } = event.event {
+                brightness_events.push((old, new_value));
+            }
+        }
+        assert_eq!(brightness_events, vec![(100, 25), (25, 75)]);
+        assert_eq!(power.global_brightness(), 0.75);
     }
 
     use super::publish_power_transition;

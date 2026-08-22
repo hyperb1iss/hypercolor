@@ -78,7 +78,6 @@ use self::pipeline_driver::run_pipeline;
 pub(crate) use self::producer_queue::ProducerFrame;
 pub(crate) use self::render_groups::{RenderSceneContext, ZoneFrameInputs};
 pub(crate) use self::scene_dependency::SceneDependencyKey;
-use crate::device_settings::DeviceSettingsStore;
 use crate::discovery::DiscoveryRuntime;
 use crate::domain::scene::{ScenePlanReader, SceneService};
 use crate::domain::spatial::SpatialService;
@@ -304,9 +303,6 @@ pub struct RenderThreadState {
 
     /// Session policy output state (brightness scale + sleep flag).
     pub power_state: watch::Receiver<OutputPowerState>,
-
-    /// Persisted global and per-device output settings.
-    pub device_settings: Arc<RwLock<DeviceSettingsStore>>,
 
     /// Frame-boundary scene changes consumed by the render thread.
     pub scene_transactions: SceneTransactionQueue,

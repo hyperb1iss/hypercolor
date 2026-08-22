@@ -26,7 +26,7 @@ pub async fn patch_output(
     Json(request): Json<OutputPatchRequest>,
 ) -> Response {
     match domain::output::patch_output(&state.domains.output, request).await {
-        Ok(output) => envelope::ok(output),
+        Ok(outcome) => envelope::ok(outcome.output),
         Err(error) => error.into_response(),
     }
 }

@@ -28,6 +28,7 @@ use hypercolor_daemon::driver_inventory::{DRIVER_INVENTORY_FILENAME, DriverInven
 use hypercolor_daemon::layout_auto_exclusions::LayoutAutoExclusionKey;
 use hypercolor_daemon::logical_devices::{LogicalDevice, LogicalDeviceKind};
 use hypercolor_daemon::network::{self, DaemonDriverHost};
+use hypercolor_daemon::output_power::OutputPower;
 use hypercolor_daemon::scene_transactions::SceneTransactionQueue;
 use hypercolor_driver_api::{
     CredentialStore, DiscoveryCapability, DiscoveryRequest, DriverConfigView, DriverDescriptor,
@@ -507,9 +508,10 @@ fn make_runtime_with_registry(
     let attachment_profiles = Arc::new(RwLock::new(ComponentProfileStore::new(
         std::path::PathBuf::from("attachment-profiles.json"),
     )));
-    let device_settings = Arc::new(RwLock::new(DeviceSettingsStore::new(
-        std::path::PathBuf::from("device-settings.json"),
-    )));
+    let device_settings = OutputPower::new(DeviceSettingsStore::new(std::path::PathBuf::from(
+        "device-settings.json",
+    )))
+    .device_settings();
     let usb_protocol_configs = UsbProtocolConfigStore::new();
     let credential_store = Arc::new(
         CredentialStore::open_blocking(&std::env::temp_dir().join(format!(
@@ -548,7 +550,7 @@ fn make_runtime_with_registry(
         logical_devices: Arc::clone(&logical_devices),
         attachment_registry: Arc::clone(&attachment_registry),
         attachment_profiles: Arc::clone(&attachment_profiles),
-        device_settings: Arc::clone(&device_settings),
+        device_settings: device_settings.clone(),
         scene_transactions: scene_transactions.clone(),
         runtime_state_path: runtime_state_path.clone(),
         device_aliases_path: runtime_state_path.with_file_name("device-aliases.json"),

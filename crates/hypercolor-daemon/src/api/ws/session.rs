@@ -1713,6 +1713,8 @@ async fn send_json(
 
 #[cfg(test)]
 mod hello_state_tests {
+    use hypercolor_types::session::OffOutputBehavior;
+
     use super::build_hello_state;
     use crate::app_state::AppState;
 
@@ -1721,17 +1723,19 @@ mod hello_state_tests {
         let state = AppState::new();
         state
             .output_power
-            .set_global_brightness(0.42)
+            .set_global_brightness(&state.event_bus, 0.42)
             .await
             .expect("brightness should persist");
         let generation = state.output_power.begin_session_transition();
         state
             .output_power
-            .transition()
-            .await
-            .update_with_events_for_generation(&state.event_bus, generation, |power| {
-                power.session_sleeping = true;
-            });
+            .pause_for_session(
+                &state.event_bus,
+                generation,
+                OffOutputBehavior::Static,
+                [0, 0, 0],
+            )
+            .await;
 
         let hello = build_hello_state(&state).await;
 

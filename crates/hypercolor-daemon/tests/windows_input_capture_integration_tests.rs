@@ -6,7 +6,6 @@
 #![cfg(target_os = "windows")]
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -26,7 +25,6 @@ use hypercolor_core::input::{
 };
 use hypercolor_core::scene::{SceneManager, make_scene};
 use hypercolor_core::spatial::SpatialEngine;
-use hypercolor_daemon::device_settings::DeviceSettingsStore;
 use hypercolor_daemon::domain::scene::SceneService;
 use hypercolor_daemon::domain::spatial::SpatialService;
 use hypercolor_daemon::interaction_routing::InteractionRoutingControl;
@@ -162,9 +160,6 @@ fn render_state(input_manager: InputManager, screen_capture_configured: bool) ->
         input_manager: Arc::new(Mutex::new(input_manager)),
         interaction_routing: InteractionRoutingControl::default(),
         power_state,
-        device_settings: Arc::new(RwLock::new(DeviceSettingsStore::new(PathBuf::from(
-            "windows-input-capture-fixture-settings.json",
-        )))),
         scene_transactions: SceneTransactionQueue::default(),
         screen_capture_configured,
         canvas_dims: CanvasDims::new(4, 3),

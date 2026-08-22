@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_daemon::device_settings::DeviceSettingsStore;
 use hypercolor_daemon::output_power::{OutputPower, OutputPowerTransition};
@@ -10,8 +12,11 @@ async fn brightness_is_persisted_before_live_publication() {
     let power = OutputPower::new(DeviceSettingsStore::new(path.clone()));
     let mut updates = power.subscribe();
     let writer = power.clone();
+    let event_bus = Arc::new(HypercolorBus::new());
+    let writer_event_bus = Arc::clone(&event_bus);
 
-    let write = tokio::spawn(async move { writer.set_global_brightness(0.42).await });
+    let write =
+        tokio::spawn(async move { writer.set_global_brightness(&writer_event_bus, 0.42).await });
     updates
         .changed()
         .await
@@ -38,9 +43,10 @@ async fn failed_brightness_persistence_leaves_live_state_unpublished() {
     let path = blocked_parent.join("device-settings.json");
     let power = OutputPower::new(DeviceSettingsStore::new(path.clone()));
     let updates = power.subscribe();
+    let event_bus = HypercolorBus::new();
 
     power
-        .set_global_brightness(0.25)
+        .set_global_brightness(&event_bus, 0.25)
         .await
         .expect_err("unwritable settings path should fail");
 
@@ -55,7 +61,7 @@ async fn failed_brightness_persistence_leaves_live_state_unpublished() {
     std::fs::create_dir(&blocked_parent).expect("settings directory should build");
     assert_eq!(
         power
-            .set_global_brightness(0.25)
+            .set_global_brightness(&event_bus, 0.25)
             .await
             .expect("retry should persist"),
         1.0
@@ -65,6 +71,93 @@ async fn failed_brightness_persistence_leaves_live_state_unpublished() {
             .expect("settings should reload")
             .global_brightness(),
         0.25
+    );
+}
+
+#[cfg(all(unix, feature = "persistence-test-hooks"))]
+#[tokio::test]
+async fn post_replacement_failure_keeps_memory_live_and_retained_bytes_aligned() {
+    use std::time::Duration;
+
+    use hypercolor_core::persistence::AtomicFileWriter;
+
+    let tempdir = tempfile::tempdir().expect("tempdir should build");
+    let path = tempdir.path().join("device-settings.json");
+    let writer = AtomicFileWriter::new(&path).expect("persistence writer should build");
+    writer.set_injected_directory_sync_failures(1);
+    let power = OutputPower::new(DeviceSettingsStore::new(path.clone()));
+    let mut updates = power.subscribe();
+    let event_bus = HypercolorBus::new();
+
+    assert_eq!(
+        power
+            .set_global_brightness(&event_bus, 0.25)
+            .await
+            .expect("an admitted retry must remain authoritative"),
+        1.0
+    );
+    updates
+        .changed()
+        .await
+        .expect("admitted brightness should publish live");
+    assert_eq!(power.global_brightness(), 0.25);
+    assert_eq!(
+        DeviceSettingsStore::load(&path)
+            .expect("visible replacement should reload")
+            .global_brightness(),
+        0.25
+    );
+
+    writer
+        .flush(Duration::from_secs(1))
+        .expect("retained brightness should become durable");
+    assert_eq!(
+        DeviceSettingsStore::load(&path)
+            .expect("durable replacement should reload")
+            .global_brightness(),
+        0.25
+    );
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+#[tokio::test]
+async fn pre_replacement_failure_retains_rollback_without_publishing_live_state() {
+    use std::time::Duration;
+
+    use hypercolor_core::persistence::AtomicFileWriter;
+
+    let tempdir = tempfile::tempdir().expect("tempdir should build");
+    let path = tempdir.path().join("device-settings.json");
+    let writer = AtomicFileWriter::new(&path).expect("persistence writer should build");
+    writer.set_injected_replace_failures(2);
+    let power = OutputPower::new(DeviceSettingsStore::new(path.clone()));
+    let updates = power.subscribe();
+    let event_bus = HypercolorBus::new();
+    let mut events = event_bus.subscribe_all();
+
+    power
+        .set_global_brightness(&event_bus, 0.25)
+        .await
+        .expect_err("a pre-replacement failure must reject the mutation");
+
+    assert_eq!(power.global_brightness(), 1.0);
+    assert!(
+        !updates
+            .has_changed()
+            .expect("watch sender should remain open")
+    );
+    assert!(matches!(
+        events.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
+    writer
+        .flush(Duration::from_secs(1))
+        .expect("retained rollback should become durable");
+    assert_eq!(
+        DeviceSettingsStore::load(&path)
+            .expect("rolled-back settings should reload")
+            .global_brightness(),
+        1.0
     );
 }
 

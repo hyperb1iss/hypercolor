@@ -642,7 +642,7 @@ impl DaemonState {
             logical_devices: Arc::clone(&logical_devices),
             attachment_registry: Arc::clone(&attachment_registry),
             attachment_profiles: Arc::clone(&attachment_profiles),
-            device_settings: Arc::clone(&device_settings),
+            device_settings: device_settings.clone(),
             scene_transactions: scene_transactions.clone(),
             runtime_state_path: runtime_state_path.clone(),
             device_aliases_path: device_aliases_path.clone(),

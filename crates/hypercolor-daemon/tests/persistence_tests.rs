@@ -362,7 +362,6 @@ fn runtime_snapshot_moves_to_state_with_a_durable_backup() {
     let canonical = directory.path().join("state/runtime-state.json");
     let expected = RuntimeSessionSnapshot {
         active_scene_id: Some("active".to_owned()),
-        global_brightness: 0.7,
         ..RuntimeSessionSnapshot::default()
     };
     save(&legacy, &expected).expect("seed legacy runtime snapshot");
@@ -377,7 +376,6 @@ fn runtime_snapshot_moves_to_state_with_a_durable_backup() {
 
     let loaded = loaded.expect("runtime snapshot exists");
     assert_eq!(loaded.active_scene_id, expected.active_scene_id);
-    assert!((loaded.global_brightness - expected.global_brightness).abs() < f32::EPSILON);
     assert!(canonical.exists());
     assert!(!legacy.exists());
     assert!(backup.exists());

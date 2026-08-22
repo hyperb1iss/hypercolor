@@ -1899,13 +1899,9 @@ async fn global_brightness_endpoint_updates_status_and_persistence() {
         serde_json::json!(0.42)
     );
 
-    let runtime_state_raw = fs::read_to_string(tmp.path().join("runtime-state.json"))
-        .expect("runtime state file should exist");
-    let runtime_state_json: serde_json::Value =
-        serde_json::from_str(&runtime_state_raw).expect("runtime state file should be valid");
-    assert_eq!(
-        runtime_state_json["global_brightness"],
-        serde_json::json!(0.42)
+    assert!(
+        !tmp.path().join("runtime-state.json").exists(),
+        "brightness must not create a second persisted authority"
     );
 }
 
@@ -4497,9 +4493,7 @@ async fn get_control_surface_returns_driver_owned_device_surface_by_id() {
     .await;
     state
         .device_settings
-        .write()
-        .await
-        .set_driver_control_values(
+        .persist_driver_control_values(
             &settings_key,
             ControlValueMap::from([
                 (
@@ -4512,6 +4506,7 @@ async fn get_control_surface_returns_driver_owned_device_surface_by_id() {
                 ),
             ]),
         )
+        .await
         .expect("driver controls should canonicalize");
     let app = test_app_with_state(state);
     let surface_id = format!("driver:wled:device:{device_id}");

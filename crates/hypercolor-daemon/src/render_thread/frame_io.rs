@@ -765,7 +765,6 @@ impl AudioSignalSnapshot {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
     use std::sync::Arc;
 
     use hypercolor_core::asset::AssetLibrary;
@@ -791,7 +790,6 @@ mod tests {
         canvas_frame_publication_identity, canvas_storage_publication_identity,
         publish_frame_updates, published_surface_publication_identity, update_published_frame,
     };
-    use crate::device_settings::DeviceSettingsStore;
     use crate::domain::scene::SceneService;
     use crate::output_power::OutputPowerState;
     use crate::performance::PerformanceTracker;
@@ -874,9 +872,6 @@ mod tests {
             input_manager: Arc::new(Mutex::new(InputManager::new())),
             interaction_routing: crate::interaction_routing::InteractionRoutingControl::default(),
             power_state,
-            device_settings: Arc::new(RwLock::new(DeviceSettingsStore::new(PathBuf::from(
-                "device-settings.json",
-            )))),
             scene_transactions: SceneTransactionQueue::default(),
             screen_capture_configured: false,
             canvas_dims: CanvasDims::new(4, 4),

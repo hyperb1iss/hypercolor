@@ -254,17 +254,18 @@ impl DriverControlStore for DaemonDriverHost {
 impl DeviceControlStore for DaemonDriverHost {
     async fn load_device_values(&self, device_id: DeviceId) -> Result<ControlValueMap> {
         let key = self.device_control_settings_key(device_id).await;
-        let store = self.runtime.device_settings.read().await;
-        store.driver_control_values_for_key(&key)
+        self.runtime
+            .device_settings
+            .driver_control_values_for_key(&key)
+            .await
     }
 
     async fn save_device_values(&self, device_id: DeviceId, values: ControlValueMap) -> Result<()> {
         let key = self.device_control_settings_key(device_id).await;
-        {
-            let mut store = self.runtime.device_settings.write().await;
-            store.set_driver_control_values(&key, values)?;
-            store.save()?;
-        }
+        self.runtime
+            .device_settings
+            .persist_driver_control_values(&key, values)
+            .await?;
         // Driver control rows live in their own map, not the per-device
         // settings rows a `Some` key names, so this hint is store-scoped.
         self.runtime

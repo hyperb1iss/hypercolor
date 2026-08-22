@@ -141,7 +141,6 @@ impl DaemonState {
             input_manager: Arc::clone(&self.input_manager),
             interaction_routing: self.interaction_routing.clone(),
             power_state: self.output_power.subscribe(),
-            device_settings: Arc::clone(&self.device_settings),
             scene_transactions: self.scene_transactions.clone(),
             screen_capture_configured: config.capture.enabled,
             canvas_dims: initial_canvas_dims,
@@ -448,9 +447,7 @@ impl DaemonState {
             let spatial = self.spatial_engine.snapshot();
             snapshot.active_layout_id = Some(spatial.layout().id.clone());
         }
-        let output_power = self.output_power.snapshot();
-        snapshot.global_brightness = output_power.global_brightness;
-        snapshot.manual_paused = output_power.manually_paused();
+        snapshot.manual_paused = self.output_power.snapshot().manually_paused();
         self.driver_host
             .driver_inventory()
             .refresh(self.driver_registry.as_ref(), self.driver_host.as_ref())
@@ -505,17 +502,6 @@ impl DaemonState {
             );
             return;
         };
-        if let Err(error) = self
-            .output_power
-            .set_global_brightness(snapshot.global_brightness)
-            .await
-        {
-            warn!(
-                %error,
-                "Failed to sync restored global brightness into device settings store"
-            );
-        }
-
         // Restore active layout if persisted.
         if let Some(layout_id) = &snapshot.active_layout_id {
             let layout = self.layouts.read().await.get(layout_id).cloned();
@@ -634,7 +620,10 @@ impl DaemonState {
         }
 
         if let Some(brightness) = activation_brightness
-            && let Err(error) = self.output_power.set_global_brightness(brightness).await
+            && let Err(error) = self
+                .output_power
+                .set_global_brightness(&self.event_bus, brightness)
+                .await
         {
             warn!(%error, "Failed to persist configured startup scene brightness");
         }

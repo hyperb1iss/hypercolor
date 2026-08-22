@@ -1797,7 +1797,7 @@ async fn apply_activation_brightness(
     };
 
     match crate::domain::output::set_brightness(&ctx.output, brightness).await {
-        Ok(()) => SideEffectOutcome::applied(),
+        Ok(_) => SideEffectOutcome::applied(),
         Err(error) => SideEffectOutcome::failed(format!(
             "brightness did not apply: {error}; patch /output to retry"
         )),

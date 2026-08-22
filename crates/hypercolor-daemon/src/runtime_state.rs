@@ -33,9 +33,6 @@ pub struct RuntimeSessionSnapshot {
     /// Active layout ID, if one was applied to the spatial engine.
     pub active_layout_id: Option<String>,
 
-    /// User-configured global output brightness.
-    pub global_brightness: f32,
-
     /// Explicit user pause state. Transient OS sleep is never persisted.
     pub manual_paused: bool,
 }
@@ -86,7 +83,6 @@ pub fn snapshot_from_scene_manager(manager: &SceneManager) -> RuntimeSessionSnap
         active_scene_id,
         default_scene_groups,
         active_layout_id: None,
-        global_brightness: 1.0,
         manual_paused: false,
     }
 }
@@ -148,8 +144,12 @@ fn read_document(path: &Path) -> Result<RuntimeSessionDocument, RuntimeSessionEr
             path: path.to_path_buf(),
             source,
         })?;
+    let mut decoded = original.clone();
+    if let Some(object) = decoded.as_object_mut() {
+        object.remove("global_brightness");
+    }
     let snapshot: RuntimeSessionSnapshot =
-        serde_json::from_value(original.clone()).map_err(|source| RuntimeSessionError::Parse {
+        serde_json::from_value(decoded).map_err(|source| RuntimeSessionError::Parse {
             path: path.to_path_buf(),
             source,
         })?;
@@ -251,7 +251,6 @@ mod tests {
             active_scene_id: Some(SceneId::DEFAULT.to_string()),
             default_scene_groups: Vec::new(),
             active_layout_id: Some("layout_abc123".to_owned()),
-            global_brightness: 0.42,
             manual_paused: true,
         };
 
@@ -261,7 +260,6 @@ mod tests {
 
         assert_eq!(loaded.active_scene_id, expected.active_scene_id);
         assert_eq!(loaded.default_scene_groups, expected.default_scene_groups);
-        assert!((loaded.global_brightness - expected.global_brightness).abs() < f32::EPSILON);
         assert_eq!(loaded.manual_paused, expected.manual_paused);
     }
 
@@ -347,8 +345,8 @@ mod tests {
     ///
     /// This is forward evolution, not legacy-shape support: a new field
     /// lands with a default so the running daemon keeps reading the file
-    /// it wrote last boot. Removing a field is the other direction and is
-    /// a refusal, covered above.
+    /// it wrote last boot. Retired authority fields are explicitly discarded;
+    /// every other removed field remains a refusal, covered above.
     #[test]
     fn an_absent_field_defaults_rather_than_failing_the_snapshot() {
         let tempdir = TempDir::new().expect("tempdir");
@@ -380,7 +378,6 @@ mod tests {
             active_scene_id: Some(SceneId::DEFAULT.to_string()),
             default_scene_groups: Vec::new(),
             active_layout_id: None,
-            global_brightness: 1.0,
             manual_paused: false,
         });
 

@@ -974,18 +974,18 @@ pub(crate) async fn persist_device_settings_for(
     settings: &DeviceUserSettings,
 ) -> Result<(), String> {
     let key = device_settings_key(state, device_id).await;
-    {
-        let mut store = state.device_settings.write().await;
-        store.set_device_settings(
+    state
+        .device_settings
+        .persist_device_settings(
             &key,
             crate::device_settings::StoredDeviceSettings {
                 name: settings.name.clone(),
                 disabled: !settings.enabled,
                 brightness: settings.brightness,
             },
-        );
-        store.save().map_err(|error| error.to_string())?;
-    }
+        )
+        .await
+        .map_err(|error| error.to_string())?;
     state
         .event_bus
         .publish(HypercolorEvent::DeviceSettingsChanged { key: Some(key) });

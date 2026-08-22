@@ -38,7 +38,7 @@ use hypercolor_types::spatial::SpatialLayout;
 
 use crate::attachment_profiles::ComponentProfileStore;
 use crate::device_metrics::{DeviceMetricsSnapshot, DeviceMetricsSnapshotStore};
-use crate::device_settings::DeviceSettingsStore;
+use crate::device_settings::{DeviceSettingsAccess, DeviceSettingsStore};
 use crate::display_frames::DisplayFrameRuntime;
 use crate::display_preferences::DisplayPreferencesStore;
 use crate::domain::context::{
@@ -196,7 +196,7 @@ pub struct AppState {
     pub display_preferences: Arc<RwLock<DisplayPreferencesStore>>,
 
     /// Persistent per-device user settings store.
-    pub device_settings: Arc<RwLock<DeviceSettingsStore>>,
+    pub device_settings: DeviceSettingsAccess,
 
     /// Persisted virtual display simulator definitions.
     pub simulated_displays: Arc<RwLock<SimulatedDisplayStore>>,
@@ -498,7 +498,7 @@ impl AppState {
             logical_devices: Arc::clone(&logical_devices),
             attachment_registry: Arc::clone(&attachment_registry),
             attachment_profiles: Arc::clone(&attachment_profiles),
-            device_settings: Arc::clone(&device_settings),
+            device_settings: device_settings.clone(),
             scene_transactions: scene_transactions.clone(),
             runtime_state_path: runtime_state_path.clone(),
             device_aliases_path,
@@ -713,7 +713,7 @@ impl AppState {
             attachment_registry: Arc::clone(&daemon.attachment_registry),
             attachment_profiles: Arc::clone(&daemon.attachment_profiles),
             display_preferences: Arc::clone(&daemon.display_preferences),
-            device_settings: Arc::clone(&daemon.device_settings),
+            device_settings: daemon.device_settings.clone(),
             simulated_displays: Arc::clone(&daemon.simulated_displays),
             simulated_display_runtime: Arc::clone(&daemon.simulated_display_runtime),
             display_frames: Arc::clone(&daemon.display_frames),
