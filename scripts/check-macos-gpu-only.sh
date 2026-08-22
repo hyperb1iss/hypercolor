@@ -563,7 +563,11 @@ self_test() {
   for path in \
     crates/hypercolor-core/src/input/screen/macos.rs \
     crates/hypercolor-core/src/input/screen/macos/admission.rs \
-    crates/hypercolor-core/src/input/screen/macos/publication.rs \
+    crates/hypercolor-core/src/input/screen/macos/publication/model.rs \
+    crates/hypercolor-core/src/input/screen/macos/publication/resolution.rs \
+    crates/hypercolor-core/src/input/screen/macos/publication/native.rs \
+    crates/hypercolor-core/src/input/screen/macos/publication/metadata.rs \
+    crates/hypercolor-core/src/input/screen/macos/publication/fixtures.rs \
     crates/hypercolor-core/src/input/screen/macos/status.rs \
     crates/hypercolor-macos-capture/src/frame.rs \
     crates/hypercolor-macos-capture/src/lib.rs; do
@@ -833,21 +837,21 @@ require_guarded crates/hypercolor-core/src/input/screen/macos.rs macos-capture-f
   'fanout_candidate: Option<PreparedCpuPublicationFanoutCandidate>,'
 require_guarded crates/hypercolor-core/src/input/screen/macos.rs macos-capture-fixtures \
   'fanout: Option<PreparedCpuPublicationFanout>,'
-require_guarded crates/hypercolor-core/src/input/screen/macos/publication.rs \
+require_guarded crates/hypercolor-core/src/input/screen/macos/publication/model.rs \
   macos-capture-fixtures \
-  'pub(super) fn cpu_executor'
-require_guarded crates/hypercolor-core/src/input/screen/macos/publication.rs \
+  'pub(in crate::input::screen::macos) fn cpu_executor'
+require_guarded crates/hypercolor-core/src/input/screen/macos/publication/fixtures.rs \
   macos-capture-fixtures \
-  'pub(super) fn legacy_cpu_capture_frame'
-require_guarded crates/hypercolor-core/src/input/screen/macos/publication.rs \
+  'pub(in crate::input::screen::macos) fn legacy_cpu_capture_frame'
+require_guarded crates/hypercolor-core/src/input/screen/macos/publication/fixtures.rs \
   macos-capture-fixtures \
-  'pub(super) fn native_cpu_capture_frame'
-require_guarded crates/hypercolor-core/src/input/screen/macos/publication.rs \
+  'pub(in crate::input::screen::macos) fn native_cpu_capture_frame'
+require_guarded crates/hypercolor-core/src/input/screen/macos/publication/fixtures.rs \
   macos-capture-fixtures \
-  'pub(super) fn publish_macos_cpu_exact'
-require_guarded crates/hypercolor-core/src/input/screen/macos/publication.rs \
+  'pub(in crate::input::screen::macos) fn publish_macos_cpu_exact'
+require_guarded crates/hypercolor-core/src/input/screen/macos/publication/fixtures.rs \
   macos-capture-fixtures \
-  'pub(super) fn publish_macos_scalar_exact'
+  'pub(in crate::input::screen::macos) fn publish_macos_scalar_exact'
 require_guarded crates/hypercolor-core/src/input/screen/macos/admission.rs \
   macos-capture-fixtures \
   'pub(super) fn prepare_macos_exact_runtime'
@@ -856,8 +860,8 @@ require_guarded crates/hypercolor-core/src/input/screen/macos/status.rs \
   'pub(super) fn set_cpu_fallback'
 
 if ! rg -U -q \
-  '#\[cfg\(not\(feature = "macos-capture-fixtures"\)\)\][[:space:]]*pub\(super\) fn resolve_macos_publication_branch_with_telemetry[\s\S]*ScreenPublicationExecutorRequest::Cpu => return Ok\(None\)' \
-  "$repo_root/crates/hypercolor-core/src/input/screen/macos/publication.rs"; then
+  '#\[cfg\(not\(feature = "macos-capture-fixtures"\)\)\][[:space:]]*pub\(in crate::input::screen::macos\) fn resolve_macos_publication_branch_with_telemetry[\s\S]*ScreenPublicationExecutorRequest::Cpu => return Ok\(None\)' \
+  "$repo_root/crates/hypercolor-core/src/input/screen/macos/publication/resolution.rs"; then
   echo 'production macOS publication does not reject CPU execution requests' >&2
   exit 1
 fi
