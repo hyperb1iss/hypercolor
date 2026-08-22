@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use hypercolor_core::config::ConfigManager;
@@ -48,8 +48,6 @@ use tempfile::TempDir;
 use uuid::Uuid;
 
 const INIT_BODY: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}"#;
-static DATA_DIR_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
-
 fn effect_controls(zone: &Zone) -> Option<&HashMap<String, ControlValue>> {
     zone.layers.iter().find_map(|layer| match &layer.source {
         LayerSource::Effect { controls, .. } => Some(controls),
@@ -84,23 +82,11 @@ fn stateless_mcp_config() -> McpConfig {
 }
 
 fn isolated_state_with_tempdir() -> (AppState, TempDir) {
-    let _lock = DATA_DIR_LOCK
-        .lock()
-        .expect("data dir lock should not be poisoned");
     let tempdir = TempDir::new().expect("create temp dir");
     let data_dir = tempdir.path().join("data");
     fs::create_dir_all(&data_dir).expect("create temp data dir");
-    ConfigManager::set_data_dir_override(Some(data_dir));
-    let state = AppState::new();
-    ConfigManager::set_data_dir_override(None);
+    let state = AppState::new_with_data_dir(data_dir);
     (state, tempdir)
-}
-
-fn fresh_app_state() -> AppState {
-    let _lock = DATA_DIR_LOCK
-        .lock()
-        .expect("data dir lock should not be poisoned");
-    AppState::new()
 }
 
 struct FailedInputSource {
@@ -167,7 +153,8 @@ impl InputSource for FailedInputSource {
 
 #[tokio::test]
 async fn diagnose_matches_rest_defaults_and_excludes_protected_parity() {
-    let state = Arc::new(fresh_app_state());
+    let (state, _state_tempdir) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
     let tool_payload = execute_tool_with_state("diagnose", &json!({}), state.as_ref())
         .await
         .expect("diagnose should succeed");
@@ -199,7 +186,7 @@ async fn diagnose_matches_rest_defaults_and_excludes_protected_parity() {
 
 #[tokio::test]
 async fn diagnose_reports_demanded_input_failure_as_unhealthy() {
-    let state = fresh_app_state();
+    let (state, _state_tempdir) = isolated_state_with_tempdir();
     {
         let mut manager = state.input_manager.lock().await;
         manager.add_source(Box::new(FailedInputSource::new()));
@@ -229,7 +216,7 @@ async fn diagnose_reports_demanded_input_failure_as_unhealthy() {
 
 #[tokio::test]
 async fn mcp_status_surfaces_are_exact_while_input_manager_is_held() {
-    let state = fresh_app_state();
+    let (state, _state_tempdir) = isolated_state_with_tempdir();
     state
         .input_manager
         .lock()
@@ -283,7 +270,7 @@ async fn mcp_status_surfaces_are_exact_while_input_manager_is_held() {
 
 #[tokio::test]
 async fn mcp_status_surfaces_report_effective_session_pause() {
-    let state = fresh_app_state();
+    let (state, _state_tempdir) = isolated_state_with_tempdir();
     state
         .power_state
         .send_modify(|power| power.session_sleeping = true);
@@ -620,7 +607,8 @@ fn extract_jsonrpc_payload(body: &str) -> Value {
 
 #[tokio::test]
 async fn mcp_http_initialize_returns_json_in_stateless_mode() {
-    let state = Arc::new(fresh_app_state());
+    let (state, _state_tempdir) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
     let router = mcp::build_router(Arc::clone(&state), &stateless_mcp_config()).with_state(state);
     let (client, base_url) = spawn_router(router).await;
 
@@ -649,7 +637,8 @@ async fn mcp_http_initialize_returns_json_in_stateless_mode() {
 
 #[tokio::test]
 async fn mcp_http_tools_list_and_call_return_structured_results() {
-    let state = Arc::new(fresh_app_state());
+    let (state, _state_tempdir) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
     insert_test_effect(&state, "Aurora").await;
     insert_test_effect(&state, "Aurora Glow").await;
     let router = mcp::build_router(Arc::clone(&state), &stateless_mcp_config()).with_state(state);
@@ -751,7 +740,8 @@ async fn mcp_http_tools_list_and_call_return_structured_results() {
 
 #[tokio::test]
 async fn mcp_http_resources_and_prompts_roundtrip() {
-    let state = Arc::new(fresh_app_state());
+    let (state, _state_tempdir) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
     let router = mcp::build_router(Arc::clone(&state), &stateless_mcp_config()).with_state(state);
     let (client, base_url) = spawn_router(router).await;
     let mcp_url = format!("{base_url}/mcp");
@@ -854,7 +844,8 @@ async fn mcp_http_stateful_mode_uses_session_headers_and_sse() {
         json_response: true,
         ..McpConfig::default()
     };
-    let state = Arc::new(fresh_app_state());
+    let (state, _state_tempdir) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
     let router = mcp::build_router(Arc::clone(&state), &config).with_state(state);
     let (client, base_url) = spawn_router(router).await;
     let mcp_url = format!("{base_url}/mcp");
@@ -921,7 +912,7 @@ async fn api_router_mounts_mcp_when_enabled_in_config() {
     .expect("write config file");
 
     let manager = Arc::new(ConfigManager::new(config_path).expect("load config manager"));
-    let mut state = fresh_app_state();
+    let (mut state, _state_tempdir) = isolated_state_with_tempdir();
     state.config_manager = Some(manager);
 
     let router = api::build_router(Arc::new(state), None);
@@ -2077,7 +2068,7 @@ fn tool_annotations_report_what_each_tool_actually_does() {
 
 #[tokio::test]
 async fn set_color_tool_rejects_missing_color() {
-    let state = fresh_app_state();
+    let (state, _state_tempdir) = isolated_state_with_tempdir();
 
     let error = execute_tool_with_state("set_color", &json!({}), &state)
         .await
@@ -2104,7 +2095,7 @@ fn fuzzy_color_shorthand_hex_requires_an_explicit_hash() {
 
 #[tokio::test]
 async fn set_output_power_tool_validates_desired_state() {
-    let state = fresh_app_state();
+    let (state, _state_tempdir) = isolated_state_with_tempdir();
 
     let error = execute_tool_with_state("set_output_power", &json!({ "state": "off" }), &state)
         .await
@@ -2114,7 +2105,8 @@ async fn set_output_power_tool_validates_desired_state() {
 
 #[tokio::test]
 async fn stateful_set_output_power_is_reversible_and_idempotent() {
-    let state = Arc::new(fresh_app_state());
+    let (state, _state_tempdir) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
 
     let paused = execute_tool_with_state(
         "set_output_power",
@@ -2187,7 +2179,8 @@ fn resource_definitions_match_live_uri_validation() {
 
 #[tokio::test]
 async fn mcp_device_inventory_surfaces_are_exact_and_filterable() {
-    let state = Arc::new(fresh_app_state());
+    let (state, _state_tempdir) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
     let device_id = insert_test_display_device(&state, "Case Display").await;
 
     let resource = read_resource_with_state("hypercolor://devices", state.as_ref())
