@@ -6,14 +6,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::{
-    ComposedFrameSet, CompositionPlan, DisplayFinalizeCacheKey, MediaTextureSourceKey,
+    ComposedFrameSet, DisplayFinalizeCacheKey, MediaTextureSourceKey,
     SparkleFlingerSurfacePoolCounts,
 };
-use crate::render_thread::gpu_device::{
-    GpuBackendPreference, GpuRenderDevice, texture_format_name,
-};
+use crate::render_thread::gpu_device::{GpuRenderDevice, texture_format_name};
 use crate::render_thread::producer_queue::{
-    GpuTextureFrame, GpuTextureFrameLease, GpuTextureFrameOrigin, ProducerFrame,
+    GpuTextureFrame, GpuTextureFrameLease, GpuTextureFrameOrigin,
 };
 #[cfg(all(target_os = "macos", feature = "screen-capture"))]
 use crate::render_thread::producer_queue::{MacosScreenTextureLease, SubmissionRetirementQueue};
@@ -35,8 +33,6 @@ use hypercolor_core::types::canvas::{
     BYTES_PER_PIXEL, Canvas, PublishedSurface, SurfaceStateCounts,
 };
 #[cfg(all(target_os = "macos", feature = "screen-capture"))]
-use hypercolor_macos_gpu_interop::probe_macos_metal4_capabilities;
-#[cfg(all(target_os = "macos", feature = "screen-capture"))]
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::scene::ZoneId;
 
@@ -57,6 +53,7 @@ mod preview;
 mod probe;
 mod projected;
 mod readback;
+mod runtime;
 mod sampler;
 mod screen_upload;
 mod snapshot;
@@ -83,9 +80,9 @@ pub(crate) use display_finalize::{
 };
 use display_finalize::{GpuDisplayFinalizeSurfaceSet, GpuDisplaySourceTexture};
 #[cfg(all(target_os = "macos", feature = "screen-capture"))]
-use macos_screen::MacosScreenGpuRecoveryState;
+use macos_screen::MacosScreenBridge;
 #[cfg(all(target_os = "macos", feature = "screen-capture"))]
-use macos_screen::{MacosScreenBridge, create_screen_bridge};
+use macos_screen::MacosScreenGpuRecoveryState;
 #[cfg(all(target_os = "macos", feature = "screen-capture"))]
 pub(crate) use macos_screen::{MacosScreenCopyOutcome, PreparedMacosScreenTarget};
 #[cfg(all(test, target_os = "macos", feature = "screen-capture"))]
@@ -111,19 +108,18 @@ use screen_upload::{
     ScreenPublicationUploadPool, ScreenUploadContentKey, ScreenUploadResidencyPolicy,
 };
 use source::{
-    CachedGpuSourceCopy, CachedSourceUpload, SourceCopyBindGroupCache, gpu_source_frame,
-    write_rgba_texture,
+    CachedGpuSourceCopy, CachedSourceUpload, SourceCopyBindGroupCache, write_rgba_texture,
 };
 use submission::{FrameInFlight, StashedFrame};
 use telemetry::record_gpu_media_texture_upload;
 pub(crate) use telemetry::{GpuSparkleFlingerTelemetrySnapshot, record_gpu_display_finalize_latch};
+#[cfg(target_os = "windows")]
+use windows_screen::WindowsScreenBridge;
 #[cfg(all(test, target_os = "windows"))]
 use windows_screen::{
     NativeScreenCopyFailurePolicy, native_screen_copy_failure_policy,
     screen_storage_requires_cache_turnover, validate_windows_plan_generation,
 };
-#[cfg(target_os = "windows")]
-use windows_screen::{WindowsScreenBridge, create_screen_bridge};
 #[cfg(target_os = "windows")]
 pub(crate) use windows_screen::{
     is_retryable_native_screen_copy_error, native_screen_copy_error_invalidates_frame,
@@ -420,251 +416,6 @@ impl GpuSparkleFlinger {
             preview,
             compositor,
         }
-    }
-
-    pub(crate) fn new() -> Result<Self> {
-        Self::new_with_backend_preference(GpuBackendPreference::Default)
-    }
-
-    pub(crate) fn new_with_backend_preference(
-        backend_preference: GpuBackendPreference,
-    ) -> Result<Self> {
-        Self::with_render_device(GpuRenderDevice::new_with_backend_preference(
-            "SparkleFlinger GPU compositor",
-            backend_preference,
-        )?)
-    }
-
-    pub(crate) fn with_render_device(render_device: GpuRenderDevice) -> Result<Self> {
-        let probe = probe_render_device(&render_device)?;
-        #[cfg(all(
-            any(target_os = "linux", target_os = "macos", target_os = "windows"),
-            feature = "servo-gpu-import"
-        ))]
-        {
-            let info = render_device.info();
-            #[cfg(target_os = "windows")]
-            let servo_adapter_info = Some(hypercolor_core::effect::ServoGpuImportAdapterInfo {
-                vendor_id: info.adapter_vendor_id,
-                device_id: info.adapter_device_id,
-            });
-            #[cfg(not(target_os = "windows"))]
-            let servo_adapter_info = None;
-            if info.servo_gpu_import_backend_compatible()
-                && let Err(error) = hypercolor_core::effect::install_servo_gpu_import_device(
-                    render_device.device_handle(),
-                    servo_adapter_info,
-                )
-            {
-                tracing::debug!(
-                    %error,
-                    "Servo GPU import device was already installed or unavailable"
-                );
-            } else if let Some(reason) = info.servo_gpu_import_backend_reason() {
-                tracing::debug!(reason, "Servo GPU import device was not installed");
-            }
-        }
-        let device = render_device.device().clone();
-        let queue = render_device.queue().clone();
-        let max_buffer_size = device.limits().max_buffer_size;
-        let max_storage_buffer_binding_size = device.limits().max_storage_buffer_binding_size;
-
-        let pipeline = GpuCompositorPipeline::new(&device);
-        let spatial_sampler = GpuSpatialSampler::new(&device);
-        #[cfg(target_os = "windows")]
-        let (screen_bridge, screen_target) =
-            create_screen_bridge(&device, &queue, probe.max_texture_dimension_2d);
-        #[cfg(all(target_os = "macos", feature = "screen-capture"))]
-        let (screen_bridge, screen_target, macos_screen_recovery) = match create_screen_bridge(
-            &device,
-            probe.max_texture_dimension_2d,
-        ) {
-            Ok((bridge, target)) => {
-                let recovery = MacosScreenGpuRecoveryState::ready(target.id());
-                (Some(bridge), Some(target), recovery)
-            }
-            Err(error) => {
-                tracing::debug!(%error, "renderer does not expose native Metal screen execution");
-                (None, None, MacosScreenGpuRecoveryState::unavailable(&error))
-            }
-        };
-        #[cfg(all(target_os = "macos", feature = "screen-capture"))]
-        let metal4_capable = probe_macos_metal4_capabilities(&device)?.all_required_facilities();
-
-        Ok(Self {
-            _render_device: render_device,
-            device,
-            queue,
-            probe,
-            max_buffer_size,
-            max_storage_buffer_binding_size,
-            canvas_gpu_admitted: true,
-            pipeline,
-            spatial_sampler,
-            opaque_black_texture: None,
-            surfaces: None,
-            compositor_surface_cache: HashMap::new(),
-            display_finalize_surfaces: HashMap::new(),
-            display_finalize_generation: 0,
-            preview_surfaces: None,
-            media_texture_pools: HashMap::new(),
-            media_texture_epoch: 0,
-            projected_group_snapshots: HashMap::new(),
-            immutable_scene_snapshots: Vec::new(),
-            current_output: None,
-            cached_composition_key: None,
-            cached_readback_surface: None,
-            cached_preview_surfaces: Vec::with_capacity(MAX_CACHED_PREVIEW_SURFACES),
-            frame_in_flight: None,
-            pending_preview_map: None,
-            ready_preview_surface: None,
-            sampling_latch: SamplingReadbackLatch::default(),
-            output_generation: 0,
-            producer_content_generation: 0,
-            cached_sample_result: None,
-            #[cfg(target_os = "windows")]
-            screen_bridge,
-            #[cfg(target_os = "windows")]
-            screen_target,
-            #[cfg(target_os = "windows")]
-            screen_storage_id: None,
-            #[cfg(all(target_os = "macos", feature = "screen-capture"))]
-            screen_bridge,
-            #[cfg(all(target_os = "macos", feature = "screen-capture"))]
-            screen_target,
-            #[cfg(all(target_os = "macos", feature = "screen-capture"))]
-            macos_screen_recovery,
-            #[cfg(all(target_os = "macos", feature = "screen-capture"))]
-            metal4_capable,
-            #[cfg(all(target_os = "macos", feature = "screen-capture"))]
-            native_screen_lease_retirements: SubmissionRetirementQueue::default(),
-            #[cfg(test)]
-            superseded_frame_count: 0,
-            #[cfg(test)]
-            preview_surface_allocation_count: 0,
-            #[cfg(test)]
-            defer_preview_resolve_once: false,
-            #[cfg(test)]
-            defer_preview_map_resolve_once: false,
-            #[cfg(test)]
-            fail_next_sampling_readback_preparation: false,
-            #[cfg(test)]
-            fail_next_preview_scale_output_preparation: false,
-            #[cfg(test)]
-            fail_next_screen_upload_pool_saturation: false,
-            #[cfg(all(test, target_os = "macos", feature = "screen-capture"))]
-            fail_next_macos_screen_rebuild: false,
-            #[cfg(all(test, target_os = "macos", feature = "screen-capture"))]
-            fail_next_macos_screen_import: false,
-            #[cfg(test)]
-            snapshot_texture_allocation_count: Cell::new(0),
-            #[cfg(test)]
-            compositor_surface_allocation_count: Cell::new(0),
-            #[cfg(test)]
-            projected_bind_group_creation_count: Cell::new(0),
-            #[cfg(test)]
-            fail_next_projected_scene_preparation: Cell::new(false),
-        })
-    }
-
-    #[cfg(all(target_os = "macos", feature = "screen-capture"))]
-    pub(crate) const fn macos_metal4_capability(&self) -> bool {
-        self.metal4_capable
-    }
-
-    fn take_sampling_readback_failure_injection(&mut self) -> bool {
-        #[cfg(test)]
-        {
-            std::mem::take(&mut self.fail_next_sampling_readback_preparation)
-        }
-        #[cfg(not(test))]
-        {
-            false
-        }
-    }
-
-    fn take_preview_scale_output_failure_injection(&mut self) -> bool {
-        #[cfg(test)]
-        {
-            std::mem::take(&mut self.fail_next_preview_scale_output_preparation)
-        }
-        #[cfg(not(test))]
-        {
-            false
-        }
-    }
-
-    #[cfg(test)]
-    fn take_screen_upload_pool_saturation_injection(&mut self) -> bool {
-        std::mem::take(&mut self.fail_next_screen_upload_pool_saturation)
-    }
-
-    #[cfg(test)]
-    pub(super) fn fail_next_sampling_readback_preparation(&mut self) {
-        self.fail_next_sampling_readback_preparation = true;
-    }
-
-    #[cfg(test)]
-    pub(super) fn fail_next_preview_scale_output_preparation(&mut self) {
-        self.fail_next_preview_scale_output_preparation = true;
-    }
-
-    #[cfg(test)]
-    pub(super) fn fail_next_screen_upload_pool_saturation(&mut self) {
-        self.fail_next_screen_upload_pool_saturation = true;
-    }
-
-    pub(crate) fn supports_plan(&self, plan: &CompositionPlan) -> bool {
-        self.canvas_gpu_admitted
-            && matches!(
-                gpu_canvas_admission(self.probe.max_texture_dimension_2d, plan.width, plan.height,),
-                GpuCanvasAdmission::Gpu
-            )
-            && !plan.layers.is_empty()
-            && plan.layers.iter().all(|layer| {
-                gpu_source_frame(&layer.frame).is_some()
-                    || layer.frame_matches_size(plan.width, plan.height)
-            })
-            && !self.plan_samples_compositor_storage(plan)
-    }
-
-    fn plan_samples_compositor_storage(&self, plan: &CompositionPlan) -> bool {
-        plan.layers.iter().any(|layer| {
-            let ProducerFrame::GpuTexture(frame) = &layer.frame else {
-                return false;
-            };
-            if plan.layers.len() == 1
-                && self.layer_reuses_current_output_texture(layer, plan.width, plan.height)
-            {
-                return false;
-            }
-            self.surfaces
-                .iter()
-                .chain(
-                    self.compositor_surface_cache
-                        .values()
-                        .filter_map(Option::as_ref),
-                )
-                .any(|surfaces| {
-                    frame.storage_id == surfaces.front.storage_id
-                        || frame.storage_id == surfaces.back.storage_id
-                        || frame.storage_id == surfaces.source.storage_id
-                })
-        })
-    }
-
-    pub(super) const fn canvas_gpu_admitted(&self) -> bool {
-        self.canvas_gpu_admitted
-    }
-
-    #[cfg(test)]
-    pub(super) const fn max_texture_dimension_2d(&self) -> u32 {
-        self.probe.max_texture_dimension_2d
-    }
-
-    #[cfg(test)]
-    pub(super) fn backend_name(&self) -> &str {
-        &self.probe.backend
     }
 
     pub(crate) fn can_sample_zone_plan(&mut self, prepared_zones: &[PreparedZonePlan]) -> bool {
