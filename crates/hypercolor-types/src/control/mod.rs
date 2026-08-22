@@ -30,7 +30,7 @@
 //! | `Flags` | CheckboxSet | ordered (a `Vec`, not a set) |
 //! | `List` | — | elements validate recursively |
 //! | `Map` | — | values validate recursively |
-//! | `Unknown` | — | unit-level forward-compatibility marker |
+//! | `Unknown` | — | explicit unit sentinel; undeclared wire tags are rejected |
 //!
 //! **Finite-only floats are an invariant, not a loss**: serde_json
 //! serializes NaN/Infinity as `null`, so a non-finite float silently

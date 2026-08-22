@@ -216,8 +216,10 @@ pub enum ControlValueType {
         fields: Vec<ControlObjectField>,
     },
 
-    /// Unknown value type from a newer daemon or driver schema.
-    #[serde(other)]
+    /// Explicit unsupported value-type sentinel.
+    ///
+    /// Undeclared wire tags are rejected. Producers must send
+    /// `{ "kind": "unknown" }` when the sentinel is intentional.
     Unknown,
 }
 
@@ -339,7 +341,7 @@ pub enum ControlValueKind {
     Gradient,
     /// Effect rectangle value.
     Rect,
-    /// Unknown future value.
+    /// Explicit unsupported value sentinel.
     Unknown,
 }
 

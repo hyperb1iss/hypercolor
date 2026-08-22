@@ -34,14 +34,19 @@ fn control_value_type_roundtrips_with_explicit_kind() {
 }
 
 #[test]
-fn control_value_type_deserializes_unknown_kind_as_fallback() {
-    let value_type: ControlValueType = serde_json::from_value(serde_json::json!({
+fn control_value_type_requires_the_explicit_unknown_sentinel() {
+    let error = serde_json::from_value::<ControlValueType>(serde_json::json!({
         "kind": "vector3",
         "min": [0, 0, 0],
         "max": [1, 1, 1]
     }))
-    .expect("deserialize future value type");
+    .expect_err("undeclared value type must be rejected");
+    assert!(error.to_string().contains("unknown variant `vector3`"));
 
+    let value_type: ControlValueType = serde_json::from_value(serde_json::json!({
+        "kind": "unknown"
+    }))
+    .expect("explicit unknown sentinel should deserialize");
     assert_eq!(value_type, ControlValueType::Unknown);
     assert_eq!(
         value_type.validate_value(&ControlValue::Text("future".to_owned())),
@@ -63,13 +68,18 @@ fn control_value_roundtrips_with_explicit_kind_and_value() {
 }
 
 #[test]
-fn control_value_deserializes_unknown_kind_as_fallback() {
-    let value: ControlValue = serde_json::from_value(serde_json::json!({
+fn control_value_requires_the_explicit_unknown_sentinel() {
+    let error = serde_json::from_value::<ControlValue>(serde_json::json!({
         "kind": "vector3",
         "value": [0.1, 0.2, 0.3]
     }))
-    .expect("deserialize future value");
+    .expect_err("undeclared canonical tag must be rejected");
+    assert!(error.to_string().contains("unknown variant `vector3`"));
 
+    let value: ControlValue = serde_json::from_value(serde_json::json!({
+        "kind": "unknown"
+    }))
+    .expect("explicit unknown sentinel should deserialize");
     assert_eq!(value, ControlValue::Unknown);
 }
 

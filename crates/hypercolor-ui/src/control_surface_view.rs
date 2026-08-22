@@ -173,14 +173,11 @@ pub fn control_surface_event_matches_device(surface_id: &str, device_id: &str) -
 
 #[cfg(test)]
 mod tests {
-    use hypercolor_types::control::ControlValue;
-    use hypercolor_types::controls::{
-        ControlSurfaceDocument, ControlSurfaceScope, ControlValueType,
-    };
+    use hypercolor_types::controls::{ControlSurfaceDocument, ControlSurfaceScope};
 
     use super::{
-        actionable_control_surfaces, control_surface_event_matches_device, control_value_summary,
-        driver_owned_device_control_surfaces, visible_control_surfaces, visible_field_count,
+        actionable_control_surfaces, control_surface_event_matches_device,
+        driver_owned_device_control_surfaces, visible_control_surfaces,
     };
 
     const DEVICE_ID: &str = "00000000-0000-0000-0000-000000000001";
@@ -198,8 +195,8 @@ mod tests {
     }
 
     #[test]
-    fn unknown_future_value_types_stay_visible_and_summarizable() {
-        let surface: ControlSurfaceDocument = serde_json::from_value(serde_json::json!({
+    fn control_surfaces_reject_undeclared_wire_kinds() {
+        let error = serde_json::from_value::<ControlSurfaceDocument>(serde_json::json!({
             "surface_id": "driver:future",
             "scope": { "driver": { "driver_id": "future" } },
             "schema_version": 1,
@@ -224,16 +221,9 @@ mod tests {
             "availability": {},
             "action_availability": {}
         }))
-        .expect("surface document should tolerate future control kinds");
+        .expect_err("undeclared control tags must fail the document boundary");
 
-        assert_eq!(surface.fields[0].value_type, ControlValueType::Unknown);
-        assert_eq!(surface.values["tone_curve"], ControlValue::Unknown);
-        assert_eq!(visible_field_count(&surface), 1);
-        assert_eq!(
-            control_value_summary(surface.values.get("tone_curve")),
-            "unsupported value"
-        );
-        assert_eq!(visible_control_surfaces(vec![surface]).len(), 1);
+        assert!(error.to_string().contains("unknown variant `spline_curve`"));
     }
 
     #[test]
