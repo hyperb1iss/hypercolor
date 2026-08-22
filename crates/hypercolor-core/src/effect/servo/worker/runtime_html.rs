@@ -41,7 +41,7 @@ pub(in crate::effect::servo) fn prepare_runtime_html_source(
     })?;
 
     let preamble =
-        build_control_preamble_script(controls, host_driven_animation, display_descriptor);
+        build_control_preamble_script(controls, host_driven_animation, display_descriptor)?;
     let base_tag = original_path
         .parent()
         .and_then(|parent| Url::from_directory_path(parent).ok())
@@ -75,7 +75,7 @@ fn build_control_preamble_script(
     controls: &HashMap<String, ControlValue>,
     host_driven_animation: bool,
     display_descriptor: Option<&DisplayDescriptor>,
-) -> String {
+) -> Result<String> {
     let mut sorted_controls: Vec<_> = controls.iter().collect();
     sorted_controls.sort_by_key(|(name, _)| *name);
 
@@ -102,14 +102,16 @@ fn build_control_preamble_script(
     script.push_str("  }\n");
     for (name, value) in sorted_controls {
         let key_literal = serde_json::to_string(name).unwrap_or_else(|_| "\"invalid\"".to_owned());
+        let value_literal = control_js_literal(value)
+            .with_context(|| format!("control '{name}' cannot enter the effect runtime"))?;
         let _ = writeln!(
             script,
             "  if (typeof globalThis[{key_literal}] === 'undefined') globalThis[{key_literal}] = {};",
-            control_js_literal(value)
+            value_literal
         );
     }
     script.push_str("})();");
-    script
+    Ok(script)
 }
 
 fn inject_runtime_head_block(html: &str, block: &str) -> String {
@@ -144,12 +146,18 @@ mod tests {
         controls.insert("speed".to_owned(), ControlValue::Float(42.0));
         controls.insert("enabled".to_owned(), ControlValue::Bool(true));
         controls.insert("color".to_owned(), ControlValue::Text("#00ffaa".to_owned()));
+        controls.insert(
+            "overlay".to_owned(),
+            ControlValue::linear_color([0.25, 0.5, 0.75, 1.0]),
+        );
 
-        let script = build_control_preamble_script(&controls, false, None);
+        let script = build_control_preamble_script(&controls, false, None)
+            .expect("valid controls should build a preamble");
 
         assert!(script.contains("globalThis[\"speed\"] = 42"));
         assert!(script.contains("globalThis[\"enabled\"] = true"));
         assert!(script.contains("globalThis[\"color\"] = \"#00ffaa\""));
+        assert!(script.contains("globalThis[\"overlay\"] = [0.25,0.5,0.75,1.0]"));
         assert!(script.contains("window.__hypercolorCaptureMode = true"));
         assert!(script.contains("window.__hypercolorPreserveDrawingBuffer = false"));
         assert!(script.contains("globalThis.__hypercolorCaptureMode = true"));
@@ -158,10 +166,23 @@ mod tests {
     }
 
     #[test]
+    fn control_preamble_rejects_effect_integer_overflow() {
+        let controls = HashMap::from([(
+            "count".to_owned(),
+            ControlValue::Int(i64::from(i32::MAX) + 1),
+        )]);
+
+        let error = build_control_preamble_script(&controls, false, None)
+            .expect_err("out-of-range controls must not enter JavaScript");
+        assert!(error.to_string().contains("control 'count'"));
+    }
+
+    #[test]
     fn control_preamble_marks_host_driven_animation_before_effect_script_runs() {
         let controls = HashMap::new();
 
-        let script = build_control_preamble_script(&controls, true, None);
+        let script = build_control_preamble_script(&controls, true, None)
+            .expect("valid controls should build a preamble");
 
         assert!(script.contains("window.__hypercolorHostDrivenAnimation = true"));
         assert!(script.contains("globalThis.__hypercolorHostDrivenAnimation = true"));

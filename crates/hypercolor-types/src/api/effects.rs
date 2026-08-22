@@ -7,8 +7,9 @@ use strum::{Display, EnumString, VariantNames};
 use utoipa::ToSchema;
 
 use crate::api::envelope::ListResponse;
+use crate::control::ControlValue;
 pub use crate::effect::EffectCategory;
-use crate::effect::{ControlDefinition, ControlValue, EffectSource, PresetTemplate};
+use crate::effect::{ControlDefinition, EffectSource, PresetTemplate};
 
 /// Rendering implementation used by an effect.
 ///

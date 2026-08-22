@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
-import json
+import math
 from collections.abc import Callable, Mapping
+from datetime import timedelta
+from ipaddress import ip_address
+from re import fullmatch
 from typing import Any, Self, TypeVar
 from urllib.parse import quote
 
@@ -63,6 +66,7 @@ from ._generated.api.system import (
     health_check as generated_health_check,
     list_audio_devices as generated_list_audio_devices,
 )
+from ._generated.models.activate_scene_request import ActivateSceneRequest
 from ._generated.models.activate_scene_response import ActivateSceneResponse
 from ._generated.models.apply_effect_request import ApplyEffectRequest
 from ._generated.models.apply_effect_response import ApplyEffectResponse
@@ -620,7 +624,9 @@ class HypercolorClient:
         """Invoke a control-surface action."""
         body = InvokeControlActionRequest()
         if input is not None:
-            body["input"] = {str(key): _control_api_value(value) for key, value in input.items()}
+            body["input"] = {
+                str(key): _canonical_control_value(value) for key, value in input.items()
+            }
         return await self._generated_model(
             generated_invoke_control_surface_action._get_kwargs(
                 surface_id,
@@ -752,10 +758,16 @@ class HypercolorClient:
             SceneSummary.from_dict,
         )
 
-    async def activate_scene(self, scene_id: str) -> ActivateSceneResponse:
+    async def activate_scene(
+        self,
+        scene_id: str,
+        *,
+        transition_ms: int | None = None,
+    ) -> ActivateSceneResponse:
         """Trigger a scene manually."""
+        body = ActivateSceneRequest.from_dict(_drop_none({"transition_ms": transition_ms}))
         return await self._generated_contract(
-            generated_activate_scene._get_kwargs(scene_id),
+            generated_activate_scene._get_kwargs(scene_id, body=body),
             ActivateSceneResponse.from_dict,
         )
 
@@ -1014,7 +1026,7 @@ class HypercolorClient:
             {
                 "effect_id": effect_id,
                 "controls": (
-                    {str(key): _display_control_value(value) for key, value in controls.items()}
+                    {str(key): _canonical_control_value(value) for key, value in controls.items()}
                     if controls is not None
                     else None
                 ),
@@ -1394,67 +1406,66 @@ def _patch_controls_request(values: Mapping[str, Any]) -> PatchControlsRequest:
     return PatchControlsRequest.from_dict(body)
 
 
-def _control_api_value(value: Any) -> dict[str, Any]:
-    if isinstance(value, Mapping):
-        if "kind" in value:
-            result = {str(key): item for key, item in value.items()}
-        else:
-            result = {
-                "kind": "object",
-                "value": {str(key): _control_api_value(item) for key, item in value.items()},
-            }
-    elif isinstance(value, list):
-        result = {"kind": "list", "value": [_control_api_value(item) for item in value]}
-    elif value is None:
-        result = {"kind": "null"}
-    elif isinstance(value, bool):
-        result = {"kind": "bool", "value": value}
-    elif isinstance(value, int):
-        result = {"kind": "integer", "value": value}
-    elif isinstance(value, float):
-        result = {"kind": "float", "value": value}
-    else:
-        result = {"kind": "string", "value": str(value)}
-    return result
-
-
-def _display_control_value(value: Any) -> dict[str, Any]:
-    if isinstance(value, Mapping):
-        if set(value) & {"float", "integer", "boolean", "color", "text", "enum", "rect"}:
-            result = {str(key): item for key, item in value.items()}
-        else:
-            result = {"text": json.dumps({str(key): item for key, item in value.items()})}
-    elif isinstance(value, bool):
-        result = {"boolean": value}
-    elif isinstance(value, int):
-        result = {"integer": value}
-    elif isinstance(value, float):
-        result = {"float": value}
-    elif isinstance(value, str):
-        result = {"color": color} if (color := _hex_color_value(value)) else {"text": value}
-    else:
-        result = {"text": str(value)}
-    return result
-
-
 def _canonical_control_value(value: Any) -> dict[str, Any]:
     if isinstance(value, Mapping):
-        if "kind" in value:
-            result = {str(key): item for key, item in value.items()}
-        elif {"x", "y", "width", "height"} <= set(value):
-            result = {"kind": "rect", "value": {str(key): item for key, item in value.items()}}
-        else:
-            result = {
-                "kind": "map",
-                "value": {str(key): _canonical_control_value(item) for key, item in value.items()},
-            }
-    elif value is None:
+        if _is_canonical_control_envelope(value):
+            return _canonical_tagged_control_value(value)
+        if set(value) == {"x", "y", "width", "height"}:
+            return {"kind": "rect", "value": _canonical_rect_payload(value)}
+        return {
+            "kind": "map",
+            "value": {str(key): _canonical_control_value(item) for key, item in value.items()},
+        }
+    return _canonical_non_mapping_control_value(value)
+
+
+_CANONICAL_UNIT_KINDS = {"null", "unknown"}
+_CANONICAL_VALUE_KINDS = {
+    "bool",
+    "int",
+    "float",
+    "text",
+    "secret_ref",
+    "ip",
+    "mac",
+    "duration",
+    "color_rgb",
+    "color_rgba",
+    "color_linear",
+    "gradient",
+    "rect",
+    "enum",
+    "flags",
+    "list",
+    "map",
+}
+
+
+def _is_canonical_control_envelope(value: Mapping[Any, Any]) -> bool:
+    if "kind" not in value:
+        return False
+    kind = value["kind"]
+    return set(value) <= {"kind", "value"} or (
+        isinstance(kind, str) and kind in _CANONICAL_UNIT_KINDS | _CANONICAL_VALUE_KINDS
+    )
+
+
+def _canonical_non_mapping_control_value(value: Any) -> dict[str, Any]:
+    if value is None:
         result = {"kind": "null"}
+    elif isinstance(value, timedelta):
+        microseconds = (value.days * 24 * 60 * 60 + value.seconds) * 1_000_000 + value.microseconds
+        if microseconds < 0 or microseconds % 1_000 != 0:
+            message = "control durations must be non-negative whole milliseconds"
+            raise ValueError(message)
+        result = {"kind": "duration", "value": microseconds // 1_000}
     elif isinstance(value, bool):
         result = {"kind": "bool", "value": value}
     elif isinstance(value, int):
+        _require_integer(value, "int", -(2**63), 2**63 - 1)
         result = {"kind": "int", "value": value}
     elif isinstance(value, float):
+        _require_finite_number(value, "float")
         result = {"kind": "float", "value": value}
     elif isinstance(value, str):
         color = _hex_color_value(value)
@@ -1466,15 +1477,6 @@ def _canonical_control_value(value: Any) -> dict[str, Any]:
             if color is not None
             else {"kind": "text", "value": value}
         )
-    elif (
-        isinstance(value, list)
-        and len(value) == 4
-        and all(isinstance(channel, int | float) for channel in value)
-    ):
-        result = {
-            "kind": "color_linear",
-            "value": dict(zip(("r", "g", "b", "a"), value, strict=True)),
-        }
     elif isinstance(value, list):
         result = {"kind": "list", "value": [_canonical_control_value(item) for item in value]}
     else:
@@ -1483,15 +1485,202 @@ def _canonical_control_value(value: Any) -> dict[str, Any]:
     return result
 
 
+def _canonical_tagged_control_value(value: Mapping[Any, Any]) -> dict[str, Any]:
+    kind = value.get("kind")
+    if not isinstance(kind, str):
+        message = "control value kind must be text"
+        raise TypeError(message)
+
+    if kind not in _CANONICAL_UNIT_KINDS | _CANONICAL_VALUE_KINDS:
+        message = f"unknown control value kind: {kind}"
+        raise ValueError(message)
+    expected_keys = {"kind"} if kind in _CANONICAL_UNIT_KINDS else {"kind", "value"}
+    _require_exact_keys(value, expected_keys, kind)
+    if kind in _CANONICAL_UNIT_KINDS:
+        return {"kind": kind}
+
+    return {"kind": kind, "value": _canonical_tagged_payload(kind, value["value"])}
+
+
+def _canonical_tagged_payload(kind: str, payload: Any) -> Any:
+    if kind in {"bool", "int", "float", "text", "secret_ref", "ip", "mac", "duration", "enum"}:
+        canonical = _canonical_scalar_payload(kind, payload)
+    elif kind in {"color_rgb", "color_rgba", "color_linear"}:
+        canonical = _canonical_color_payload(kind, payload)
+    elif kind == "gradient":
+        canonical = _canonical_gradient_payload(payload)
+    elif kind == "rect":
+        canonical = _canonical_rect_payload(payload)
+    elif kind == "flags":
+        if not isinstance(payload, list) or not all(isinstance(item, str) for item in payload):
+            message = "flags control value must contain a list of text values"
+            raise TypeError(message)
+        canonical = list(payload)
+    elif kind == "list":
+        if not isinstance(payload, list):
+            message = "list control value must contain a list"
+            raise TypeError(message)
+        canonical = [_canonical_control_value(item) for item in payload]
+    elif kind == "map":
+        if not isinstance(payload, Mapping) or not all(isinstance(key, str) for key in payload):
+            message = "map control value must contain a string-keyed map"
+            raise TypeError(message)
+        canonical = {key: _canonical_control_value(item) for key, item in payload.items()}
+    else:
+        message = f"unknown control value kind: {kind}"
+        raise ValueError(message)
+    return canonical
+
+
+def _canonical_scalar_payload(kind: str, payload: Any) -> bool | int | float | str:
+    if kind == "bool":
+        if not isinstance(payload, bool):
+            message = "bool control value must contain a boolean"
+            raise TypeError(message)
+        canonical = payload
+    elif kind == "int":
+        _require_integer(payload, kind, -(2**63), 2**63 - 1)
+        canonical = payload
+    elif kind == "float":
+        canonical = _require_finite_number(payload, kind)
+    elif kind in {"text", "secret_ref", "enum"}:
+        _require_text(payload, kind)
+        canonical = payload
+    elif kind == "ip":
+        _require_text(payload, kind)
+        try:
+            ip_address(payload)
+        except ValueError as error:
+            message = "ip control value must contain an IP address"
+            raise ValueError(message) from error
+        canonical = payload
+    elif kind == "mac":
+        _require_text(payload, kind)
+        mac_pattern = (
+            r"(?:[0-9A-Fa-f]{12}|(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}|"
+            r"(?:[0-9A-Fa-f]{2}-){5}[0-9A-Fa-f]{2}|"
+            r"[0-9A-Fa-f]{4}(?:\.[0-9A-Fa-f]{4}){2})"
+        )
+        if fullmatch(mac_pattern, payload) is None:
+            message = "mac control value must contain six hexadecimal octets"
+            raise ValueError(message)
+        canonical = payload
+    elif kind == "duration":
+        _require_integer(payload, kind, 0, 2**64 - 1)
+        canonical = payload
+    else:
+        message = f"unknown scalar control value kind: {kind}"
+        raise ValueError(message)
+    return canonical
+
+
+def _require_exact_keys(value: Mapping[Any, Any], expected: set[str], kind: str) -> None:
+    if set(value) != expected:
+        message = f"{kind} control value must contain exactly {sorted(expected)}"
+        raise ValueError(message)
+
+
+def _require_text(value: Any, kind: str) -> None:
+    if not isinstance(value, str):
+        message = f"{kind} control value must contain text"
+        raise TypeError(message)
+
+
+def _require_integer(value: Any, kind: str, minimum: int, maximum: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        message = f"{kind} control value must contain an integer"
+        raise TypeError(message)
+    if not minimum <= value <= maximum:
+        message = f"{kind} control value integer is outside the canonical range"
+        raise ValueError(message)
+    return value
+
+
+def _require_finite_number(value: Any, kind: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        message = f"{kind} control value must contain a number"
+        raise TypeError(message)
+    number = float(value)
+    if not math.isfinite(number):
+        message = f"{kind} control value must contain a finite number"
+        raise ValueError(message)
+    return number
+
+
+def _canonical_color_payload(kind: str, payload: Any) -> dict[str, int | float]:
+    channels = {
+        "color_rgb": ("r", "g", "b"),
+        "color_rgba": ("r", "g", "b", "a"),
+        "color_linear": ("r", "g", "b", "a"),
+    }[kind]
+    if isinstance(payload, list) and len(payload) == len(channels):
+        payload = dict(zip(channels, payload, strict=True))
+    if not isinstance(payload, Mapping):
+        message = f"{kind} control value must contain color channels"
+        raise TypeError(message)
+    _require_exact_keys(payload, set(channels), kind)
+    canonical: dict[str, int | float] = {}
+    for channel in channels:
+        component = payload[channel]
+        if kind == "color_linear":
+            canonical[channel] = _require_finite_number(component, kind)
+        else:
+            canonical[channel] = _require_integer(component, kind, 0, 255)
+    return canonical
+
+
+def _canonical_gradient_payload(payload: Any) -> list[dict[str, Any]]:
+    if not isinstance(payload, list) or not 2 <= len(payload) <= 8:
+        message = "gradient control value must contain two to eight stops"
+        raise ValueError(message)
+    canonical = []
+    previous_position = -math.inf
+    for stop in payload:
+        if not isinstance(stop, Mapping):
+            message = "gradient stop must be an object"
+            raise TypeError(message)
+        _require_exact_keys(stop, {"position", "color"}, "gradient stop")
+        position = _require_finite_number(stop["position"], "gradient position")
+        if not 0.0 <= position <= 1.0 or position < previous_position:
+            message = "gradient positions must be ordered within 0.0 through 1.0"
+            raise ValueError(message)
+        color = stop["color"]
+        if not isinstance(color, list) or len(color) != 4:
+            message = "gradient stop color must contain four channels"
+            raise TypeError(message)
+        canonical_color = [_require_finite_number(channel, "gradient color") for channel in color]
+        if any(not 0.0 <= channel <= 1.0 for channel in canonical_color):
+            message = "gradient color channels must be within 0.0 through 1.0"
+            raise ValueError(message)
+        canonical.append({"position": position, "color": canonical_color})
+        previous_position = position
+    return canonical
+
+
+def _canonical_rect_payload(payload: Any) -> dict[str, float]:
+    if not isinstance(payload, Mapping):
+        message = "rect control value must contain an object"
+        raise TypeError(message)
+    channels = ("x", "y", "width", "height")
+    _require_exact_keys(payload, set(channels), "rect")
+    return {channel: _require_finite_number(payload[channel], "rect") for channel in channels}
+
+
 def _hex_color_value(value: str) -> list[float] | None:
     color = value.strip().removeprefix("#")
     if len(color) not in {6, 8} or any(ch not in "0123456789abcdefABCDEF" for ch in color):
         return None
-    red = int(color[0:2], 16) / 255
-    green = int(color[2:4], 16) / 255
-    blue = int(color[4:6], 16) / 255
+    red = _srgb_to_linear(int(color[0:2], 16) / 255)
+    green = _srgb_to_linear(int(color[2:4], 16) / 255)
+    blue = _srgb_to_linear(int(color[4:6], 16) / 255)
     alpha = int(color[6:8], 16) / 255 if len(color) == 8 else 1.0
     return [red, green, blue, alpha]
+
+
+def _srgb_to_linear(channel: float) -> float:
+    if channel <= 0.04045:
+        return channel / 12.92
+    return ((channel + 0.055) / 1.055) ** 2.4
 
 
 def _request_path(path: str) -> str:

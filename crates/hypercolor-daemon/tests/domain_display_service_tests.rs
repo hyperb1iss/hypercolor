@@ -12,9 +12,11 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use hypercolor_core::effect::EffectEntry;
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::{
-    ControlValue, EffectCategory, EffectId, EffectMetadata, EffectSource, EffectState,
+    ControlDefinition, ControlKind, ControlType, EffectCategory, EffectId, EffectMetadata,
+    EffectSource, EffectState,
 };
 use hypercolor_types::event::{HypercolorEvent, ZoneChangeKind};
 use hypercolor_types::layer::{LayerSource, SceneLayer, SceneLayerId};
@@ -76,6 +78,25 @@ fn face_effect(name: &str) -> EffectMetadata {
             path: format!("/tmp/{name}.html").into(),
         },
         license: None,
+    }
+}
+
+fn numeric_control(id: &str) -> ControlDefinition {
+    ControlDefinition {
+        id: id.to_owned(),
+        name: id.to_owned(),
+        kind: ControlKind::Number,
+        control_type: ControlType::Slider,
+        default_value: ControlValue::Float(0.5),
+        min: Some(0.0),
+        max: Some(1.0),
+        step: None,
+        labels: Vec::new(),
+        group: None,
+        tooltip: None,
+        aspect_lock: None,
+        preview_source: None,
+        binding: None,
     }
 }
 
@@ -245,6 +266,27 @@ async fn set_display_face_applies_the_requested_composition() {
 }
 
 #[tokio::test]
+async fn set_display_face_rejects_controls_inside_the_domain() {
+    let (state, _tempdir) = isolated_state();
+    let device_id = DeviceId::new();
+    let mut effect = face_effect("clock");
+    effect.controls.push(numeric_control("accent"));
+    insert_effect(&state, &effect).await;
+    let mut command = assign_command(&state, device_id, &effect).await;
+    command
+        .controls
+        .insert("accent".to_owned(), ControlValue::Bool(true));
+    let before = state.domains.scene.revision();
+
+    let error = set_display_face(&state.domains.effects, command)
+        .await
+        .expect_err("a direct display-domain caller cannot bypass control admission");
+
+    assert!(error.to_string().contains("control values were rejected"));
+    assert_eq!(state.domains.scene.revision(), before);
+}
+
+#[tokio::test]
 async fn clear_display_face_keeps_the_zone_and_drops_the_effect() {
     let (state, _tempdir) = isolated_state();
     let device_id = DeviceId::new();
@@ -333,7 +375,7 @@ async fn patching_composition_and_controls_reports_a_missing_zone() {
 
     assert!(
         patch_display_face_controls(
-            &state.domains.scene,
+            &state.domains.effects,
             PatchDisplayFaceControls {
                 zone_id: ZoneId::new(),
                 controls: HashMap::from([("accent".to_owned(), ControlValue::Float(0.5))]),
@@ -349,7 +391,8 @@ async fn patching_composition_and_controls_reports_a_missing_zone() {
 async fn patch_display_face_controls_merges_onto_the_zone() {
     let (state, _tempdir) = isolated_state();
     let device_id = DeviceId::new();
-    let effect = face_effect("clock");
+    let mut effect = face_effect("clock");
+    effect.controls.push(numeric_control("accent"));
     insert_effect(&state, &effect).await;
     let created = set_display_face(
         &state.domains.effects,
@@ -358,8 +401,21 @@ async fn patch_display_face_controls_merges_onto_the_zone() {
     .await
     .expect("the face should be assigned");
 
+    let before = state.domains.scene.revision();
+    let error = patch_display_face_controls(
+        &state.domains.effects,
+        PatchDisplayFaceControls {
+            zone_id: created.zone.id,
+            controls: HashMap::from([("accent".to_owned(), ControlValue::Bool(true))]),
+        },
+    )
+    .await
+    .expect_err("face control patches cannot bypass effect admission");
+    assert!(error.to_string().contains("control values were rejected"));
+    assert_eq!(state.domains.scene.revision(), before);
+
     let written = patch_display_face_controls(
-        &state.domains.scene,
+        &state.domains.effects,
         PatchDisplayFaceControls {
             zone_id: created.zone.id,
             controls: HashMap::from([("accent".to_owned(), ControlValue::Float(0.5))]),
@@ -370,10 +426,10 @@ async fn patch_display_face_controls_merges_onto_the_zone() {
     .expect("the zone exists");
 
     assert_eq!(
-        zone_controls(&written.zone).and_then(|controls| controls.get("accent")),
+        zone_controls(&written.written.zone).and_then(|controls| controls.get("accent")),
         Some(&ControlValue::Float(0.5))
     );
-    assert_eq!(written.change, ZoneChangeKind::ControlsPatched);
+    assert_eq!(written.written.change, ZoneChangeKind::ControlsPatched);
 }
 
 // ── Surface sync and pruning ─────────────────────────────────────────────

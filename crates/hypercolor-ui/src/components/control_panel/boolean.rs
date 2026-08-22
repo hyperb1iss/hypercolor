@@ -4,7 +4,7 @@ use leptos::prelude::*;
 use leptos_icons::Icon;
 use serde_json::json;
 
-use hypercolor_types::effect::ControlValue;
+use hypercolor_types::control::ControlValue;
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_toggle(
@@ -17,7 +17,7 @@ pub(super) fn render_toggle(
     value: Signal<ControlValue>,
     on_change: Callback<(String, serde_json::Value)>,
 ) -> impl IntoView {
-    let initial = matches!(value.get_untracked(), ControlValue::Boolean(true));
+    let initial = matches!(value.get_untracked(), ControlValue::Bool(true));
     let (checked, set_checked) = signal(initial);
     let control_name = control_id;
     let on_style = format!(
@@ -26,7 +26,7 @@ pub(super) fn render_toggle(
     );
 
     Effect::new(move |_| {
-        let next = matches!(value.get(), ControlValue::Boolean(true));
+        let next = matches!(value.get(), ControlValue::Bool(true));
         if checked.get_untracked() != next {
             set_checked.set(next);
         }

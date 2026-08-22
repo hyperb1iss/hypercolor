@@ -35,11 +35,12 @@ use hypercolor_driver_support::network::{
 use hypercolor_driver_support::pairing::{activate_if_requested, disconnect_after_unpair};
 use hypercolor_driver_support::{CredentialStore, control_apply, control_surface};
 use hypercolor_types::config::DriverConfigEntry;
+use hypercolor_types::control::{ControlValue, IpText};
 use hypercolor_types::controls::{
     ActionConfirmation, ActionConfirmationLevel, ApplyControlChangesResponse, ApplyImpact,
     ControlActionDescriptor, ControlActionResult, ControlActionStatus, ControlAvailabilityExpr,
     ControlChange, ControlFieldDescriptor, ControlGroupKind, ControlOwner, ControlSurfaceDocument,
-    ControlValue, ControlValueMap, ControlValueType,
+    ControlValueMap, ControlValueType,
 };
 use hypercolor_types::device::{DeviceClassHint, DriverPresentation, DriverTransportKind};
 use hypercolor_types::identity::BackendId;
@@ -451,7 +452,7 @@ pub fn nanoleaf_device_control_surface(device: &TrackedDeviceCtx<'_>) -> Control
             "IP Address",
             "connection",
             ControlValueType::IpAddress,
-            ControlValue::IpAddress,
+            |raw| IpText::new(raw).ok().map(ControlValue::Ip),
             0,
         );
         if let Some(api_port) = metadata
@@ -465,7 +466,7 @@ pub fn nanoleaf_device_control_surface(device: &TrackedDeviceCtx<'_>) -> Control
                 "API Port",
                 "connection",
                 control_surface::integer_value_type(0, Some(i64::from(u16::MAX))),
-                ControlValue::Integer(api_port),
+                ControlValue::Int(api_port),
                 10,
             );
         }
@@ -477,7 +478,7 @@ pub fn nanoleaf_device_control_surface(device: &TrackedDeviceCtx<'_>) -> Control
             "Device Key",
             "diagnostics",
             control_surface::string_value_type(Some(255)),
-            ControlValue::String,
+            |raw| Some(ControlValue::Text(raw)),
             20,
         );
     }
@@ -490,7 +491,7 @@ pub fn nanoleaf_device_control_surface(device: &TrackedDeviceCtx<'_>) -> Control
             "Model",
             "diagnostics",
             control_surface::string_value_type(Some(80)),
-            ControlValue::String(model.clone()),
+            ControlValue::Text(model.clone()),
             30,
         );
     }
@@ -502,7 +503,7 @@ pub fn nanoleaf_device_control_surface(device: &TrackedDeviceCtx<'_>) -> Control
             "Firmware",
             "diagnostics",
             control_surface::string_value_type(Some(80)),
-            ControlValue::String(firmware_version.clone()),
+            ControlValue::Text(firmware_version.clone()),
             40,
         );
     }
@@ -514,7 +515,7 @@ pub fn nanoleaf_device_control_surface(device: &TrackedDeviceCtx<'_>) -> Control
         "LED Count",
         "diagnostics",
         control_surface::integer_value_type(0, None),
-        ControlValue::Integer(i64::from(device.info.total_led_count())),
+        ControlValue::Int(i64::from(device.info.total_led_count())),
         50,
     );
     control_surface::push_readonly_value(
@@ -524,7 +525,7 @@ pub fn nanoleaf_device_control_surface(device: &TrackedDeviceCtx<'_>) -> Control
         "Max FPS",
         "diagnostics",
         control_surface::integer_value_type(0, None),
-        ControlValue::Integer(i64::from(device.info.capabilities.max_fps)),
+        ControlValue::Int(i64::from(device.info.capabilities.max_fps)),
         60,
     );
     control_surface::push_readonly_value(
@@ -534,7 +535,7 @@ pub fn nanoleaf_device_control_surface(device: &TrackedDeviceCtx<'_>) -> Control
         "State",
         "diagnostics",
         control_surface::string_value_type(Some(32)),
-        ControlValue::String(device.current_state.to_string()),
+        ControlValue::Text(device.current_state.to_string()),
         70,
     );
     document.actions.push(ControlActionDescriptor {
@@ -619,13 +620,13 @@ fn nanoleaf_config_values(config: &NanoleafConfig) -> ControlValueMap {
                 config
                     .device_ips
                     .iter()
-                    .map(|ip| ControlValue::IpAddress(ip.to_string()))
+                    .map(|ip| ControlValue::Ip(IpText::from(*ip)))
                     .collect(),
             ),
         ),
         (
             FIELD_TRANSITION_TIME.to_owned(),
-            ControlValue::Integer(i64::from(config.transition_time)),
+            ControlValue::Int(i64::from(config.transition_time)),
         ),
     ])
 }

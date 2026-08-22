@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::Canvas;
-use hypercolor_types::control::{ControlDeltaBatch, ControlSet, SetRevision};
+use hypercolor_types::control::{ControlDeltaBatch, ControlSet};
 use hypercolor_types::display::DisplayDescriptor;
 use hypercolor_types::effect::EffectMetadata;
 use hypercolor_types::lighting::LightingState;
@@ -233,29 +233,34 @@ pub trait EffectRenderer: Send {
     /// The default delivers the complete snapshot as resolution sequence
     /// zero. Implementations may override this when replacing derived state
     /// needs behavior distinct from applying an ordinary delta.
-    fn initialize_controls(
-        &mut self,
-        revision: SetRevision,
-        controls: &ControlSet,
-    ) -> Result<(), ControlError> {
-        if revision != controls.set_revision() {
-            return Err(ControlError::RevisionMismatch {
-                supplied: revision,
-                authoritative: controls.set_revision(),
-            });
-        }
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the renderer cannot replace its derived control
+    /// state from the authoritative snapshot.
+    fn initialize_controls(&mut self, controls: &ControlSet) -> anyhow::Result<()> {
         let changes = controls
             .iter()
             .map(|(control_id, value)| (control_id.clone(), value.clone()))
             .collect::<Vec<_>>();
-        self.apply_controls(&ControlDeltaBatch::new(revision, 0, &changes))
+        self.apply_controls(&ControlDeltaBatch::new(
+            controls.set_revision(),
+            0,
+            &changes,
+        ))
     }
 
     /// Apply one ordered batch of resolved control changes atomically.
     ///
     /// Implementations update only derived renderer caches. The owning effect
-    /// slot retains the authoritative [`ControlSet`].
-    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> Result<(), ControlError>;
+    /// slot retains the authoritative [`ControlSet`], and values have already
+    /// passed canonical and effect-definition validation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the batch cannot be applied atomically to the
+    /// renderer's derived state.
+    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> anyhow::Result<()>;
 
     /// Bind the content-addressed asset library.
     ///
@@ -286,25 +291,4 @@ pub trait EffectRenderer: Send {
     /// Called when the effect transitions to `Destroying`. After this call,
     /// the renderer will not receive any further method calls.
     fn destroy(&mut self);
-}
-
-/// A renderer rejected authoritative control delivery.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum ControlError {
-    /// The initialization revision did not match the supplied snapshot.
-    #[error(
-        "control snapshot revision mismatch: supplied {supplied}, authoritative {authoritative}"
-    )]
-    RevisionMismatch {
-        /// Revision passed to the renderer lifecycle call.
-        supplied: SetRevision,
-        /// Revision carried by the authoritative snapshot.
-        authoritative: SetRevision,
-    },
-    /// The renderer refused a canonical value or an atomic batch invariant.
-    #[error("renderer rejected controls: {reason}")]
-    Rejected {
-        /// Stable rejection description suitable for diagnostics.
-        reason: String,
-    },
 }

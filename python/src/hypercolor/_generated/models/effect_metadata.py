@@ -30,10 +30,11 @@ class EffectMetadata:
         Attributes:
             author (str): Author or publisher name.
             description (str): Short description (max 200 chars). Shown in the effect browser.
-            id (UUID): Unique identifier for an effect, wrapping a UUID v7.
+            id (UUID): Opaque stable identifier for an effect, wrapping a UUID.
 
-                Generated at discovery time and used as the primary key across
-                the registry, event bus, API, and UI.
+                The effect source owns its generation policy. Loaders may derive a stable
+                UUID from source identity or accept an explicitly authored UUID; callers
+                must not infer UUID version or creation time from this type.
             name (str): Human-readable display name.
             source (EffectSource): Identifies the rendering path and source location for an effect.
 

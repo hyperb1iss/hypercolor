@@ -515,7 +515,8 @@ fn runtime_document_records_real_statuses_bodies_and_media_types() {
     assert_eq!(control_kinds.len(), 19);
     assert!(control_kinds.contains("float"));
     assert!(control_kinds.contains("map"));
-    assert!(schemas["EffectControlValue"].is_object());
+    assert!(schemas.get("EffectControlValue").is_none());
+    assert!(schemas.get("DriverControlValue").is_none());
     assert_eq!(
         schemas["PatchControlsRequest"]["properties"]["values"]["additionalProperties"]["$ref"],
         "#/components/schemas/ControlValue"

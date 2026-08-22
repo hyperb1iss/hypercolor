@@ -11,7 +11,8 @@ use uuid::Uuid;
 
 use crate::asset::AssetId;
 use crate::canvas::BlendMode;
-use crate::effect::{ControlBinding, ControlValue, EffectId};
+use crate::control::ControlValue;
+use crate::effect::{ControlBinding, EffectId};
 use crate::library::PresetId;
 use crate::scene::DisplayFaceBlendMode;
 use crate::spatial::NormalizedPosition;

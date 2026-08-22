@@ -5,7 +5,7 @@ use utoipa::ToSchema;
 
 use crate::controls::{ControlSurfaceDocument, ControlValueMap};
 
-/// Response from `GET /api/v1/control-surfaces`.
+/// Response body for `GET /api/v1/control-surfaces`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct ControlSurfaceListResponse {
     pub surfaces: Vec<ControlSurfaceDocument>,

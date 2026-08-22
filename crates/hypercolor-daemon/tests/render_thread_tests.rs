@@ -36,8 +36,9 @@ use hypercolor_driver_support::CredentialStore;
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{Canvas, PublishedSurface, Rgba};
 use hypercolor_types::config::RenderAccelerationMode;
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::device::{DeviceError, DeviceId, DeviceInfo, DeviceState};
-use hypercolor_types::effect::{ControlValue, EffectId, EffectMetadata};
+use hypercolor_types::effect::{EffectId, EffectMetadata};
 use hypercolor_types::event::{
     FrameData, HypercolorEvent, InputButtonState, InputEvent, TimedInputEvent, ZoneColors,
 };
@@ -409,7 +410,7 @@ fn active_builtin_effect(stem: &str, controls: HashMap<String, ControlValue>) ->
 fn solid_color_controls(r: u8, g: u8, b: u8) -> HashMap<String, ControlValue> {
     HashMap::from([(
         "color".into(),
-        ControlValue::Color([
+        ControlValue::linear_color([
             f32::from(r) / 255.0,
             f32::from(g) / 255.0,
             f32::from(b) / 255.0,
@@ -1875,13 +1876,19 @@ async fn pipeline_renders_active_scene_groups_without_global_effect_engine() {
         custom_group(
             "Left",
             solid_id,
-            HashMap::from([("color".into(), ControlValue::Color([1.0, 0.0, 0.0, 1.0]))]),
+            HashMap::from([(
+                "color".into(),
+                ControlValue::linear_color([1.0, 0.0, 0.0, 1.0]),
+            )]),
             test_layout(vec![point_zone("zone_left", "mock:left", 0.25, 0.5)]),
         ),
         custom_group(
             "Right",
             solid_id,
-            HashMap::from([("color".into(), ControlValue::Color([0.0, 0.0, 1.0, 1.0]))]),
+            HashMap::from([(
+                "color".into(),
+                ControlValue::linear_color([0.0, 0.0, 1.0, 1.0]),
+            )]),
             test_layout(vec![point_zone("zone_right", "mock:right", 0.75, 0.5)]),
         ),
     ];
@@ -1943,13 +1950,19 @@ async fn multi_group_scene_publishes_authoritative_canvas_and_scene_canvas() {
         custom_group(
             "Left",
             solid_id,
-            HashMap::from([("color".into(), ControlValue::Color([1.0, 0.0, 0.0, 1.0]))]),
+            HashMap::from([(
+                "color".into(),
+                ControlValue::linear_color([1.0, 0.0, 0.0, 1.0]),
+            )]),
             test_layout(vec![point_zone("zone_left", "mock:left", 0.25, 0.5)]),
         ),
         custom_group(
             "Right",
             solid_id,
-            HashMap::from([("color".into(), ControlValue::Color([0.0, 0.0, 1.0, 1.0]))]),
+            HashMap::from([(
+                "color".into(),
+                ControlValue::linear_color([0.0, 0.0, 1.0, 1.0]),
+            )]),
             test_layout(vec![point_zone("zone_right", "mock:right", 0.75, 0.5)]),
         ),
     ];
@@ -2018,7 +2031,10 @@ async fn late_group_canvas_subscribers_see_last_display_face_frame() {
         group_id,
         display_id,
         solid_id,
-        HashMap::from([("color".into(), ControlValue::Color([0.0, 0.0, 1.0, 1.0]))]),
+        HashMap::from([(
+            "color".into(),
+            ControlValue::linear_color([0.0, 0.0, 1.0, 1.0]),
+        )]),
         test_layout(Vec::new()),
     )];
     scene.unassigned_behavior = UnassignedBehavior::Off;
@@ -2082,7 +2098,10 @@ async fn blended_display_faces_publish_authoritative_scene_canvas_on_gpu() {
         group_id,
         display_id,
         solid_id,
-        HashMap::from([("color".into(), ControlValue::Color([0.0, 0.0, 1.0, 1.0]))]),
+        HashMap::from([(
+            "color".into(),
+            ControlValue::linear_color([0.0, 0.0, 1.0, 1.0]),
+        )]),
         test_layout(Vec::new()),
     );
     face_group
@@ -2096,7 +2115,10 @@ async fn blended_display_faces_publish_authoritative_scene_canvas_on_gpu() {
         custom_group(
             "Primary",
             solid_id,
-            HashMap::from([("color".into(), ControlValue::Color([1.0, 0.0, 0.0, 1.0]))]),
+            HashMap::from([(
+                "color".into(),
+                ControlValue::linear_color([1.0, 0.0, 0.0, 1.0]),
+            )]),
             test_layout(Vec::new()),
         ),
         face_group,
@@ -2164,7 +2186,10 @@ async fn render_thread_prunes_stale_group_canvas_streams_when_face_groups_change
         first_group_id,
         display_id,
         solid_id,
-        HashMap::from([("color".into(), ControlValue::Color([1.0, 0.0, 0.0, 1.0]))]),
+        HashMap::from([(
+            "color".into(),
+            ControlValue::linear_color([1.0, 0.0, 0.0, 1.0]),
+        )]),
         test_layout(Vec::new()),
     )];
     first_scene.unassigned_behavior = UnassignedBehavior::Off;
@@ -2174,7 +2199,10 @@ async fn render_thread_prunes_stale_group_canvas_streams_when_face_groups_change
         second_group_id,
         display_id,
         solid_id,
-        HashMap::from([("color".into(), ControlValue::Color([0.0, 0.0, 1.0, 1.0]))]),
+        HashMap::from([(
+            "color".into(),
+            ControlValue::linear_color([0.0, 0.0, 1.0, 1.0]),
+        )]),
         test_layout(Vec::new()),
     )];
     second_scene.unassigned_behavior = UnassignedBehavior::Off;

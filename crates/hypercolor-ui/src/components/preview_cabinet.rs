@@ -27,7 +27,7 @@ use hypercolor_leptos_ext::prelude::{
     TimeoutHandle as BrowserTimeoutHandle, set_timeout as browser_set_timeout,
 };
 use hypercolor_leptos_ext::raf::Scheduler;
-use hypercolor_types::effect::ControlValue;
+use hypercolor_types::control::ControlValue;
 use leptos::ev;
 use leptos::prelude::*;
 use leptos_icons::Icon;
@@ -449,7 +449,10 @@ pub fn PreviewCabinet(
                                     effect_id=effect_id
                                     control_values=control_values
                                     accent_rgb=accent_signal
-                                    on_preset_applied=Callback::new(move |()| fx.refresh_active_effect())
+                                    on_preset_applied=Callback::new(move |(observed, replacement)| {
+                                        fx.adopt_replacement_target(&observed, replacement);
+                                        fx.refresh_active_effect();
+                                    })
                                     active_preset_id_signal=active_preset_id_signal
                                 />
                             }.into_any()

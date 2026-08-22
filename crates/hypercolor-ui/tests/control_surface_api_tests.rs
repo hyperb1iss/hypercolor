@@ -6,10 +6,10 @@ use hypercolor_ui::control_surface_api::{
 #[test]
 fn list_url_selects_device_and_driver_surfaces() {
     assert_eq!(
-        control_surface_list_url(ControlSurfaceListQuery {
-            device_id: Some("Desk Strip"),
+        control_surface_list_url(&ControlSurfaceListQuery {
+            device_id: Some("Desk Strip".to_owned()),
             driver_id: None,
-            include_driver: true,
+            include_driver: Some(true),
         }),
         "/api/v1/control-surfaces?device_id=Desk%20Strip&include_driver=true"
     );
@@ -18,10 +18,10 @@ fn list_url_selects_device_and_driver_surfaces() {
 #[test]
 fn list_url_selects_driver_surface() {
     assert_eq!(
-        control_surface_list_url(ControlSurfaceListQuery {
+        control_surface_list_url(&ControlSurfaceListQuery {
             device_id: None,
-            driver_id: Some("wled"),
-            include_driver: false,
+            driver_id: Some("wled".to_owned()),
+            include_driver: None,
         }),
         "/api/v1/control-surfaces?driver_id=wled"
     );

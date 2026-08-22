@@ -9,8 +9,8 @@ use hypercolor_types::api::output::{OutputPatchRequest, OutputPowerMode};
 use hypercolor_types::api::scene::{
     ApplyEffectRequest, ClearSceneRequest, PatchControlsRequest, ReplaceLayerRequest,
 };
-use hypercolor_types::control::ControlValue as ApiControlValue;
-use hypercolor_types::effect::{ControlValue, EffectCategory};
+use hypercolor_types::control::ControlValue;
+use hypercolor_types::effect::{ControlDefinition, EffectCategory};
 use hypercolor_types::layer::{LayerSource, SceneLayer};
 use hypercolor_types::scene::{ZoneId, ZoneRole};
 
@@ -205,30 +205,27 @@ async fn execute_activate(
     client: &DaemonClient,
     ctx: &OutputContext,
 ) -> Result<()> {
+    let definitions = if args.param.is_empty() {
+        Vec::new()
+    } else {
+        effect_control_definitions(client, &args.effect).await?
+    };
     let mut controls = BTreeMap::new();
     for (key, value) in &args.param {
         controls.insert(
             key.clone(),
-            control_value_from_json(parse_control_value(value))?,
+            control_value_from_json(key, parse_control_value(value), &definitions)?,
         );
     }
     if let Some(speed) = args.speed {
-        controls.insert(
-            "speed".to_string(),
-            ControlValue::Integer(i32::try_from(speed)?),
-        );
+        controls.insert("speed".to_string(), ControlValue::Int(i64::from(speed)));
     }
     if let Some(intensity) = args.intensity {
         controls.insert(
             "intensity".to_string(),
-            ControlValue::Integer(i32::try_from(intensity)?),
+            ControlValue::Int(i64::from(intensity)),
         );
     }
-
-    let controls = controls
-        .into_iter()
-        .map(|(name, value)| ApiControlValue::try_from(value).map(|value| (name, value)))
-        .collect::<Result<BTreeMap<_, _>, _>>()?;
 
     let body = ApplyEffectRequest {
         controls: (!controls.is_empty()).then_some(controls),
@@ -336,15 +333,16 @@ async fn execute_patch(
     client: &DaemonClient,
     ctx: &OutputContext,
 ) -> Result<()> {
+    let (zone, layer, effect_id, _) = active_effect_layer(client).await?;
+    let definitions = effect_control_definitions(client, &effect_id).await?;
     let mut values = BTreeMap::new();
     for (key, value) in &args.param {
         values.insert(
             key.clone(),
-            ApiControlValue::try_from(control_value_from_json(parse_control_value(value))?)?,
+            control_value_from_json(key, parse_control_value(value), &definitions)?,
         );
     }
 
-    let (zone, layer, _, _) = active_effect_layer(client).await?;
     let path = format!("/scene/zones/{zone}/layers/{}/controls", layer.id);
     let response = client
         .patch(
@@ -465,24 +463,28 @@ async fn active_effect_layer(
     Ok((zone.id, layer.0, layer.1, layer.2))
 }
 
-fn control_value_from_json(value: serde_json::Value) -> Result<ControlValue> {
-    if let Some(value) = value.as_i64() {
-        return Ok(ControlValue::Integer(i32::try_from(value)?));
-    }
-    if value.is_number() {
-        return Ok(ControlValue::Float(serde_json::from_value(value)?));
-    }
-    if let Some(value) = value.as_bool() {
-        return Ok(ControlValue::Boolean(value));
-    }
-    if let Some(value) = value.as_str() {
-        return Ok(ControlValue::Text(value.to_owned()));
-    }
-    if let Ok(color) = serde_json::from_value::<[f32; 4]>(value.clone()) {
-        return Ok(ControlValue::Color(color));
-    }
-    if let Ok(rect) = serde_json::from_value(value) {
-        return Ok(ControlValue::Rect(rect));
-    }
-    anyhow::bail!("Unsupported effect control value")
+async fn effect_control_definitions(
+    client: &DaemonClient,
+    effect: &str,
+) -> Result<Vec<ControlDefinition>> {
+    let detail: EffectDetailResponse = serde_json::from_value(
+        client
+            .get(&format!("/effects/{}", urlencoded(effect)))
+            .await?,
+    )?;
+    Ok(detail.controls)
+}
+
+fn control_value_from_json(
+    name: &str,
+    value: serde_json::Value,
+    definitions: &[ControlDefinition],
+) -> Result<ControlValue> {
+    definitions
+        .iter()
+        .find(|definition| definition.control_id().eq_ignore_ascii_case(name))
+        .map_or_else(
+            || ControlValue::try_from_effect_json(&value).map_err(Into::into),
+            |definition| definition.admit_effect_json(&value).map_err(Into::into),
+        )
 }

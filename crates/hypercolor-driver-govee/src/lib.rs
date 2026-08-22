@@ -25,9 +25,10 @@ use hypercolor_driver_support::network::validate_ip;
 use hypercolor_driver_support::pairing::{activate_if_requested, disconnect_after_unpair};
 use hypercolor_driver_support::{CredentialStore, control_apply, control_surface};
 use hypercolor_types::config::DriverConfigEntry;
+use hypercolor_types::control::{ControlValue, IpText, MacText};
 use hypercolor_types::controls::{
     ApplyControlChangesResponse, ApplyImpact, ControlChange, ControlFieldDescriptor,
-    ControlGroupKind, ControlSurfaceDocument, ControlValue, ControlValueMap, ControlValueType,
+    ControlGroupKind, ControlSurfaceDocument, ControlValueMap, ControlValueType,
 };
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceClassHint, DeviceColorFormat, DeviceFamily,
@@ -781,7 +782,7 @@ pub fn govee_device_control_surface(device: &TrackedDeviceCtx<'_>) -> ControlSur
         "IP Address",
         "connection",
         ControlValueType::IpAddress,
-        ControlValue::IpAddress,
+        |raw| IpText::new(raw).ok().map(ControlValue::Ip),
         0,
     );
     push_govee_metadata_field(
@@ -791,7 +792,7 @@ pub fn govee_device_control_surface(device: &TrackedDeviceCtx<'_>) -> ControlSur
         "SKU",
         "connection",
         control_surface::string_value_type(None),
-        ControlValue::String,
+        |raw| Some(ControlValue::Text(raw)),
         10,
     );
     push_govee_metadata_field(
@@ -801,7 +802,7 @@ pub fn govee_device_control_surface(device: &TrackedDeviceCtx<'_>) -> ControlSur
         "MAC",
         "connection",
         ControlValueType::MacAddress,
-        ControlValue::MacAddress,
+        |raw| MacText::new(raw).ok().map(ControlValue::Mac),
         20,
     );
     push_govee_metadata_field(
@@ -811,7 +812,7 @@ pub fn govee_device_control_surface(device: &TrackedDeviceCtx<'_>) -> ControlSur
         "Cloud Device ID",
         "cloud",
         control_surface::string_value_type(None),
-        ControlValue::String,
+        |raw| Some(ControlValue::Text(raw)),
         0,
     );
     push_govee_metadata_bool_field(
@@ -840,7 +841,7 @@ pub fn govee_device_control_surface(device: &TrackedDeviceCtx<'_>) -> ControlSur
             "Firmware",
             "diagnostics",
             control_surface::string_value_type(None),
-            ControlValue::String(version.clone()),
+            ControlValue::Text(version.clone()),
             0,
         );
     }
@@ -851,7 +852,7 @@ pub fn govee_device_control_surface(device: &TrackedDeviceCtx<'_>) -> ControlSur
         "LED Count",
         "diagnostics",
         control_surface::integer_value_type(0, None),
-        ControlValue::Integer(i64::from(device.info.total_led_count())),
+        ControlValue::Int(i64::from(device.info.total_led_count())),
         10,
     );
     control_surface::push_readonly_value(
@@ -861,7 +862,7 @@ pub fn govee_device_control_surface(device: &TrackedDeviceCtx<'_>) -> ControlSur
         "Max FPS",
         "diagnostics",
         control_surface::integer_value_type(0, None),
-        ControlValue::Integer(i64::from(device.info.capabilities.max_fps)),
+        ControlValue::Int(i64::from(device.info.capabilities.max_fps)),
         20,
     );
     let sku = device
@@ -980,7 +981,7 @@ fn push_govee_metadata_field(
     label: &str,
     group_id: &str,
     value_type: ControlValueType,
-    value: impl FnOnce(String) -> ControlValue,
+    value: impl FnOnce(String) -> Option<ControlValue>,
     ordering: i32,
 ) {
     let Some(metadata) = device.metadata else {
@@ -1042,7 +1043,7 @@ fn push_govee_support_cmds_field(
         .split(',')
         .map(str::trim)
         .filter(|command| !command.is_empty())
-        .map(|command| ControlValue::String(command.to_owned()))
+        .map(|command| ControlValue::Text(command.to_owned()))
         .collect::<Vec<_>>();
     control_surface::push_readonly_value(
         document,
@@ -1089,7 +1090,7 @@ fn govee_control_values(config: &GoveeConfig) -> ControlValueMap {
                 config
                     .known_ips
                     .iter()
-                    .map(|ip| ControlValue::IpAddress(ip.to_string()))
+                    .map(|ip| ControlValue::Ip(IpText::from(*ip)))
                     .collect(),
             ),
         ),
@@ -1099,11 +1100,11 @@ fn govee_control_values(config: &GoveeConfig) -> ControlValueMap {
         ),
         (
             FIELD_LAN_STATE_FPS.to_owned(),
-            ControlValue::Integer(i64::from(config.lan_state_fps)),
+            ControlValue::Int(i64::from(config.lan_state_fps)),
         ),
         (
             FIELD_RAZER_FPS.to_owned(),
-            ControlValue::Integer(i64::from(config.razer_fps)),
+            ControlValue::Int(i64::from(config.razer_fps)),
         ),
     ])
 }

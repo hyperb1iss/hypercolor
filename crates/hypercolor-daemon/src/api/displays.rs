@@ -1,5 +1,6 @@
 //! Display-face and preview endpoints — `/api/v1/displays/*`.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -219,13 +220,20 @@ pub async fn set_display_face(
     }
 
     if body.scope == DisplayFaceScope::Default {
-        let _admission = match state.domains.effects.admit(&effect).await {
-            Ok(admission) => admission,
+        let admitted = match crate::domain::display::admit_display_face_controls(
+            &state.domains.effects,
+            effect.clone(),
+            &body.controls,
+        )
+        .await
+        {
+            Ok(admitted) => admitted,
             Err(error) => return error.into_response(),
         };
+        let (effect, controls, admission) = admitted.into_parts();
         let preference = crate::display_preferences::DisplayPreference {
             blend_mode: display_target.blend_mode,
-            controls: body.controls,
+            controls,
             effect_id: effect.id,
             opacity: display_target.opacity,
         };
@@ -238,7 +246,8 @@ pub async fn set_display_face(
                 .into_response();
             }
         }
-        let Some(zone) = apply_display_preference_overlay_admitted(state.as_ref(), device_id).await
+        drop(admission);
+        let Some(zone) = apply_display_preference_overlay_checked(state.as_ref(), device_id).await
         else {
             return DomainError::Internal(anyhow::anyhow!(
                 "Failed to install the default face overlay"
@@ -261,7 +270,7 @@ pub async fn set_display_face(
         return envelope::ok(DisplayFaceResponse {
             default_assigned: true,
             device_id: device_id.to_string(),
-            effect: effect.into_metadata(),
+            effect,
             zone,
             live_scope: if scene_assigned {
                 DisplayFaceScope::Scene
@@ -549,49 +558,47 @@ pub async fn patch_display_face_controls(
         .into_response();
     }
 
-    let mut requested_controls = std::collections::HashMap::with_capacity(body.values.len());
-    for (name, value) in body.values {
-        let value = match value.to_effect_wire() {
-            Ok(value) => value,
-            Err(error) => {
-                return DomainError::validation_field(format!("values.{name}"), error.to_string())
-                    .into_response();
-            }
-        };
-        requested_controls.insert(name, value);
-    }
+    let requested_controls = body.values.into_iter().collect::<HashMap<_, _>>();
 
     let (scene_assigned, default_assigned) = display_face_layer_state(&state, device_id).await;
     if !scene_assigned && default_assigned {
-        let effect = match current_default_face_assignment(state.as_ref(), device_id).await {
-            Ok(response) => response.effect,
-            Err(error) => return error.into_response(),
-        };
-        let (normalized_controls, rejected) =
-            crate::domain::effect::normalize_control_values(&effect, &requested_controls);
-        if !rejected.is_empty() {
-            return DomainError::validation_details(
-                "Invalid display face control values",
-                serde_json::json!({ "rejected": rejected }),
-            )
-            .into_response();
-        }
-        {
-            let mut store = state.display_preferences.write().await;
-            let Some(preference) = store.get(device_id).cloned() else {
-                return DomainError::not_found(
-                    ResourceKind::Zone,
-                    format!("default-face:{device_id}"),
-                )
-                .into_response();
+        loop {
+            let preference = {
+                let store = state.display_preferences.read().await;
+                let Some(preference) = store.get(device_id).cloned() else {
+                    return DomainError::not_found(
+                        ResourceKind::Zone,
+                        format!("default-face:{device_id}"),
+                    )
+                    .into_response();
+                };
+                preference
             };
-            let mut updated = preference;
-            updated.controls.extend(normalized_controls);
-            if let Err(error) = store.set(device_id, updated) {
-                return DomainError::Internal(anyhow::anyhow!(
-                    "Failed to prepare display preference persistence: {error}"
-                ))
-                .into_response();
+            let admitted = match crate::domain::display::admit_current_display_face_controls(
+                &state.domains.effects,
+                preference.effect_id,
+                &requested_controls,
+            )
+            .await
+            {
+                Ok(admitted) => admitted,
+                Err(error) => return error.into_response(),
+            };
+            let (_effect, normalized_controls, admission) = admitted.into_parts();
+            let updated = {
+                let mut store = state.display_preferences.write().await;
+                store.merge_controls_if_unchanged(device_id, &preference, &normalized_controls)
+            };
+            drop(admission);
+            match updated {
+                Ok(true) => break,
+                Ok(false) => {}
+                Err(error) => {
+                    return DomainError::Internal(anyhow::anyhow!(
+                        "Failed to prepare display preference persistence: {error}"
+                    ))
+                    .into_response();
+                }
             }
         }
         return match current_default_face_assignment(state.as_ref(), device_id).await {
@@ -613,25 +620,16 @@ pub async fn patch_display_face_controls(
         };
     }
 
-    let (group, effect) = match current_display_face_assignment(state.as_ref(), device_id).await {
-        Ok(response) => (response.zone, response.effect),
+    let group = match current_display_face_assignment(state.as_ref(), device_id).await {
+        Ok(response) => response.zone,
         Err(error) => return error.into_response(),
     };
-    let (normalized_controls, rejected) =
-        crate::domain::effect::normalize_control_values(&effect, &requested_controls);
-    if !rejected.is_empty() {
-        return DomainError::validation_details(
-            "Invalid display face control values",
-            serde_json::json!({ "rejected": rejected }),
-        )
-        .into_response();
-    }
 
     let written = match crate::domain::display::patch_display_face_controls(
-        &state.domains.scene,
+        &state.domains.effects,
         crate::domain::display::PatchDisplayFaceControls {
             zone_id: group.id,
-            controls: normalized_controls,
+            controls: requested_controls,
         },
     )
     .await
@@ -650,11 +648,11 @@ pub async fn patch_display_face_controls(
             store.get(device_id).is_some()
         },
         device_id: device_id.to_string(),
-        effect,
-        zone: written.zone,
+        effect: written.effect,
+        zone: written.written.zone,
         live_scope: DisplayFaceScope::Scene,
         scene_assigned: true,
-        scene_id: written.scene_id.to_string(),
+        scene_id: written.written.scene_id.to_string(),
     })
 }
 
@@ -839,54 +837,92 @@ pub(crate) async fn apply_display_preference_overlay(
     state: &AppState,
     device_id: DeviceId,
 ) -> Option<Zone> {
-    let _effect_admission = state.domains.effects.admit_current().await;
-    apply_display_preference_overlay_admitted(state, device_id).await
+    apply_display_preference_overlay_checked(state, device_id).await
 }
 
-pub(crate) async fn apply_display_preference_overlay_admitted(
+pub(crate) async fn apply_display_preference_overlay_checked(
     state: &AppState,
     device_id: DeviceId,
 ) -> Option<Zone> {
-    let preference = {
+    loop {
+        let admission = state.domains.effects.admit_current().await;
+        let candidate = {
+            let store = state.display_preferences.read().await;
+            store.get(device_id).cloned()
+        };
+        let Some(mut preference) = candidate else {
+            let store = state.display_preferences.read().await;
+            if store.get(device_id).is_some() {
+                continue;
+            }
+            let retracted = retract_default_display_overlay(state, device_id).await;
+            drop(store);
+            drop(admission);
+            return retracted;
+        };
+
+        let tracked = state.device_registry.get(&device_id).await;
+        let surface = tracked
+            .as_ref()
+            .and_then(|tracked| display_surface_info(&tracked.info));
+        let resolved = crate::domain::display::resolve_display_face_controls_under_admission(
+            &state.domains.effects,
+            &admission,
+            preference.effect_id,
+            &preference.controls,
+        )
+        .await;
         let store = state.display_preferences.read().await;
-        store.get(device_id).cloned()
-    };
-    let Some(preference) = preference else {
-        return retract_default_display_overlay(state, device_id).await;
-    };
-
-    let tracked = state.device_registry.get(&device_id).await?;
-    let surface = display_surface_info(&tracked.info)?;
-    let effect_resolves = state
-        .domains
-        .effects
-        .metadata(preference.effect_id)
-        .await
-        .is_some();
-    if !effect_resolves {
-        warn!(
-            %device_id,
-            effect_id = %preference.effect_id,
-            "Default display face effect is not installed; skipping overlay"
-        );
-        return retract_default_display_overlay(state, device_id).await;
-    }
-
-    let zone = build_default_display_zone(
-        device_id,
-        tracked.info.name.as_str(),
-        preference.effect_id,
-        &preference,
-        display_face_layout(device_id, tracked.info.name.as_str(), surface),
-    );
-    match crate::domain::display::set_default_display_overlay(&state.domains.scene, device_id, zone)
-        .await
-    {
-        Ok(installed) => installed,
-        Err(error) => {
-            warn!(%error, %device_id, "Failed to install the default face overlay");
-            None
+        if store.get(device_id) != Some(&preference) {
+            drop(store);
+            drop(admission);
+            continue;
         }
+        let (Some(tracked), Some(surface)) = (tracked, surface) else {
+            let retracted = retract_default_display_overlay(state, device_id).await;
+            drop(store);
+            drop(admission);
+            return retracted;
+        };
+        let (effect, controls) = match resolved {
+            Ok(resolved) => resolved,
+            Err(error) => {
+                warn!(
+                    %error,
+                    %device_id,
+                    effect_id = %preference.effect_id,
+                    "Default display face is no longer admissible; skipping overlay"
+                );
+                let retracted = retract_default_display_overlay(state, device_id).await;
+                drop(store);
+                drop(admission);
+                return retracted;
+            }
+        };
+        preference.controls = controls;
+
+        let zone = build_default_display_zone(
+            device_id,
+            tracked.info.name.as_str(),
+            effect.id,
+            &preference,
+            display_face_layout(device_id, tracked.info.name.as_str(), surface),
+        );
+        let installed = crate::domain::display::set_default_display_overlay(
+            &state.domains.scene,
+            device_id,
+            zone,
+        )
+        .await;
+        drop(store);
+        drop(admission);
+        return match installed {
+            Ok(installed) => installed,
+            Err(error) => {
+                warn!(%error, %device_id, "Failed to install the default face overlay");
+                None
+            }
+        };
     }
 }
 

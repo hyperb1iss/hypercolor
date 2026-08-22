@@ -13,8 +13,9 @@
 
 use std::collections::HashMap;
 
-use hypercolor_types::canvas::{LinearRgba, linear_to_srgb};
-use hypercolor_types::effect::{ControlDefinition, ControlType, ControlValue};
+use hypercolor_types::canvas::LinearRgba;
+use hypercolor_types::control::ControlValue;
+use hypercolor_types::effect::ControlDefinition;
 
 /// Convert a raw control-panel JSON value into a typed [`ControlValue`],
 /// using the effect's control schema to disambiguate string and color
@@ -25,44 +26,13 @@ pub fn json_to_control_value(
     controls: &[ControlDefinition],
     value: &serde_json::Value,
 ) -> Option<ControlValue> {
-    if let Some(boolean) = value.as_bool() {
-        return Some(ControlValue::Boolean(boolean));
-    }
-    if let Some(integer) = value.as_i64() {
-        return Some(ControlValue::Integer(i32::try_from(integer).ok()?));
-    }
-    if let Some(float) = value.as_f64() {
-        return Some(ControlValue::Float(parse_f32(float)?));
-    }
-    if let Some(text) = value.as_str() {
-        let (is_dropdown, is_color_picker) = controls
-            .iter()
-            .find(|def| def.control_id().eq_ignore_ascii_case(control_name))
-            .map(|def| {
-                (
-                    matches!(def.control_type, ControlType::Dropdown),
-                    matches!(def.control_type, ControlType::ColorPicker),
-                )
-            })
-            .unwrap_or((false, false));
-        if is_dropdown {
-            return Some(ControlValue::Enum(text.to_owned()));
-        }
-        if is_color_picker && let Some(color) = hex_to_control_value(text) {
-            return Some(color);
-        }
-        return Some(ControlValue::Text(text.to_owned()));
-    }
-    if let Some(array) = value.as_array()
-        && array.len() == 4
-    {
-        let mut color = [0.0_f32; 4];
-        for (idx, component) in array.iter().enumerate() {
-            color[idx] = parse_f32(component.as_f64()?)?;
-        }
-        return Some(ControlValue::Color(color));
-    }
-    None
+    let definition = controls
+        .iter()
+        .find(|definition| definition.control_id().eq_ignore_ascii_case(control_name));
+    definition.map_or_else(
+        || ControlValue::try_from_effect_json(value).ok(),
+        |definition| definition.admit_effect_json(value).ok(),
+    )
 }
 
 /// Fold one raw control edit into a control-value map, returning the
@@ -95,36 +65,9 @@ pub fn controls_to_json(
 /// Convert a typed control value into its API JSON representation.
 #[must_use]
 pub fn control_value_to_json(value: &ControlValue) -> serde_json::Value {
-    match value {
-        ControlValue::Float(number) => serde_json::json!(number),
-        ControlValue::Integer(number) => serde_json::json!(number),
-        ControlValue::Boolean(boolean) => serde_json::json!(boolean),
-        ControlValue::Text(text) | ControlValue::Enum(text) => serde_json::json!(text),
-        ControlValue::Color(rgba) => serde_json::json!(format!(
-            "#{:02x}{:02x}{:02x}",
-            color_channel_to_byte(rgba[0]),
-            color_channel_to_byte(rgba[1]),
-            color_channel_to_byte(rgba[2]),
-        )),
-        ControlValue::Gradient(stops) => serde_json::json!(stops),
-        ControlValue::Rect(rect) => serde_json::json!({
-            "x": rect.x,
-            "y": rect.y,
-            "width": rect.width,
-            "height": rect.height,
-        }),
-    }
-}
-
-/// Narrow an `f64` to a finite `f32`, rejecting non-finite or out-of-range
-/// inputs.
-#[must_use]
-pub fn parse_f32(value: f64) -> Option<f32> {
-    if !value.is_finite() || value < f64::from(f32::MIN) || value > f64::from(f32::MAX) {
-        return None;
-    }
-    #[allow(clippy::cast_possible_truncation)]
-    Some(value as f32)
+    value
+        .try_to_effect_json()
+        .expect("UI effect state contains renderer-compatible control values")
 }
 
 /// Parse a hex color into linear RGB plus normalized alpha.
@@ -145,17 +88,8 @@ pub fn hex_to_rgba_json(hex: &str) -> Option<serde_json::Value> {
     Some(serde_json::json!([r, g, b, a]))
 }
 
-/// Convert a hex color string into a [`ControlValue::Color`].
+/// Convert a hex color string into a [`ControlValue::ColorLinear`].
 #[must_use]
 pub fn hex_to_control_value(hex: &str) -> Option<ControlValue> {
-    Some(ControlValue::Color(hex_to_rgba(hex)?))
-}
-
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::as_conversions
-)]
-fn color_channel_to_byte(channel: f32) -> u8 {
-    (linear_to_srgb(channel.clamp(0.0, 1.0)) * 255.0).round() as u8
+    Some(ControlValue::linear_color(hex_to_rgba(hex)?))
 }

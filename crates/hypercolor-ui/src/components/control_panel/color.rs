@@ -5,7 +5,7 @@ use leptos::prelude::*;
 use serde_json::json;
 
 use hypercolor_leptos_ext::events::Input;
-use hypercolor_types::effect::ControlValue;
+use hypercolor_types::control::ControlValue;
 
 use crate::components::color_wheel::ColorWheel;
 

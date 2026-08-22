@@ -5,8 +5,9 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+use crate::control::ControlValue;
 use crate::display::DisplayDescriptor;
-use crate::effect::{ControlValue, EffectMetadata};
+use crate::effect::EffectMetadata;
 use crate::scene::{DisplayFaceBlendMode, Zone};
 
 /// Which assignment layer a face operation targets (spec 69 §3.6).

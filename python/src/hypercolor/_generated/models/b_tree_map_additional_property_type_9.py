@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
@@ -10,26 +10,29 @@ from ..models.b_tree_map_additional_property_type_9_kind import (
     BTreeMapAdditionalPropertyType9Kind,
 )
 
+if TYPE_CHECKING:
+    from ..models.rgb import Rgb
+
+
 T = TypeVar("T", bound="BTreeMapAdditionalPropertyType9")
 
 
 @_attrs_define
 class BTreeMapAdditionalPropertyType9:
-    """MAC address text.
-
+    """
     Attributes:
         kind (BTreeMapAdditionalPropertyType9Kind):
-        value (str): MAC address text.
+        value (Rgb): Encoded sRGB color, no alpha. This is what device backends receive.
     """
 
     kind: BTreeMapAdditionalPropertyType9Kind
-    value: str
+    value: Rgb
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         kind = self.kind.value
 
-        value = self.value
+        value = self.value.to_dict()
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -44,10 +47,12 @@ class BTreeMapAdditionalPropertyType9:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.rgb import Rgb
+
         d = dict(src_dict)
         kind = BTreeMapAdditionalPropertyType9Kind(d.pop("kind"))
 
-        value = d.pop("value")
+        value = Rgb.from_dict(d.pop("value"))
 
         b_tree_map_additional_property_type_9 = cls(
             kind=kind,

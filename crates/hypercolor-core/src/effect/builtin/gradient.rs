@@ -7,16 +7,16 @@
 use std::path::PathBuf;
 
 use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, LinearRgba, Oklab, Oklch};
-use hypercolor_types::control::{ControlDeltaBatch, ControlValue as CanonicalControlValue};
+use hypercolor_types::control::{ControlDeltaBatch, ControlValue};
 use hypercolor_types::effect::{
-    ControlDefinition, ControlValue, EffectCategory, EffectMetadata, EffectSource, PresetTemplate,
+    ControlDefinition, EffectCategory, EffectMetadata, EffectSource, PresetTemplate,
 };
 
 use super::common::{
     builtin_effect_id, color_control, dropdown_control, preset, preset_with_desc, slider_control,
     toggle_control,
 };
-use crate::effect::traits::{ControlError, EffectRenderer, FrameInput, prepare_target_canvas};
+use crate::effect::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
 
 /// High-level gradient shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -448,29 +448,29 @@ impl EffectRenderer for GradientRenderer {
         clippy::too_many_lines,
         reason = "control dispatch mirrors the public schema and keeps cache invalidation local"
     )]
-    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> Result<(), ControlError> {
+    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> anyhow::Result<()> {
         for (control_id, value) in batch.changes {
             match control_id.as_str() {
                 "color_start" => {
-                    if let CanonicalControlValue::ColorLinear(color) = value {
+                    if let ControlValue::ColorLinear(color) = value {
                         self.color_start = [color.r, color.g, color.b, color.a];
                         self.invalidate_cache();
                     }
                 }
                 "color_mid" => {
-                    if let CanonicalControlValue::ColorLinear(color) = value {
+                    if let ControlValue::ColorLinear(color) = value {
                         self.color_mid = [color.r, color.g, color.b, color.a];
                         self.invalidate_cache();
                     }
                 }
                 "color_end" => {
-                    if let CanonicalControlValue::ColorLinear(color) = value {
+                    if let ControlValue::ColorLinear(color) = value {
                         self.color_end = [color.r, color.g, color.b, color.a];
                         self.invalidate_cache();
                     }
                 }
                 "use_mid_color" => {
-                    if let CanonicalControlValue::Bool(flag) = value {
+                    if let ControlValue::Bool(flag) = value {
                         self.use_mid_color = *flag;
                         self.invalidate_cache();
                     }
@@ -482,17 +482,13 @@ impl EffectRenderer for GradientRenderer {
                     }
                 }
                 "mode" => {
-                    if let CanonicalControlValue::Enum(choice)
-                    | CanonicalControlValue::Text(choice) = value
-                    {
+                    if let ControlValue::Enum(choice) | ControlValue::Text(choice) = value {
                         self.mode = GradientMode::from_str(choice);
                         self.invalidate_cache();
                     }
                 }
                 "repeat_mode" => {
-                    if let CanonicalControlValue::Enum(choice)
-                    | CanonicalControlValue::Text(choice) = value
-                    {
+                    if let ControlValue::Enum(choice) | ControlValue::Text(choice) = value {
                         self.repeat_mode = RepeatMode::from_str(choice);
                         self.invalidate_cache();
                     }
@@ -540,9 +536,7 @@ impl EffectRenderer for GradientRenderer {
                     }
                 }
                 "interpolation" => {
-                    if let CanonicalControlValue::Enum(choice)
-                    | CanonicalControlValue::Text(choice) = value
-                    {
+                    if let ControlValue::Enum(choice) | ControlValue::Text(choice) = value {
                         self.interpolation = InterpolationMode::from_str(choice);
                         self.invalidate_cache();
                     }
@@ -554,9 +548,7 @@ impl EffectRenderer for GradientRenderer {
                     }
                 }
                 "easing" => {
-                    if let CanonicalControlValue::Enum(choice)
-                    | CanonicalControlValue::Text(choice) = value
-                    {
+                    if let ControlValue::Enum(choice) | ControlValue::Text(choice) = value {
                         self.easing = EasingMode::from_str(choice);
                         self.invalidate_cache();
                     }
@@ -794,10 +786,19 @@ fn presets() -> Vec<PresetTemplate> {
             "Neon Blaze",
             "Electric SilkCircuit palette with vivid hue sweep",
             &[
-                ("color_start", ControlValue::Color([0.88, 0.08, 1.0, 1.0])),
-                ("color_end", ControlValue::Color([0.0, 1.0, 0.85, 1.0])),
-                ("use_mid_color", ControlValue::Boolean(true)),
-                ("color_mid", ControlValue::Color([1.0, 0.25, 0.55, 1.0])),
+                (
+                    "color_start",
+                    ControlValue::linear_color([0.88, 0.08, 1.0, 1.0]),
+                ),
+                (
+                    "color_end",
+                    ControlValue::linear_color([0.0, 1.0, 0.85, 1.0]),
+                ),
+                ("use_mid_color", ControlValue::Bool(true)),
+                (
+                    "color_mid",
+                    ControlValue::linear_color([1.0, 0.25, 0.55, 1.0]),
+                ),
                 ("interpolation", ControlValue::Enum("Vivid".to_owned())),
                 ("speed", ControlValue::Float(0.2)),
                 ("repeat_mode", ControlValue::Enum("Mirror".to_owned())),
@@ -807,10 +808,19 @@ fn presets() -> Vec<PresetTemplate> {
             "Sunset",
             "Warm horizon gradient",
             &[
-                ("color_start", ControlValue::Color([1.0, 0.3, 0.1, 1.0])),
-                ("color_end", ControlValue::Color([0.4, 0.0, 0.6, 1.0])),
-                ("use_mid_color", ControlValue::Boolean(true)),
-                ("color_mid", ControlValue::Color([1.0, 0.6, 0.2, 1.0])),
+                (
+                    "color_start",
+                    ControlValue::linear_color([1.0, 0.3, 0.1, 1.0]),
+                ),
+                (
+                    "color_end",
+                    ControlValue::linear_color([0.4, 0.0, 0.6, 1.0]),
+                ),
+                ("use_mid_color", ControlValue::Bool(true)),
+                (
+                    "color_mid",
+                    ControlValue::linear_color([1.0, 0.6, 0.2, 1.0]),
+                ),
                 ("interpolation", ControlValue::Enum("Vivid".to_owned())),
                 ("angle", ControlValue::Float(0.0)),
             ],
@@ -819,10 +829,19 @@ fn presets() -> Vec<PresetTemplate> {
             "Aurora",
             "Northern lights with gentle motion",
             &[
-                ("color_start", ControlValue::Color([0.0, 1.0, 0.5, 1.0])),
-                ("color_end", ControlValue::Color([0.3, 0.0, 1.0, 1.0])),
-                ("use_mid_color", ControlValue::Boolean(true)),
-                ("color_mid", ControlValue::Color([0.0, 0.8, 1.0, 1.0])),
+                (
+                    "color_start",
+                    ControlValue::linear_color([0.0, 1.0, 0.5, 1.0]),
+                ),
+                (
+                    "color_end",
+                    ControlValue::linear_color([0.3, 0.0, 1.0, 1.0]),
+                ),
+                ("use_mid_color", ControlValue::Bool(true)),
+                (
+                    "color_mid",
+                    ControlValue::linear_color([0.0, 0.8, 1.0, 1.0]),
+                ),
                 ("interpolation", ControlValue::Enum("Vivid".to_owned())),
                 ("speed", ControlValue::Float(0.15)),
                 ("repeat_mode", ControlValue::Enum("Mirror".to_owned())),
@@ -832,10 +851,19 @@ fn presets() -> Vec<PresetTemplate> {
             "Molten Core",
             "Deep orange through red to dark, smooth interpolation",
             &[
-                ("color_start", ControlValue::Color([1.0, 0.7, 0.0, 1.0])),
-                ("color_end", ControlValue::Color([0.3, 0.0, 0.0, 1.0])),
-                ("use_mid_color", ControlValue::Boolean(true)),
-                ("color_mid", ControlValue::Color([1.0, 0.15, 0.0, 1.0])),
+                (
+                    "color_start",
+                    ControlValue::linear_color([1.0, 0.7, 0.0, 1.0]),
+                ),
+                (
+                    "color_end",
+                    ControlValue::linear_color([0.3, 0.0, 0.0, 1.0]),
+                ),
+                ("use_mid_color", ControlValue::Bool(true)),
+                (
+                    "color_mid",
+                    ControlValue::linear_color([1.0, 0.15, 0.0, 1.0]),
+                ),
                 ("interpolation", ControlValue::Enum("Smooth".to_owned())),
                 ("saturation", ControlValue::Float(1.2)),
                 ("easing", ControlValue::Enum("Ease Out".to_owned())),
@@ -845,10 +873,19 @@ fn presets() -> Vec<PresetTemplate> {
             "Cyberpunk Skyline",
             "Deep blue to magenta to electric pink",
             &[
-                ("color_start", ControlValue::Color([0.0, 0.02, 0.2, 1.0])),
-                ("color_end", ControlValue::Color([1.0, 0.08, 0.58, 1.0])),
-                ("use_mid_color", ControlValue::Boolean(true)),
-                ("color_mid", ControlValue::Color([0.5, 0.0, 0.8, 1.0])),
+                (
+                    "color_start",
+                    ControlValue::linear_color([0.0, 0.02, 0.2, 1.0]),
+                ),
+                (
+                    "color_end",
+                    ControlValue::linear_color([1.0, 0.08, 0.58, 1.0]),
+                ),
+                ("use_mid_color", ControlValue::Bool(true)),
+                (
+                    "color_mid",
+                    ControlValue::linear_color([0.5, 0.0, 0.8, 1.0]),
+                ),
                 ("interpolation", ControlValue::Enum("Vivid".to_owned())),
                 ("angle", ControlValue::Float(90.0)),
             ],
@@ -857,10 +894,19 @@ fn presets() -> Vec<PresetTemplate> {
             "Forest Canopy",
             "Dark green through emerald to golden light",
             &[
-                ("color_start", ControlValue::Color([0.0, 0.15, 0.05, 1.0])),
-                ("color_end", ControlValue::Color([0.95, 0.85, 0.2, 1.0])),
-                ("use_mid_color", ControlValue::Boolean(true)),
-                ("color_mid", ControlValue::Color([0.0, 0.7, 0.3, 1.0])),
+                (
+                    "color_start",
+                    ControlValue::linear_color([0.0, 0.15, 0.05, 1.0]),
+                ),
+                (
+                    "color_end",
+                    ControlValue::linear_color([0.95, 0.85, 0.2, 1.0]),
+                ),
+                ("use_mid_color", ControlValue::Bool(true)),
+                (
+                    "color_mid",
+                    ControlValue::linear_color([0.0, 0.7, 0.3, 1.0]),
+                ),
                 ("interpolation", ControlValue::Enum("Vivid".to_owned())),
                 ("saturation", ControlValue::Float(1.1)),
             ],
@@ -868,8 +914,14 @@ fn presets() -> Vec<PresetTemplate> {
         preset(
             "Deep Ocean",
             &[
-                ("color_start", ControlValue::Color([0.0, 0.02, 0.15, 1.0])),
-                ("color_end", ControlValue::Color([0.0, 0.2, 0.5, 1.0])),
+                (
+                    "color_start",
+                    ControlValue::linear_color([0.0, 0.02, 0.15, 1.0]),
+                ),
+                (
+                    "color_end",
+                    ControlValue::linear_color([0.0, 0.2, 0.5, 1.0]),
+                ),
                 ("mode", ControlValue::Enum("Radial".to_owned())),
                 ("interpolation", ControlValue::Enum("Smooth".to_owned())),
                 ("speed", ControlValue::Float(0.08)),

@@ -11,7 +11,8 @@ use uuid::Uuid;
 
 use hypercolor_color::LinearRgba;
 
-use crate::viewport::ViewportRect;
+use crate::control::{ControlValue, ControlValueInvalid, EffectJsonValueError};
+use crate::spatial::NormalizedRect;
 
 // ── EffectId ──────────────────────────────────────────────────────────────────
 
@@ -190,6 +191,7 @@ pub enum EffectState {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct GradientStop {
     /// Position along the gradient axis, `0.0` = start, `1.0` = end.
+    #[schema(minimum = 0.0, maximum = 1.0)]
     pub position: f32,
     /// Linear RGBA color at this stop.
     pub color: [f32; 4],
@@ -253,113 +255,15 @@ pub enum ControlKind {
     Other(String),
 }
 
-// ── ControlValue ──────────────────────────────────────────────────────────────
-
-/// Runtime value of a control parameter.
-///
-/// The variant must be compatible with the corresponding [`ControlType`]:
-///
-/// | `ControlType`    | Valid `ControlValue`       |
-/// |------------------|----------------------------|
-/// | `Slider`         | `Float(f32)`               |
-/// | `Toggle`         | `Boolean(bool)`            |
-/// | `ColorPicker`    | `Color([f32; 4])`          |
-/// | `GradientEditor` | `Gradient(Vec<GradientStop>)` |
-/// | `Dropdown`       | `Enum(String)`             |
-/// | `TextInput`      | `Text(String)`             |
-/// | `Asset`          | `Text(String)`             |
-/// | `Rect`           | `Rect(ViewportRect)`       |
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
-#[schema(as = EffectControlValue)]
-#[serde(rename_all = "snake_case")]
-pub enum ControlValue {
-    /// Floating-point numeric value. Used by `Slider` controls.
-    Float(f32),
-    /// Signed integer value.
-    Integer(i32),
-    /// Boolean on/off value. Used by `Toggle` controls.
-    Boolean(bool),
-    /// Linear RGBA color. Used by `ColorPicker` controls.
-    Color([f32; 4]),
-    /// Multi-stop gradient. Used by `GradientEditor` controls.
-    Gradient(Vec<GradientStop>),
-    /// Named enum variant. Used by `Dropdown` controls.
-    Enum(String),
-    /// Free-form text. Used by `TextInput` controls.
-    Text(String),
-    /// Normalized rectangular viewport.
-    Rect(ViewportRect),
-}
-
-impl ControlValue {
-    /// Returns the value as an `f32`, if numeric.
-    ///
-    /// `Float` returns the inner value directly.
-    /// `Integer` converts via widening cast.
-    /// `Boolean` returns `1.0` for `true`, `0.0` for `false`.
-    /// All other variants return `None`.
-    #[must_use]
-    pub fn as_f32(&self) -> Option<f32> {
-        match self {
-            Self::Float(v) => Some(*v),
-            #[expect(clippy::cast_precision_loss, clippy::as_conversions)]
-            Self::Integer(v) => Some(*v as f32),
-            Self::Boolean(v) => Some(if *v { 1.0 } else { 0.0 }),
-            _ => None,
-        }
-    }
-
-    /// Returns a JavaScript-compatible literal for injection into
-    /// Servo's `window[name]` globals.
-    #[must_use]
-    pub fn to_js_literal(&self) -> String {
-        match self {
-            Self::Float(v) => v.to_string(),
-            Self::Integer(v) => v.to_string(),
-            Self::Boolean(v) => if *v { "true" } else { "false" }.to_string(),
-            Self::Color([r, g, b, _a]) => {
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    clippy::cast_sign_loss,
-                    clippy::as_conversions
-                )]
-                let (ri, gi, bi) = (
-                    (r * 255.0).round() as u8,
-                    (g * 255.0).round() as u8,
-                    (b * 255.0).round() as u8,
-                );
-                format!("\"#{ri:02x}{gi:02x}{bi:02x}\"")
-            }
-            Self::Gradient(stops) => {
-                let entries: Vec<String> = stops
-                    .iter()
-                    .map(|s| {
-                        format!(
-                            "{{pos:{},color:[{},{},{},{}]}}",
-                            s.position, s.color[0], s.color[1], s.color[2], s.color[3]
-                        )
-                    })
-                    .collect();
-                format!("[{}]", entries.join(","))
-            }
-            Self::Enum(v) | Self::Text(v) => {
-                format!("\"{}\"", v.replace('\\', "\\\\").replace('"', "\\\""))
-            }
-            Self::Rect(rect) => {
-                format!(
-                    "{{x:{},y:{},width:{},height:{}}}",
-                    rect.x, rect.y, rect.width, rect.height
-                )
-            }
-        }
-    }
-}
-
 /// Validation errors for a control update payload.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ControlValidationError {
     #[error("control '{control}': expected numeric value, got {got}")]
     ExpectedNumeric { control: String, got: &'static str },
+    #[error("control '{control}': numeric value is outside the effect runtime range")]
+    NumericOutOfRange { control: String },
+    #[error("control '{control}': integer normalization would change its canonical variant")]
+    IntegerNormalizationWouldChangeVariant { control: String },
     #[error("control '{control}': expected boolean value, got {got}")]
     ExpectedBoolean { control: String, got: &'static str },
     #[error("control '{control}': expected color/text value, got {got}")]
@@ -368,6 +272,13 @@ pub enum ControlValidationError {
     ExpectedText { control: String, got: &'static str },
     #[error("control '{control}': expected rect value, got {got}")]
     ExpectedRect { control: String, got: &'static str },
+    #[error("control '{control}': expected gradient value, got {got}")]
+    ExpectedGradient { control: String, got: &'static str },
+    #[error("control '{control}': invalid gradient: {source}")]
+    InvalidGradient {
+        control: String,
+        source: ControlValueInvalid,
+    },
     #[error("control '{control}': invalid option '{value}', valid options: {valid:?}")]
     InvalidOption {
         control: String,
@@ -376,22 +287,50 @@ pub enum ControlValidationError {
     },
 }
 
-fn control_value_kind(value: &ControlValue) -> &'static str {
-    match value {
-        ControlValue::Float(_) => "float",
-        ControlValue::Integer(_) => "integer",
-        ControlValue::Boolean(_) => "boolean",
-        ControlValue::Color(_) => "color",
-        ControlValue::Gradient(_) => "gradient",
-        ControlValue::Enum(_) => "enum",
-        ControlValue::Text(_) => "text",
-        ControlValue::Rect(_) => "rect",
-    }
+/// Why a raw JSON value cannot enter one schema-defined effect control.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum EffectControlAdmissionError {
+    /// The raw value is not representable by the effect runtime.
+    #[error("{0}")]
+    Json(#[from] EffectJsonValueError),
+    /// The decoded value does not satisfy the addressed control schema.
+    #[error("{0}")]
+    Validation(#[from] ControlValidationError),
 }
 
-fn parse_hex_color(text: &str) -> Option<[f32; 4]> {
-    let color = LinearRgba::from_hex_srgb(text.trim()).ok()?;
-    Some([color.r, color.g, color.b, color.a])
+fn control_value_kind(value: &ControlValue) -> &'static str {
+    value.kind_name()
+}
+
+fn parse_hex_color(text: &str) -> Option<LinearRgba> {
+    LinearRgba::from_hex_srgb(text.trim()).ok()
+}
+
+fn clamp_normalized_rect(rect: NormalizedRect) -> NormalizedRect {
+    let width = if rect.width.is_finite() {
+        rect.width.clamp(crate::viewport::MIN_VIEWPORT_EDGE, 1.0)
+    } else {
+        1.0
+    };
+    let height = if rect.height.is_finite() {
+        rect.height.clamp(crate::viewport::MIN_VIEWPORT_EDGE, 1.0)
+    } else {
+        1.0
+    };
+    NormalizedRect {
+        x: if rect.x.is_finite() {
+            rect.x.clamp(0.0, (1.0 - width).max(0.0))
+        } else {
+            0.0
+        },
+        y: if rect.y.is_finite() {
+            rect.y.clamp(0.0, (1.0 - height).max(0.0))
+        } else {
+            0.0
+        },
+        width,
+        height,
+    }
 }
 
 // ── ControlBinding ────────────────────────────────────────────────────────────
@@ -454,8 +393,9 @@ pub enum PreviewSource {
 
 /// A single user-facing parameter declared by an effect.
 ///
-/// The UI auto-generates widgets from these definitions. The engine
-/// injects current values into the active renderer every frame.
+/// The UI generates widgets from these definitions. Admitted control
+/// changes enter renderer state at a frame boundary; unchanged values
+/// remain in that state without repeated control-plane injection.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct ControlDefinition {
     /// Stable control identifier used in API payloads and renderer globals.
@@ -506,33 +446,103 @@ impl ControlDefinition {
         &self.id
     }
 
+    /// Decode, validate, and normalize a raw effect-control JSON value.
+    ///
+    /// Bare four-number arrays are admitted only for a schema-confirmed
+    /// color picker. Generic effect JSON remains intentionally ambiguous.
+    pub fn admit_effect_json(
+        &self,
+        value: &serde_json::Value,
+    ) -> Result<ControlValue, EffectControlAdmissionError> {
+        let parsed = if matches!(self.control_type, ControlType::ColorPicker) {
+            ControlValue::try_from_effect_color_json(value)
+                .or_else(|_| ControlValue::try_from_effect_json(value))?
+        } else {
+            ControlValue::try_from_effect_json(value)?
+        };
+        let normalized = self.validate_value(&parsed)?;
+        normalized.try_to_effect_json()?;
+        Ok(normalized)
+    }
+
     /// Validate and normalize a control value against this definition.
     pub fn validate_value(
         &self,
         value: &ControlValue,
     ) -> Result<ControlValue, ControlValidationError> {
         let control = self.control_id().to_owned();
+        if matches!(self.control_type, ControlType::GradientEditor) {
+            if !matches!(value, ControlValue::Gradient(_)) {
+                return Err(ControlValidationError::ExpectedGradient {
+                    control,
+                    got: control_value_kind(value),
+                });
+            }
+            value
+                .validate()
+                .map_err(|source| ControlValidationError::InvalidGradient { control, source })?;
+            return Ok(value.clone());
+        }
+
         match self.kind {
             ControlKind::Number | ControlKind::Hue | ControlKind::Area => {
-                let Some(mut normalized) = value.as_f32() else {
-                    return Err(ControlValidationError::ExpectedNumeric {
+                let normalize = |mut numeric: f64| {
+                    if let Some(min) = self.min {
+                        numeric = numeric.max(f64::from(min));
+                    }
+                    if let Some(max) = self.max {
+                        numeric = numeric.min(f64::from(max));
+                    }
+                    if let Some(step) = self.step.filter(|step| *step > 0.0) {
+                        let step = f64::from(step);
+                        numeric = (numeric / step).round() * step;
+                    }
+                    numeric
+                };
+
+                match value {
+                    ControlValue::Float(value) => {
+                        let Some(_) = ControlValue::Float(*value).as_effect_f32() else {
+                            return Err(ControlValidationError::NumericOutOfRange { control });
+                        };
+                        let normalized = normalize(*value);
+                        let Some(normalized) = ControlValue::Float(normalized).as_effect_f32()
+                        else {
+                            return Err(ControlValidationError::NumericOutOfRange { control });
+                        };
+                        Ok(ControlValue::Float(f64::from(normalized)))
+                    }
+                    ControlValue::Int(value) => {
+                        let value = i32::try_from(*value).map_err(|_| {
+                            ControlValidationError::NumericOutOfRange {
+                                control: control.clone(),
+                            }
+                        })?;
+                        let normalized = normalize(f64::from(value));
+                        if normalized.fract() != 0.0 {
+                            return Err(
+                                ControlValidationError::IntegerNormalizationWouldChangeVariant {
+                                    control,
+                                },
+                            );
+                        }
+                        #[expect(clippy::cast_possible_truncation, clippy::as_conversions)]
+                        let normalized = normalized as i64;
+                        i32::try_from(normalized).map_err(|_| {
+                            ControlValidationError::NumericOutOfRange {
+                                control: control.clone(),
+                            }
+                        })?;
+                        Ok(ControlValue::Int(normalized))
+                    }
+                    _ => Err(ControlValidationError::ExpectedNumeric {
                         control,
                         got: control_value_kind(value),
-                    });
-                };
-                if let Some(min) = self.min {
-                    normalized = normalized.max(min);
+                    }),
                 }
-                if let Some(max) = self.max {
-                    normalized = normalized.min(max);
-                }
-                if let Some(step) = self.step.filter(|step| *step > 0.0) {
-                    normalized = (normalized / step).round() * step;
-                }
-                Ok(ControlValue::Float(normalized))
             }
             ControlKind::Boolean => match value {
-                ControlValue::Boolean(flag) => Ok(ControlValue::Boolean(*flag)),
+                ControlValue::Bool(flag) => Ok(ControlValue::Bool(*flag)),
                 _ => Err(ControlValidationError::ExpectedBoolean {
                     control,
                     got: control_value_kind(value),
@@ -565,19 +575,19 @@ impl ControlDefinition {
                 }
             }
             ControlKind::Rect => match value {
-                ControlValue::Rect(rect) => Ok(ControlValue::Rect(rect.clamp())),
+                ControlValue::Rect(rect) => Ok(ControlValue::Rect(clamp_normalized_rect(*rect))),
                 _ => Err(ControlValidationError::ExpectedRect {
                     control,
                     got: control_value_kind(value),
                 }),
             },
             ControlKind::Color => match value {
-                ControlValue::Color(color) => Ok(ControlValue::Color(*color)),
+                ControlValue::ColorLinear(color) => Ok(ControlValue::ColorLinear(*color)),
                 ControlValue::Text(text) | ControlValue::Enum(text) => {
                     if matches!(self.control_type, ControlType::ColorPicker)
                         && let Some(color) = parse_hex_color(text)
                     {
-                        return Ok(ControlValue::Color(color));
+                        return Ok(ControlValue::ColorLinear(color));
                     }
                     Ok(ControlValue::Text(text.clone()))
                 }

@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
 use hypercolor_types::canvas::Canvas;
-use hypercolor_types::control::{ControlDeltaBatch, ControlValue as CanonicalControlValue};
+use hypercolor_types::control::{ControlDeltaBatch, ControlValue};
 use hypercolor_types::effect::{
     ControlDefinition, EffectCategory, EffectMetadata, EffectSource, PreviewSource,
 };
@@ -17,7 +17,7 @@ use crate::effect::servo::{
     ServoProducerRole, ServoRenderStatus, ServoSessionHandle, SessionConfig,
     note_servo_session_error,
 };
-use crate::effect::traits::{ControlError, EffectRenderer, FrameInput, prepare_target_canvas};
+use crate::effect::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
 use crate::spatial::sample_viewport;
 
 const URL_LOAD_DEBOUNCE: Duration = Duration::from_millis(250);
@@ -286,13 +286,11 @@ impl EffectRenderer for WebViewportRenderer {
         Ok(())
     }
 
-    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> Result<(), ControlError> {
+    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> anyhow::Result<()> {
         for (control_id, value) in batch.changes {
             match control_id.as_str() {
                 "url" => {
-                    if let CanonicalControlValue::Text(url) | CanonicalControlValue::Enum(url) =
-                        value
-                    {
+                    if let ControlValue::Text(url) | ControlValue::Enum(url) = value {
                         let normalized = normalize_web_url_input(url);
                         if normalized != self.url {
                             self.url = normalized;
@@ -304,15 +302,13 @@ impl EffectRenderer for WebViewportRenderer {
                     }
                 }
                 "viewport" => {
-                    if let CanonicalControlValue::Rect(rect) = value {
+                    if let ControlValue::Rect(rect) = value {
                         self.viewport =
                             ViewportRect::new(rect.x, rect.y, rect.width, rect.height).clamp();
                     }
                 }
                 "fit_mode" => {
-                    if let CanonicalControlValue::Enum(mode) | CanonicalControlValue::Text(mode) =
-                        value
-                    {
+                    if let ControlValue::Enum(mode) | ControlValue::Text(mode) = value {
                         self.fit_mode = parse_fit_mode(mode);
                     }
                 }
@@ -642,7 +638,7 @@ mod tests {
         let changes = [(ControlId::from(name), value)];
         renderer
             .apply_controls(&ControlDeltaBatch::new(SetRevision::default(), 0, &changes))
-            .expect("test control delivery");
+            .expect("web viewport renderer should accept admitted controls");
     }
 
     #[test]

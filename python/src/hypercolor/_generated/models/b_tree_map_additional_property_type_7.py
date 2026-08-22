@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, TypeVar, cast
+from typing import Any, TypeVar
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
@@ -15,15 +15,14 @@ T = TypeVar("T", bound="BTreeMapAdditionalPropertyType7")
 
 @_attrs_define
 class BTreeMapAdditionalPropertyType7:
-    """RGBA color.
-
+    """
     Attributes:
         kind (BTreeMapAdditionalPropertyType7Kind):
-        value (list[int]): RGBA color.
+        value (str):
     """
 
     kind: BTreeMapAdditionalPropertyType7Kind
-    value: list[int]
+    value: str
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -47,7 +46,7 @@ class BTreeMapAdditionalPropertyType7:
         d = dict(src_dict)
         kind = BTreeMapAdditionalPropertyType7Kind(d.pop("kind"))
 
-        value = cast(list[int], d.pop("value"))
+        value = d.pop("value")
 
         b_tree_map_additional_property_type_7 = cls(
             kind=kind,

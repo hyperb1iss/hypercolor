@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import timedelta
 from pathlib import Path
 from typing import cast
 
@@ -92,7 +93,7 @@ def _applied_zone(effect_id: str = "aurora") -> dict[str, object]:
                 "source": {
                     "type": "effect",
                     "effect_id": effect_id,
-                    "controls": {"effectSpeed": {"integer": 70}},
+                    "controls": {"effectSpeed": {"kind": "int", "value": 70}},
                     "control_bindings": {},
                     "preset_id": None,
                 },
@@ -527,7 +528,7 @@ async def test_effect_preset_stack_lists_and_applies_both_origins(
                             "name": "Calm",
                             "description": None,
                             "effect_id": "aurora/main",
-                            "controls": {"speed": {"float": 0.4}},
+                            "controls": {"speed": {"kind": "float", "value": 0.4}},
                             "tags": [],
                             "origin": "bundled",
                             "editable": False,
@@ -537,7 +538,7 @@ async def test_effect_preset_stack_lists_and_applies_both_origins(
                             "name": "Bright",
                             "description": "Custom",
                             "effect_id": "aurora/main",
-                            "controls": {"speed": {"float": 0.8}},
+                            "controls": {"speed": {"kind": "float", "value": 0.8}},
                             "tags": ["custom"],
                             "origin": "saved",
                             "editable": True,
@@ -727,10 +728,10 @@ async def test_activate_scene_quotes_generated_path_parameters(
         )
     )
 
-    result = await client.activate_scene("movie/night")
+    result = await client.activate_scene("movie/night", transition_ms=250)
 
     assert route.called
-    assert route.calls[0].request.content == b""
+    assert route.calls[0].request.content == b'{"transition_ms":250}'
     assert result.scene.id == "movie/night"
     assert result.layout.layout_id == "layout-a"
     assert result.brightness.applied is False
@@ -785,16 +786,18 @@ async def test_patch_layer_controls_addresses_real_layer(client: HypercolorClien
     )
 
     assert route.called
-    assert json.loads(route.calls[0].request.content) == {
-        "values": {
-            "speed": {"kind": "int", "value": 80},
-            "tint": {
-                "kind": "color_linear",
-                "value": {"r": 128 / 255, "g": 64 / 255, "b": 1.0, "a": 1.0},
-            },
-        },
-        "clear_bindings": ["speed"],
-    }
+    request = json.loads(route.calls[0].request.content)
+    assert request["values"]["speed"] == {"kind": "int", "value": 80}
+    assert request["clear_bindings"] == ["speed"]
+    assert request["values"]["tint"]["kind"] == "color_linear"
+    assert request["values"]["tint"]["value"] == pytest.approx(
+        {
+            "r": 0.21586050011389926,
+            "g": 0.05126945837404324,
+            "b": 1.0,
+            "a": 1.0,
+        }
+    )
     assert str(result.layers[0].id) == layer
 
 
@@ -837,7 +840,7 @@ async def test_get_device_controls_quotes_generated_path_parameters(
             content=_envelope(
                 _control_surface(
                     "device:keyboard/main",
-                    {"brightness": {"kind": "integer", "value": 88}},
+                    {"brightness": {"kind": "int", "value": 88}},
                 )
             ),
         )
@@ -847,7 +850,7 @@ async def test_get_device_controls_quotes_generated_path_parameters(
 
     assert route.called
     assert surface.surface_id == "device:keyboard/main"
-    assert surface.values["brightness"] == {"kind": "integer", "value": 88}
+    assert surface.values["brightness"] == {"kind": "int", "value": 88}
 
 
 @respx.mock
@@ -866,7 +869,7 @@ async def test_set_control_values_converts_python_values(client: HypercolorClien
                     "accepted": [],
                     "rejected": [],
                     "impacts": [],
-                    "values": {"brightness": {"kind": "integer", "value": 88}},
+                    "values": {"brightness": {"kind": "int", "value": 88}},
                 }
             ),
         )
@@ -885,7 +888,7 @@ async def test_set_control_values_converts_python_values(client: HypercolorClien
         }
     }
     assert result.revision == 5
-    assert result.values["brightness"] == {"kind": "integer", "value": 88}
+    assert result.values["brightness"] == {"kind": "int", "value": 88}
 
 
 @respx.mock
@@ -902,7 +905,7 @@ async def test_invoke_control_action_converts_input(client: HypercolorClient) ->
                     "action_id": "identify",
                     "status": "completed",
                     "revision": 5,
-                    "result": {"kind": "string", "value": "Identifying keyboard"},
+                    "result": {"kind": "text", "value": "Identifying keyboard"},
                 }
             ),
         )
@@ -911,18 +914,149 @@ async def test_invoke_control_action_converts_input(client: HypercolorClient) ->
     result = await client.invoke_control_action(
         "device:keyboard",
         "identify",
-        {"duration_ms": 750, "color": {"kind": "color_rgb", "value": [128, 255, 234]}},
+        {
+            "duration": timedelta(milliseconds=750),
+            "attempt": 2,
+            "label": "keyboard",
+            "options": {"force": True},
+            "color": {"kind": "color_rgb", "value": [128, 255, 234]},
+            "mac": {"kind": "mac", "value": "aabb.ccdd.eeff"},
+            "nested": {
+                "kind": "map",
+                "value": {
+                    "attempt": 3,
+                    "flags": {"kind": "list", "value": [True, "safe"]},
+                },
+            },
+        },
     )
 
     assert route.called
     assert json.loads(route.calls[0].request.content) == {
         "input": {
-            "duration_ms": {"kind": "integer", "value": 750},
-            "color": {"kind": "color_rgb", "value": [128, 255, 234]},
+            "duration": {"kind": "duration", "value": 750},
+            "attempt": {"kind": "int", "value": 2},
+            "label": {"kind": "text", "value": "keyboard"},
+            "options": {
+                "kind": "map",
+                "value": {"force": {"kind": "bool", "value": True}},
+            },
+            "color": {
+                "kind": "color_rgb",
+                "value": {"r": 128, "g": 255, "b": 234},
+            },
+            "mac": {"kind": "mac", "value": "aabb.ccdd.eeff"},
+            "nested": {
+                "kind": "map",
+                "value": {
+                    "attempt": {"kind": "int", "value": 3},
+                    "flags": {
+                        "kind": "list",
+                        "value": [
+                            {"kind": "bool", "value": True},
+                            {"kind": "text", "value": "safe"},
+                        ],
+                    },
+                },
+            },
         }
     }
     assert result.status == "completed"
-    assert result.result == {"kind": "string", "value": "Identifying keyboard"}
+    assert result.result == {"kind": "text", "value": "Identifying keyboard"}
+
+
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        {"kind": "bool"},
+        {"kind": "null", "value": None},
+        {"kind": "text", "value": "ok", "extra": True},
+        {"kind": "future", "value": 1},
+        {"kind": "color_rgb", "value": {"r": 1, "g": 2}},
+        {"kind": "map", "value": {"nested": {"kind": "int"}}},
+    ],
+)
+@pytest.mark.asyncio
+async def test_set_control_values_rejects_malformed_canonical_envelopes(
+    client: HypercolorClient,
+    malformed: object,
+) -> None:
+    with pytest.raises((TypeError, ValueError)):
+        await client.set_control_values("device:keyboard", {"bad": malformed})
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_plain_maps_with_business_kind_fields_remain_maps(
+    client: HypercolorClient,
+) -> None:
+    route = respx.patch(
+        "http://hyperia.test:9420/api/v1/control-surfaces/device%3Akeyboard/values"
+    ).mock(
+        return_value=httpx.Response(
+            200,
+            content=_envelope(
+                {
+                    "surface_id": "device:keyboard",
+                    "previous_revision": 3,
+                    "revision": 4,
+                    "accepted": [],
+                    "rejected": [],
+                    "impacts": [],
+                    "values": {},
+                }
+            ),
+        )
+    )
+
+    await client.set_control_values(
+        "device:keyboard",
+        {"transport": {"kind": "network", "name": "fixture"}},
+    )
+
+    assert json.loads(route.calls[0].request.content)["values"]["transport"] == {
+        "kind": "map",
+        "value": {
+            "kind": {"kind": "text", "value": "network"},
+            "name": {"kind": "text", "value": "fixture"},
+        },
+    }
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_bare_lists_remain_lists_in_action_input(client: HypercolorClient) -> None:
+    route = respx.post(
+        "http://hyperia.test:9420/api/v1/control-surfaces/device%3Akeyboard/actions/test"
+    ).mock(
+        return_value=httpx.Response(
+            200,
+            content=_envelope(
+                {
+                    "surface_id": "device:keyboard",
+                    "action_id": "test",
+                    "status": "completed",
+                    "revision": 5,
+                }
+            ),
+        )
+    )
+
+    await client.invoke_control_action(
+        "device:keyboard",
+        "test",
+        {"channels": [0.1, 0.2, 0.3, 1.0]},
+    )
+
+    assert json.loads(route.calls[0].request.content)["input"]["channels"] == {
+        "kind": "list",
+        "value": [
+            {"kind": "float", "value": 0.1},
+            {"kind": "float", "value": 0.2},
+            {"kind": "float", "value": 0.3},
+            {"kind": "float", "value": 1.0},
+        ],
+    }
 
 
 @respx.mock
@@ -1403,7 +1537,7 @@ async def test_scene_display_and_diagnostics_helpers(
     assert displays[0].id == "streamdeck"
     assert json.loads(face_route.calls[0].request.content) == {
         "effect_id": "clock",
-        "controls": {"speed": {"float": 0.8}},
+        "controls": {"speed": {"kind": "float", "value": 0.8}},
         "opacity": 0.8,
     }
     assert face.effect["id"] == "clock"
@@ -1440,14 +1574,14 @@ async def test_get_effect_decodes_full_model(client: HypercolorClient) -> None:
                             "min": 0,
                             "max": 100,
                             "step": 1,
-                            "default_value": {"integer": 40},
+                            "default_value": {"kind": "int", "value": 40},
                         }
                     ],
                     "presets": [
                         {
                             "id": "default",
                             "name": "Default",
-                            "controls": {"effectSpeed": {"integer": 40}},
+                            "controls": {"effectSpeed": {"kind": "int", "value": 40}},
                         }
                     ],
                 }
@@ -1463,7 +1597,7 @@ async def test_get_effect_decodes_full_model(client: HypercolorClient) -> None:
     assert not isinstance(effect.presets, Unset)
     assert effect.presets[0].name == "Default"
     assert not isinstance(effect.presets[0].controls, Unset)
-    assert effect.presets[0].controls.to_dict() == {"effectSpeed": {"integer": 40}}
+    assert effect.presets[0].controls.to_dict() == {"effectSpeed": {"kind": "int", "value": 40}}
 
 
 @respx.mock

@@ -10,8 +10,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::device::DeviceId;
-use hypercolor_types::effect::{ControlValue, EffectId};
+use hypercolor_types::effect::EffectId;
 use hypercolor_types::scene::DisplayFaceBlendMode;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{OwnedRwLockWriteGuard, RwLock};
@@ -215,6 +216,23 @@ impl DisplayPreferencesStore {
         let mut candidate = self.preferences.clone();
         candidate.insert(device_id, preference);
         self.install_candidate(candidate)
+    }
+
+    /// Merge controls only while the stored assignment still matches the
+    /// assignment whose effect schema admitted them.
+    pub(crate) fn merge_controls_if_unchanged(
+        &mut self,
+        device_id: DeviceId,
+        expected: &DisplayPreference,
+        controls: &HashMap<String, ControlValue>,
+    ) -> anyhow::Result<bool> {
+        if self.preferences.get(&device_id) != Some(expected) {
+            return Ok(false);
+        }
+        let mut updated = expected.clone();
+        updated.controls.extend(controls.clone());
+        self.set(device_id, updated)?;
+        Ok(true)
     }
 
     /// Serialize and admit a removal before changing the live store.
@@ -429,12 +447,62 @@ impl MigratedStore for DisplayPreferencesCodec {
 mod tests {
     use std::collections::HashMap;
 
+    use hypercolor_types::control::ControlValue;
     use hypercolor_types::device::DeviceId;
     use hypercolor_types::effect::EffectId;
     use hypercolor_types::scene::DisplayFaceBlendMode;
     use tempfile::TempDir;
 
     use super::{DisplayPreference, DisplayPreferencesStore};
+
+    fn preference(effect_id: EffectId) -> DisplayPreference {
+        DisplayPreference {
+            effect_id,
+            controls: HashMap::new(),
+            blend_mode: DisplayFaceBlendMode::Alpha,
+            opacity: 1.0,
+        }
+    }
+
+    #[test]
+    fn control_merge_refuses_to_replace_a_changed_assignment() {
+        let temp = TempDir::new().expect("tempdir");
+        let mut store = DisplayPreferencesStore::new(temp.path().join("display-preferences.json"))
+            .expect("store should open");
+        let device_id = DeviceId::new();
+        let stale = preference(EffectId::new(uuid::Uuid::now_v7()));
+        let current = preference(EffectId::new(uuid::Uuid::now_v7()));
+        store
+            .set(device_id, current.clone())
+            .expect("current preference should persist");
+
+        assert!(
+            !store
+                .merge_controls_if_unchanged(
+                    device_id,
+                    &stale,
+                    &HashMap::from([("speed".into(), ControlValue::Float(0.5))]),
+                )
+                .expect("stale merge should be rejected")
+        );
+        assert_eq!(store.get(device_id), Some(&current));
+
+        assert!(
+            store
+                .merge_controls_if_unchanged(
+                    device_id,
+                    &current,
+                    &HashMap::from([("speed".into(), ControlValue::Float(0.5))]),
+                )
+                .expect("current merge should persist")
+        );
+        assert_eq!(
+            store
+                .get(device_id)
+                .and_then(|preference| preference.controls.get("speed")),
+            Some(&ControlValue::Float(0.5))
+        );
+    }
 
     #[test]
     fn effect_id_migration_is_durable_before_preferences_are_published() {

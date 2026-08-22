@@ -6,7 +6,8 @@ use hypercolor_core::effect::{EffectPool, EffectRegistry, builtin::register_buil
 use hypercolor_core::input::InteractionData;
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{Canvas, Rgba};
-use hypercolor_types::effect::{ControlBinding, ControlValue, EffectId};
+use hypercolor_types::control::ControlValue;
+use hypercolor_types::effect::{ControlBinding, EffectId};
 use hypercolor_types::layer::{LayerSource, SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{Zone, ZoneId, ZoneRole};
 use hypercolor_types::sensor::SystemSnapshot;
@@ -95,7 +96,7 @@ fn effect_layer(effect_id: EffectId, color: [f32; 4]) -> SceneLayer {
     SceneLayer::from_effect(
         SceneLayerId::new(),
         effect_id,
-        HashMap::from([("color".into(), ControlValue::Color(color))]),
+        HashMap::from([("color".into(), ControlValue::linear_color(color))]),
         HashMap::new(),
         None,
     )
@@ -112,6 +113,17 @@ fn set_effect_control(group: &mut Zone, name: &str, value: ControlValue) {
     controls
         .expect("fixture should store an effect layer")
         .insert(name.to_owned(), value);
+}
+
+fn set_effect_id(group: &mut Zone, effect_id: EffectId) {
+    let stored_effect_id = group
+        .layers
+        .iter_mut()
+        .find_map(|layer| match &mut layer.source {
+            LayerSource::Effect { effect_id, .. } => Some(effect_id),
+            _ => None,
+        });
+    *stored_effect_id.expect("fixture should store an effect layer") = effect_id;
 }
 
 fn set_effect_control_binding(group: &mut Zone, name: &str, binding: ControlBinding) {
@@ -142,7 +154,7 @@ fn effect_pool_reconciles_and_renders_group_controls() {
     set_effect_control(
         &mut group,
         "color",
-        ControlValue::Color([1.0, 0.0, 0.0, 1.0]),
+        ControlValue::linear_color([1.0, 0.0, 0.0, 1.0]),
     );
 
     let mut pool = EffectPool::new();
@@ -202,6 +214,84 @@ fn failed_effect_pool_preparation_preserves_live_slots() {
 }
 
 #[test]
+fn invalid_effect_control_is_rejected_before_live_state_changes() {
+    let registry = registry_with_builtins();
+    let solid_id = builtin_effect_id(&registry, "solid_color");
+    let mut live_group = render_group(ZoneId::new(), solid_id);
+    set_effect_control(
+        &mut live_group,
+        "color",
+        ControlValue::linear_color([1.0, 0.0, 0.0, 1.0]),
+    );
+    let mut candidate_group = live_group.clone();
+    set_effect_control(&mut candidate_group, "color", ControlValue::Bool(true));
+    candidate_group.controls_version += 1;
+    let mut pool = EffectPool::new();
+    pool.reconcile(
+        std::slice::from_ref(&live_group),
+        &registry,
+        &HashMap::new(),
+    )
+    .expect("live controls should reconcile");
+
+    let result = pool.prepare_reconcile(
+        std::slice::from_ref(&candidate_group),
+        &registry,
+        &HashMap::new(),
+    );
+
+    assert!(result.is_err());
+    let mut canvas = Canvas::new(1, 1);
+    pool.render_group_into(
+        &live_group,
+        0.016,
+        &AudioData::silence(),
+        &InteractionData::default(),
+        None,
+        &EMPTY_SENSORS,
+        hypercolor_core::effect::FrameDataSources::default(),
+        &mut canvas,
+    )
+    .expect("rejected controls must not disturb the live renderer");
+    assert_eq!(top_left(&canvas), Rgba::new(255, 0, 0, 255));
+}
+
+#[test]
+fn effect_pool_rejects_non_projectable_values_even_for_unknown_keys() {
+    let registry = registry_with_builtins();
+    let solid_id = builtin_effect_id(&registry, "solid_color");
+    let rejected_values = [
+        serde_json::json!({"kind": "null"}),
+        serde_json::json!({"kind": "secret_ref", "value": "token"}),
+        serde_json::json!({"kind": "ip", "value": "127.0.0.1"}),
+        serde_json::json!({"kind": "mac", "value": "01:23:45:67:89:ab"}),
+        serde_json::json!({"kind": "duration", "value": 250}),
+        serde_json::json!({"kind": "color_rgb", "value": {"r": 1, "g": 2, "b": 3}}),
+        serde_json::json!({"kind": "color_rgba", "value": {"r": 1, "g": 2, "b": 3, "a": 4}}),
+        serde_json::json!({"kind": "flags", "value": ["one"]}),
+        serde_json::json!({"kind": "list", "value": [{"kind": "bool", "value": true}]}),
+        serde_json::json!({"kind": "map", "value": {"one": {"kind": "bool", "value": true}}}),
+        serde_json::json!({"kind": "unknown"}),
+    ];
+
+    for (index, raw) in rejected_values.into_iter().enumerate() {
+        let mut group = render_group(ZoneId::new(), solid_id);
+        set_effect_control(
+            &mut group,
+            &format!("unknown_{index}"),
+            serde_json::from_value(raw).expect("fixture should decode canonically"),
+        );
+        let pool = EffectPool::new();
+
+        assert!(
+            pool.prepare_reconcile(&[group], &registry, &HashMap::new())
+                .is_err(),
+            "non-projectable fixture {index} entered a prepared effect pool"
+        );
+    }
+}
+
+#[test]
 fn abandoned_prepared_effect_pool_keeps_live_slots_renderable() {
     let registry = registry_with_builtins();
     let solid_id = builtin_effect_id(&registry, "solid_color");
@@ -243,13 +333,13 @@ fn changed_controls_update_slot_only_when_prepared_pool_commits() {
     set_effect_control(
         &mut live_group,
         "color",
-        ControlValue::Color([1.0, 0.0, 0.0, 1.0]),
+        ControlValue::linear_color([1.0, 0.0, 0.0, 1.0]),
     );
     let mut candidate_group = live_group.clone();
     set_effect_control(
         &mut candidate_group,
         "color",
-        ControlValue::Color([0.0, 0.0, 1.0, 1.0]),
+        ControlValue::linear_color([0.0, 0.0, 1.0, 1.0]),
     );
     candidate_group.controls_version += 1;
     let mut pool = EffectPool::new();
@@ -281,7 +371,8 @@ fn changed_controls_update_slot_only_when_prepared_pool_commits() {
     .expect("live slot should remain unchanged during preparation");
     assert_eq!(top_left(&canvas), Rgba::new(255, 0, 0, 255));
 
-    pool.commit_reconcile(prepared).expect("commit reconcile");
+    pool.commit_reconcile(prepared)
+        .expect("prepared reconcile should commit");
     pool.render_group_into(
         &candidate_group,
         0.016,
@@ -297,6 +388,133 @@ fn changed_controls_update_slot_only_when_prepared_pool_commits() {
 }
 
 #[test]
+fn stale_prepared_pool_is_rejected_before_any_live_control_update() {
+    let registry = registry_with_builtins();
+    let solid_id = builtin_effect_id(&registry, "solid_color");
+    let mut live_a = render_group(ZoneId::new(), solid_id);
+    let mut live_b = render_group(ZoneId::new(), solid_id);
+    set_effect_control(
+        &mut live_a,
+        "color",
+        ControlValue::linear_color([1.0, 0.0, 0.0, 1.0]),
+    );
+    set_effect_control(
+        &mut live_b,
+        "color",
+        ControlValue::linear_color([1.0, 0.0, 0.0, 1.0]),
+    );
+    let mut candidate_a = live_a.clone();
+    let mut candidate_b = live_b.clone();
+    set_effect_control(
+        &mut candidate_a,
+        "color",
+        ControlValue::linear_color([0.0, 0.0, 1.0, 1.0]),
+    );
+    set_effect_control(
+        &mut candidate_b,
+        "color",
+        ControlValue::linear_color([0.0, 1.0, 0.0, 1.0]),
+    );
+    candidate_a.controls_version += 1;
+    candidate_b.controls_version += 1;
+
+    let mut pool = EffectPool::new();
+    pool.reconcile(
+        &[live_a.clone(), live_b.clone()],
+        &registry,
+        &HashMap::new(),
+    )
+    .expect("live groups should reconcile");
+    let prepared = pool
+        .prepare_reconcile(&[candidate_a, candidate_b], &registry, &HashMap::new())
+        .expect("candidate controls should prepare");
+    pool.remove_group(live_b.id);
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        pool.commit_reconcile(prepared)
+            .expect("prepared reconcile should commit");
+    }));
+
+    assert!(result.is_err());
+    let mut canvas = Canvas::new(1, 1);
+    pool.render_group_into(
+        &live_a,
+        0.016,
+        &AudioData::silence(),
+        &InteractionData::default(),
+        None,
+        &EMPTY_SENSORS,
+        hypercolor_core::effect::FrameDataSources::default(),
+        &mut canvas,
+    )
+    .expect("untouched live slot should remain renderable");
+    assert_eq!(top_left(&canvas), Rgba::new(255, 0, 0, 255));
+}
+
+#[test]
+fn stale_preparation_rejects_same_key_renderer_replacement() {
+    let registry = registry_with_builtins();
+    let solid_id = builtin_effect_id(&registry, "solid_color");
+    let rainbow_id = builtin_effect_id(&registry, "rainbow");
+    let mut live_group = render_group(ZoneId::new(), solid_id);
+    set_effect_control(
+        &mut live_group,
+        "color",
+        ControlValue::linear_color([1.0, 0.0, 0.0, 1.0]),
+    );
+    let mut stale_candidate = live_group.clone();
+    set_effect_control(
+        &mut stale_candidate,
+        "color",
+        ControlValue::linear_color([0.0, 0.0, 1.0, 1.0]),
+    );
+    stale_candidate.controls_version += 1;
+
+    let mut pool = EffectPool::new();
+    pool.reconcile(
+        std::slice::from_ref(&live_group),
+        &registry,
+        &HashMap::new(),
+    )
+    .expect("live group should reconcile");
+    let stale = pool
+        .prepare_reconcile(
+            std::slice::from_ref(&stale_candidate),
+            &registry,
+            &HashMap::new(),
+        )
+        .expect("control update should prepare against the solid renderer");
+
+    let mut replacement = live_group.clone();
+    set_effect_id(&mut replacement, rainbow_id);
+    pool.reconcile(
+        std::slice::from_ref(&replacement),
+        &registry,
+        &HashMap::new(),
+    )
+    .expect("same-key rainbow renderer should replace the solid renderer");
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = pool.commit_reconcile(stale);
+    }));
+
+    assert!(result.is_err());
+    assert_eq!(pool.slot_count(), 1);
+    let mut canvas = Canvas::new(1, 1);
+    pool.render_group_into(
+        &replacement,
+        0.016,
+        &AudioData::silence(),
+        &InteractionData::default(),
+        None,
+        &EMPTY_SENSORS,
+        hypercolor_core::effect::FrameDataSources::default(),
+        &mut canvas,
+    )
+    .expect("replacement renderer should remain live after stale commit rejection");
+}
+
+#[test]
 fn effect_pool_hot_swaps_effects_for_same_group() {
     let registry = registry_with_builtins();
     let solid_id = builtin_effect_id(&registry, "solid_color");
@@ -306,7 +524,7 @@ fn effect_pool_hot_swaps_effects_for_same_group() {
     set_effect_control(
         &mut solid_group,
         "color",
-        ControlValue::Color([1.0, 0.0, 0.0, 1.0]),
+        ControlValue::linear_color([1.0, 0.0, 0.0, 1.0]),
     );
 
     let mut pool = EffectPool::new();
@@ -368,7 +586,7 @@ fn effect_pool_rebuilds_slot_when_registry_entry_changes_for_same_effect_id() {
     set_effect_control(
         &mut group,
         "color",
-        ControlValue::Color([1.0, 0.0, 0.0, 1.0]),
+        ControlValue::linear_color([1.0, 0.0, 0.0, 1.0]),
     );
 
     let mut pool = EffectPool::new();

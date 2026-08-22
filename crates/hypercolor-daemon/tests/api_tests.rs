@@ -18,8 +18,8 @@ use hypercolor_core::config::ConfigManager;
 use hypercolor_driver_api::{
     BackendInfo, ControlApplyTarget, DeviceBackend, DiscoveredDevice, DiscoveryCapability,
     DiscoveryConnectBehavior, DiscoveryRequest, DriverConfigView, DriverControlProvider,
-    DriverDescriptor, DriverError, DriverHost, DriverModule, DriverRuntimeCacheProvider,
-    ValidatedControlChanges,
+    DriverControlStore, DriverDescriptor, DriverError, DriverHost, DriverModule,
+    DriverRuntimeCacheProvider, ValidatedControlChanges,
 };
 #[cfg(feature = "builtin-drivers")]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -58,11 +58,12 @@ use hypercolor_types::api::scene::SceneDocument;
 use hypercolor_types::api::scenes::{ReplaceSceneLayerRequest, ReplaceSceneRequest};
 use hypercolor_types::canvas::{Canvas, Rgba};
 use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig, RenderAccelerationMode};
+use hypercolor_types::control::ControlValue as SurfaceControlValue;
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::controls::{
     ApplyControlChangesResponse, ApplyImpact, ControlActionDescriptor, ControlActionResult,
     ControlActionStatus, ControlAvailabilityExpr, ControlChange, ControlOwner,
-    ControlSurfaceDocument, ControlSurfaceEvent, ControlSurfaceScope,
-    ControlValue as SurfaceControlValue, ControlValueMap,
+    ControlSurfaceDocument, ControlSurfaceEvent, ControlSurfaceScope, ControlValueMap,
 };
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceError, DeviceFamily,
@@ -70,8 +71,8 @@ use hypercolor_types::device::{
     DeviceTopologyHint, DriverTransportKind, SegmentInfo,
 };
 use hypercolor_types::effect::{
-    ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory, EffectId,
-    EffectMetadata, EffectSource, EffectState, PresetTemplate,
+    ControlDefinition, ControlKind, ControlType, EffectCategory, EffectId, EffectMetadata,
+    EffectSource, EffectState, GradientStop, PresetTemplate,
 };
 use hypercolor_types::event::InputButtonState;
 use hypercolor_types::event::{HypercolorEvent, ZoneChangeKind};
@@ -524,6 +525,11 @@ static ACTION_TEST_DRIVER: DriverDescriptor = DriverDescriptor::new(
 
 struct ActionTestDriver;
 
+#[derive(serde::Deserialize)]
+struct ActionTestConfig {
+    descriptor: serde_json::Value,
+}
+
 impl DriverModule for ActionTestDriver {
     fn descriptor(&self) -> &'static DriverDescriptor {
         &ACTION_TEST_DRIVER
@@ -539,7 +545,7 @@ impl DriverControlProvider for ActionTestDriver {
     async fn driver_surface(
         &self,
         _host: &dyn DriverHost,
-        _config: DriverConfigView<'_>,
+        config: DriverConfigView<'_>,
     ) -> anyhow::Result<Option<ControlSurfaceDocument>> {
         let mut surface = ControlSurfaceDocument::empty(
             "driver:action_test",
@@ -562,6 +568,23 @@ impl DriverControlProvider for ActionTestDriver {
             availability: ControlAvailabilityExpr::Always,
             ordering: 0,
         });
+        if config.entry.settings.contains_key("descriptor") {
+            let config = config.parse_settings::<ActionTestConfig>()?;
+            let name = config
+                .descriptor
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("test descriptor must have a name"))?;
+            surface
+                .values
+                .insert("descriptor".to_owned(), ControlValue::Text(name.to_owned()));
+        }
+        if config.entry.settings.contains_key("persisted") {
+            surface.values.insert(
+                "persisted".to_owned(),
+                ControlValue::Text("projected".to_owned()),
+            );
+        }
         Ok(Some(surface))
     }
 
@@ -3354,15 +3377,10 @@ async fn insert_test_effect_with_presets(
     name: &str,
     presets: Vec<PresetTemplate>,
 ) -> EffectMetadata {
-    let metadata = EffectMetadata {
-        id: EffectId::new(Uuid::now_v7()),
-        name: name.to_owned(),
-        author: "test".to_owned(),
-        version: "0.1.0".to_owned(),
-        description: format!("{name} description"),
-        category: EffectCategory::Ambient,
-        tags: vec!["test".to_owned()],
-        controls: vec![ControlDefinition {
+    insert_test_effect_with_controls(
+        state,
+        name,
+        vec![ControlDefinition {
             id: "speed".to_owned(),
             name: "Speed".to_owned(),
             kind: ControlKind::Number,
@@ -3378,6 +3396,26 @@ async fn insert_test_effect_with_presets(
             preview_source: None,
             binding: None,
         }],
+        presets,
+    )
+    .await
+}
+
+async fn insert_test_effect_with_controls(
+    state: &Arc<AppState>,
+    name: &str,
+    controls: Vec<ControlDefinition>,
+    presets: Vec<PresetTemplate>,
+) -> EffectMetadata {
+    let metadata = EffectMetadata {
+        id: EffectId::new(Uuid::now_v7()),
+        name: name.to_owned(),
+        author: "test".to_owned(),
+        version: "0.1.0".to_owned(),
+        description: format!("{name} description"),
+        category: EffectCategory::Ambient,
+        tags: vec!["test".to_owned()],
+        controls,
         presets,
         audio_reactive: false,
         screen_reactive: false,
@@ -4285,7 +4323,7 @@ async fn get_driver_controls_returns_module_control_surface() {
     assert_eq!(data["values"]["default_protocol"]["value"], "ddp");
     assert_eq!(data["values"]["realtime_http_enabled"]["kind"], "bool");
     assert_eq!(data["values"]["realtime_http_enabled"]["value"], true);
-    assert_eq!(data["values"]["dedup_threshold"]["kind"], "integer");
+    assert_eq!(data["values"]["dedup_threshold"]["kind"], "int");
     assert_eq!(data["values"]["dedup_threshold"]["value"], 2);
 
     let fields = data["fields"]
@@ -4373,10 +4411,7 @@ async fn get_driver_controls_returns_govee_hue_and_nanoleaf_surfaces() {
     let nanoleaf = body_json(nanoleaf_response).await;
     assert_eq!(nanoleaf["data"]["surface_id"], "driver:nanoleaf");
     assert_eq!(nanoleaf["data"]["values"]["device_ips"]["kind"], "list");
-    assert_eq!(
-        nanoleaf["data"]["values"]["transition_time"]["kind"],
-        "integer"
-    );
+    assert_eq!(nanoleaf["data"]["values"]["transition_time"]["kind"], "int");
     let nanoleaf_fields = nanoleaf["data"]["fields"]
         .as_array()
         .expect("Nanoleaf fields should be an array");
@@ -4503,12 +4538,9 @@ async fn get_control_surface_returns_driver_owned_device_surface_by_id() {
             ControlValueMap::from([
                 (
                     "protocol".to_owned(),
-                    SurfaceControlValue::String("e131".to_owned()),
+                    SurfaceControlValue::Text("e131".to_owned()),
                 ),
-                (
-                    "dedup_threshold".to_owned(),
-                    SurfaceControlValue::Integer(8),
-                ),
+                ("dedup_threshold".to_owned(), SurfaceControlValue::Int(8)),
             ]),
         )
         .await
@@ -4720,8 +4752,14 @@ async fn patch_driver_control_surface_updates_config() {
         .drivers
         .get("wled")
         .expect("wled config should exist");
-    assert_eq!(wled.settings["default_protocol"], "e131");
-    assert_eq!(wled.settings["dedup_threshold"], 7);
+    assert_eq!(
+        wled.settings["default_protocol"],
+        serde_json::json!({ "kind": "enum", "value": "e131" })
+    );
+    assert_eq!(
+        wled.settings["dedup_threshold"],
+        serde_json::json!({ "kind": "int", "value": 7 })
+    );
 
     let backend_manager = state.backend_manager.lock().await;
     assert!(backend_manager.backend_ids().contains(&"wled"));
@@ -4770,8 +4808,14 @@ async fn patch_govee_driver_control_surface_persists_backend_settings() {
         .drivers
         .get("govee")
         .expect("govee config should exist");
-    assert_eq!(govee.settings["power_off_on_disconnect"], true);
-    assert_eq!(govee.settings["lan_state_fps"], 12);
+    assert_eq!(
+        govee.settings["power_off_on_disconnect"],
+        serde_json::json!({ "kind": "bool", "value": true })
+    );
+    assert_eq!(
+        govee.settings["lan_state_fps"],
+        serde_json::json!({ "kind": "int", "value": 12 })
+    );
 }
 
 #[tokio::test]
@@ -4809,7 +4853,10 @@ async fn patch_hue_driver_control_surface_persists_backend_settings() {
 
     let config = manager.get();
     let hue = config.drivers.get("hue").expect("hue config should exist");
-    assert_eq!(hue.settings["use_cie_xy"], false);
+    assert_eq!(
+        hue.settings["use_cie_xy"],
+        serde_json::json!({ "kind": "bool", "value": false })
+    );
 }
 
 #[tokio::test]
@@ -4850,7 +4897,10 @@ async fn patch_nanoleaf_driver_control_surface_persists_backend_settings() {
         .drivers
         .get("nanoleaf")
         .expect("nanoleaf config should exist");
-    assert_eq!(nanoleaf.settings["transition_time"], 8);
+    assert_eq!(
+        nanoleaf.settings["transition_time"],
+        serde_json::json!({ "kind": "int", "value": 8 })
+    );
 }
 
 #[tokio::test]
@@ -5094,7 +5144,7 @@ async fn patch_driver_control_surface_publishes_values_changed_event() {
             assert_eq!(revision, updated_revision);
             assert_eq!(
                 values.get("dedup_threshold"),
-                Some(&SurfaceControlValue::Integer(11))
+                Some(&SurfaceControlValue::Int(11))
             );
         }
         _ => panic!("expected values_changed control surface event"),
@@ -5133,6 +5183,93 @@ async fn invoke_driver_control_surface_action_routes_to_provider() {
             .as_str()
             .expect("error message")
             .contains("unknown control action")
+    );
+}
+
+#[tokio::test]
+async fn driver_control_reload_preserves_raw_objects_with_kind_fields() {
+    let (mut state, tempdir) = isolated_state_with_tempdir();
+    let manager = Arc::new(
+        ConfigManager::new(tempdir.path().join("config.toml"))
+            .expect("config manager should be created"),
+    );
+    manager.modify(|config| {
+        config.drivers.insert(
+            "action_test".to_owned(),
+            DriverConfigEntry::enabled(BTreeMap::from([(
+                "descriptor".to_owned(),
+                serde_json::json!({"kind": "network", "name": "fixture"}),
+            )])),
+        );
+    });
+
+    let mut registry = DriverModuleRegistry::new();
+    registry
+        .register(ActionTestDriver)
+        .expect("test action driver should register");
+    let registry = Arc::new(registry);
+    state.driver_registry = Arc::clone(&registry);
+    state.config_manager = Some(Arc::clone(&manager));
+    state.driver_host = Arc::new(
+        state
+            .driver_host
+            .with_driver_registry(registry)
+            .with_config_manager(Some(manager)),
+    );
+
+    let values = state
+        .driver_host
+        .load_driver_values("action_test")
+        .await
+        .expect("driver values should reload");
+
+    assert_eq!(
+        values.get("descriptor"),
+        Some(&ControlValue::Text("fixture".to_owned()))
+    );
+}
+
+#[tokio::test]
+async fn driver_control_reload_rejects_malformed_canonical_envelopes() {
+    let (mut state, tempdir) = isolated_state_with_tempdir();
+    let manager = Arc::new(
+        ConfigManager::new(tempdir.path().join("config.toml"))
+            .expect("config manager should be created"),
+    );
+    manager.modify(|config| {
+        config.drivers.insert(
+            "action_test".to_owned(),
+            DriverConfigEntry::enabled(BTreeMap::from([(
+                "persisted".to_owned(),
+                serde_json::json!({"kind": "float"}),
+            )])),
+        );
+    });
+
+    let mut registry = DriverModuleRegistry::new();
+    registry
+        .register(ActionTestDriver)
+        .expect("test action driver should register");
+    let registry = Arc::new(registry);
+    state.driver_registry = Arc::clone(&registry);
+    state.config_manager = Some(Arc::clone(&manager));
+    state.driver_host = Arc::new(
+        state
+            .driver_host
+            .with_driver_registry(registry)
+            .with_config_manager(Some(manager)),
+    );
+
+    let error = state
+        .driver_host
+        .load_driver_values("action_test")
+        .await
+        .expect_err("malformed canonical values must not fall back to a projection");
+
+    assert!(
+        error.to_string().contains(
+            "invalid persisted control value for driver 'action_test' setting 'persisted'"
+        )
     );
 }
 
@@ -5749,6 +5886,79 @@ async fn apply_effect_upserts_primary_group() {
         .expect("active scene should contain a primary group");
     assert_eq!(primary.role, ZoneRole::Primary);
     assert!(primary.effect_ids().next().is_some());
+}
+
+#[tokio::test]
+async fn apply_effect_accepts_canonical_gradient_controls() {
+    let state = Arc::new(isolated_state());
+    let gradient = ControlValue::Gradient(vec![
+        GradientStop {
+            position: 0.0,
+            color: [1.0, 0.0, 0.0, 1.0],
+        },
+        GradientStop {
+            position: 0.5,
+            color: [0.5, 0.25, 0.75, 1.0],
+        },
+        GradientStop {
+            position: 1.0,
+            color: [0.0, 0.0, 1.0, 1.0],
+        },
+    ]);
+    insert_test_effect_with_controls(
+        &state,
+        "gradient_test",
+        vec![ControlDefinition {
+            id: "palette".to_owned(),
+            name: "Palette".to_owned(),
+            kind: ControlKind::Other("gradient".to_owned()),
+            control_type: ControlType::GradientEditor,
+            default_value: gradient.clone(),
+            min: None,
+            max: None,
+            step: None,
+            labels: Vec::new(),
+            group: None,
+            tooltip: None,
+            aspect_lock: None,
+            preview_source: None,
+            binding: None,
+        }],
+        Vec::new(),
+    )
+    .await;
+    let app = test_app_with_state(Arc::clone(&state));
+    let body = serde_json::json!({
+        "controls": {
+            "palette": serde_json::to_value(&gradient)
+                .expect("gradient should serialize for the REST request")
+        }
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/gradient_test/apply")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&body).expect("request body should serialize"),
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let manager = state.scene_manager.snapshot().await;
+    let primary = manager
+        .active_scene()
+        .and_then(Scene::primary_zone)
+        .expect("active scene should contain a primary group");
+    assert_eq!(
+        zone_effect_controls(primary).and_then(|controls| controls.get("palette")),
+        Some(&gradient)
+    );
 }
 
 #[tokio::test]
@@ -6530,7 +6740,7 @@ async fn apply_effect_with_preset_id_sets_group_preset_atomically() {
         .expect("preset controls should be baked into the group");
     assert!(matches!(
         speed,
-        hypercolor_types::effect::ControlValue::Float(value) if (*value - 3.5).abs() < 0.01
+        hypercolor_types::control::ControlValue::Float(value) if (*value - 3.5).abs() < 0.01
     ));
 }
 
@@ -6667,7 +6877,8 @@ async fn library_presets_create_and_get() {
     assert_eq!(create_response.status(), StatusCode::CREATED);
     let create_json = body_json(create_response).await;
     assert_eq!(create_json["data"]["name"], "Warm Sweep");
-    assert_eq!(create_json["data"]["controls"]["speed"]["float"], 7.5);
+    assert_eq!(create_json["data"]["controls"]["speed"]["kind"], "float");
+    assert_eq!(create_json["data"]["controls"]["speed"]["value"], 7.5);
     assert_eq!(create_json["data"]["tags"][0], "cozy");
     let preset_id = create_json["data"]["id"]
         .as_str()
@@ -6686,7 +6897,8 @@ async fn library_presets_create_and_get() {
     assert_eq!(get_response.status(), StatusCode::OK);
     let get_json = body_json(get_response).await;
     assert_eq!(get_json["data"]["id"], preset_id);
-    assert_eq!(get_json["data"]["controls"]["speed"]["float"], 7.5);
+    assert_eq!(get_json["data"]["controls"]["speed"]["kind"], "float");
+    assert_eq!(get_json["data"]["controls"]["speed"]["value"], 7.5);
 }
 
 #[tokio::test]
@@ -10333,7 +10545,7 @@ async fn get_device_controls_returns_host_control_surface() {
     assert_eq!(data["surface_id"], format!("device:{device_id}"));
     assert_eq!(data["schema_version"], 1);
     assert_eq!(data["scope"]["device"]["driver_id"], "wled");
-    assert_eq!(data["values"]["name"]["kind"], "string");
+    assert_eq!(data["values"]["name"]["kind"], "text");
     assert_eq!(data["values"]["name"]["value"], "Desk Strip");
     assert_eq!(data["values"]["enabled"]["kind"], "bool");
     assert_eq!(data["values"]["enabled"]["value"], true);
@@ -10368,7 +10580,7 @@ async fn get_device_controls_returns_host_control_surface() {
     );
     assert_eq!(
         identify["input_fields"][0]["default_value"]["kind"],
-        "duration_ms"
+        "duration"
     );
     assert_eq!(identify["input_fields"][0]["default_value"]["value"], 3000);
     assert_eq!(identify["input_fields"][1]["id"], "color");
@@ -10566,8 +10778,11 @@ async fn invoke_host_device_control_surface_identify_action_returns_typed_result
                 .body(Body::from(
                     serde_json::json!({
                         "input": {
-                            "duration_ms": { "kind": "duration_ms", "value": 1 },
-                            "color": { "kind": "color_rgb", "value": [128, 64, 255] }
+                            "duration_ms": { "kind": "duration", "value": 1 },
+                            "color": {
+                                "kind": "color_rgb",
+                                "value": { "r": 128, "g": 64, "b": 255 }
+                            }
                         }
                     })
                     .to_string(),
@@ -11104,7 +11319,7 @@ async fn patch_face_controls_updates_display_group() {
     assert_eq!(patch_response.status(), StatusCode::OK);
     let patch_json = body_json(patch_response).await;
     assert_eq!(
-        patch_json["data"]["zone"]["layers"][0]["source"]["controls"]["label"]["text"],
+        patch_json["data"]["zone"]["layers"][0]["source"]["controls"]["label"]["value"],
         "gpu"
     );
 

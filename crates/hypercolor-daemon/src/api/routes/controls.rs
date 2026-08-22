@@ -38,7 +38,7 @@ pub(super) fn router() -> OpenApiRouter<Arc<AppState>> {
                 "List control surfaces",
             )
             .query::<hypercolor_types::api::controls::ControlSurfaceListQuery>()
-            .component::<hypercolor_types::controls::ControlValue>()],
+            .component::<hypercolor_types::control::ControlValue>()],
         ))
         .routes(openapi::documented_route(
             "/control-surfaces/{id}",

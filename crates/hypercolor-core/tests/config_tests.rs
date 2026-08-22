@@ -1,6 +1,7 @@
 //! Tests for the configuration manager and path resolution.
 
-use std::{fs, sync::Arc};
+use std::fs;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use hypercolor_core::config::ConfigManager;
 use hypercolor_types::config::InteractionRoutePolicy;
@@ -455,6 +456,30 @@ fn reload_serializes_with_an_inflight_config_writer() {
 
 // ─── Path Resolution ────────────────────────────────────────────────────────
 
+static PATH_OVERRIDE_LOCK: Mutex<()> = Mutex::new(());
+
+struct PathOverrideTestGuard {
+    _lock: MutexGuard<'static, ()>,
+}
+
+impl PathOverrideTestGuard {
+    fn acquire() -> Self {
+        let lock = PATH_OVERRIDE_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        ConfigManager::set_data_dir_override(None);
+        ConfigManager::set_state_dir_override(None);
+        Self { _lock: lock }
+    }
+}
+
+impl Drop for PathOverrideTestGuard {
+    fn drop(&mut self) {
+        ConfigManager::set_state_dir_override(None);
+        ConfigManager::set_data_dir_override(None);
+    }
+}
+
 #[test]
 fn config_dir_ends_with_hypercolor() {
     let dir = ConfigManager::config_dir();
@@ -467,6 +492,7 @@ fn config_dir_ends_with_hypercolor() {
 
 #[test]
 fn data_dir_ends_with_hypercolor() {
+    let _guard = PathOverrideTestGuard::acquire();
     let dir = ConfigManager::data_dir();
     // On Windows the last component is "hypercolor" (under LocalAppData).
     // On Linux it's also "hypercolor" (under ~/.local/share).
@@ -478,16 +504,17 @@ fn data_dir_ends_with_hypercolor() {
 
 #[test]
 fn data_dir_override_replaces_default_resolution() {
+    let _guard = PathOverrideTestGuard::acquire();
     let dir = tempfile::tempdir().expect("failed to create temp dir");
     let override_path = dir.path().join("override-data");
 
     ConfigManager::set_data_dir_override(Some(override_path.clone()));
     assert_eq!(ConfigManager::data_dir(), override_path);
-    ConfigManager::set_data_dir_override(None);
 }
 
 #[test]
 fn state_dir_uses_an_independent_override() {
+    let _guard = PathOverrideTestGuard::acquire();
     let dir = tempfile::tempdir().expect("failed to create temp dir");
     let data_path = dir.path().join("data");
     let state_path = dir.path().join("state");
@@ -496,8 +523,6 @@ fn state_dir_uses_an_independent_override() {
     ConfigManager::set_state_dir_override(Some(state_path.clone()));
     assert_eq!(ConfigManager::data_dir(), data_path);
     assert_eq!(ConfigManager::state_dir(), state_path);
-    ConfigManager::set_state_dir_override(None);
-    ConfigManager::set_data_dir_override(None);
 }
 
 #[test]
@@ -511,6 +536,7 @@ fn cache_dir_contains_hypercolor() {
 
 #[test]
 fn all_dirs_are_absolute() {
+    let _guard = PathOverrideTestGuard::acquire();
     assert!(ConfigManager::config_dir().is_absolute());
     assert!(ConfigManager::data_dir().is_absolute());
     assert!(ConfigManager::state_dir().is_absolute());

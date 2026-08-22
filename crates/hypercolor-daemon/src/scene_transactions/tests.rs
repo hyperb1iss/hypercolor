@@ -160,11 +160,47 @@ async fn publish_commit(
             &accepted.expected_layout,
             accepted.active_scene_id,
             accepted.source_active_render_groups_revision,
-            |_| {},
+            |_| Ok(()),
         )
         .await;
     accepted.activation.complete(result.clone());
     result
+}
+
+#[tokio::test]
+async fn renderer_rejection_does_not_publish_layout_authority() {
+    let initial = layout("initial", 320, 200);
+    let candidate = layout("candidate", 640, 480);
+    let (spatial_engine, scene_manager, _queue) = state(initial.clone());
+    let scenes = scene_manager.snapshot().await;
+
+    let result = scene_manager
+        .publish_layout_activation(
+            &spatial_engine,
+            SpatialEngine::try_new(candidate).expect("candidate layout should prepare"),
+            &initial,
+            scenes.active_scene_id().copied(),
+            scenes.active_render_groups_revision(),
+            |_| {
+                Err(LayoutTransactionRejection::PreparationFailed {
+                    message: "injected renderer rejection".into(),
+                })
+            },
+        )
+        .await;
+
+    assert!(matches!(
+        result,
+        Err(LayoutTransactionRejection::PreparationFailed { ref message })
+            if message == "injected renderer rejection"
+    ));
+    assert_eq!(spatial_engine.layout().id, initial.id);
+    assert_eq!(
+        scene_manager.snapshot().await.active_render_groups()[0]
+            .layout
+            .id,
+        initial.id
+    );
 }
 
 async fn complete_commit(activation: &LayoutActivationControl) {
@@ -842,7 +878,7 @@ async fn renderer_shutdown_after_persistence_rolls_disk_back_to_live_generation(
             &source_layout,
             scenes.active_scene_id().copied(),
             scenes.active_render_groups_revision(),
-            |_| {},
+            |_| Ok(()),
         )
         .await
         .expect("newer live layout should publish");

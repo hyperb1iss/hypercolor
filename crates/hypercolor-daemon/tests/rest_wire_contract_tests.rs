@@ -17,9 +17,10 @@ use http::{Request, StatusCode};
 use hypercolor_core::effect::EffectEntry;
 use hypercolor_daemon::api;
 use hypercolor_daemon::app_state::AppState;
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::effect::{
-    ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory, EffectId,
-    EffectMetadata, EffectSource, EffectState,
+    ControlDefinition, ControlKind, ControlType, EffectCategory, EffectId, EffectMetadata,
+    EffectSource, EffectState,
 };
 use serde_json::{Value, json};
 use tower::ServiceExt;

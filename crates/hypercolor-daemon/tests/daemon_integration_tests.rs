@@ -29,8 +29,7 @@ use tokio::sync::{Mutex, watch};
 /// Minimal TOML that parses into a valid `HypercolorConfig`.
 const MINIMAL_TOML: &str = "schema_version = 5\n";
 
-static CONFIG_DIR_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
-static DATA_DIR_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+static PATH_OVERRIDE_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 struct TestConfigDirGuard {
     _lock: tokio::sync::MutexGuard<'static, ()>,
@@ -41,7 +40,7 @@ struct TestConfigDirGuard {
 
 impl TestConfigDirGuard {
     async fn new() -> Self {
-        let lock = CONFIG_DIR_LOCK.lock().await;
+        let lock = PATH_OVERRIDE_LOCK.lock().await;
         let dir = tempfile::tempdir().expect("tempdir should be created");
         let config_dir = dir.path().join("config");
         ConfigManager::set_config_dir_override(Some(config_dir.clone()));
@@ -64,21 +63,25 @@ struct TestDataDirGuard {
     _dir: tempfile::TempDir,
     #[allow(dead_code)]
     data_dir: PathBuf,
+    _config_dir: PathBuf,
     _state_dir: PathBuf,
 }
 
 impl TestDataDirGuard {
     async fn new() -> Self {
-        let lock = DATA_DIR_LOCK.lock().await;
+        let lock = PATH_OVERRIDE_LOCK.lock().await;
         let dir = tempfile::tempdir().expect("tempdir should be created");
         let data_dir = dir.path().join("data");
+        let config_dir = dir.path().join("config");
         let state_dir = dir.path().join("state");
         ConfigManager::set_data_dir_override(Some(data_dir.clone()));
+        ConfigManager::set_config_dir_override(Some(config_dir.clone()));
         ConfigManager::set_state_dir_override(Some(state_dir.clone()));
         Self {
             _lock: lock,
             _dir: dir,
             data_dir,
+            _config_dir: config_dir,
             _state_dir: state_dir,
         }
     }
@@ -87,6 +90,7 @@ impl TestDataDirGuard {
 impl Drop for TestDataDirGuard {
     fn drop(&mut self) {
         ConfigManager::set_data_dir_override(None);
+        ConfigManager::set_config_dir_override(None);
         ConfigManager::set_state_dir_override(None);
     }
 }
@@ -309,7 +313,6 @@ async fn daemon_double_shutdown_is_safe() {
 
 #[tokio::test]
 async fn daemon_start_rolls_back_partial_startup() {
-    let _config_guard = TestConfigDirGuard::new().await;
     let _data_guard = TestDataDirGuard::new().await;
     let mut config = default_config();
     config.audio.enabled = false;
@@ -374,7 +377,7 @@ async fn removed_runtime_effect_fields_are_rejected_on_startup() {
             "default_scene_groups": [],
             "active_effect_id": effect_id,
             "control_values": {
-                "speed": { "float": 7.0 }
+                "speed": { "kind": "float", "value": 7.0 }
             }
         }))
         .expect("runtime snapshot json should serialize"),

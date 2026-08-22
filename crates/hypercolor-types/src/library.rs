@@ -12,7 +12,8 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-use crate::effect::{ControlValue, EffectId};
+use crate::control::ControlValue;
+use crate::effect::EffectId;
 
 // ── Strong IDs ─────────────────────────────────────────────────────────────
 

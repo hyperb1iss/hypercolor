@@ -16,9 +16,7 @@ mod frame_state;
 
 use hypercolor_core::bus::{EventFilter, HypercolorBus};
 use hypercolor_core::device::{DeviceRegistry, DiscoveryOrchestrator};
-use hypercolor_core::effect::{
-    ControlError, EffectEntry, EffectRegistry, EffectRenderer, FrameInput,
-};
+use hypercolor_core::effect::{EffectEntry, EffectRegistry, EffectRenderer, FrameInput};
 use hypercolor_core::engine::{
     FpsController, FpsTier, RenderLoop, RenderLoopState, TierTransitionConfig,
 };
@@ -84,10 +82,7 @@ impl EffectRenderer for TestGradientRenderer {
         Ok(())
     }
 
-    fn apply_controls(
-        &mut self,
-        _batch: &ControlDeltaBatch<'_>,
-    ) -> std::result::Result<(), ControlError> {
+    fn apply_controls(&mut self, _batch: &ControlDeltaBatch<'_>) -> anyhow::Result<()> {
         Ok(())
     }
 
@@ -127,10 +122,7 @@ impl EffectRenderer for TestSolidRenderer {
         Ok(())
     }
 
-    fn apply_controls(
-        &mut self,
-        _batch: &ControlDeltaBatch<'_>,
-    ) -> std::result::Result<(), ControlError> {
+    fn apply_controls(&mut self, _batch: &ControlDeltaBatch<'_>) -> anyhow::Result<()> {
         Ok(())
     }
 

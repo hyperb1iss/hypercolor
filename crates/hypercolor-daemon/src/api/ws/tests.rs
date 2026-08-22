@@ -36,7 +36,8 @@ use hypercolor_types::canvas::{
     Canvas, PublishedSurface, Rgba, linear_to_srgb_u8, srgb_u8_to_linear,
 };
 use hypercolor_types::config::InteractionRoutePolicy;
-use hypercolor_types::controls::{ControlSurfaceEvent, ControlValue, ControlValueMap};
+use hypercolor_types::control::ControlValue;
+use hypercolor_types::controls::{ControlSurfaceEvent, ControlValueMap};
 use hypercolor_types::device::{ConnectionType, DeviceId, DeviceOrigin};
 use hypercolor_types::event::{
     FrameData, FrameTiming, HypercolorEvent, MacosDaemonHandoverPhaseEvent,
@@ -3335,7 +3336,7 @@ fn event_message_parts_serializes_control_surface_changed() {
     let event = HypercolorEvent::ControlSurfaceChanged(ControlSurfaceEvent::ValuesChanged {
         surface_id: "driver:fixture".to_owned(),
         revision: 42,
-        values: ControlValueMap::from([("dedup_threshold".to_owned(), ControlValue::Integer(7))]),
+        values: ControlValueMap::from([("dedup_threshold".to_owned(), ControlValue::Int(7))]),
     });
 
     let (event_name, event_data) = event_message_parts(&event);

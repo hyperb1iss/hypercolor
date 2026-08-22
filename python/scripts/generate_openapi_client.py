@@ -149,36 +149,35 @@ def prepare_generator_spec(path: Path, temp_dir: Path) -> Path:
 
 
 def normalize_recursive_control_schemas(schemas: dict[str, object]) -> None:
-    for name in ("ControlValue", "DriverControlValue"):
-        schema = schemas.get(name)
-        if not isinstance(schema, dict):
-            continue
-        variants = schema.get("oneOf")
-        if not isinstance(variants, list):
-            continue
-        kinds = [
-            kind
-            for variant in variants
-            if isinstance(variant, dict)
-            for properties in [variant.get("properties")]
-            if isinstance(properties, dict)
-            for kind_schema in [properties.get("kind")]
-            if isinstance(kind_schema, dict)
-            for enum_values in [kind_schema.get("enum")]
-            if isinstance(enum_values, list)
-            for kind in enum_values
-            if isinstance(kind, str)
-        ]
-        schemas[name] = {
-            "type": "object",
-            "description": schema.get("description", f"{name} payload"),
-            "required": ["kind"],
-            "properties": {
-                "kind": {"type": "string", "enum": kinds},
-                "value": {},
-            },
-            "additionalProperties": False,
-        }
+    schema = schemas.get("ControlValue")
+    if not isinstance(schema, dict):
+        return
+    variants = schema.get("oneOf")
+    if not isinstance(variants, list):
+        return
+    kinds = [
+        kind
+        for variant in variants
+        if isinstance(variant, dict)
+        for properties in [variant.get("properties")]
+        if isinstance(properties, dict)
+        for kind_schema in [properties.get("kind")]
+        if isinstance(kind_schema, dict)
+        for enum_values in [kind_schema.get("enum")]
+        if isinstance(enum_values, list)
+        for kind in enum_values
+        if isinstance(kind, str)
+    ]
+    schemas["ControlValue"] = {
+        "type": "object",
+        "description": schema.get("description", "ControlValue payload"),
+        "required": ["kind"],
+        "properties": {
+            "kind": {"type": "string", "enum": kinds},
+            "value": {},
+        },
+        "additionalProperties": False,
+    }
 
 
 def normalize_binary_response_media_types(spec: dict[str, object]) -> None:

@@ -4,6 +4,7 @@ from .action_confirmation import ActionConfirmation
 from .action_confirmation_level import ActionConfirmationLevel
 from .activate_playlist_response import ActivatePlaylistResponse
 from .activate_playlist_response_200 import ActivatePlaylistResponse200
+from .activate_scene_request import ActivateSceneRequest
 from .activate_scene_response import ActivateSceneResponse
 from .activate_scene_response_200 import ActivateSceneResponse200
 from .activated_scene_ref import ActivatedSceneRef
@@ -122,12 +123,24 @@ from .b_tree_map_additional_property_type_14 import BTreeMapAdditionalPropertyTy
 from .b_tree_map_additional_property_type_14_kind import (
     BTreeMapAdditionalPropertyType14Kind,
 )
-from .b_tree_map_additional_property_type_14_value import (
-    BTreeMapAdditionalPropertyType14Value,
-)
 from .b_tree_map_additional_property_type_15 import BTreeMapAdditionalPropertyType15
 from .b_tree_map_additional_property_type_15_kind import (
     BTreeMapAdditionalPropertyType15Kind,
+)
+from .b_tree_map_additional_property_type_16 import BTreeMapAdditionalPropertyType16
+from .b_tree_map_additional_property_type_16_kind import (
+    BTreeMapAdditionalPropertyType16Kind,
+)
+from .b_tree_map_additional_property_type_17 import BTreeMapAdditionalPropertyType17
+from .b_tree_map_additional_property_type_17_kind import (
+    BTreeMapAdditionalPropertyType17Kind,
+)
+from .b_tree_map_additional_property_type_17_value import (
+    BTreeMapAdditionalPropertyType17Value,
+)
+from .b_tree_map_additional_property_type_18 import BTreeMapAdditionalPropertyType18
+from .b_tree_map_additional_property_type_18_kind import (
+    BTreeMapAdditionalPropertyType18Kind,
 )
 from .binding_map import BindingMap
 from .binding_source_type_0 import BindingSourceType0
@@ -299,8 +312,6 @@ from .display_summary_list_item import DisplaySummaryListItem
 from .driver_capability_set import DriverCapabilitySet
 from .driver_config_entry import DriverConfigEntry
 from .driver_config_response import DriverConfigResponse
-from .driver_control_value import DriverControlValue
-from .driver_control_value_kind import DriverControlValueKind
 from .driver_list_response import DriverListResponse
 from .driver_module_descriptor import DriverModuleDescriptor
 from .driver_module_kind import DriverModuleKind
@@ -318,14 +329,6 @@ from .driver_transport_kind_type_7 import DriverTransportKindType7
 from .edge_behavior import EdgeBehavior
 from .effect_capability_set import EffectCapabilitySet
 from .effect_category import EffectCategory
-from .effect_control_value_type_0 import EffectControlValueType0
-from .effect_control_value_type_1 import EffectControlValueType1
-from .effect_control_value_type_2 import EffectControlValueType2
-from .effect_control_value_type_3 import EffectControlValueType3
-from .effect_control_value_type_4 import EffectControlValueType4
-from .effect_control_value_type_5 import EffectControlValueType5
-from .effect_control_value_type_6 import EffectControlValueType6
-from .effect_control_value_type_7 import EffectControlValueType7
 from .effect_detail_response import EffectDetailResponse
 from .effect_health_status import EffectHealthStatus
 from .effect_metadata import EffectMetadata
@@ -642,6 +645,7 @@ __all__ = (
     "ActivatedSceneRef",
     "ActivatePlaylistResponse",
     "ActivatePlaylistResponse200",
+    "ActivateSceneRequest",
     "ActivateSceneResponse",
     "ActivateSceneResponse200",
     "ActivePlaylistResponse",
@@ -719,9 +723,15 @@ __all__ = (
     "BTreeMapAdditionalPropertyType13Kind",
     "BTreeMapAdditionalPropertyType14",
     "BTreeMapAdditionalPropertyType14Kind",
-    "BTreeMapAdditionalPropertyType14Value",
     "BTreeMapAdditionalPropertyType15",
     "BTreeMapAdditionalPropertyType15Kind",
+    "BTreeMapAdditionalPropertyType16",
+    "BTreeMapAdditionalPropertyType16Kind",
+    "BTreeMapAdditionalPropertyType17",
+    "BTreeMapAdditionalPropertyType17Kind",
+    "BTreeMapAdditionalPropertyType17Value",
+    "BTreeMapAdditionalPropertyType18",
+    "BTreeMapAdditionalPropertyType18Kind",
     "BTreeMapAdditionalPropertyType1Kind",
     "BTreeMapAdditionalPropertyType2",
     "BTreeMapAdditionalPropertyType2Kind",
@@ -894,8 +904,6 @@ __all__ = (
     "DriverCapabilitySet",
     "DriverConfigEntry",
     "DriverConfigResponse",
-    "DriverControlValue",
-    "DriverControlValueKind",
     "DriverListResponse",
     "DriverModuleDescriptor",
     "DriverModuleKind",
@@ -913,14 +921,6 @@ __all__ = (
     "EdgeBehavior",
     "EffectCapabilitySet",
     "EffectCategory",
-    "EffectControlValueType0",
-    "EffectControlValueType1",
-    "EffectControlValueType2",
-    "EffectControlValueType3",
-    "EffectControlValueType4",
-    "EffectControlValueType5",
-    "EffectControlValueType6",
-    "EffectControlValueType7",
     "EffectDetailResponse",
     "EffectHealthStatus",
     "EffectMetadata",

@@ -1,6 +1,7 @@
 use hypercolor_driver_api::ValidatedControlChanges;
 use hypercolor_driver_support::{control_apply, control_surface};
-use hypercolor_types::controls::{ApplyImpact, ControlChange, ControlValue, ControlValueMap};
+use hypercolor_types::control::ControlValue;
+use hypercolor_types::controls::{ApplyImpact, ControlChange, ControlValueMap};
 
 #[test]
 fn validate_control_changes_dedupes_impacts() {
@@ -97,11 +98,11 @@ fn apply_response_marks_changes_accepted() {
     let changes = ValidatedControlChanges {
         changes: vec![ControlChange {
             field_id: "transition_time".to_owned(),
-            value: ControlValue::Integer(12),
+            value: ControlValue::Int(12),
         }],
         impacts: vec![ApplyImpact::BackendRebind],
     };
-    let values = ControlValueMap::from([("transition_time".to_owned(), ControlValue::Integer(12))]);
+    let values = ControlValueMap::from([("transition_time".to_owned(), ControlValue::Int(12))]);
 
     let response = control_apply::apply_response("driver:nanoleaf", 1, 2, changes, values);
 

@@ -1,8 +1,9 @@
 //! Effects browse page — grid of effect cards with filtering and detail panel.
 
+use std::sync::Arc;
+
 use leptos::prelude::*;
 use leptos_icons::Icon;
-use leptos_use::use_debounce_fn;
 
 use crate::api;
 use crate::app::{EffectsContext, WsContext};
@@ -19,11 +20,14 @@ use crate::components::resize_handle::ResizeHandle;
 use crate::components::section_label::{LabelSize, LabelTone, label_class};
 use crate::components::silk_select::SilkSelect;
 use crate::components::status_banner::{StatusBanner, StatusBannerTone};
+use crate::control_session::{
+    ControlPatchConfig, ControlPatchFn, ControlPatchFuture, use_control_patch_session,
+};
 use crate::icons::*;
-use crate::optimistic_controls::{OptimisticControlSession, raw_control_updates_payload};
 use crate::toasts;
 use crate::zones::{ZoneEffectState, ZonesContext};
-use hypercolor_types::effect::{ControlDefinition, ControlValue, EffectCategory};
+use hypercolor_types::control::ControlValue;
+use hypercolor_types::effect::{ControlDefinition, EffectCategory};
 use hypercolor_types::scene::{SceneKind, SceneMutationMode, ZoneRole};
 
 mod support;
@@ -179,61 +183,59 @@ pub fn EffectsPage() -> impl IntoView {
         MIN_CONTROLS_WIDTH,
         MAX_CONTROLS_WIDTH,
     ));
-    let control_session = OptimisticControlSession::new();
-    let control_request_epoch = StoredValue::new(0_u64);
     let preferences_store = use_context::<crate::preferences::PreferencesStore>();
-    let flush_control_updates = use_debounce_fn(
-        move || {
-            let updates = control_session.take_pending();
-            if updates.is_empty() {
+    let patch: ControlPatchFn = Arc::new(
+        move |target_key: String,
+              payload: crate::optimistic_controls::ControlValueMap,
+              _version: Option<u64>|
+              -> ControlPatchFuture {
+            Box::pin(async move {
+                let (zone_id, layer_id) = api::EffectLayerTarget::session_ids(&target_key)
+                    .ok_or_else(|| "Invalid effect layer target".to_owned())?;
+                api::patch_layer_controls(zone_id, layer_id, &payload).await?;
+                Ok(api::MutationOutcome::Applied(None))
+            })
+        },
+    );
+    let on_committed = preferences_store.map(|store| {
+        Callback::new(move |target_key: String| {
+            let Some(target) = fx.active_effect_target.get_untracked() else {
+                return;
+            };
+            if target.session_key() != target_key {
                 return;
             }
-
-            let controls_json = raw_control_updates_payload(updates);
-            let request_epoch = control_request_epoch
-                .try_update_value(|epoch| {
-                    *epoch = epoch.wrapping_add(1);
-                    *epoch
-                })
-                .unwrap_or_default();
-            let active_effect_id = fx.active_effect_id.get_untracked();
-            leptos::task::spawn_local(async move {
-                match api::update_controls(&controls_json).await {
-                    Ok(()) => {
-                        let is_latest_request = control_request_epoch.get_value() == request_epoch;
-                        let has_pending_updates = control_session.has_pending();
-                        let same_effect = fx.active_effect_id.get_untracked() == active_effect_id;
-                        if is_latest_request
-                            && !has_pending_updates
-                            && same_effect
-                            && let Some(store) = preferences_store
-                            && let Some(effect_id) = active_effect_id
-                        {
-                            store.save(
-                                effect_id,
-                                crate::preferences::EffectPreferences {
-                                    preset_id: fx.active_preset_id.get_untracked(),
-                                    control_values: fx.active_control_values.get_untracked(),
-                                },
-                            );
-                        }
-                    }
-                    Err(error) => {
-                        let is_latest_request = control_request_epoch.get_value() == request_epoch;
-                        let has_pending_updates = control_session.has_pending();
-                        let same_effect = fx.active_effect_id.get_untracked() == active_effect_id;
-                        if is_latest_request && !has_pending_updates && same_effect {
-                            fx.refresh_active_effect();
-                            toasts::toast_error(&format!(
-                                "Failed to update effect controls: {error}"
-                            ));
-                        }
-                    }
-                }
-            });
-        },
-        75.0,
-    );
+            if let Err(error) = store.save(
+                target.effect_id,
+                crate::preferences::EffectPreferences {
+                    preset_id: fx.active_preset_id.get_untracked(),
+                    control_values: fx.active_control_values.get_untracked(),
+                },
+            ) {
+                toasts::toast_error(&format!(
+                    "Controls applied, but preferences were not saved: {error}"
+                ));
+            }
+        })
+    });
+    let control_session = use_control_patch_session(ControlPatchConfig {
+        target: Signal::derive(move || {
+            fx.active_effect_target
+                .get()
+                .map(|target| target.session_key())
+        }),
+        defs: Signal::derive(move || fx.active_controls.get()),
+        set_values: fx.set_active_control_values,
+        initial_version: None,
+        debounce_ms: 75.0,
+        patch,
+        on_error: Callback::new(|error: String| {
+            toasts::toast_error(&format!("Failed to update effect controls: {error}"));
+        }),
+        recover: Callback::new(move |()| fx.refresh_active_effect()),
+        on_committed,
+        flush_guard: None,
+    });
 
     // Persist filter changes to localStorage
     Effect::new(move |_| {
@@ -477,7 +479,6 @@ pub fn EffectsPage() -> impl IntoView {
             return;
         }
 
-        let controls_snapshot = fx.active_controls.get();
         let current_values = fx.active_control_values.get();
         let updates = expand_control_updates(
             fx.active_effect_name.get().as_deref(),
@@ -486,14 +487,7 @@ pub fn EffectsPage() -> impl IntoView {
             &value,
         );
 
-        control_session.apply_raw_updates_to(
-            fx.set_active_control_values,
-            &controls_snapshot,
-            &updates,
-        );
-        control_session.queue_raw_updates(&updates);
-
-        flush_control_updates();
+        control_session.on_changes.run(updates);
     });
 
     // Resize callbacks for detail and controls panels

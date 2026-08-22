@@ -10,9 +10,10 @@ use tracing::{debug, warn};
 use uuid::Uuid;
 
 use hypercolor_color::LinearRgba;
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::effect::{
-    ControlDefinition, ControlKind, ControlType, ControlValue, EffectId, EffectMetadata,
-    EffectSource, EffectState, PresetTemplate,
+    ControlDefinition, ControlKind, ControlType, EffectId, EffectMetadata, EffectSource,
+    EffectState, PresetTemplate,
 };
 use hypercolor_types::viewport::ViewportRect;
 
@@ -479,7 +480,7 @@ fn control_definition_from_html(raw: &HtmlControlMetadata) -> Option<ControlDefi
         HtmlControlKind::Boolean => (
             ControlKind::Boolean,
             ControlType::Toggle,
-            ControlValue::Boolean(bool_default(raw.default.as_deref())),
+            ControlValue::Bool(bool_default(raw.default.as_deref())),
         ),
         HtmlControlKind::Color => (
             ControlKind::Color,
@@ -558,7 +559,7 @@ fn numeric_default(raw: Option<&str>) -> ControlValue {
         .map(str::trim)
         .and_then(|value| value.parse::<f32>().ok())
         .unwrap_or(0.0);
-    ControlValue::Float(parsed)
+    ControlValue::Float(f64::from(parsed))
 }
 
 fn bool_default(raw: Option<&str>) -> bool {
@@ -583,12 +584,14 @@ fn color_default(raw: Option<&str>) -> ControlValue {
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .unwrap_or("#ffffff");
-    parse_hex_color(hex).unwrap_or(ControlValue::Color([1.0, 1.0, 1.0, 1.0]))
+    parse_hex_color(hex).unwrap_or(ControlValue::linear_color([1.0, 1.0, 1.0, 1.0]))
 }
 
 fn parse_hex_color(hex: &str) -> Option<ControlValue> {
     let color = LinearRgba::from_hex_srgb(hex).ok()?;
-    Some(ControlValue::Color([color.r, color.g, color.b, color.a]))
+    Some(ControlValue::linear_color([
+        color.r, color.g, color.b, color.a,
+    ]))
 }
 
 fn text_default(raw: Option<&str>, fallback: &str) -> ControlValue {
@@ -599,8 +602,8 @@ fn text_default(raw: Option<&str>, fallback: &str) -> ControlValue {
 
 fn rect_default(raw: Option<&str>) -> ControlValue {
     parse_rect(raw.unwrap_or_default())
-        .map(ControlValue::Rect)
-        .unwrap_or_else(|| ControlValue::Rect(ViewportRect::full()))
+        .map(ControlValue::rect)
+        .unwrap_or_else(|| ControlValue::rect(ViewportRect::full()))
 }
 
 /// Convert a parsed HTML preset into a typed `PresetTemplate`.
@@ -640,10 +643,11 @@ fn preset_template_from_html(
 /// Parse a raw string control value using the control's kind for type guidance.
 fn parse_raw_control_value(kind: &ControlKind, raw: &str) -> Option<ControlValue> {
     match kind {
-        ControlKind::Number | ControlKind::Hue | ControlKind::Area => {
-            raw.parse::<f32>().ok().map(ControlValue::Float)
-        }
-        ControlKind::Boolean => Some(ControlValue::Boolean(matches!(
+        ControlKind::Number | ControlKind::Hue | ControlKind::Area => raw
+            .parse::<f32>()
+            .ok()
+            .map(|value| ControlValue::Float(f64::from(value))),
+        ControlKind::Boolean => Some(ControlValue::Bool(matches!(
             raw.to_ascii_lowercase().as_str(),
             "1" | "true" | "yes" | "on"
         ))),
@@ -655,7 +659,7 @@ fn parse_raw_control_value(kind: &ControlKind, raw: &str) -> Option<ControlValue
             }
         }
         ControlKind::Combobox => Some(ControlValue::Enum(raw.to_owned())),
-        ControlKind::Rect => parse_rect(raw).map(ControlValue::Rect),
+        ControlKind::Rect => parse_rect(raw).map(ControlValue::rect),
         ControlKind::Sensor | ControlKind::Text | ControlKind::Other(_) => {
             Some(ControlValue::Text(raw.to_owned()))
         }

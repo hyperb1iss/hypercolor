@@ -13,10 +13,10 @@ use hypercolor_tui::state::{
 };
 use hypercolor_types::api::scene::PatchControlsRequest;
 use hypercolor_types::api::system::{RenderLoopStatus, ServerInfo, SystemResource, SystemStatus};
-use hypercolor_types::control::ControlValue as CanonicalControlValue;
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::controls::ControlActionStatus;
 use hypercolor_types::effect::{
-    ControlBinding, ControlDefinition, ControlKind, ControlType, ControlValue, PresetTemplate,
+    ControlBinding, ControlDefinition, ControlKind, ControlType, PresetTemplate,
 };
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
@@ -177,7 +177,10 @@ async fn get_effects_hydrates_the_catalog_in_one_round_trip() {
     assert_eq!(effects[0].controls[0].control_type, "slider");
     // True defaults are preserved — live values are per-zone and must NOT
     // be merged over `default_value`.
-    assert_eq!(effects[0].controls[0].default_value.as_f32(), Some(0.25));
+    assert_eq!(
+        effects[0].controls[0].default_value.as_effect_f32(),
+        Some(0.25)
+    );
     assert_eq!(effects[0].presets.len(), 1);
     assert_eq!(
         effects[0].presets[0].id,
@@ -549,7 +552,7 @@ async fn control_surface_mutations_encode_path_ids_and_payloads() {
 
     let client = client_for(spawn_server(router).await);
     let request = PatchControlsRequest {
-        values: BTreeMap::from([("enabled".to_string(), CanonicalControlValue::Bool(true))]),
+        values: BTreeMap::from([("enabled".to_string(), ControlValue::Bool(true))]),
         clear_bindings: Vec::new(),
     };
     let response = client
@@ -681,7 +684,9 @@ fn scene_document() -> Value {
                     "source": {
                         "type": "effect",
                         "effect_id": EFFECT_RAINBOW,
-                        "controls": {"speed": {"float": 0.6}}
+                        "controls": {
+                            "speed": {"kind": "float", "value": 0.6}
+                        }
                     },
                     "blend": "replace",
                     "opacity": 1.0
@@ -728,7 +733,7 @@ async fn update_control_targets_the_real_scene_layer() {
 
     let client = client_for(spawn_server(router).await);
     client
-        .update_control("speed", &json!(0.5))
+        .update_control("speed", &ControlValue::Float(0.5))
         .await
         .expect("update control");
 
@@ -824,7 +829,7 @@ async fn get_active_scene_returns_the_canonical_document_without_a_scene_list_fe
     assert_eq!(
         zone_effect_controls(primary)
             .get("speed")
-            .and_then(hypercolor_tui::state::ControlValue::as_f32),
+            .and_then(ControlValue::as_effect_f32),
         Some(0.6)
     );
 }
@@ -849,7 +854,14 @@ async fn apply_effect_uses_canonical_zone_and_control_values() {
 
     let client = client_for(spawn_server(router).await);
     client
-        .apply_effect("rainbow", Some(&json!({"speed": 0.5})), Some(ZONE_B))
+        .apply_effect(
+            "rainbow",
+            Some(&HashMap::from([(
+                "speed".to_owned(),
+                ControlValue::Float(0.5),
+            )])),
+            Some(ZONE_B),
+        )
         .await
         .expect("apply effect");
 
@@ -892,7 +904,7 @@ async fn zone_mutations_use_live_scene_routes() {
                     assert!(headers.get(header::IF_MATCH).is_none());
                     assert_eq!(
                         body,
-                        json!({"values": {"speed": {"kind": "float", "value": 0.9_f32}}})
+                        json!({"values": {"speed": {"kind": "float", "value": 0.9}}})
                     );
                     canonical_json(json!({"data": {}}))
                 },
@@ -905,7 +917,11 @@ async fn zone_mutations_use_live_scene_routes() {
         .await
         .expect("update zone");
     client
-        .patch_zone_controls(ZONE_B, LAYER_ID, &json!({"speed": 0.9}))
+        .patch_zone_controls(
+            ZONE_B,
+            LAYER_ID,
+            &BTreeMap::from([("speed".to_owned(), ControlValue::Float(0.9))]),
+        )
         .await
         .expect("patch controls");
 }

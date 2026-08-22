@@ -2,9 +2,10 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use hypercolor_core::scene::{SceneManager, make_scene};
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::{
-    ControlBinding, ControlValue, EffectCategory, EffectId, EffectMetadata, EffectSource,
+    ControlBinding, EffectCategory, EffectId, EffectMetadata, EffectSource,
 };
 use hypercolor_types::layer::{
     LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, MediaPlayback, SceneLayer,

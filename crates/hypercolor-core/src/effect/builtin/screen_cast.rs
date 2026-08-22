@@ -6,14 +6,14 @@
 use std::path::PathBuf;
 
 use hypercolor_types::canvas::Canvas;
-use hypercolor_types::control::{ControlDeltaBatch, ControlValue as CanonicalControlValue};
+use hypercolor_types::control::{ControlDeltaBatch, ControlValue};
 use hypercolor_types::effect::{
     ControlDefinition, EffectCategory, EffectMetadata, EffectSource, PreviewSource,
 };
 use hypercolor_types::viewport::{FitMode, ViewportRect};
 
 use super::common::{builtin_effect_id, dropdown_control, rect_control, slider_control};
-use crate::effect::traits::{ControlError, EffectRenderer, FrameInput, prepare_target_canvas};
+use crate::effect::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
 use crate::spatial::sample_viewport;
 
 /// Screen-reactive renderer backed by the current capture snapshot.
@@ -69,11 +69,11 @@ impl EffectRenderer for ScreenCastRenderer {
         Ok(())
     }
 
-    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> Result<(), ControlError> {
+    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> anyhow::Result<()> {
         for (control_id, value) in batch.changes {
             match control_id.as_str() {
                 "viewport" => {
-                    if let CanonicalControlValue::Rect(rect) = value {
+                    if let ControlValue::Rect(rect) = value {
                         self.viewport =
                             ViewportRect::new(rect.x, rect.y, rect.width, rect.height).clamp();
                     }
@@ -84,9 +84,7 @@ impl EffectRenderer for ScreenCastRenderer {
                     }
                 }
                 "fit_mode" => {
-                    if let CanonicalControlValue::Enum(mode) | CanonicalControlValue::Text(mode) =
-                        value
-                    {
+                    if let ControlValue::Enum(mode) | ControlValue::Text(mode) = value {
                         self.fit_mode = parse_fit_mode(mode);
                     }
                 }

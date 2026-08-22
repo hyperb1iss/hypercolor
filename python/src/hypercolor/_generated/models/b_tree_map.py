@@ -55,6 +55,15 @@ if TYPE_CHECKING:
     from ..models.b_tree_map_additional_property_type_15 import (
         BTreeMapAdditionalPropertyType15,
     )
+    from ..models.b_tree_map_additional_property_type_16 import (
+        BTreeMapAdditionalPropertyType16,
+    )
+    from ..models.b_tree_map_additional_property_type_17 import (
+        BTreeMapAdditionalPropertyType17,
+    )
+    from ..models.b_tree_map_additional_property_type_18 import (
+        BTreeMapAdditionalPropertyType18,
+    )
 
 
 T = TypeVar("T", bound="BTreeMap")
@@ -74,6 +83,9 @@ class BTreeMap:
         | BTreeMapAdditionalPropertyType13
         | BTreeMapAdditionalPropertyType14
         | BTreeMapAdditionalPropertyType15
+        | BTreeMapAdditionalPropertyType16
+        | BTreeMapAdditionalPropertyType17
+        | BTreeMapAdditionalPropertyType18
         | BTreeMapAdditionalPropertyType2
         | BTreeMapAdditionalPropertyType3
         | BTreeMapAdditionalPropertyType4
@@ -130,6 +142,15 @@ class BTreeMap:
         from ..models.b_tree_map_additional_property_type_14 import (
             BTreeMapAdditionalPropertyType14,
         )
+        from ..models.b_tree_map_additional_property_type_15 import (
+            BTreeMapAdditionalPropertyType15,
+        )
+        from ..models.b_tree_map_additional_property_type_16 import (
+            BTreeMapAdditionalPropertyType16,
+        )
+        from ..models.b_tree_map_additional_property_type_17 import (
+            BTreeMapAdditionalPropertyType17,
+        )
 
         field_dict: dict[str, Any] = {}
         for prop_name, prop in self.additional_properties.items():
@@ -162,6 +183,12 @@ class BTreeMap:
             elif isinstance(prop, BTreeMapAdditionalPropertyType13):
                 field_dict[prop_name] = prop.to_dict()
             elif isinstance(prop, BTreeMapAdditionalPropertyType14):
+                field_dict[prop_name] = prop.to_dict()
+            elif isinstance(prop, BTreeMapAdditionalPropertyType15):
+                field_dict[prop_name] = prop.to_dict()
+            elif isinstance(prop, BTreeMapAdditionalPropertyType16):
+                field_dict[prop_name] = prop.to_dict()
+            elif isinstance(prop, BTreeMapAdditionalPropertyType17):
                 field_dict[prop_name] = prop.to_dict()
             else:
                 field_dict[prop_name] = prop.to_dict()
@@ -218,6 +245,15 @@ class BTreeMap:
         from ..models.b_tree_map_additional_property_type_15 import (
             BTreeMapAdditionalPropertyType15,
         )
+        from ..models.b_tree_map_additional_property_type_16 import (
+            BTreeMapAdditionalPropertyType16,
+        )
+        from ..models.b_tree_map_additional_property_type_17 import (
+            BTreeMapAdditionalPropertyType17,
+        )
+        from ..models.b_tree_map_additional_property_type_18 import (
+            BTreeMapAdditionalPropertyType18,
+        )
 
         d = dict(src_dict)
         b_tree_map = cls()
@@ -236,6 +272,9 @@ class BTreeMap:
                 | BTreeMapAdditionalPropertyType13
                 | BTreeMapAdditionalPropertyType14
                 | BTreeMapAdditionalPropertyType15
+                | BTreeMapAdditionalPropertyType16
+                | BTreeMapAdditionalPropertyType17
+                | BTreeMapAdditionalPropertyType18
                 | BTreeMapAdditionalPropertyType2
                 | BTreeMapAdditionalPropertyType3
                 | BTreeMapAdditionalPropertyType4
@@ -395,13 +434,43 @@ class BTreeMap:
                     return additional_property_type_14
                 except (TypeError, ValueError, AttributeError, KeyError):
                     pass
+                try:
+                    if not isinstance(data, dict):
+                        raise TypeError()
+                    additional_property_type_15 = (
+                        BTreeMapAdditionalPropertyType15.from_dict(data)
+                    )
+
+                    return additional_property_type_15
+                except (TypeError, ValueError, AttributeError, KeyError):
+                    pass
+                try:
+                    if not isinstance(data, dict):
+                        raise TypeError()
+                    additional_property_type_16 = (
+                        BTreeMapAdditionalPropertyType16.from_dict(data)
+                    )
+
+                    return additional_property_type_16
+                except (TypeError, ValueError, AttributeError, KeyError):
+                    pass
+                try:
+                    if not isinstance(data, dict):
+                        raise TypeError()
+                    additional_property_type_17 = (
+                        BTreeMapAdditionalPropertyType17.from_dict(data)
+                    )
+
+                    return additional_property_type_17
+                except (TypeError, ValueError, AttributeError, KeyError):
+                    pass
                 if not isinstance(data, dict):
                     raise TypeError()
-                additional_property_type_15 = (
-                    BTreeMapAdditionalPropertyType15.from_dict(data)
+                additional_property_type_18 = (
+                    BTreeMapAdditionalPropertyType18.from_dict(data)
                 )
 
-                return additional_property_type_15
+                return additional_property_type_18
 
             additional_property = _parse_additional_property(prop_dict)
 
@@ -425,6 +494,9 @@ class BTreeMap:
         | BTreeMapAdditionalPropertyType13
         | BTreeMapAdditionalPropertyType14
         | BTreeMapAdditionalPropertyType15
+        | BTreeMapAdditionalPropertyType16
+        | BTreeMapAdditionalPropertyType17
+        | BTreeMapAdditionalPropertyType18
         | BTreeMapAdditionalPropertyType2
         | BTreeMapAdditionalPropertyType3
         | BTreeMapAdditionalPropertyType4
@@ -447,6 +519,9 @@ class BTreeMap:
         | BTreeMapAdditionalPropertyType13
         | BTreeMapAdditionalPropertyType14
         | BTreeMapAdditionalPropertyType15
+        | BTreeMapAdditionalPropertyType16
+        | BTreeMapAdditionalPropertyType17
+        | BTreeMapAdditionalPropertyType18
         | BTreeMapAdditionalPropertyType2
         | BTreeMapAdditionalPropertyType3
         | BTreeMapAdditionalPropertyType4

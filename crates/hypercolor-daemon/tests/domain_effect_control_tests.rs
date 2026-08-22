@@ -5,10 +5,12 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use hypercolor_core::effect::EffectEntry;
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::effect::{
-    ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory, EffectId,
-    EffectMetadata, EffectSource, EffectState,
+    ControlDefinition, ControlKind, ControlType, EffectCategory, EffectId, EffectMetadata,
+    EffectSource, EffectState,
 };
+use hypercolor_types::layer::{SceneLayer, SceneLayerId};
 use hypercolor_types::scene::ZoneId;
 use uuid::Uuid;
 
@@ -17,6 +19,7 @@ use hypercolor_daemon::domain::MutationContext;
 use hypercolor_daemon::domain::effect::{
     ApplyEffect, RequestedTransition, apply_effect, invalidate_active_zones,
 };
+use hypercolor_daemon::domain::layer::insert_layer;
 
 // ── Harness ──────────────────────────────────────────────────────────────
 
@@ -33,7 +36,7 @@ fn slider(id: &str, default: f32) -> ControlDefinition {
         name: id.to_owned(),
         kind: ControlKind::default(),
         control_type: ControlType::Slider,
-        default_value: ControlValue::Float(default),
+        default_value: ControlValue::Float(f64::from(default)),
         min: Some(0.0),
         max: Some(1.0),
         step: None,
@@ -126,4 +129,59 @@ async fn invalidating_the_active_zones_advances_the_revision_every_time() {
         after > before,
         "the resolved zones must be recomputed: {before} -> {after}"
     );
+}
+
+#[tokio::test]
+async fn apply_effect_rejects_unvalidated_controls_inside_the_domain() {
+    let (state, _tempdir) = isolated_state();
+    let metadata = controllable_effect("aurora");
+    insert_effect(&state, &metadata).await;
+    let before = state.domains.scene.revision();
+    let resolved = state
+        .domains
+        .effects
+        .metadata_for_mutation(metadata.id)
+        .await
+        .expect("registered effect should resolve");
+
+    let error = apply_effect(
+        &state.domains.effects,
+        ApplyEffect {
+            effect: resolved,
+            controls: HashMap::from([("speed".to_owned(), ControlValue::Bool(true))]),
+            preset_id: None,
+            target_zone: None,
+            expected_revision: None,
+            transition: RequestedTransition::cut(),
+            wake_output: true,
+        },
+        MutationContext::api(),
+    )
+    .await
+    .expect_err("a direct domain caller cannot bypass effect schema admission");
+
+    assert!(error.to_string().contains("control values were rejected"));
+    assert_eq!(state.domains.scene.revision(), before);
+}
+
+#[tokio::test]
+async fn layer_insertion_normalizes_controls_under_catalog_admission() {
+    let (state, _tempdir) = isolated_state();
+    let metadata = controllable_effect("aurora");
+    let zone_id = running_effect(&state, &metadata).await;
+    let before = state.domains.scene.revision();
+    let layer = SceneLayer::from_effect(
+        SceneLayerId::new(),
+        metadata.id,
+        HashMap::from([("speed".to_owned(), ControlValue::Bool(true))]),
+        HashMap::new(),
+        None,
+    );
+
+    let error = insert_layer(&state.domains.effects, zone_id, layer, None, None)
+        .await
+        .expect_err("layer creation cannot publish an invalid effect control");
+
+    assert!(error.to_string().contains("control values were rejected"));
+    assert_eq!(state.domains.scene.revision(), before);
 }

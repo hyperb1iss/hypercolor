@@ -4,11 +4,12 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 
 use anyhow::{Context, Result};
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::controls::{
     ApplyImpact, ControlAccess, ControlAvailability, ControlAvailabilityExpr,
     ControlAvailabilityState, ControlFieldDescriptor, ControlGroupDescriptor, ControlGroupKind,
-    ControlOwner, ControlPersistence, ControlSurfaceDocument, ControlSurfaceScope, ControlValue,
-    ControlValueMap, ControlValueType, ControlVisibility,
+    ControlOwner, ControlPersistence, ControlSurfaceDocument, ControlSurfaceScope, ControlValueMap,
+    ControlValueType, ControlVisibility,
 };
 use hypercolor_types::device::DeviceId;
 
@@ -162,21 +163,17 @@ pub fn push_metadata_value(
     label: &str,
     group_id: &str,
     value_type: ControlValueType,
-    value: impl FnOnce(String) -> ControlValue,
+    value: impl FnOnce(String) -> Option<ControlValue>,
     ordering: i32,
 ) {
     let Some(raw) = metadata.get(id).filter(|value| !value.is_empty()).cloned() else {
         return;
     };
+    let Some(value) = value(raw) else {
+        return;
+    };
     push_readonly_value(
-        document,
-        driver_id,
-        id,
-        label,
-        group_id,
-        value_type,
-        value(raw),
-        ordering,
+        document, driver_id, id, label, group_id, value_type, value, ordering,
     );
 }
 
@@ -243,10 +240,11 @@ pub fn validate_control_ip_list(label: &str, value: &ControlValue) -> Result<()>
         return Ok(());
     };
     for value in values {
-        if let ControlValue::IpAddress(raw) = value {
+        if let ControlValue::Ip(raw) = value {
             let ip = raw
+                .as_str()
                 .parse::<IpAddr>()
-                .with_context(|| format!("invalid {label}: {raw}"))?;
+                .with_context(|| format!("invalid {label}: {}", raw.as_str()))?;
             validate_ip(ip).with_context(|| format!("invalid {label}: {ip}"))?;
         }
     }

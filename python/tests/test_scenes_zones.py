@@ -55,7 +55,7 @@ ZONE = {
             "source": {
                 "type": "effect",
                 "effect_id": "aurora",
-                "controls": {"speed": {"integer": 50}},
+                "controls": {"speed": {"kind": "int", "value": 50}},
                 "control_bindings": {},
                 "preset_id": None,
             },

@@ -5,7 +5,8 @@ use hypercolor_daemon::device_settings::DeviceSettingsStore;
 use hypercolor_daemon::path_migration::MigrationOutcome;
 #[cfg(feature = "persistence-test-hooks")]
 use hypercolor_daemon::persistence::AtomicFileWriter;
-use hypercolor_types::controls::{ControlValue, ControlValueMap};
+use hypercolor_types::control::ControlValue;
+use hypercolor_types::controls::ControlValueMap;
 use serde_json::json;
 
 fn v2_settings_payload(value: i64) -> Vec<u8> {
@@ -55,7 +56,7 @@ fn device_settings_persists_driver_control_values() {
     let mut store = DeviceSettingsStore::new(path.clone());
     let values = ControlValueMap::from([
         ("protocol".to_owned(), ControlValue::Enum("e131".to_owned())),
-        ("dedup_threshold".to_owned(), ControlValue::Integer(6)),
+        ("dedup_threshold".to_owned(), ControlValue::Int(6)),
     ]);
 
     store
@@ -121,10 +122,10 @@ fn v2_driver_controls_migrate_to_the_canonical_wire() {
     let projected = store
         .driver_control_values_for_key("net:desk-strip")
         .expect("canonical values should project");
-    assert_eq!(projected["dedup_threshold"], ControlValue::Integer(6));
+    assert_eq!(projected["dedup_threshold"], ControlValue::Int(6));
     assert_eq!(
         projected["target"],
-        ControlValue::IpAddress("192.0.2.10".to_owned())
+        ControlValue::ip("192.0.2.10").expect("fixture IP should be valid")
     );
 
     let persisted: serde_json::Value =
@@ -191,7 +192,7 @@ fn v2_store_moves_to_state_as_canonical_v3() {
         store
             .driver_control_values_for_key("net:desk-strip")
             .expect("canonical controls should project")["dedup_threshold"],
-        ControlValue::Integer(6)
+        ControlValue::Int(6)
     );
     let persisted: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&canonical).expect("canonical settings should read"))
@@ -242,7 +243,7 @@ fn newer_legacy_schema_wins_over_existing_state() {
         store
             .driver_control_values_for_key("net:desk-strip")
             .expect("canonical controls should project")["dedup_threshold"],
-        ControlValue::Integer(3)
+        ControlValue::Int(3)
     );
 }
 
@@ -265,7 +266,7 @@ fn equal_v2_documents_prefer_state_then_upgrade_it_in_place() {
         store
             .driver_control_values_for_key("net:desk-strip")
             .expect("canonical controls should project")["dedup_threshold"],
-        ControlValue::Integer(2)
+        ControlValue::Int(2)
     );
     assert!(legacy.exists());
     assert!(canonical.with_extension("pre-v3.bak").exists());
@@ -294,7 +295,7 @@ fn failed_v2_import_keeps_legacy_until_canonical_v3_converges() {
         store
             .driver_control_values_for_key("net:desk-strip")
             .expect("canonical controls should project")["dedup_threshold"],
-        ControlValue::Integer(6)
+        ControlValue::Int(6)
     );
     assert!(legacy.exists());
 

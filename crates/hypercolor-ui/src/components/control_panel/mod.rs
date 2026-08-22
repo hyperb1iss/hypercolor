@@ -14,9 +14,8 @@ use hypercolor_leptos_ext::prelude::{
     viewport_height as browser_viewport_height, viewport_width as browser_viewport_width,
 };
 use hypercolor_types::canvas::{LinearRgba, Rgb, linear_to_srgb};
-use hypercolor_types::effect::{
-    ControlDefinition, ControlKind, ControlType, ControlValue, PreviewSource,
-};
+use hypercolor_types::control::ControlValue;
+use hypercolor_types::effect::{ControlDefinition, ControlKind, ControlType, PreviewSource};
 use hypercolor_types::viewport::ViewportRect;
 
 use crate::app::WsContext;
@@ -354,7 +353,9 @@ fn ControlWidget(
         .into_any(),
         ControlType::Rect => {
             let rect_value = Signal::derive(move || match value.get() {
-                ControlValue::Rect(rect) => rect,
+                ControlValue::Rect(rect) => {
+                    ViewportRect::new(rect.x, rect.y, rect.width, rect.height)
+                }
                 _ => ViewportRect::full(),
             });
             let preview_source = def.preview_source;
@@ -624,8 +625,8 @@ pub fn dropdown_panel_style(trigger: Option<web_sys::HtmlButtonElement>) -> Stri
 
 pub(super) fn control_value_to_hex(value: &ControlValue) -> String {
     match value {
-        ControlValue::Color([r, g, b, _]) => {
-            Rgb::new(to_byte(*r), to_byte(*g), to_byte(*b)).to_hex()
+        ControlValue::ColorLinear(color) => {
+            Rgb::new(to_byte(color.r), to_byte(color.g), to_byte(color.b)).to_hex()
         }
         ControlValue::Text(hex) if hex.starts_with('#') && hex.len() >= 7 => hex[..7].to_string(),
         _ => "#ffffff".to_string(),

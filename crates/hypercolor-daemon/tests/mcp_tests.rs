@@ -25,13 +25,14 @@ use hypercolor_daemon::mcp::tools::{ToolError, build_tool_definitions, execute_t
 use hypercolor_daemon::runtime_state;
 use hypercolor_daemon::scene_store;
 use hypercolor_types::config::{CURRENT_SCHEMA_VERSION, McpConfig};
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
     DeviceInfo, DeviceOrigin, DeviceTopologyHint, SegmentInfo,
 };
 use hypercolor_types::effect::{
-    ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory, EffectId,
-    EffectMetadata, EffectSource,
+    ControlDefinition, ControlKind, ControlType, EffectCategory, EffectId, EffectMetadata,
+    EffectSource,
 };
 use hypercolor_types::event::{
     ChangeTrigger, EffectStopReason, HypercolorEvent, SceneChangeReason, ZoneChangeKind,
@@ -155,6 +156,7 @@ impl InputSource for FailedInputSource {
 #[tokio::test]
 async fn diagnose_matches_rest_defaults_and_excludes_protected_parity() {
     let (state, _tempdir) = isolated_state_with_tempdir();
+
     let state = Arc::new(state);
     let tool_payload = execute_tool_with_state("diagnose", &json!({}), state.as_ref())
         .await
@@ -188,6 +190,7 @@ async fn diagnose_matches_rest_defaults_and_excludes_protected_parity() {
 #[tokio::test]
 async fn diagnose_reports_demanded_input_failure_as_unhealthy() {
     let (state, _tempdir) = isolated_state_with_tempdir();
+
     {
         let mut manager = state.input_manager.lock().await;
         manager.add_source(Box::new(FailedInputSource::new()));
@@ -218,6 +221,7 @@ async fn diagnose_reports_demanded_input_failure_as_unhealthy() {
 #[tokio::test]
 async fn mcp_status_surfaces_are_exact_while_input_manager_is_held() {
     let (state, _tempdir) = isolated_state_with_tempdir();
+
     state
         .input_manager
         .lock()
@@ -273,6 +277,7 @@ async fn mcp_status_surfaces_are_exact_while_input_manager_is_held() {
 async fn mcp_status_surfaces_report_effective_session_pause() {
     let (state, _tempdir) = isolated_state_with_tempdir();
     let generation = state.output_power.begin_session_transition();
+
     state
         .output_power
         .pause_for_session(
@@ -376,6 +381,22 @@ fn test_html_effect_metadata(name: &str) -> EffectMetadata {
 fn test_display_face_effect_metadata(name: &str) -> EffectMetadata {
     let mut metadata = test_html_effect_metadata(name);
     metadata.category = EffectCategory::Display;
+    metadata.controls.push(ControlDefinition {
+        id: "title".to_owned(),
+        name: "Title".to_owned(),
+        kind: ControlKind::Text,
+        control_type: ControlType::TextInput,
+        default_value: ControlValue::Text("System".to_owned()),
+        min: None,
+        max: None,
+        step: None,
+        labels: Vec::new(),
+        group: Some("General".to_owned()),
+        tooltip: None,
+        aspect_lock: None,
+        preview_source: None,
+        binding: None,
+    });
     metadata
 }
 
@@ -615,6 +636,7 @@ fn extract_jsonrpc_payload(body: &str) -> Value {
 #[tokio::test]
 async fn mcp_http_initialize_returns_json_in_stateless_mode() {
     let (state, _tempdir) = isolated_state_with_tempdir();
+
     let state = Arc::new(state);
     let router = mcp::build_router(Arc::clone(&state), &stateless_mcp_config()).with_state(state);
     let (client, base_url) = spawn_router(router).await;
@@ -645,6 +667,7 @@ async fn mcp_http_initialize_returns_json_in_stateless_mode() {
 #[tokio::test]
 async fn mcp_http_tools_list_and_call_return_structured_results() {
     let (state, _tempdir) = isolated_state_with_tempdir();
+
     let state = Arc::new(state);
     insert_test_effect(&state, "Aurora").await;
     insert_test_effect(&state, "Aurora Glow").await;
@@ -748,6 +771,7 @@ async fn mcp_http_tools_list_and_call_return_structured_results() {
 #[tokio::test]
 async fn mcp_http_resources_and_prompts_roundtrip() {
     let (state, _tempdir) = isolated_state_with_tempdir();
+
     let state = Arc::new(state);
     let router = mcp::build_router(Arc::clone(&state), &stateless_mcp_config()).with_state(state);
     let (client, base_url) = spawn_router(router).await;
@@ -852,6 +876,7 @@ async fn mcp_http_stateful_mode_uses_session_headers_and_sse() {
         ..McpConfig::default()
     };
     let (state, _tempdir) = isolated_state_with_tempdir();
+
     let state = Arc::new(state);
     let router = mcp::build_router(Arc::clone(&state), &config).with_state(state);
     let (client, base_url) = spawn_router(router).await;
@@ -1037,7 +1062,7 @@ async fn stateful_display_face_tool_assigns_and_clears_face_groups() {
     );
     assert_eq!(assign_result["device"]["width"], 320);
     assert_eq!(
-        assign_result["zone"]["layers"][0]["source"]["controls"]["title"]["text"],
+        assign_result["zone"]["layers"][0]["source"]["controls"]["title"]["value"],
         "CPU"
     );
 
@@ -1167,6 +1192,329 @@ fn set_effect_advertises_only_the_closed_cut_transition() {
         set_effect.input_schema["additionalProperties"],
         json!(false),
         "the closed shape is what stops a client sending a deleted parameter"
+    );
+}
+
+#[test]
+fn adjust_controls_advertises_recursive_canonical_values() {
+    let tools = build_tool_definitions();
+    let adjust = tools
+        .iter()
+        .find(|tool| tool.name == "adjust_controls")
+        .expect("adjust_controls should be registered");
+    assert_eq!(
+        adjust.input_schema["properties"]["values"]["additionalProperties"]["$ref"],
+        "#/$defs/controlValue"
+    );
+
+    let variants = adjust.input_schema["$defs"]["controlValue"]["oneOf"]
+        .as_array()
+        .expect("ControlValue should be a tagged union");
+    let tags = variants
+        .iter()
+        .map(|variant| {
+            variant["properties"]["kind"]["const"]
+                .as_str()
+                .expect("every variant should pin its tag")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        tags,
+        vec![
+            "null",
+            "bool",
+            "int",
+            "float",
+            "text",
+            "secret_ref",
+            "ip",
+            "mac",
+            "duration",
+            "color_rgb",
+            "color_rgba",
+            "color_linear",
+            "gradient",
+            "rect",
+            "enum",
+            "flags",
+            "list",
+            "map",
+            "unknown",
+        ]
+    );
+    let variant = |kind: &str| {
+        variants
+            .iter()
+            .find(|variant| variant["properties"]["kind"]["const"] == kind)
+            .unwrap_or_else(|| panic!("{kind} should be advertised"))
+    };
+    assert_eq!(
+        variant("list")["properties"]["value"]["items"]["$ref"],
+        "#/$defs/controlValue"
+    );
+    assert_eq!(
+        variant("map")["properties"]["value"]["additionalProperties"]["$ref"],
+        "#/$defs/controlValue"
+    );
+
+    let validator = jsonschema::validator_for(&adjust.input_schema)
+        .expect("adjust_controls schema should compile");
+    let valid = json!({
+        "zone": "primary",
+        "layer": "layer-1",
+        "values": {
+            "nested": {
+                "kind": "map",
+                "value": {
+                    "items": {
+                        "kind": "list",
+                        "value": [
+                            { "kind": "float", "value": 0.5 },
+                            { "kind": "unknown" }
+                        ]
+                    }
+                }
+            }
+        }
+    });
+    assert!(validator.is_valid(&valid));
+    for invalid in [
+        json!({
+            "zone": "primary",
+            "layer": "layer-1",
+            "values": { "speed": 0.5 }
+        }),
+        json!({
+            "zone": "primary",
+            "layer": "layer-1",
+            "values": { "future": { "kind": "vector3", "value": [0, 0, 0] } }
+        }),
+    ] {
+        assert!(!validator.is_valid(&invalid));
+    }
+}
+
+#[test]
+fn adjust_controls_schema_matches_canonical_value_boundaries() {
+    let tools = build_tool_definitions();
+    let adjust = tools
+        .iter()
+        .find(|tool| tool.name == "adjust_controls")
+        .expect("adjust_controls should be registered");
+    let validator = jsonschema::options()
+        .should_validate_formats(true)
+        .build(&adjust.input_schema)
+        .expect("adjust_controls schema should compile with format assertions");
+    let assert_parity = |label: &str, value: Value, expected: bool| {
+        let input = json!({
+            "zone": "primary",
+            "layer": "layer-1",
+            "values": { "candidate": value.clone() }
+        });
+        let schema_accepts = validator.is_valid(&input);
+        let canonical_accepts = serde_json::from_value::<ControlValue>(value).is_ok();
+        assert_eq!(schema_accepts, expected, "schema result for {label}");
+        assert_eq!(canonical_accepts, expected, "canonical result for {label}");
+        assert_eq!(
+            schema_accepts, canonical_accepts,
+            "schema and canonical admission diverged for {label}"
+        );
+    };
+
+    for (label, value) in [
+        ("i64 minimum", json!({ "kind": "int", "value": i64::MIN })),
+        ("i64 maximum", json!({ "kind": "int", "value": i64::MAX })),
+        ("IPv4", json!({ "kind": "ip", "value": "192.0.2.1" })),
+        ("IPv6", json!({ "kind": "ip", "value": "2001:db8::1" })),
+        (
+            "colon MAC",
+            json!({ "kind": "mac", "value": "aa:bb:cc:dd:ee:ff" }),
+        ),
+        (
+            "hyphen MAC",
+            json!({ "kind": "mac", "value": "AA-BB-CC-DD-EE-FF" }),
+        ),
+        (
+            "bare MAC",
+            json!({ "kind": "mac", "value": "aabbccddeeff" }),
+        ),
+        (
+            "dotted MAC",
+            json!({ "kind": "mac", "value": "aabb.ccdd.eeff" }),
+        ),
+        (
+            "gradient channel bounds",
+            json!({
+                "kind": "gradient",
+                "value": [
+                    { "position": 0.0, "color": [0.0, 0.0, 0.0, 0.0] },
+                    { "position": 1.0, "color": [1.0, 1.0, 1.0, 1.0] }
+                ]
+            }),
+        ),
+        (
+            "recursive list and map",
+            json!({
+                "kind": "map",
+                "value": {
+                    "items": {
+                        "kind": "list",
+                        "value": [
+                            { "kind": "ip", "value": "::1" },
+                            { "kind": "unknown" }
+                        ]
+                    }
+                }
+            }),
+        ),
+        (
+            "maximum duration",
+            json!({ "kind": "duration", "value": u64::MAX }),
+        ),
+        (
+            "maximum finite f32 channel",
+            json!({
+                "kind": "color_linear",
+                "value": {
+                    "r": f64::from(f32::MAX),
+                    "g": 0.0,
+                    "b": 0.0,
+                    "a": 1.0
+                }
+            }),
+        ),
+    ] {
+        assert_parity(label, value, true);
+    }
+
+    let above_i64 = serde_json::from_str::<Value>(r#"{"kind":"int","value":9223372036854775808}"#)
+        .expect("above-i64 fixture should parse as JSON");
+    let below_i64 = serde_json::from_str::<Value>(r#"{"kind":"int","value":-9223372036854777856}"#)
+        .expect("below-i64 fixture should parse as JSON");
+    let above_u64 =
+        serde_json::from_str::<Value>(r#"{"kind":"duration","value":18446744073709551616}"#)
+            .expect("above-u64 fixture should parse as JSON");
+    for (label, value) in [
+        ("above i64", above_i64),
+        ("below i64", below_i64),
+        (
+            "invalid IPv4",
+            json!({ "kind": "ip", "value": "999.1.2.3" }),
+        ),
+        ("invalid IPv6", json!({ "kind": "ip", "value": "2001:::1" })),
+        (
+            "mixed MAC separators",
+            json!({ "kind": "mac", "value": "aa:bb-cc:dd:ee:ff" }),
+        ),
+        (
+            "short MAC",
+            json!({ "kind": "mac", "value": "aa:bb:cc:dd:ee" }),
+        ),
+        (
+            "gradient channel below zero",
+            json!({
+                "kind": "gradient",
+                "value": [
+                    { "position": 0.0, "color": [-0.001, 0.0, 0.0, 1.0] },
+                    { "position": 1.0, "color": [1.0, 1.0, 1.0, 1.0] }
+                ]
+            }),
+        ),
+        (
+            "gradient channel above one",
+            json!({
+                "kind": "gradient",
+                "value": [
+                    { "position": 0.0, "color": [0.0, 0.0, 0.0, 1.0] },
+                    { "position": 1.0, "color": [1.001, 1.0, 1.0, 1.0] }
+                ]
+            }),
+        ),
+        (
+            "invalid nested IP",
+            json!({
+                "kind": "map",
+                "value": { "address": { "kind": "ip", "value": "nope" } }
+            }),
+        ),
+        (
+            "channel above f32 range",
+            json!({
+                "kind": "color_linear",
+                "value": { "r": 1.0e40, "g": 0.0, "b": 0.0, "a": 1.0 }
+            }),
+        ),
+        ("above u64 duration", above_u64),
+        (
+            "unknown payload",
+            json!({ "kind": "unknown", "value": null }),
+        ),
+        (
+            "unknown tag",
+            json!({ "kind": "vector3", "value": [0.0, 0.0, 0.0] }),
+        ),
+        (
+            "unknown color payload field",
+            json!({
+                "kind": "color_rgb",
+                "value": { "r": 1, "g": 2, "b": 3, "future": 4 }
+            }),
+        ),
+        (
+            "unknown gradient stop field",
+            json!({
+                "kind": "gradient",
+                "value": [
+                    {
+                        "position": 0.0,
+                        "color": [0.0, 0.0, 0.0, 1.0],
+                        "future": true
+                    },
+                    { "position": 1.0, "color": [1.0, 1.0, 1.0, 1.0] }
+                ]
+            }),
+        ),
+    ] {
+        assert_parity(label, value, false);
+    }
+}
+
+#[test]
+fn gradient_order_remains_a_semantic_admission_invariant() {
+    let tools = build_tool_definitions();
+    let adjust = tools
+        .iter()
+        .find(|tool| tool.name == "adjust_controls")
+        .expect("adjust_controls should be registered");
+    let validator = jsonschema::options()
+        .should_validate_formats(true)
+        .build(&adjust.input_schema)
+        .expect("adjust_controls schema should compile");
+    let descending = json!({
+        "kind": "gradient",
+        "value": [
+            { "position": 0.8, "color": [1.0, 0.0, 0.0, 1.0] },
+            { "position": 0.2, "color": [0.0, 0.0, 1.0, 1.0] }
+        ]
+    });
+    let input = json!({
+        "zone": "primary",
+        "layer": "layer-1",
+        "values": { "palette": descending.clone() }
+    });
+
+    assert!(
+        validator.is_valid(&input),
+        "JSON Schema cannot express ordering across adjacent array items"
+    );
+    let error = serde_json::from_value::<ControlValue>(descending)
+        .expect_err("canonical admission must reject descending gradient stops");
+    assert!(error.to_string().contains("nondecreasing order"));
+    assert!(
+        adjust.input_schema.to_string().contains(
+            "JSON Schema validates each stop shape and range; canonical value admission enforces ordering"
+        ),
+        "the published schema must identify the semantic ordering boundary"
     );
 }
 
@@ -1465,7 +1813,7 @@ async fn adjust_controls_resolves_the_zone_and_requires_an_id_for_unnamed_layers
     .expect("the canonical control patch should succeed");
     assert!(adjusted["revision"].is_number());
     assert_eq!(
-        adjusted["zone"]["layers"][0]["source"]["controls"]["speed"]["float"],
+        adjusted["zone"]["layers"][0]["source"]["controls"]["speed"]["value"],
         json!(8.5)
     );
 
@@ -1776,8 +2124,11 @@ async fn stateful_set_color_syncs_scene_runtime_state() {
     match effect_controls(&snapshot.default_scene_groups[0])
         .and_then(|controls| controls.get("color"))
     {
-        Some(ControlValue::Color([r, g, b, a])) => {
-            assert_eq!((*r, *g, *b, *a), (1.0, 106.0 / 255.0, 193.0 / 255.0, 1.0));
+        Some(ControlValue::ColorLinear(color)) => {
+            assert_eq!(
+                (color.r, color.g, color.b, color.a),
+                (1.0, 106.0 / 255.0, 193.0 / 255.0, 1.0)
+            );
         }
         other => panic!("expected RGBA control value, got {other:?}"),
     }
@@ -2110,6 +2461,7 @@ async fn set_output_power_tool_validates_desired_state() {
 #[tokio::test]
 async fn stateful_set_output_power_is_reversible_and_idempotent() {
     let (state, _tempdir) = isolated_state_with_tempdir();
+
     let state = Arc::new(state);
 
     let paused = execute_tool_with_state(
@@ -2239,6 +2591,7 @@ fn resource_definitions_match_live_uri_validation() {
 #[tokio::test]
 async fn mcp_device_inventory_surfaces_are_exact_and_filterable() {
     let (state, _tempdir) = isolated_state_with_tempdir();
+
     let state = Arc::new(state);
     let device_id = insert_test_display_device(&state, "Case Display").await;
 

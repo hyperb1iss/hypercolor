@@ -466,22 +466,11 @@ pub(crate) async fn activate_playlist_item(
         }
     };
 
-    let (controls, rejected) =
-        crate::domain::effect::normalize_control_values(&metadata, &requested_controls);
-    if !rejected.is_empty() {
-        warn!(
-            effect_id = %metadata.id,
-            effect = %metadata.name,
-            ?rejected,
-            "Rejected controls while advancing playlist"
-        );
-    }
-
     crate::domain::effect::apply_effect(
         &state.domains.effects,
         crate::domain::effect::ApplyEffect {
             effect: metadata,
-            controls,
+            controls: requested_controls,
             preset_id,
             target_zone: None,
             expected_revision: None,

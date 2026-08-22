@@ -3,11 +3,12 @@
 use std::collections::HashMap;
 
 use hypercolor_types::asset::AssetId;
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::device::{ConnectionType, DeviceOrigin};
 use hypercolor_types::event::{
     AssetChangeKind, ChangeTrigger, ContextType, DisconnectReason, EffectDegradationState,
-    EffectRef, EffectStopReason, EventCategory, EventControlValue, EventPriority, FrameData,
-    FrameTiming, HypercolorEvent, InputButtonState, InputEvent, LayerHealth, LayerStackChangeKind,
+    EffectRef, EffectStopReason, EventCategory, EventPriority, FrameData, FrameTiming,
+    HypercolorEvent, InputButtonState, InputEvent, LayerHealth, LayerStackChangeKind,
     MacosDaemonHandoverPhaseEvent, MacosDaemonOwnerConflictEvent, MacosDaemonOwnerEvent,
     MacosDaemonOwnerRecoveryRequiredEvent, PointerScrollPhase, PointerScrollUnit,
     SceneChangeReason, Severity, TimedInputEvent, TransitionRef, ZoneChangeKind, ZoneColors,
@@ -106,8 +107,8 @@ fn effect_events_have_effect_category() {
         HypercolorEvent::EffectControlChanged {
             effect_id: "rainbow".into(),
             control_id: "speed".into(),
-            old_value: EventControlValue::Number(0.5),
-            new_value: EventControlValue::Number(0.8),
+            old_value: ControlValue::Float(0.5),
+            new_value: ControlValue::Float(0.8),
             zone_id: ZoneId::new(),
             layer_id: SceneLayerId::new(),
             trigger: ChangeTrigger::Api,
@@ -155,8 +156,8 @@ fn effect_control_changed_requires_zone_and_layer_identity() {
     let event = HypercolorEvent::EffectControlChanged {
         effect_id: "rainbow".into(),
         control_id: "speed".into(),
-        old_value: EventControlValue::Number(0.5),
-        new_value: EventControlValue::Number(0.8),
+        old_value: ControlValue::Float(0.5),
+        new_value: ControlValue::Float(0.8),
         zone_id: ZoneId::new(),
         layer_id: SceneLayerId::new(),
         trigger: ChangeTrigger::Api,
@@ -1056,32 +1057,6 @@ fn serde_tagged_format() {
     assert_eq!(value["type"], "DaemonStarted");
     assert_eq!(value["data"]["version"], "0.1.0");
     assert_eq!(value["data"]["pid"], 42);
-}
-
-// ── ControlValue Tests ──────────────────────────────────────────────────
-
-#[test]
-fn control_value_number_roundtrip() {
-    let val = EventControlValue::Number(0.75);
-    let json = serde_json::to_string(&val).expect("serialize");
-    let deserialized: EventControlValue = serde_json::from_str(&json).expect("deserialize");
-    assert_eq!(deserialized, EventControlValue::Number(0.75));
-}
-
-#[test]
-fn control_value_boolean_roundtrip() {
-    let val = EventControlValue::Boolean(true);
-    let json = serde_json::to_string(&val).expect("serialize");
-    let deserialized: EventControlValue = serde_json::from_str(&json).expect("deserialize");
-    assert_eq!(deserialized, EventControlValue::Boolean(true));
-}
-
-#[test]
-fn control_value_string_roundtrip() {
-    let val = EventControlValue::String("rainbow".into());
-    let json = serde_json::to_string(&val).expect("serialize");
-    let deserialized: EventControlValue = serde_json::from_str(&json).expect("deserialize");
-    assert_eq!(deserialized, EventControlValue::String("rainbow".into()));
 }
 
 // ── FrameData Tests ─────────────────────────────────────────────────────

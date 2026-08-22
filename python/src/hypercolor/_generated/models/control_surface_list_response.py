@@ -15,7 +15,8 @@ T = TypeVar("T", bound="ControlSurfaceListResponse")
 
 @_attrs_define
 class ControlSurfaceListResponse:
-    """
+    """Response body for `GET /api/v1/control-surfaces`.
+
     Attributes:
         surfaces (list[ControlSurfaceDocument]):
     """

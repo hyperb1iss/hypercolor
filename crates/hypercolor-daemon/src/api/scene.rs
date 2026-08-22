@@ -472,17 +472,7 @@ pub async fn patch_layer_controls(
         Err(error) => return error.into_response(),
     };
 
-    let mut values = HashMap::with_capacity(body.values.len());
-    for (name, value) in body.values {
-        let projected = match value.to_effect_wire() {
-            Ok(value) => value,
-            Err(error) => {
-                return DomainError::validation_field(format!("values.{name}"), error.to_string())
-                    .into_response();
-            }
-        };
-        values.insert(name, projected);
-    }
+    let values = body.values.into_iter().collect::<HashMap<_, _>>();
     written_response(
         scene_tree::patch_layer_controls(
             &state.domains.scene_tree,

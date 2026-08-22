@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
@@ -18,19 +18,24 @@ class BTreeMapAdditionalPropertyType15:
     """
     Attributes:
         kind (BTreeMapAdditionalPropertyType15Kind):
+        value (list[str]):
     """
 
     kind: BTreeMapAdditionalPropertyType15Kind
+    value: list[str]
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         kind = self.kind.value
+
+        value = self.value
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
                 "kind": kind,
+                "value": value,
             }
         )
 
@@ -41,8 +46,11 @@ class BTreeMapAdditionalPropertyType15:
         d = dict(src_dict)
         kind = BTreeMapAdditionalPropertyType15Kind(d.pop("kind"))
 
+        value = cast(list[str], d.pop("value"))
+
         b_tree_map_additional_property_type_15 = cls(
             kind=kind,
+            value=value,
         )
 
         b_tree_map_additional_property_type_15.additional_properties = d

@@ -172,7 +172,7 @@ impl PrepareLayoutTransaction {
                 &expected_layout,
                 expected_active_scene_id,
                 expected_active_render_groups_revision,
-                |_| {},
+                |_| Ok(()),
             )
             .await;
         activation.complete(result.clone());

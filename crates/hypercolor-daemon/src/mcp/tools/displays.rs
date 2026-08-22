@@ -12,8 +12,9 @@ use crate::domain::display::{
 };
 use crate::mcp::results::{DisplayDeviceResult, DisplayFaceResult};
 use crate::mcp::selector::SelectorCandidate;
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::device::{DeviceId, DeviceInfo};
-use hypercolor_types::effect::{ControlValue, EffectCategory};
+use hypercolor_types::effect::{EffectCategory, EffectMetadata};
 use hypercolor_types::event::ZoneChangeKind;
 use hypercolor_types::scene::{DisplayFaceBlendMode, DisplayFaceTarget};
 
@@ -81,11 +82,9 @@ pub(super) async fn handle_set_display_face_with_state(
         }
     };
     let (device_id, info, surface) = resolve_display_device(state, raw_device).await?;
-    let controls = parse_controls_map(params.get("controls"))?;
 
     if scope == crate::api::displays::DisplayFaceScope::Default {
-        return handle_default_scope(state, params, device_id, &info, surface, clear, controls)
-            .await;
+        return handle_default_scope(state, params, device_id, &info, surface, clear).await;
     }
 
     if clear {
@@ -133,6 +132,7 @@ pub(super) async fn handle_set_display_face_with_state(
         }
         effect
     };
+    let controls = parse_controls_map(params.get("controls"), &effect)?;
 
     // The face blends over the live effect by default; Replace is opt-in
     // through the REST composition endpoint for face-only looks.
@@ -197,7 +197,6 @@ async fn handle_default_scope(
     info: &DeviceInfo,
     surface: DisplaySurfaceInfo,
     clear: bool,
-    controls: std::collections::HashMap<String, ControlValue>,
 ) -> Result<Value, ToolError> {
     if clear {
         let removed = {
@@ -263,8 +262,15 @@ async fn handle_default_scope(
         }
         effect
     };
+    let controls = parse_controls_map(params.get("controls"), &effect)?;
 
-    let _admission = state.domains.effects.admit(&effect).await?;
+    let admitted = crate::domain::display::admit_display_face_controls(
+        &state.domains.effects,
+        effect,
+        &controls,
+    )
+    .await?;
+    let (effect, controls, admission) = admitted.into_parts();
 
     {
         let mut store = state.display_preferences.write().await;
@@ -282,8 +288,9 @@ async fn handle_default_scope(
             )
             .map_err(|error| ToolError::Internal(error.to_string()))?;
     }
+    drop(admission);
     let Some(group) =
-        crate::api::displays::apply_display_preference_overlay_admitted(state, device_id).await
+        crate::api::displays::apply_display_preference_overlay_checked(state, device_id).await
     else {
         return Err(ToolError::Internal(
             "failed to install the default face overlay".into(),
@@ -314,6 +321,7 @@ async fn handle_default_scope(
 
 fn parse_controls_map(
     value: Option<&Value>,
+    effect: &EffectMetadata,
 ) -> Result<std::collections::HashMap<String, ControlValue>, ToolError> {
     let Some(value) = value else {
         return Ok(std::collections::HashMap::new());
@@ -327,56 +335,22 @@ fn parse_controls_map(
 
     let mut controls = std::collections::HashMap::with_capacity(map.len());
     for (key, value) in map {
-        let Some(control) = control_value_from_json(value) else {
-            return Err(ToolError::InvalidParam {
+        let definition = effect
+            .control_by_id(key)
+            .ok_or_else(|| ToolError::InvalidParam {
                 param: "controls".into(),
-                reason: format!("unsupported control value for '{key}'"),
-            });
-        };
+                reason: format!("unknown control '{key}'"),
+            })?;
+        let control =
+            definition
+                .admit_effect_json(value)
+                .map_err(|error| ToolError::InvalidParam {
+                    param: "controls".into(),
+                    reason: format!("invalid control value for '{key}': {error}"),
+                })?;
         controls.insert(key.clone(), control);
     }
     Ok(controls)
-}
-
-fn control_value_from_json(value: &Value) -> Option<ControlValue> {
-    if let Some(flag) = value.as_bool() {
-        return Some(ControlValue::Boolean(flag));
-    }
-
-    if let Some(integer_value) = value.as_i64() {
-        let coerced = i32::try_from(integer_value).ok()?;
-        return Some(ControlValue::Integer(coerced));
-    }
-
-    if let Some(float_value) = value.as_f64() {
-        let finite = if float_value.is_finite() {
-            float_value
-        } else {
-            return None;
-        };
-        #[expect(clippy::cast_possible_truncation, clippy::as_conversions)]
-        let coerced = finite as f32;
-        return Some(ControlValue::Float(coerced));
-    }
-
-    if let Some(text) = value.as_str() {
-        return Some(ControlValue::Text(text.to_owned()));
-    }
-
-    if let Some(array) = value.as_array()
-        && array.len() == 4
-    {
-        let mut rgba = [0.0_f32; 4];
-        for (idx, component) in array.iter().enumerate() {
-            let number = component.as_f64()?;
-            #[expect(clippy::cast_possible_truncation, clippy::as_conversions)]
-            let number = number as f32;
-            rgba[idx] = number;
-        }
-        return Some(ControlValue::Color(rgba));
-    }
-
-    None
 }
 
 async fn resolve_display_device(
@@ -419,5 +393,106 @@ fn display_device_payload(info: &DeviceInfo, surface: DisplaySurfaceInfo) -> Dis
         width: surface.width,
         height: surface.height,
         circular: surface.circular,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use hypercolor_types::control::ControlValue;
+    use hypercolor_types::effect::{
+        ControlDefinition, ControlKind, ControlType, EffectCategory, EffectId, EffectMetadata,
+        EffectSource,
+    };
+
+    use super::parse_controls_map;
+
+    fn metadata() -> EffectMetadata {
+        EffectMetadata {
+            id: EffectId::new(uuid::Uuid::now_v7()),
+            name: "display fixture".to_owned(),
+            author: "test".to_owned(),
+            version: "1".to_owned(),
+            description: String::new(),
+            category: EffectCategory::Display,
+            tags: Vec::new(),
+            controls: vec![
+                ControlDefinition {
+                    id: "accent".to_owned(),
+                    name: "Accent".to_owned(),
+                    kind: ControlKind::Color,
+                    control_type: ControlType::ColorPicker,
+                    default_value: ControlValue::linear_color([1.0, 1.0, 1.0, 1.0]),
+                    min: None,
+                    max: None,
+                    step: None,
+                    labels: Vec::new(),
+                    group: None,
+                    tooltip: None,
+                    aspect_lock: None,
+                    preview_source: None,
+                    binding: None,
+                },
+                ControlDefinition {
+                    id: "gain".to_owned(),
+                    name: "Gain".to_owned(),
+                    kind: ControlKind::Number,
+                    control_type: ControlType::Slider,
+                    default_value: ControlValue::Float(0.5),
+                    min: Some(0.0),
+                    max: Some(1.0),
+                    step: None,
+                    labels: Vec::new(),
+                    group: None,
+                    tooltip: None,
+                    aspect_lock: None,
+                    preview_source: None,
+                    binding: None,
+                },
+            ],
+            presets: Vec::new(),
+            audio_reactive: false,
+            screen_reactive: false,
+            input_reactive: false,
+            source: EffectSource::Html {
+                path: "fixture.html".into(),
+            },
+            license: None,
+        }
+    }
+
+    #[test]
+    fn display_controls_reject_f64_values_outside_the_effect_abi() {
+        let payload = serde_json::json!({
+            "gain": f64::from(f32::MAX) * 2.0,
+        });
+
+        let error = parse_controls_map(Some(&payload), &metadata())
+            .expect_err("f64 values beyond f32 must be rejected");
+        assert!(error.to_string().contains("within the f32 range"));
+    }
+
+    #[test]
+    fn display_controls_admit_checked_rgba_arrays() {
+        let payload = serde_json::json!({
+            "accent": [0.1, 0.2, 0.3, 0.4],
+        });
+
+        let controls =
+            parse_controls_map(Some(&payload), &metadata()).expect("valid RGBA should parse");
+        let ControlValue::ColorLinear(color) = controls["accent"] else {
+            panic!("expected linear color");
+        };
+        assert!((color.a - 0.4).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn display_controls_reject_unknown_control_ids() {
+        let payload = serde_json::json!({
+            "missing": 0.5,
+        });
+
+        let error = parse_controls_map(Some(&payload), &metadata())
+            .expect_err("undeclared controls must be rejected");
+        assert!(error.to_string().contains("unknown control 'missing'"));
     }
 }

@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use hypercolor_types::asset::AssetId;
 use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, LinearRgba, Oklch, Rgba};
-use hypercolor_types::control::{ControlDeltaBatch, ControlValue as CanonicalControlValue};
+use hypercolor_types::control::{ControlDeltaBatch, ControlValue};
 use hypercolor_types::effect::{ControlDefinition, EffectCategory, EffectMetadata, EffectSource};
 use hypercolor_types::layer::{LoopMode, MediaPlayback};
 use hypercolor_types::viewport::FitMode;
@@ -16,7 +16,7 @@ use super::common::{
 };
 use crate::asset::AssetLibrary;
 use crate::effect::media::MediaProducer;
-use crate::effect::traits::{ControlError, EffectRenderer, FrameInput, prepare_target_canvas};
+use crate::effect::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
 
 pub struct MediaPlayerRenderer {
     asset: String,
@@ -136,26 +136,22 @@ impl EffectRenderer for MediaPlayerRenderer {
         Ok(())
     }
 
-    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> Result<(), ControlError> {
+    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> anyhow::Result<()> {
         for (control_id, value) in batch.changes {
             match control_id.as_str() {
                 "asset" => match value {
-                    CanonicalControlValue::Text(asset) | CanonicalControlValue::Enum(asset) => {
+                    ControlValue::Text(asset) | ControlValue::Enum(asset) => {
                         self.set_asset(asset);
                     }
                     _ => {}
                 },
                 "loop_mode" => {
-                    if let CanonicalControlValue::Enum(value) | CanonicalControlValue::Text(value) =
-                        value
-                    {
+                    if let ControlValue::Enum(value) | ControlValue::Text(value) = value {
                         self.playback.loop_mode = loop_mode_from_control(value);
                     }
                 }
                 "fit" => {
-                    if let CanonicalControlValue::Enum(value) | CanonicalControlValue::Text(value) =
-                        value
-                    {
+                    if let ControlValue::Enum(value) | ControlValue::Text(value) = value {
                         self.fit_mode = fit_mode_from_control(value);
                     }
                 }
@@ -170,7 +166,7 @@ impl EffectRenderer for MediaPlayerRenderer {
                     }
                 }
                 "tint" => {
-                    if let CanonicalControlValue::ColorLinear(color) = value {
+                    if let ControlValue::ColorLinear(color) = value {
                         self.tint = [color.r, color.g, color.b, color.a];
                     }
                 }

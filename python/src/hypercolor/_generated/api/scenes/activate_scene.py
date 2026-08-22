@@ -6,6 +6,7 @@ import httpx
 
 from ... import errors
 from ...client import AuthenticatedClient, Client
+from ...models.activate_scene_request import ActivateSceneRequest
 from ...models.activate_scene_response_200 import ActivateSceneResponse200
 from ...models.api_error_body import ApiErrorBody
 from ...types import Response
@@ -13,7 +14,10 @@ from ...types import Response
 
 def _get_kwargs(
     id: str,
+    *,
+    body: ActivateSceneRequest,
 ) -> dict[str, Any]:
+    headers: dict[str, Any] = {}
 
     _kwargs: dict[str, Any] = {
         "method": "post",
@@ -22,6 +26,11 @@ def _get_kwargs(
         ),
     }
 
+    _kwargs["json"] = body.to_dict()
+
+    headers["Content-Type"] = "application/json"
+
+    _kwargs["headers"] = headers
     return _kwargs
 
 
@@ -99,11 +108,13 @@ def sync_detailed(
     id: str,
     *,
     client: AuthenticatedClient | Client,
+    body: ActivateSceneRequest,
 ) -> Response[ActivateSceneResponse200 | ApiErrorBody]:
     """Activate scene
 
     Args:
         id (str):
+        body (ActivateSceneRequest): Request for `POST /api/v1/scenes/{id}/activate`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -115,6 +126,7 @@ def sync_detailed(
 
     kwargs = _get_kwargs(
         id=id,
+        body=body,
     )
 
     response = client.get_httpx_client().request(
@@ -128,11 +140,13 @@ def sync(
     id: str,
     *,
     client: AuthenticatedClient | Client,
+    body: ActivateSceneRequest,
 ) -> ActivateSceneResponse200 | ApiErrorBody | None:
     """Activate scene
 
     Args:
         id (str):
+        body (ActivateSceneRequest): Request for `POST /api/v1/scenes/{id}/activate`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -145,6 +159,7 @@ def sync(
     return sync_detailed(
         id=id,
         client=client,
+        body=body,
     ).parsed
 
 
@@ -152,11 +167,13 @@ async def asyncio_detailed(
     id: str,
     *,
     client: AuthenticatedClient | Client,
+    body: ActivateSceneRequest,
 ) -> Response[ActivateSceneResponse200 | ApiErrorBody]:
     """Activate scene
 
     Args:
         id (str):
+        body (ActivateSceneRequest): Request for `POST /api/v1/scenes/{id}/activate`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -168,6 +185,7 @@ async def asyncio_detailed(
 
     kwargs = _get_kwargs(
         id=id,
+        body=body,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)
@@ -179,11 +197,13 @@ async def asyncio(
     id: str,
     *,
     client: AuthenticatedClient | Client,
+    body: ActivateSceneRequest,
 ) -> ActivateSceneResponse200 | ApiErrorBody | None:
     """Activate scene
 
     Args:
         id (str):
+        body (ActivateSceneRequest): Request for `POST /api/v1/scenes/{id}/activate`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -197,5 +217,6 @@ async def asyncio(
         await asyncio_detailed(
             id=id,
             client=client,
+            body=body,
         )
     ).parsed

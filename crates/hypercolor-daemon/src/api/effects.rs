@@ -21,11 +21,11 @@ use hypercolor_types::api::scene::{
     ApplyEffectRequest as SceneApplyEffectRequest, ApplyEffectResponse as SceneApplyEffectResponse,
     TransitionType,
 };
-use hypercolor_types::effect::{ControlValue, EffectCategory, EffectMetadata, EffectSource};
+use hypercolor_types::control::ControlValue;
+use hypercolor_types::effect::{EffectCategory, EffectMetadata, EffectSource};
 use hypercolor_types::event::HypercolorEvent;
 use hypercolor_types::library::PresetId;
 
-use crate::api::control_values::json_to_control_value;
 use crate::api::envelope;
 use crate::app_state::AppState;
 use crate::domain;
@@ -318,35 +318,14 @@ pub async fn apply_effect(
 
     // Explicit controls win; otherwise the preset seeds the layer.
     let requested_controls = request.controls.unwrap_or_default();
-    let (normalized_controls, dropped_controls) = if requested_controls.is_empty()
+    let controls = if requested_controls.is_empty()
         && let Some(preset) = resolved_preset.as_ref()
     {
-        domain::effect::normalize_control_values(&metadata, &preset.controls)
+        preset.controls.clone()
     } else {
-        let mut owned = HashMap::with_capacity(requested_controls.len());
-        for (name, value) in requested_controls {
-            let projected = match value.to_effect_wire() {
-                Ok(value) => value,
-                Err(error) => {
-                    return DomainError::validation_field(
-                        format!("controls.{name}"),
-                        error.to_string(),
-                    )
-                    .into_response();
-                }
-            };
-            owned.insert(name, projected);
-        }
-        domain::effect::normalize_control_values(&metadata, &owned)
+        requested_controls.into_iter().collect()
     };
-    if !dropped_controls.is_empty() {
-        return DomainError::validation_details(
-            "one or more control values were rejected",
-            serde_json::json!({ "rejected": dropped_controls }),
-        )
-        .into_response();
-    }
-    let control_count = normalized_controls.len();
+    let control_count = controls.len();
 
     // Commit before waking output. A wake failure rides in the 200 because
     // the scene mutation is already real.
@@ -354,7 +333,7 @@ pub async fn apply_effect(
         &state.domains.effects,
         domain::effect::ApplyEffect {
             effect: metadata.clone(),
-            controls: normalized_controls,
+            controls,
             preset_id: resolved_preset.as_ref().map(|preset| preset.id),
             target_zone: request.zone,
             expected_revision,
@@ -608,14 +587,21 @@ pub(crate) fn normalize_control_payload(
     let mut rejected = Vec::new();
 
     for (name, value) in raw_controls {
-        let Some(parsed) = json_to_control_value(value) else {
-            rejected.push(format!("{name} (unsupported JSON shape)"));
-            continue;
-        };
-
-        let result = metadata.control_by_id(name).map_or_else(
-            || Ok(parsed.clone()),
-            |control| control.validate_value(&parsed),
+        let definition = metadata.control_by_id(name);
+        let result: Result<ControlValue, String> = definition.map_or_else(
+            || {
+                let parsed =
+                    ControlValue::try_from_effect_json(value).map_err(|error| error.to_string())?;
+                parsed
+                    .try_to_effect_json()
+                    .map_err(|error| error.to_string())?;
+                Ok(parsed)
+            },
+            |control| {
+                control
+                    .admit_effect_json(value)
+                    .map_err(|error| error.to_string())
+            },
         );
         match result {
             Ok(control_value) => {
@@ -626,6 +612,105 @@ pub(crate) fn normalize_control_payload(
     }
 
     (normalized, rejected)
+}
+
+#[cfg(test)]
+mod control_admission_tests {
+    use std::collections::HashMap;
+
+    use hypercolor_types::control::ControlValue;
+    use hypercolor_types::effect::{
+        ControlDefinition, ControlKind, ControlType, EffectCategory, EffectId, EffectMetadata,
+        EffectSource,
+    };
+
+    fn metadata() -> EffectMetadata {
+        EffectMetadata {
+            id: EffectId::new(uuid::Uuid::now_v7()),
+            name: "admission fixture".to_owned(),
+            author: "test".to_owned(),
+            version: "1".to_owned(),
+            description: String::new(),
+            category: EffectCategory::Ambient,
+            tags: Vec::new(),
+            controls: vec![ControlDefinition {
+                id: "accent".to_owned(),
+                name: "Accent".to_owned(),
+                kind: ControlKind::Color,
+                control_type: ControlType::ColorPicker,
+                default_value: ControlValue::linear_color([1.0, 1.0, 1.0, 1.0]),
+                min: None,
+                max: None,
+                step: None,
+                labels: Vec::new(),
+                group: None,
+                tooltip: None,
+                aspect_lock: None,
+                preview_source: None,
+                binding: None,
+            }],
+            presets: Vec::new(),
+            audio_reactive: false,
+            screen_reactive: false,
+            input_reactive: false,
+            source: EffectSource::Native {
+                path: "fixture".into(),
+            },
+            license: None,
+        }
+    }
+
+    #[test]
+    fn raw_admission_uses_color_schema_but_keeps_unknown_arrays_strict() {
+        let raw = serde_json::json!({
+            "accent": [0.125, 0.25, 0.5, 1.0],
+            "unknown": [0.125, 0.25, 0.5, 1.0]
+        });
+        let (admitted, rejected) = super::normalize_control_payload(
+            &metadata(),
+            raw.as_object().expect("fixture should be an object"),
+        );
+
+        assert_eq!(
+            admitted.get("accent"),
+            Some(&ControlValue::linear_color([0.125, 0.25, 0.5, 1.0]))
+        );
+        assert_eq!(rejected.len(), 1);
+        assert!(rejected[0].starts_with("unknown ("));
+    }
+
+    #[test]
+    fn typed_admission_rejects_every_non_effect_variant_on_unknown_keys() {
+        let rejected_values = [
+            serde_json::json!({"kind": "null"}),
+            serde_json::json!({"kind": "secret_ref", "value": "token"}),
+            serde_json::json!({"kind": "ip", "value": "127.0.0.1"}),
+            serde_json::json!({"kind": "mac", "value": "01:23:45:67:89:ab"}),
+            serde_json::json!({"kind": "duration", "value": 250}),
+            serde_json::json!({"kind": "color_rgb", "value": {"r": 1, "g": 2, "b": 3}}),
+            serde_json::json!({"kind": "color_rgba", "value": {"r": 1, "g": 2, "b": 3, "a": 4}}),
+            serde_json::json!({"kind": "flags", "value": ["one"]}),
+            serde_json::json!({"kind": "list", "value": [{"kind": "bool", "value": true}]}),
+            serde_json::json!({"kind": "map", "value": {"one": {"kind": "bool", "value": true}}}),
+            serde_json::json!({"kind": "unknown"}),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, value)| {
+            (
+                format!("unknown_{index}"),
+                serde_json::from_value::<ControlValue>(value)
+                    .expect("fixture should decode canonically"),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+
+        let (admitted, rejected) =
+            crate::domain::effect::normalize_control_values(&metadata(), &rejected_values);
+
+        assert!(admitted.is_empty());
+        assert_eq!(rejected.len(), rejected_values.len());
+    }
 }
 
 fn log_effect_apply_completion(

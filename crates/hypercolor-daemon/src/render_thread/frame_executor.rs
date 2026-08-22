@@ -77,7 +77,6 @@ pub(crate) async fn service_scene_transactions(
                     height,
                 } = prepared;
                 let completion = activation.clone();
-                let mut reconcile_error = None;
                 let publication = state
                     .scene_manager
                     .publish_layout_activation(
@@ -87,6 +86,12 @@ pub(crate) async fn service_scene_transactions(
                         active_scene_id,
                         source_active_render_groups_revision,
                         |spatial_engine| {
+                            render
+                                .render_group_runtime
+                                .commit_reconcile(prepared_groups)
+                                .map_err(|error| LayoutTransactionRejection::PreparationFailed {
+                                    message: error.to_string(),
+                                })?;
                             if let Some(prepared_resize) = prepared_resize {
                                 render.commit_canvas_resize(prepared_resize);
                                 state.canvas_dims.set(width, height);
@@ -98,21 +103,11 @@ pub(crate) async fn service_scene_transactions(
                             render
                                 .sparkleflinger
                                 .apply_projected_scene_resources(prepared_projected_scene);
-                            if let Err(error) = render
-                                .render_group_runtime
-                                .commit_reconcile(prepared_groups)
-                            {
-                                reconcile_error = Some(error.to_string());
-                            }
                             scene.render_state.replace_spatial_engine(spatial_engine);
+                            Ok(())
                         },
                     )
                     .await;
-                let publication = publication.and_then(|()| {
-                    reconcile_error.map_or(Ok(()), |message| {
-                        Err(LayoutTransactionRejection::PreparationFailed { message })
-                    })
-                });
                 completion.complete(publication);
             }
         }

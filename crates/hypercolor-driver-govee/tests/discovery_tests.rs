@@ -18,9 +18,10 @@ use hypercolor_driver_govee::{
     resolve_govee_probe_devices_from_sources,
 };
 use hypercolor_types::config::DriverConfigEntry;
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::controls::{
     ApplyImpact, ControlAccess, ControlChange, ControlPersistence, ControlSurfaceEvent,
-    ControlSurfaceScope, ControlValue, ControlValueMap,
+    ControlSurfaceScope, ControlValueMap,
 };
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
@@ -303,14 +304,16 @@ fn govee_driver_control_surface_exposes_config_fields() {
     );
     assert_eq!(
         surface.values["known_ips"],
-        ControlValue::List(vec![ControlValue::IpAddress("10.0.0.9".to_owned())])
+        ControlValue::List(vec![
+            ControlValue::ip("10.0.0.9").expect("fixture IP should be valid")
+        ])
     );
     assert_eq!(
         surface.values["power_off_on_disconnect"],
         ControlValue::Bool(true)
     );
-    assert_eq!(surface.values["lan_state_fps"], ControlValue::Integer(7));
-    assert_eq!(surface.values["razer_fps"], ControlValue::Integer(25));
+    assert_eq!(surface.values["lan_state_fps"], ControlValue::Int(7));
+    assert_eq!(surface.values["razer_fps"], ControlValue::Int(25));
 
     let changed = govee_driver_control_surface(&GoveeConfig {
         razer_fps: 26,
@@ -340,7 +343,7 @@ async fn govee_apply_persists_values_without_running_host_impacts() {
         ValidatedControlChanges {
             changes: vec![ControlChange {
                 field_id: "lan_state_fps".to_owned(),
-                value: ControlValue::Integer(8),
+                value: ControlValue::Int(8),
             }],
             impacts: vec![ApplyImpact::BackendRebind, ApplyImpact::DiscoveryRescan],
         },
@@ -349,10 +352,10 @@ async fn govee_apply_persists_values_without_running_host_impacts() {
     .expect("govee control apply should persist values");
 
     assert_eq!(response.surface_id, "driver:govee");
-    assert_eq!(response.values["lan_state_fps"], ControlValue::Integer(8));
+    assert_eq!(response.values["lan_state_fps"], ControlValue::Int(8));
     assert_eq!(
         host.saved_driver_values("govee")["lan_state_fps"],
-        ControlValue::Integer(8)
+        ControlValue::Int(8)
     );
     assert_eq!(host.rebinds.load(Ordering::Relaxed), 0);
     assert_eq!(host.rescans.load(Ordering::Relaxed), 0);
@@ -396,19 +399,19 @@ fn govee_device_control_surface_exposes_lan_metadata() {
     );
     assert_eq!(
         surface.values["ip"],
-        ControlValue::IpAddress("10.0.0.5".to_owned())
+        ControlValue::ip("10.0.0.5").expect("fixture IP should be valid")
     );
     assert_eq!(
         surface.values["sku"],
-        ControlValue::String("H619A".to_owned())
+        ControlValue::Text("H619A".to_owned())
     );
     assert_eq!(
         surface.values["mac"],
-        ControlValue::MacAddress("001122334455".to_owned())
+        ControlValue::mac("001122334455").expect("fixture MAC should be valid")
     );
     assert_eq!(surface.values["razer_streaming"], ControlValue::Bool(true));
-    assert_eq!(surface.values["led_count"], ControlValue::Integer(1));
-    assert_eq!(surface.values["max_fps"], ControlValue::Integer(10));
+    assert_eq!(surface.values["led_count"], ControlValue::Int(1));
+    assert_eq!(surface.values["max_fps"], ControlValue::Int(10));
 }
 
 #[test]
@@ -433,7 +436,7 @@ fn govee_device_control_surface_exposes_cloud_metadata() {
 
     assert_eq!(
         surface.values["cloud_device_id"],
-        ControlValue::String("AA:BB:CC:DD:EE:FF".to_owned())
+        ControlValue::Text("AA:BB:CC:DD:EE:FF".to_owned())
     );
     assert_eq!(
         surface.values["cloud_controllable"],
@@ -446,8 +449,8 @@ fn govee_device_control_surface_exposes_cloud_metadata() {
     assert_eq!(
         surface.values["cloud_support_cmds"],
         ControlValue::List(vec![
-            ControlValue::String("turn".to_owned()),
-            ControlValue::String("brightness".to_owned()),
+            ControlValue::Text("turn".to_owned()),
+            ControlValue::Text("brightness".to_owned()),
         ])
     );
 }

@@ -9,8 +9,8 @@ use leptos_router::path;
 
 use hypercolor_leptos_ext::events::Input;
 use hypercolor_leptos_ext::prelude::now_ms;
-use hypercolor_types::control::ControlValue as CanonicalControlValue;
-use hypercolor_types::effect::{ControlDefinition, ControlValue};
+use hypercolor_types::control::ControlValue;
+use hypercolor_types::effect::ControlDefinition;
 use hypercolor_types::event::LayerHealth;
 use hypercolor_types::scene::{SceneKind, SceneMutationMode};
 use hypercolor_types::sensor::SystemSnapshot;
@@ -163,6 +163,8 @@ pub struct EffectsContext {
     pub refresh_effects: Callback<()>,
     pub active_effect_id: ReadSignal<Option<String>>,
     pub set_active_effect_id: WriteSignal<Option<String>>,
+    pub active_effect_target: ReadSignal<Option<api::EffectLayerTarget>>,
+    pub set_active_effect_target: WriteSignal<Option<api::EffectLayerTarget>>,
     pub active_effect_name: ReadSignal<Option<String>>,
     pub set_active_effect_name: WriteSignal<Option<String>>,
     pub active_effect_category: ReadSignal<String>,
@@ -199,6 +201,7 @@ pub struct EffectsContext {
     /// change. Cleared for an effect when `apply_effect(id)` is called,
     /// so switching away and coming back re-triggers the restore.
     pub restored_effects: StoredValue<HashSet<String>>,
+    pub apply_generation: StoredValue<u64>,
     /// The zone a quick-apply targets. Studio writes it from the selected
     /// zone; every quick-apply surface reads it so applies land in the
     /// zone the user is composing (Wave B3).
@@ -228,6 +231,20 @@ pub struct DisplaysContext {
     pub displays_resource: LocalResource<Result<Vec<api::DisplaySummary>, String>>,
 }
 
+async fn apply_owned_target<Apply, ApplyFuture, CurrentGeneration>(
+    request_generation: u64,
+    apply: Apply,
+    current_generation: CurrentGeneration,
+) -> Result<Option<api::EffectLayerTarget>, String>
+where
+    Apply: FnOnce() -> ApplyFuture,
+    ApplyFuture: std::future::Future<Output = Result<api::EffectLayerTarget, String>>,
+    CurrentGeneration: FnOnce() -> u64,
+{
+    let target = apply().await?;
+    Ok((current_generation() == request_generation).then_some(target))
+}
+
 impl EffectsContext {
     fn effect_summary(&self, id: &str) -> Option<api::EffectSummary> {
         self.effects_index.with_untracked(|effects| {
@@ -253,6 +270,16 @@ impl EffectsContext {
 
     pub fn refresh_active_scene(&self) {
         self.scene_refresh.run(());
+    }
+
+    pub fn adopt_replacement_target(
+        &self,
+        observed: &api::EffectLayerTarget,
+        replacement: api::EffectLayerTarget,
+    ) {
+        if self.active_effect_target.get_untracked().as_ref() == Some(observed) {
+            self.set_active_effect_target.set(Some(replacement));
+        }
     }
 
     /// Apply an effect by ID — sets local state + calls API.
@@ -283,21 +310,8 @@ impl EffectsContext {
                     .and_then(|prefs| prefs.preset_id.as_deref())
                     .and_then(|preset_id| preset_id.parse().ok()),
                 controls: stored_prefs.as_ref().and_then(|prefs| {
-                    (!prefs.control_values.is_empty()).then(|| {
-                        prefs
-                            .control_values
-                            .clone()
-                            .into_iter()
-                            .map(|(name, value)| {
-                                (
-                                    name,
-                                    CanonicalControlValue::try_from(value).expect(
-                                        "stored effect controls must satisfy canonical invariants",
-                                    ),
-                                )
-                            })
-                            .collect()
-                    })
+                    (!prefs.control_values.is_empty())
+                        .then(|| prefs.control_values.clone().into_iter().collect())
                 }),
                 zone: target_zone_id.as_deref().and_then(|zone_id| {
                     uuid::Uuid::parse_str(zone_id)
@@ -321,11 +335,6 @@ impl EffectsContext {
             return;
         }
 
-        // Default-zone apply: skip if it is already the active effect.
-        if self.active_effect_id.get().as_deref() == Some(&id) {
-            return;
-        }
-
         self.restored_effects.update_value(|set| {
             if stored_prefs.is_some() {
                 set.insert(id.clone());
@@ -333,10 +342,13 @@ impl EffectsContext {
                 set.remove(&id);
             }
         });
+        let generation = self.apply_generation.get_value().saturating_add(1);
+        self.apply_generation.set_value(generation);
         self.set_last_effect_error.set(None);
 
         let previous = capture_active_effect_state(self);
         let selected_effect = self.effect_summary(&id);
+        self.set_active_effect_target.set(None);
         self.set_active_effect_id.set(Some(id.clone()));
         self.set_active_effect_name
             .set(selected_effect.as_ref().map(|effect| effect.name.clone()));
@@ -361,11 +373,23 @@ impl EffectsContext {
 
         let ctx = *self;
         leptos::task::spawn_local(async move {
-            if api::apply_effect(&id, body.as_ref()).await.is_ok() {
-                ctx.refresh_active_effect();
-            } else {
-                restore_active_effect_state(&ctx, previous);
-                toasts::toast_error("Couldn't apply the effect");
+            match apply_owned_target(
+                generation,
+                || async { api::apply_effect(&id, body.as_ref()).await },
+                || ctx.apply_generation.get_value(),
+            )
+            .await
+            {
+                Ok(Some(target)) => {
+                    ctx.set_active_effect_target.set(Some(target));
+                    ctx.refresh_active_effect();
+                }
+                Ok(None) => ctx.refresh_active_effect(),
+                Err(_) if ctx.apply_generation.get_value() == generation => {
+                    restore_active_effect_state(&ctx, previous);
+                    toasts::toast_error("Couldn't apply the effect");
+                }
+                Err(_) => ctx.refresh_active_effect(),
             }
         });
     }
@@ -675,6 +699,7 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
     let active_resource = api::daemon_resource(api::fetch_primary_effect_view);
     let favorites_resource = api::daemon_resource(api::fetch_favorites);
     let (active_effect_id, set_active_effect_id) = signal(None::<String>);
+    let (active_effect_target, set_active_effect_target) = signal(None::<api::EffectLayerTarget>);
     let (active_effect_name, set_active_effect_name) = signal(None::<String>);
     let (active_effect_category, set_active_effect_category) = signal(String::new());
     let (active_controls, set_active_controls) = signal(Vec::<ControlDefinition>::new());
@@ -703,6 +728,8 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
         refresh_effects: Callback::new(move |()| effects_resource.refetch()),
         active_effect_id,
         set_active_effect_id,
+        active_effect_target,
+        set_active_effect_target,
         active_effect_name,
         set_active_effect_name,
         active_effect_category,
@@ -727,6 +754,7 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
         set_favorite_ids,
         preferences: preferences_store,
         restored_effects: StoredValue::new(HashSet::new()),
+        apply_generation: StoredValue::new(0),
         apply_target: RwSignal::new(ApplyTarget::Primary),
         scene_refresh: zones_ctx.refresh,
         zone_effects,
@@ -1064,5 +1092,86 @@ fn NotFoundPage() -> impl IntoView {
                 "Back to the dashboard"
             </a>
         </div>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::rc::Rc;
+    use std::task::{Context, Poll, Waker};
+
+    use super::apply_owned_target;
+    use crate::api::EffectLayerTarget;
+
+    struct SuspendedApply {
+        generation: Rc<Cell<u64>>,
+        target: Option<EffectLayerTarget>,
+        suspended: bool,
+    }
+
+    impl Future for SuspendedApply {
+        type Output = Result<EffectLayerTarget, String>;
+
+        fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+            if !self.suspended {
+                self.suspended = true;
+                self.generation.set(2);
+                cx.waker().wake_by_ref();
+                return Poll::Pending;
+            }
+            Poll::Ready(Ok(self
+                .target
+                .take()
+                .expect("apply target is returned once")))
+        }
+    }
+
+    fn target(layer_id: &str) -> EffectLayerTarget {
+        EffectLayerTarget {
+            effect_id: "00000000-0000-0000-0000-00000000000a".to_owned(),
+            zone_id: "00000000-0000-0000-0000-000000000002".to_owned(),
+            layer_id: layer_id.to_owned(),
+        }
+    }
+
+    #[test]
+    fn suspended_direct_same_effect_apply_cannot_overwrite_newer_layer_ownership() {
+        let generation = Rc::new(Cell::new(1_u64));
+        let old_layer = "00000000-0000-0000-0000-000000000003";
+        let new_layer = "00000000-0000-0000-0000-000000000004";
+        let apply_generation = Rc::clone(&generation);
+        let current_generation = Rc::clone(&generation);
+        let old = apply_owned_target(
+            1,
+            move || SuspendedApply {
+                generation: apply_generation,
+                target: Some(target(old_layer)),
+                suspended: false,
+            },
+            move || current_generation.get(),
+        );
+        let mut old = std::pin::pin!(old);
+        let waker = Waker::noop();
+        let mut context = Context::from_waker(waker);
+
+        assert!(matches!(old.as_mut().poll(&mut context), Poll::Pending));
+        let current_generation = Rc::clone(&generation);
+        let new = apply_owned_target(
+            2,
+            || std::future::ready(Ok(target(new_layer))),
+            move || current_generation.get(),
+        );
+        let mut new = std::pin::pin!(new);
+        let Poll::Ready(Ok(Some(adopted))) = new.as_mut().poll(&mut context) else {
+            panic!("the newer same-effect apply should own its returned layer");
+        };
+        assert_eq!(adopted.layer_id, new_layer);
+
+        let Poll::Ready(Ok(None)) = old.as_mut().poll(&mut context) else {
+            panic!("the suspended older response must lose generation ownership");
+        };
     }
 }

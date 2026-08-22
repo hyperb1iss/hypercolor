@@ -6,32 +6,42 @@ from typing import TYPE_CHECKING, Any, TypeVar
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
+from ..models.b_tree_map_additional_property_type_17_kind import (
+    BTreeMapAdditionalPropertyType17Kind,
+)
+
 if TYPE_CHECKING:
-    from ..models.viewport_rect import ViewportRect
+    from ..models.b_tree_map_additional_property_type_17_value import (
+        BTreeMapAdditionalPropertyType17Value,
+    )
 
 
-T = TypeVar("T", bound="EffectControlValueType7")
+T = TypeVar("T", bound="BTreeMapAdditionalPropertyType17")
 
 
 @_attrs_define
-class EffectControlValueType7:
-    """Normalized rectangular viewport.
-
+class BTreeMapAdditionalPropertyType17:
+    """
     Attributes:
-        rect (ViewportRect): Normalized viewport rectangle in `[0.0, 1.0]` source space.
+        kind (BTreeMapAdditionalPropertyType17Kind):
+        value (BTreeMapAdditionalPropertyType17Value):
     """
 
-    rect: ViewportRect
+    kind: BTreeMapAdditionalPropertyType17Kind
+    value: BTreeMapAdditionalPropertyType17Value
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        rect = self.rect.to_dict()
+        kind = self.kind.value
+
+        value = self.value.to_dict()
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "rect": rect,
+                "kind": kind,
+                "value": value,
             }
         )
 
@@ -39,17 +49,22 @@ class EffectControlValueType7:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.viewport_rect import ViewportRect
-
-        d = dict(src_dict)
-        rect = ViewportRect.from_dict(d.pop("rect"))
-
-        effect_control_value_type_7 = cls(
-            rect=rect,
+        from ..models.b_tree_map_additional_property_type_17_value import (
+            BTreeMapAdditionalPropertyType17Value,
         )
 
-        effect_control_value_type_7.additional_properties = d
-        return effect_control_value_type_7
+        d = dict(src_dict)
+        kind = BTreeMapAdditionalPropertyType17Kind(d.pop("kind"))
+
+        value = BTreeMapAdditionalPropertyType17Value.from_dict(d.pop("value"))
+
+        b_tree_map_additional_property_type_17 = cls(
+            kind=kind,
+            value=value,
+        )
+
+        b_tree_map_additional_property_type_17.additional_properties = d
+        return b_tree_map_additional_property_type_17
 
     @property
     def additional_keys(self) -> list[str]:

@@ -13,7 +13,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use hypercolor_types::effect::{ControlDefinition, ControlValue};
+use hypercolor_types::control::ControlValue;
+use hypercolor_types::effect::ControlDefinition;
 use hypercolor_types::layer::LayerSource;
 use hypercolor_types::scene::ZoneRole;
 use leptos::prelude::*;
@@ -256,9 +257,13 @@ fn ZoneControlsPanel(
 
     // The layer id came from the live document. Replacement retires it, so
     // a stale control patch cannot land on a newer effect.
+    let session_target = Signal::stored(Some(format!("{zone_id}:{layer_id}")));
     let patch: ControlPatchFn = Arc::new({
         let zone_id = zone_id.clone();
-        move |payload: serde_json::Value, _version: Option<u64>| -> ControlPatchFuture {
+        move |_target: String,
+              payload: crate::optimistic_controls::ControlValueMap,
+              _version: Option<u64>|
+              -> ControlPatchFuture {
             let zone_id = zone_id.clone();
             let layer_id = layer_id.clone();
             Box::pin(async move {
@@ -268,6 +273,7 @@ fn ZoneControlsPanel(
         }
     });
     let session = use_control_patch_session(ControlPatchConfig {
+        target: session_target,
         defs,
         set_values,
         initial_version: None,
@@ -276,6 +282,8 @@ fn ZoneControlsPanel(
         on_error: Callback::new(|error: String| {
             toasts::toast_error(&format!("Zone controls failed: {error}"));
         }),
+        recover: zones_ctx.refresh,
+        on_committed: None,
         flush_guard: None,
     });
 

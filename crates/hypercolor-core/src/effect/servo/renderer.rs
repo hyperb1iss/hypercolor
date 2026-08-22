@@ -22,9 +22,9 @@ use super::ServoSessionHandle;
 use super::SessionConfig;
 use super::worker_client::{ServoFramePayload, ServoProducerRole};
 use crate::effect::lightscript::LightscriptRuntime;
-use crate::effect::traits::{ControlError, EffectRenderer, FrameInput, prepare_target_canvas};
 #[cfg(feature = "servo-gpu-import")]
 use crate::effect::traits::{EffectRenderOutput, ImportedEffectFrame};
+use crate::effect::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
 #[cfg(test)]
 use crate::engine::FpsTier;
 use frame_queue::{AnimationCadence, QueuedFrameInput, animation_cadence};
@@ -246,7 +246,7 @@ impl EffectRenderer for ServoRenderer {
         Ok(())
     }
 
-    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> Result<(), ControlError> {
+    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> anyhow::Result<()> {
         for (control_id, value) in batch.changes {
             self.controls
                 .insert(control_id.as_str().to_owned(), value.clone());

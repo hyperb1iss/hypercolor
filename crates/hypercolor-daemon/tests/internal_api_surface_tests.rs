@@ -770,25 +770,27 @@ fn effect_mutations_require_generation_qualified_admission() {
     };
     let effect_domain = source("domain/effect.rs");
     assert!(effect_domain.contains("pub effect: ResolvedEffect"));
-    assert!(effect_domain.contains("ctx.admit(&command.effect).await?"));
+    assert!(effect_domain.contains(".admit_resolved_controls(command.effect, &command.controls)"));
+    assert!(effect_domain.contains("pub(crate) struct AdmittedEffectControls"));
+    assert!(!effect_domain.contains("already normalized against the effect's schema"));
     assert!(!effect_domain.contains("pub async fn admit_generation"));
 
     let display_domain = source("domain/display.rs");
     assert!(display_domain.contains("pub effect: ResolvedEffect"));
-    assert!(display_domain.contains("ctx.admit(&command.effect).await?"));
+    assert!(display_domain.contains("admit_display_face_controls"));
+    assert!(display_domain.contains("admit_current_display_face_controls"));
 
     let effect_api = source("api/effects.rs");
     assert!(effect_api.contains("resolve_for_mutation(&id)"));
     let display_api = source("api/displays.rs");
     assert!(display_api.contains("resolve_for_mutation(&body.effect_id)"));
     assert!(
-        display_api
-            .contains("apply_display_preference_overlay_admitted(state.as_ref(), device_id)")
+        display_api.contains("apply_display_preference_overlay_checked(state.as_ref(), device_id)")
     );
     let mcp_tools = source("mcp/tools/mod.rs");
     assert!(mcp_tools.contains("all_for_mutation()"));
     let mcp_displays = source("mcp/tools/displays.rs");
-    assert!(mcp_displays.contains("apply_display_preference_overlay_admitted(state, device_id)"));
+    assert!(mcp_displays.contains("apply_display_preference_overlay_checked(state, device_id)"));
 
     let layer_domain = source("domain/layer.rs");
     assert!(layer_domain.contains("admit_layer_sources"));
@@ -801,14 +803,14 @@ fn effect_mutations_require_generation_qualified_admission() {
     assert!(scene_api.contains("insert_layer(&state.domains.effects"));
     assert!(!scene_api.contains("insert_layer(&state.domains.scene"));
 
-    let admission = display_api
-        .find("let _effect_admission = state.domains.effects.admit_current().await;")
-        .expect("display overlay should acquire effect admission");
-    let preference = display_api[admission..]
+    let preference = display_api
         .find("state.display_preferences.read().await")
-        .expect("display overlay should read the admitted preference");
-    let scene_commit = display_api[admission..]
+        .expect("display overlay should read the preference");
+    let admission = display_api[preference..]
+        .find("admit_current_display_face_controls")
+        .expect("display overlay should admit preference controls");
+    let scene_commit = display_api[preference..]
         .find("domain::display::set_default_display_overlay")
         .expect("display overlay should commit under effect admission");
-    assert!(preference < scene_commit);
+    assert!(admission < scene_commit);
 }

@@ -9,16 +9,16 @@ use std::f32::consts::TAU;
 use std::path::PathBuf;
 
 use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, linear_to_srgb_u8};
-use hypercolor_types::control::{ControlDeltaBatch, ControlValue as CanonicalControlValue};
+use hypercolor_types::control::{ControlDeltaBatch, ControlValue};
 use hypercolor_types::effect::{
-    ControlDefinition, ControlValue, EffectCategory, EffectMetadata, EffectSource, PresetTemplate,
+    ControlDefinition, EffectCategory, EffectMetadata, EffectSource, PresetTemplate,
 };
 
 use super::common::{
     builtin_effect_id, color_control, dropdown_control, preset_with_desc, slider_control,
     toggle_control,
 };
-use crate::effect::traits::{ControlError, EffectRenderer, FrameInput, prepare_target_canvas};
+use crate::effect::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
 
 const LEAD_COLOR: [f32; 4] = [0.07, 1.00, 0.96, 1.0];
 const TRAIL_COLOR: [f32; 4] = [1.00, 0.12, 0.86, 1.0];
@@ -444,40 +444,36 @@ impl EffectRenderer for CalibrationRenderer {
         Ok(())
     }
 
-    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> Result<(), ControlError> {
+    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> anyhow::Result<()> {
         for (control_id, value) in batch.changes {
             match control_id.as_str() {
                 "pattern" => {
-                    if let CanonicalControlValue::Enum(choice)
-                    | CanonicalControlValue::Text(choice) = value
-                    {
+                    if let ControlValue::Enum(choice) | ControlValue::Text(choice) = value {
                         self.pattern = CalibrationPattern::from_str(choice);
                     }
                 }
                 "direction" => {
-                    if let CanonicalControlValue::Enum(choice)
-                    | CanonicalControlValue::Text(choice) = value
-                    {
+                    if let ControlValue::Enum(choice) | ControlValue::Text(choice) = value {
                         self.direction = CalibrationDirection::from_str(choice);
                     }
                 }
                 "primary_color" => {
-                    if let CanonicalControlValue::ColorLinear(color) = value {
+                    if let ControlValue::ColorLinear(color) = value {
                         self.primary_color = [color.r, color.g, color.b, color.a];
                     }
                 }
                 "secondary_color" => {
-                    if let CanonicalControlValue::ColorLinear(color) = value {
+                    if let ControlValue::ColorLinear(color) = value {
                         self.secondary_color = [color.r, color.g, color.b, color.a];
                     }
                 }
                 "accent_color" => {
-                    if let CanonicalControlValue::ColorLinear(color) = value {
+                    if let ControlValue::ColorLinear(color) = value {
                         self.accent_color = [color.r, color.g, color.b, color.a];
                     }
                 }
                 "background_color" => {
-                    if let CanonicalControlValue::ColorLinear(color) = value {
+                    if let ControlValue::ColorLinear(color) = value {
                         self.background_color = [color.r, color.g, color.b, color.a];
                     }
                 }
@@ -497,7 +493,7 @@ impl EffectRenderer for CalibrationRenderer {
                     }
                 }
                 "show_grid" => {
-                    if let CanonicalControlValue::Bool(show_grid) = value {
+                    if let ControlValue::Bool(show_grid) = value {
                         self.show_grid = *show_grid;
                     }
                 }
@@ -770,7 +766,7 @@ fn presets() -> Vec<PresetTemplate> {
                 ("speed", ControlValue::Float(18.0)),
                 ("size", ControlValue::Float(20.0)),
                 ("softness", ControlValue::Float(12.0)),
-                ("show_grid", ControlValue::Boolean(false)),
+                ("show_grid", ControlValue::Bool(false)),
             ],
         ),
         preset_with_desc(
@@ -782,7 +778,7 @@ fn presets() -> Vec<PresetTemplate> {
                 ("speed", ControlValue::Float(18.0)),
                 ("size", ControlValue::Float(20.0)),
                 ("softness", ControlValue::Float(12.0)),
-                ("show_grid", ControlValue::Boolean(false)),
+                ("show_grid", ControlValue::Bool(false)),
             ],
         ),
         preset_with_desc(
@@ -794,7 +790,7 @@ fn presets() -> Vec<PresetTemplate> {
                 ("speed", ControlValue::Float(16.0)),
                 ("size", ControlValue::Float(16.0)),
                 ("softness", ControlValue::Float(10.0)),
-                ("show_grid", ControlValue::Boolean(true)),
+                ("show_grid", ControlValue::Bool(true)),
                 ("grid_scale", ControlValue::Float(8.0)),
             ],
         ),
@@ -810,7 +806,7 @@ fn presets() -> Vec<PresetTemplate> {
                 ("speed", ControlValue::Float(22.0)),
                 ("size", ControlValue::Float(14.0)),
                 ("softness", ControlValue::Float(16.0)),
-                ("show_grid", ControlValue::Boolean(true)),
+                ("show_grid", ControlValue::Bool(true)),
                 ("grid_scale", ControlValue::Float(10.0)),
             ],
         ),
@@ -845,7 +841,7 @@ fn presets() -> Vec<PresetTemplate> {
                 ("speed", ControlValue::Float(16.0)),
                 ("size", ControlValue::Float(44.0)),
                 ("softness", ControlValue::Float(20.0)),
-                ("show_grid", ControlValue::Boolean(true)),
+                ("show_grid", ControlValue::Bool(true)),
                 ("grid_scale", ControlValue::Float(8.0)),
             ],
         ),
@@ -858,7 +854,7 @@ fn presets() -> Vec<PresetTemplate> {
                 ("speed", ControlValue::Float(16.0)),
                 ("size", ControlValue::Float(44.0)),
                 ("softness", ControlValue::Float(20.0)),
-                ("show_grid", ControlValue::Boolean(true)),
+                ("show_grid", ControlValue::Bool(true)),
                 ("grid_scale", ControlValue::Float(8.0)),
             ],
         ),

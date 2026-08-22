@@ -15,15 +15,14 @@ T = TypeVar("T", bound="BTreeMapAdditionalPropertyType8")
 
 @_attrs_define
 class BTreeMapAdditionalPropertyType8:
-    """IP address text.
-
+    """
     Attributes:
         kind (BTreeMapAdditionalPropertyType8Kind):
-        value (str): IP address text.
+        value (int):
     """
 
     kind: BTreeMapAdditionalPropertyType8Kind
-    value: str
+    value: int
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:

@@ -35,12 +35,12 @@ use hypercolor_types::api::scenes::{
 };
 use hypercolor_types::asset::AssetId;
 use hypercolor_types::config::MediaConfig;
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::device::DeviceId;
-use hypercolor_types::effect::{ControlBinding, ControlValue, EffectMetadata};
+use hypercolor_types::effect::{ControlBinding, EffectMetadata};
 use hypercolor_types::event::{
-    ChangeTrigger, EffectRef, EffectStopReason, EventControlValue, HypercolorEvent,
-    LayerStackChangeKind, SceneChangeReason, SceneLibraryChangeKind, SceneSettingsChangeKind,
-    Severity, ZoneChangeKind,
+    ChangeTrigger, EffectRef, EffectStopReason, HypercolorEvent, LayerStackChangeKind,
+    SceneChangeReason, SceneLibraryChangeKind, SceneSettingsChangeKind, Severity, ZoneChangeKind,
 };
 use hypercolor_types::layer::{LayerSource, SceneLayer, SceneLayerId};
 use hypercolor_types::library::PresetId;
@@ -579,7 +579,7 @@ impl SceneService {
         publish_renderer_state: F,
     ) -> Result<(), LayoutTransactionRejection>
     where
-        F: FnOnce(SpatialEngine),
+        F: FnOnce(SpatialEngine) -> Result<(), LayoutTransactionRejection>,
     {
         let mut manager = self.0.manager.write().await;
         let source_is_current = manager.active_scene_id().copied() == expected_active_scene_id
@@ -589,13 +589,13 @@ impl SceneService {
             return Err(LayoutTransactionRejection::Superseded);
         }
 
+        publish_renderer_state(candidate_spatial_engine.clone())?;
         manager.sync_primary_group_layout(candidate_spatial_engine.layout().as_ref());
         let ticket = self.0.commits.admit(Arc::clone(&self.0.event_bus));
         self.0
             .plan
             .store(Arc::new(manager.plan_snapshot(ticket.generation())));
-        spatial_engine.replace(candidate_spatial_engine.clone());
-        publish_renderer_state(candidate_spatial_engine);
+        spatial_engine.replace(candidate_spatial_engine);
         ticket.release(Vec::new());
         Ok(())
     }
@@ -1361,16 +1361,10 @@ impl SceneMutation {
                 if old_value == &new_value {
                     continue;
                 }
-                let (Some(old_value), Some(new_value)) = (
-                    event_control_value(old_value),
-                    event_control_value(&new_value),
-                ) else {
-                    continue;
-                };
                 self.events.push(HypercolorEvent::EffectControlChanged {
                     effect_id: effect_id.to_string(),
                     control_id,
-                    old_value,
+                    old_value: old_value.clone(),
                     new_value,
                     zone_id,
                     layer_id,
@@ -2272,7 +2266,7 @@ pub async fn snapshot_scene(
 /// [`DomainError::Conflict`] when a concurrent mutation lands first.
 pub async fn replace_scene(
     ctx: &SceneLibraryContext,
-    command: ReplaceScene,
+    mut command: ReplaceScene,
 ) -> Result<SceneWritten, DomainError> {
     if command.document.id.is_some_and(|id| id != command.scene_id) {
         return Err(DomainError::validation_field(
@@ -2287,9 +2281,9 @@ pub async fn replace_scene(
             command
                 .document
                 .zones
-                .iter()
-                .flat_map(|zone| zone.layers.iter())
-                .map(|layer| &layer.source),
+                .iter_mut()
+                .flat_map(|zone| zone.layers.iter_mut())
+                .map(|layer| &mut layer.source),
         )
         .await?;
 
@@ -2687,18 +2681,5 @@ pub fn zone_changed_event(scene_id: SceneId, zone: &Zone, kind: ZoneChangeKind) 
         zone_id: zone.id,
         role: zone.role,
         kind,
-    }
-}
-
-fn event_control_value(value: &ControlValue) -> Option<EventControlValue> {
-    match value {
-        ControlValue::Float(_) | ControlValue::Integer(_) => {
-            value.as_f32().map(EventControlValue::Number)
-        }
-        ControlValue::Boolean(value) => Some(EventControlValue::Boolean(*value)),
-        ControlValue::Enum(value) | ControlValue::Text(value) => {
-            Some(EventControlValue::String(value.clone()))
-        }
-        ControlValue::Color(_) | ControlValue::Rect(_) | ControlValue::Gradient(_) => None,
     }
 }

@@ -6,7 +6,8 @@ use std::sync::Arc;
 use bytes::Bytes;
 use hypercolor_types::api::effects::EffectSourceKind;
 pub use hypercolor_types::api::scene::{SceneDocument, ZoneResource};
-use hypercolor_types::effect::{ControlValue as ApiControlValue, EffectCategory};
+pub use hypercolor_types::control::ControlValue;
+use hypercolor_types::effect::EffectCategory;
 use hypercolor_types::layer::{LayerSource, SceneLayer};
 use hypercolor_types::library::PresetId;
 use hypercolor_types::scene::ZoneRole;
@@ -117,7 +118,7 @@ pub fn zone_effect_controls(zone: &ZoneResource) -> HashMap<String, ControlValue
     };
     controls
         .iter()
-        .map(|(name, value)| (name.clone(), ControlValue::from_api(value)))
+        .map(|(name, value)| (name.clone(), value.clone()))
         .collect()
 }
 
@@ -134,7 +135,7 @@ pub fn set_zone_effect_control(zone: &mut ZoneResource, id: &str, value: &Contro
     let LayerSource::Effect { controls, .. } = &mut layer.source else {
         return;
     };
-    controls.insert(id.to_owned(), value.to_api());
+    controls.insert(id.to_owned(), value.clone());
 }
 
 // ── Daemon State ────────────────────────────────────────────────────
@@ -225,68 +226,6 @@ impl<'de> Deserialize<'de> for PresetTemplate {
             description: wire.description,
             controls: wire.controls,
         })
-    }
-}
-
-/// A control parameter value.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum ControlValue {
-    Float(f32),
-    Integer(i32),
-    Boolean(bool),
-    Color([f32; 4]),
-    Text(String),
-}
-
-impl ControlValue {
-    fn from_api(value: &ApiControlValue) -> Self {
-        match value {
-            ApiControlValue::Float(value) => Self::Float(*value),
-            ApiControlValue::Integer(value) => Self::Integer(*value),
-            ApiControlValue::Boolean(value) => Self::Boolean(*value),
-            ApiControlValue::Color(value) => Self::Color(*value),
-            ApiControlValue::Enum(value) | ApiControlValue::Text(value) => {
-                Self::Text(value.clone())
-            }
-            ApiControlValue::Gradient(stops) => {
-                Self::Text(format!("{} gradient stops", stops.len()))
-            }
-            ApiControlValue::Rect(rect) => Self::Text(format!(
-                "{:.2},{:.2} {:.2}×{:.2}",
-                rect.x, rect.y, rect.width, rect.height,
-            )),
-        }
-    }
-
-    fn to_api(&self) -> ApiControlValue {
-        match self {
-            Self::Float(value) => ApiControlValue::Float(*value),
-            Self::Integer(value) => ApiControlValue::Integer(*value),
-            Self::Boolean(value) => ApiControlValue::Boolean(*value),
-            Self::Color(value) => ApiControlValue::Color(*value),
-            Self::Text(value) => ApiControlValue::Text(value.clone()),
-        }
-    }
-
-    /// Extract as f32, if numeric.
-    #[must_use]
-    pub fn as_f32(&self) -> Option<f32> {
-        match self {
-            Self::Float(v) => Some(*v),
-            #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
-            Self::Integer(v) => Some(*v as f32),
-            _ => None,
-        }
-    }
-
-    /// Extract as bool, if boolean.
-    #[must_use]
-    pub fn as_bool(&self) -> Option<bool> {
-        match self {
-            Self::Boolean(v) => Some(*v),
-            _ => None,
-        }
     }
 }
 

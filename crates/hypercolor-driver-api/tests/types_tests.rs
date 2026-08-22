@@ -1,9 +1,11 @@
+use std::collections::BTreeMap;
+use std::net::IpAddr;
 use std::sync::LazyLock;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use hypercolor_driver_api::{
-    ControlApplyTarget, DeviceAuthState, DiscoveryRequest, DriverControlProvider,
+    ControlApplyTarget, DeviceAuthState, DiscoveryRequest, DriverConfigView, DriverControlProvider,
     DriverCredentialStore, DriverDescriptor, DriverDiscoveryState, DriverHost, DriverModule,
     DriverPresentationProvider, DriverProtocolCatalog, DriverRuntimeActions, OutputCadence,
     PairDeviceRequest, PairDeviceStatus, PairingDescriptor, PairingFieldDescriptor,
@@ -11,6 +13,7 @@ use hypercolor_driver_api::{
 };
 use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior};
 use hypercolor_types::config::DriverConfigEntry;
+use hypercolor_types::control::{ControlValue, IpText, SecretRef};
 use hypercolor_types::controls::{
     ApplyControlChangesResponse, ControlActionResult, ControlActionStatus, ControlChange,
     ControlSurfaceDocument, ControlSurfaceScope, ControlValueMap,
@@ -21,6 +24,126 @@ use hypercolor_types::device::{
     DriverModuleKind, DriverPresentation, DriverProtocolDescriptor, DriverTransportKind,
     FingerprintNamespace, SegmentInfo,
 };
+use serde::Deserialize;
+
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+struct CanonicalDriverConfig {
+    protocol: String,
+    hosts: Vec<IpAddr>,
+    credential: String,
+    duration_ms: u64,
+    color: [u8; 4],
+    nested: BTreeMap<String, bool>,
+}
+
+#[test]
+fn driver_config_view_projects_tagged_control_values_without_flattening_storage() {
+    let controls = BTreeMap::from([
+        ("protocol".to_owned(), ControlValue::Enum("ddp".to_owned())),
+        (
+            "hosts".to_owned(),
+            ControlValue::List(vec![ControlValue::Ip(
+                IpText::new("::FFFF:1.2.3.4").expect("valid fixture IP"),
+            )]),
+        ),
+        (
+            "credential".to_owned(),
+            ControlValue::SecretRef(SecretRef::new("credential:wled:token")),
+        ),
+        (
+            "duration_ms".to_owned(),
+            ControlValue::Duration(Duration::from_millis(1_250)),
+        ),
+        (
+            "color".to_owned(),
+            ControlValue::ColorRgba(hypercolor_types::canvas::Rgba::new(1, 2, 3, 4)),
+        ),
+        (
+            "nested".to_owned(),
+            ControlValue::Map(BTreeMap::from([(
+                "enabled".to_owned(),
+                ControlValue::Bool(true),
+            )])),
+        ),
+    ]);
+    let entry = DriverConfigEntry::enabled(
+        controls
+            .iter()
+            .map(|(key, value)| {
+                (
+                    key.clone(),
+                    serde_json::to_value(value).expect("canonical value should serialize"),
+                )
+            })
+            .collect(),
+    );
+
+    let parsed = DriverConfigView {
+        driver_id: "fixture",
+        entry: &entry,
+    }
+    .parse_settings::<CanonicalDriverConfig>()
+    .expect("tagged controls should project into private driver config");
+
+    assert_eq!(parsed.protocol, "ddp");
+    assert_eq!(
+        parsed.hosts,
+        vec!["::ffff:1.2.3.4".parse::<IpAddr>().expect("IP")]
+    );
+    assert_eq!(parsed.credential, "credential:wled:token");
+    assert_eq!(parsed.duration_ms, 1_250);
+    assert_eq!(parsed.color, [1, 2, 3, 4]);
+    assert_eq!(
+        parsed.nested,
+        BTreeMap::from([("enabled".to_owned(), true)])
+    );
+
+    let roundtrip = entry
+        .settings
+        .iter()
+        .map(|(key, value)| {
+            (
+                key.clone(),
+                serde_json::from_value(value.clone()).expect("tagged control should deserialize"),
+            )
+        })
+        .collect::<BTreeMap<_, ControlValue>>();
+    assert_eq!(roundtrip, controls);
+}
+
+#[derive(Debug, Deserialize, PartialEq)]
+struct RawDriverConfig {
+    hosts: Vec<IpAddr>,
+    descriptor: serde_json::Value,
+}
+
+#[test]
+fn driver_config_view_keeps_raw_arrays_and_untagged_objects() {
+    let descriptor = serde_json::json!({ "kind": "network", "name": "fixture" });
+    let entry = DriverConfigEntry::enabled(BTreeMap::from([
+        (
+            "hosts".to_owned(),
+            serde_json::json!(["192.168.1.50", "2001:db8::1"]),
+        ),
+        ("descriptor".to_owned(), descriptor.clone()),
+    ]));
+
+    let parsed = DriverConfigView {
+        driver_id: "fixture",
+        entry: &entry,
+    }
+    .parse_settings::<RawDriverConfig>()
+    .expect("raw driver config should bypass canonical projection");
+
+    assert_eq!(
+        parsed.hosts,
+        vec![
+            "192.168.1.50".parse::<IpAddr>().expect("IPv4"),
+            "2001:db8::1".parse::<IpAddr>().expect("IPv6"),
+        ]
+    );
+    assert_eq!(parsed.descriptor, descriptor);
+}
 
 #[test]
 fn output_cadence_tracks_optional_maximum_frame_silence() {

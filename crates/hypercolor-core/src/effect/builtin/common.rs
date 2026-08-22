@@ -5,9 +5,9 @@
 //! module-level registrar uses [`builtin_effect_id`] to derive stable
 //! UUIDs from the effect's stem name.
 
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::effect::{
-    ControlDefinition, ControlKind, ControlType, ControlValue, EffectId, PresetTemplate,
-    PreviewSource,
+    ControlDefinition, ControlKind, ControlType, EffectId, PresetTemplate, PreviewSource,
 };
 use hypercolor_types::viewport::ViewportRect;
 use uuid::Uuid;
@@ -24,7 +24,7 @@ pub(super) fn color_control(
         name: name.to_owned(),
         kind: ControlKind::Color,
         control_type: ControlType::ColorPicker,
-        default_value: ControlValue::Color(default_value),
+        default_value: ControlValue::linear_color(default_value),
         min: None,
         max: None,
         step: None,
@@ -56,7 +56,7 @@ pub(super) fn slider_control(
         name: name.to_owned(),
         kind: ControlKind::Number,
         control_type: ControlType::Slider,
-        default_value: ControlValue::Float(default_value),
+        default_value: ControlValue::Float(f64::from(default_value)),
         min: Some(min),
         max: Some(max),
         step: Some(step),
@@ -81,7 +81,7 @@ pub(super) fn toggle_control(
         name: name.to_owned(),
         kind: ControlKind::Boolean,
         control_type: ControlType::Toggle,
-        default_value: ControlValue::Boolean(default_value),
+        default_value: ControlValue::Bool(default_value),
         min: None,
         max: None,
         step: None,
@@ -179,7 +179,7 @@ pub(super) fn rect_control(
         name: name.to_owned(),
         kind: ControlKind::Rect,
         control_type: ControlType::Rect,
-        default_value: ControlValue::Rect(default_value),
+        default_value: ControlValue::rect(default_value),
         min: None,
         max: None,
         step: None,

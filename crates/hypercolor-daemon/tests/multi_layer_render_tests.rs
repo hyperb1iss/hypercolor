@@ -19,8 +19,9 @@ use hypercolor_daemon::preview_runtime::PreviewRuntime;
 use hypercolor_daemon::render_thread::{CanvasDims, RenderThread, RenderThreadState};
 use hypercolor_types::canvas::Rgba;
 use hypercolor_types::config::RenderAccelerationMode;
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::device::DeviceId;
-use hypercolor_types::effect::{ControlValue, EffectId};
+use hypercolor_types::effect::EffectId;
 use hypercolor_types::layer::{LayerBlendMode, SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{DisplayFaceTarget, UnassignedBehavior, Zone, ZoneId, ZoneRole};
 use hypercolor_types::spatial::{
@@ -95,7 +96,7 @@ fn solid_layer(
     let mut layer = SceneLayer::from_effect(
         SceneLayerId::new(),
         effect_id,
-        HashMap::from([("color".into(), ControlValue::Color(color))]),
+        HashMap::from([("color".into(), ControlValue::linear_color(color))]),
         HashMap::new(),
         None,
     );

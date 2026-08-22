@@ -22,7 +22,7 @@ use hypercolor_types::api::scene::{
     AssignMembersRequest, MemberPlacement, SceneDocument, ZoneLayoutResource, ZoneMember,
     ZoneMemberId, ZoneResource,
 };
-use hypercolor_types::effect::ControlValue;
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::layer::{LayerSource, SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{Scene, SceneId, UnassignedBehavior, Zone, ZoneId, ZoneRole};
 use hypercolor_types::spatial::{Output, SpatialLayout};
@@ -267,7 +267,7 @@ pub struct PatchLayerControls {
     /// Which layer to patch.
     pub layer_id: SceneLayerId,
     /// The values to write.
-    pub values: HashMap<String, hypercolor_types::effect::ControlValue>,
+    pub values: HashMap<String, ControlValue>,
     /// Bindings to remove in the same commit.
     pub clear_bindings: Vec<String>,
     /// The revision an adapter resolved names against, when it did so.
@@ -446,11 +446,11 @@ pub async fn clear_scene(
 /// [`DomainError::PreconditionFailed`] for a stale revision.
 pub async fn replace_layer(
     ctx: &SceneTreeContext,
-    command: ReplaceLayer,
+    mut command: ReplaceLayer,
 ) -> Result<ZoneWritten, DomainError> {
     let _effect_admission = ctx
         .effects
-        .admit_layer_sources(std::iter::once(&command.layer.source))
+        .admit_layer_sources(std::iter::once(&mut command.layer.source))
         .await?;
     let media_admission = ctx.scene.media_admission_for_layer(&command.layer).await;
     let mut mutation = ctx.scene.begin_mutation().await;
@@ -802,6 +802,7 @@ pub(crate) fn layer_error(
 struct NormalizedLayerControls {
     values: HashMap<String, ControlValue>,
     previous: HashMap<String, ControlValue>,
+    _admission: Option<super::effect::EffectMutationAdmission>,
 }
 
 async fn normalize_against_layer(
@@ -840,28 +841,22 @@ async fn normalize_against_layer(
         return Ok(NormalizedLayerControls {
             values,
             previous: HashMap::new(),
+            _admission: None,
         });
     };
-    let metadata = ctx.effects.metadata(effect_id).await;
-    let mut previous = metadata
-        .as_ref()
-        .map_or_else(HashMap::new, super::effect::default_control_values);
+    let admitted = ctx
+        .effects
+        .admit_current_controls(effect_id, &values)
+        .await?;
+    let (metadata, values, admission) = admitted.into_parts();
+    let mut previous = super::effect::default_control_values(&metadata);
     previous.extend(layer_controls);
 
-    let values = if let Some(metadata) = metadata {
-        let (normalized, rejected) = super::effect::normalize_control_values(&metadata, &values);
-        if !rejected.is_empty() {
-            return Err(DomainError::validation_details(
-                "one or more control values were rejected",
-                serde_json::json!({ "rejected": rejected }),
-            ));
-        }
-        normalized
-    } else {
-        values
-    };
-
-    Ok(NormalizedLayerControls { values, previous })
+    Ok(NormalizedLayerControls {
+        values,
+        previous,
+        _admission: Some(admission),
+    })
 }
 
 fn scene_commit_was_superseded(error: &DomainError) -> bool {

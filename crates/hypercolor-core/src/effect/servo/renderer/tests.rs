@@ -48,7 +48,7 @@ fn apply_control(renderer: &mut ServoRenderer, name: &str, value: ControlValue) 
             0,
             &changes,
         ))
-        .expect("test control delivery");
+        .expect("Servo renderer should accept admitted controls");
 }
 
 fn frame_input(delta_secs: f32) -> FrameInput<'static> {
@@ -451,7 +451,7 @@ fn sensor_updates_are_limited_to_sensor_aware_metadata() {
         name: "Sensor".to_owned(),
         kind: ControlKind::Sensor,
         control_type: ControlType::Dropdown,
-        default_value: hypercolor_types::effect::ControlValue::Enum("cpu_temp".to_owned()),
+        default_value: hypercolor_types::control::ControlValue::Enum("cpu_temp".to_owned()),
         min: None,
         max: None,
         step: None,

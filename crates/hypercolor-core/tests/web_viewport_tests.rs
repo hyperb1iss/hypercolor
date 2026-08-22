@@ -13,9 +13,8 @@ use hypercolor_core::effect::{EffectRenderer, FrameInput};
 use hypercolor_core::input::InteractionData;
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{Canvas, Rgba};
-use hypercolor_types::effect::{
-    ControlValue, EffectCategory, EffectId, EffectMetadata, EffectSource,
-};
+use hypercolor_types::control::ControlValue;
+use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
 use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::viewport::ViewportRect;
 use reqwest::Url;
@@ -164,8 +163,14 @@ fn web_viewport_renders_local_fixture_and_exposes_preview_canvas() {
     let mut renderer = WebViewportRenderer::new();
     renderer.apply_test_control("url", &ControlValue::Text(fixture.url));
     renderer.apply_test_control("fit_mode", &ControlValue::Enum("Stretch".into()));
-    renderer.apply_test_control("render_width", &ControlValue::Float(PREVIEW_WIDTH as f32));
-    renderer.apply_test_control("render_height", &ControlValue::Float(PREVIEW_HEIGHT as f32));
+    renderer.apply_test_control(
+        "render_width",
+        &ControlValue::Float(f64::from(PREVIEW_WIDTH)),
+    );
+    renderer.apply_test_control(
+        "render_height",
+        &ControlValue::Float(f64::from(PREVIEW_HEIGHT)),
+    );
     renderer
         .init(&metadata())
         .expect("web viewport init should succeed");
@@ -196,11 +201,17 @@ fn web_viewport_viewport_control_crops_the_requested_region() {
     let mut renderer = WebViewportRenderer::new();
     renderer.apply_test_control("url", &ControlValue::Text(fixture.url));
     renderer.apply_test_control("fit_mode", &ControlValue::Enum("Stretch".into()));
-    renderer.apply_test_control("render_width", &ControlValue::Float(PREVIEW_WIDTH as f32));
-    renderer.apply_test_control("render_height", &ControlValue::Float(PREVIEW_HEIGHT as f32));
+    renderer.apply_test_control(
+        "render_width",
+        &ControlValue::Float(f64::from(PREVIEW_WIDTH)),
+    );
+    renderer.apply_test_control(
+        "render_height",
+        &ControlValue::Float(f64::from(PREVIEW_HEIGHT)),
+    );
     renderer.apply_test_control(
         "viewport",
-        &ControlValue::Rect(ViewportRect::new(0.55, 0.0, 0.45, 1.0)),
+        &ControlValue::rect(ViewportRect::new(0.55, 0.0, 0.45, 1.0)),
     );
     renderer
         .init(&metadata())
@@ -226,8 +237,14 @@ fn web_viewport_viewport_control_crops_the_requested_region() {
 fn web_viewport_invalid_url_falls_back_to_black() {
     let mut renderer = WebViewportRenderer::new();
     renderer.apply_test_control("url", &ControlValue::Text("not a valid url value".into()));
-    renderer.apply_test_control("render_width", &ControlValue::Float(PREVIEW_WIDTH as f32));
-    renderer.apply_test_control("render_height", &ControlValue::Float(PREVIEW_HEIGHT as f32));
+    renderer.apply_test_control(
+        "render_width",
+        &ControlValue::Float(f64::from(PREVIEW_WIDTH)),
+    );
+    renderer.apply_test_control(
+        "render_height",
+        &ControlValue::Float(f64::from(PREVIEW_HEIGHT)),
+    );
     renderer
         .init(&metadata())
         .expect("invalid URL should not abort renderer init");

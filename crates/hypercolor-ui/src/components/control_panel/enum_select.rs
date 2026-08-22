@@ -4,7 +4,8 @@ use leptos::portal::Portal;
 use leptos::prelude::*;
 use serde_json::json;
 
-use hypercolor_types::effect::{ControlDefinition, ControlValue};
+use hypercolor_types::control::ControlValue;
+use hypercolor_types::effect::ControlDefinition;
 
 use super::{ControlDropdownDismissHandlers, dropdown_panel_style};
 use leptos_icons::Icon;

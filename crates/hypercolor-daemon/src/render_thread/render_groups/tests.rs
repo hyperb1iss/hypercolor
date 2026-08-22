@@ -14,8 +14,9 @@ use hypercolor_core::input::InteractionData;
 use hypercolor_types::asset::AssetId;
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{LinearRgba, Rgba};
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::device::DisplayFrameFormat;
-use hypercolor_types::effect::{ControlValue, EffectId};
+use hypercolor_types::effect::EffectId;
 use hypercolor_types::layer::{MediaPlayback, SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{SceneId, ZoneRole};
 #[cfg(feature = "wgpu")]

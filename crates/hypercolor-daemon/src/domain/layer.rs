@@ -18,7 +18,7 @@
 use std::collections::HashMap;
 
 use hypercolor_core::scene::LayerMutationError;
-use hypercolor_types::effect::ControlValue;
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::layer::{SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{SceneId, Zone, ZoneId};
 
@@ -62,12 +62,12 @@ pub type LayerResult = Result<LayerStackWritten, LayerMutationError>;
 pub async fn insert_layer(
     effects: &EffectContext,
     zone_id: ZoneId,
-    layer: SceneLayer,
+    mut layer: SceneLayer,
     index: Option<usize>,
     expected_revision: Option<u64>,
 ) -> Result<LayerResult, DomainError> {
     let _effect_admission = effects
-        .admit_layer_sources(std::iter::once(&layer.source))
+        .admit_layer_sources(std::iter::once(&mut layer.source))
         .await?;
     let ctx = effects.scene_context();
     let media_admission = ctx.media_admission_for_layer(&layer).await;

@@ -1,9 +1,10 @@
 use std::collections::HashMap;
 
 use hypercolor_driver_support::control_surface;
+use hypercolor_types::control::{ControlValue, IpText};
 use hypercolor_types::controls::{
     ApplyImpact, ControlAccess, ControlGroupKind, ControlPersistence, ControlSurfaceScope,
-    ControlValue, ControlValueType, ControlVisibility,
+    ControlValueType, ControlVisibility,
 };
 use hypercolor_types::device::DeviceId;
 
@@ -50,11 +51,23 @@ fn driver_field_sets_standard_driver_config_defaults() {
 }
 
 #[test]
-fn push_metadata_value_skips_empty_metadata() {
+fn push_metadata_value_skips_empty_and_invalid_metadata() {
     let mut document = control_surface::device_surface("hue", DeviceId::new());
     let mut metadata = HashMap::from([("ip".to_owned(), "192.168.1.24".to_owned())]);
     metadata.insert("empty".to_owned(), String::new());
+    metadata.insert("invalid_ip".to_owned(), "not-an-address".to_owned());
 
+    control_surface::push_metadata_value(
+        &mut document,
+        "hue",
+        &metadata,
+        "invalid_ip",
+        "Invalid IP",
+        "connection",
+        ControlValueType::IpAddress,
+        |raw| IpText::new(raw).ok().map(ControlValue::Ip),
+        5,
+    );
     control_surface::push_metadata_value(
         &mut document,
         "hue",
@@ -63,7 +76,7 @@ fn push_metadata_value_skips_empty_metadata() {
         "IP Address",
         "connection",
         ControlValueType::IpAddress,
-        ControlValue::IpAddress,
+        |raw| IpText::new(raw).ok().map(ControlValue::Ip),
         0,
     );
     control_surface::push_metadata_value(
@@ -74,15 +87,18 @@ fn push_metadata_value_skips_empty_metadata() {
         "Empty",
         "connection",
         control_surface::string_value_type(None),
-        ControlValue::String,
+        |raw| Some(ControlValue::Text(raw)),
         10,
     );
 
     assert_eq!(document.fields.len(), 1);
     assert_eq!(
         document.values.get("ip"),
-        Some(&ControlValue::IpAddress("192.168.1.24".to_owned()))
+        Some(&ControlValue::Ip(
+            IpText::new("192.168.1.24").expect("fixture IP should be valid")
+        ))
     );
+    assert!(!document.values.contains_key("invalid_ip"));
     assert!(!document.values.contains_key("empty"));
 }
 
@@ -110,13 +126,17 @@ fn availability_markers_cover_fields_and_actions() {
 }
 
 #[test]
-fn validate_control_ip_list_rejects_invalid_ips() {
-    let valid = ControlValue::List(vec![ControlValue::IpAddress("192.168.1.24".to_owned())]);
+fn validate_control_ip_list_rejects_non_routable_ips() {
+    let valid = ControlValue::List(vec![ControlValue::Ip(
+        IpText::new("192.168.1.24").expect("fixture IP should be valid"),
+    )]);
     control_surface::validate_control_ip_list("known IP", &valid).expect("valid IP list");
 
-    let invalid = ControlValue::List(vec![ControlValue::IpAddress("999.1.1.1".to_owned())]);
+    let invalid = ControlValue::List(vec![ControlValue::Ip(
+        IpText::new("127.0.0.1").expect("fixture IP should be syntactically valid"),
+    )]);
     let error = control_surface::validate_control_ip_list("known IP", &invalid)
-        .expect_err("invalid IP list should fail");
+        .expect_err("non-routable IP list should fail");
     assert!(error.to_string().contains("invalid known IP"));
 }
 

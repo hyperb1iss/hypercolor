@@ -172,8 +172,9 @@ impl ZoneRuntime {
             None,
         );
         prepared.resolve_scene_backing(self, projected.gpu_projection_admitted(), false)?;
+        self.commit_reconcile(prepared)?;
         sparkleflinger.apply_projected_scene_resources(projected);
-        self.commit_reconcile(prepared)
+        Ok(())
     }
 
     pub(crate) fn effect_registry_snapshot(

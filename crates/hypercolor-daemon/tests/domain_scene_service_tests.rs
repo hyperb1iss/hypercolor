@@ -15,13 +15,14 @@ use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::effect::EffectEntry;
 use hypercolor_core::scene::SceneManager;
 use hypercolor_types::asset::AssetId;
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
     DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint,
     SegmentInfo,
 };
 use hypercolor_types::effect::{
-    ControlValue, EffectCategory, EffectId, EffectMetadata, EffectSource, EffectState,
+    EffectCategory, EffectId, EffectMetadata, EffectSource, EffectState,
 };
 use hypercolor_types::event::{HypercolorEvent, SceneLibraryChangeKind, Severity, ZoneChangeKind};
 use hypercolor_types::identity::LayoutId;

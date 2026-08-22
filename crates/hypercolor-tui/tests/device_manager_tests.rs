@@ -5,10 +5,11 @@ use hypercolor_tui::action::Action;
 use hypercolor_tui::component::Component;
 use hypercolor_tui::state::DeviceSummary;
 use hypercolor_tui::views::DeviceManagerView;
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::controls::{
     ActionConfirmation, ActionConfirmationLevel, ApplyImpact, ControlActionDescriptor,
     ControlAvailabilityExpr, ControlObjectField, ControlOwner, ControlSurfaceDocument,
-    ControlSurfaceScope, ControlValue, ControlValueType,
+    ControlSurfaceScope, ControlValueType,
 };
 use hypercolor_types::device::DeviceId;
 
@@ -71,7 +72,7 @@ fn action_with_default_input_invokes_with_default_values() {
             assert_eq!(action_id, "identify");
             assert_eq!(
                 input.get("duration_ms"),
-                Some(&ControlValue::DurationMs(3000))
+                Some(&ControlValue::Duration(std::time::Duration::from_secs(3)))
             );
             assert!(!input.contains_key("color"));
         }
@@ -151,7 +152,7 @@ fn control_surface_with_default_input() -> ControlSurfaceDocument {
                     step: Some(100),
                 },
                 required: false,
-                default_value: Some(ControlValue::DurationMs(3000)),
+                default_value: Some(ControlValue::Duration(std::time::Duration::from_secs(3))),
             },
             ControlObjectField {
                 id: "color".to_owned(),

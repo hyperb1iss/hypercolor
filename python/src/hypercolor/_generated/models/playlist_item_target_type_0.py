@@ -17,10 +17,11 @@ class PlaylistItemTargetType0:
     """Run an effect directly.
 
     Attributes:
-        effect_id (UUID): Unique identifier for an effect, wrapping a UUID v7.
+        effect_id (UUID): Opaque stable identifier for an effect, wrapping a UUID.
 
-            Generated at discovery time and used as the primary key across
-            the registry, event bus, API, and UI.
+            The effect source owns its generation policy. Loaders may derive a stable
+            UUID from source identity or accept an explicitly authored UUID; callers
+            must not infer UUID version or creation time from this type.
         type_ (PlaylistItemTargetType0Type):
     """
 

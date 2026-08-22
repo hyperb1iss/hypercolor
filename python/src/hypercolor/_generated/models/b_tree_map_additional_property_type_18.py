@@ -6,28 +6,31 @@ from typing import Any, TypeVar
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
-T = TypeVar("T", bound="EffectControlValueType6")
+from ..models.b_tree_map_additional_property_type_18_kind import (
+    BTreeMapAdditionalPropertyType18Kind,
+)
+
+T = TypeVar("T", bound="BTreeMapAdditionalPropertyType18")
 
 
 @_attrs_define
-class EffectControlValueType6:
-    """Free-form text. Used by `TextInput` controls.
-
+class BTreeMapAdditionalPropertyType18:
+    """
     Attributes:
-        text (str): Free-form text. Used by `TextInput` controls.
+        kind (BTreeMapAdditionalPropertyType18Kind):
     """
 
-    text: str
+    kind: BTreeMapAdditionalPropertyType18Kind
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        text = self.text
+        kind = self.kind.value
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "text": text,
+                "kind": kind,
             }
         )
 
@@ -36,14 +39,14 @@ class EffectControlValueType6:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        text = d.pop("text")
+        kind = BTreeMapAdditionalPropertyType18Kind(d.pop("kind"))
 
-        effect_control_value_type_6 = cls(
-            text=text,
+        b_tree_map_additional_property_type_18 = cls(
+            kind=kind,
         )
 
-        effect_control_value_type_6.additional_properties = d
-        return effect_control_value_type_6
+        b_tree_map_additional_property_type_18.additional_properties = d
+        return b_tree_map_additional_property_type_18
 
     @property
     def additional_keys(self) -> list[str]:

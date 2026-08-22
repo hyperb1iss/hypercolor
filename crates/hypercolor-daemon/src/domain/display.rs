@@ -8,15 +8,15 @@
 //! whether the commit arms a scene-store write, which the intent methods
 //! decide.
 //!
-//! Device resolution, effect validation, and response shaping stay with
-//! the adapters. A REST path segment naming a display by id or name, an
-//! MCP argument doing the same, and the compaction that hides a
-//! redundant blend mode from the response are all transport concerns.
+//! Device selector resolution and response shaping stay with the adapters.
+//! Effect identity and controls are admitted here under the catalog guard
+//! before either layer can mutate authoritative state.
 
 use std::collections::HashMap;
 
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceTopologyHint};
-use hypercolor_types::effect::ControlValue;
+use hypercolor_types::effect::{EffectCategory, EffectMetadata, EffectSource};
 use hypercolor_types::event::ZoneChangeKind;
 use hypercolor_types::scene::{DisplayFaceBlendMode, DisplayFaceTarget, SceneId, Zone, ZoneId};
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
@@ -24,7 +24,9 @@ use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 use crate::domain::DomainError;
 use crate::domain::commit::SceneCommit;
 use crate::domain::context::SceneContext;
-use crate::domain::effect::{EffectContext, ResolvedEffect};
+use crate::domain::effect::{
+    AdmittedEffectControls, EffectContext, EffectMutationAdmission, ResolvedEffect,
+};
 
 /// Native display surface geometry resolved from one tracked device.
 #[derive(Debug, Clone, Copy)]
@@ -92,7 +94,7 @@ pub struct SetDisplayFace {
     pub device_id: DeviceId,
     /// The display's name, for the zone the assignment creates.
     pub device_name: String,
-    /// The face, already validated as an HTML display effect.
+    /// The face resolved against one catalog generation.
     pub effect: ResolvedEffect,
     /// Control overrides to store on the zone.
     pub controls: HashMap<String, ControlValue>,
@@ -129,7 +131,7 @@ pub struct PatchDisplayComposition {
 pub struct PatchDisplayFaceControls {
     /// Which display zone to patch.
     pub zone_id: ZoneId,
-    /// Control values, already normalized against the face's schema.
+    /// Canonical control values to validate against the assigned face.
     pub controls: HashMap<String, ControlValue>,
 }
 
@@ -148,6 +150,61 @@ pub struct DisplayZoneWritten {
     pub commit: SceneCommit,
 }
 
+/// A display control mutation plus the schema that admitted it.
+#[derive(Debug)]
+pub struct DisplayControlsWritten {
+    pub effect: EffectMetadata,
+    pub written: DisplayZoneWritten,
+}
+
+fn validate_display_face(metadata: &EffectMetadata) -> Result<(), DomainError> {
+    if metadata.category != EffectCategory::Display {
+        return Err(DomainError::validation(format!(
+            "Effect '{}' is not a display face",
+            metadata.name
+        )));
+    }
+    if !matches!(metadata.source, EffectSource::Html { .. }) {
+        return Err(DomainError::validation(format!(
+            "Effect '{}' is not an HTML display face",
+            metadata.name
+        )));
+    }
+    Ok(())
+}
+
+pub(crate) async fn admit_display_face_controls(
+    ctx: &EffectContext,
+    effect: ResolvedEffect,
+    controls: &HashMap<String, ControlValue>,
+) -> Result<AdmittedEffectControls, DomainError> {
+    validate_display_face(&effect)?;
+    ctx.admit_resolved_controls(effect, controls).await
+}
+
+pub(crate) async fn admit_current_display_face_controls(
+    ctx: &EffectContext,
+    effect_id: hypercolor_types::effect::EffectId,
+    controls: &HashMap<String, ControlValue>,
+) -> Result<AdmittedEffectControls, DomainError> {
+    let admitted = ctx.admit_current_controls(effect_id, controls).await?;
+    validate_display_face(admitted.metadata())?;
+    Ok(admitted)
+}
+
+pub(crate) async fn resolve_display_face_controls_under_admission(
+    ctx: &EffectContext,
+    admission: &EffectMutationAdmission,
+    effect_id: hypercolor_types::effect::EffectId,
+    controls: &HashMap<String, ControlValue>,
+) -> Result<(EffectMetadata, HashMap<String, ControlValue>), DomainError> {
+    let (metadata, controls) = ctx
+        .resolve_controls_under_admission(admission, effect_id, controls)
+        .await?;
+    validate_display_face(&metadata)?;
+    Ok((metadata, controls))
+}
+
 // ── Scene-layer services ─────────────────────────────────────────────────
 
 /// Assign a face to a display in the active scene.
@@ -162,7 +219,8 @@ pub async fn set_display_face(
     ctx: &EffectContext,
     command: SetDisplayFace,
 ) -> Result<DisplayZoneWritten, DomainError> {
-    let _admission = ctx.admit(&command.effect).await?;
+    let admitted = admit_display_face_controls(ctx, command.effect, &command.controls).await?;
+    let (effect, controls, _admission) = admitted.into_parts();
     let scene = ctx.scene_context();
     let mut mutation = scene.begin_mutation().await;
     let scene_id = mutation.active_scene_for_runtime_mutation("assigning a display face")?;
@@ -175,8 +233,8 @@ pub async fn set_display_face(
     let zone = mutation.upsert_display_zone(
         command.device_id,
         &command.device_name,
-        &command.effect,
-        command.controls,
+        &effect,
+        controls,
         command.layout,
         command.target,
     )?;
@@ -266,23 +324,37 @@ pub async fn patch_display_composition(
 ///
 /// As [`set_display_face`].
 pub async fn patch_display_face_controls(
-    ctx: &SceneContext,
+    ctx: &EffectContext,
     command: PatchDisplayFaceControls,
-) -> Result<Option<DisplayZoneWritten>, DomainError> {
-    let mut mutation = ctx.begin_mutation().await;
+) -> Result<Option<DisplayControlsWritten>, DomainError> {
+    let scene = ctx.scene_context();
+    let mut mutation = scene.begin_mutation().await;
     let scene_id = mutation.active_scene_for_runtime_mutation("updating display face controls")?;
-    let Some(zone) = mutation.patch_zone_controls(command.zone_id, command.controls) else {
+    let Some(effect_id) = mutation
+        .scenes()
+        .active_scene()
+        .and_then(|scene| scene.zones.iter().find(|zone| zone.id == command.zone_id))
+        .and_then(|zone| zone.effect_ids().next())
+    else {
+        return Ok(None);
+    };
+    let admitted = admit_current_display_face_controls(ctx, effect_id, &command.controls).await?;
+    let (effect, controls, _admission) = admitted.into_parts();
+    let Some(zone) = mutation.patch_zone_controls(command.zone_id, controls) else {
         return Ok(None);
     };
 
-    let commit = ctx.commit(mutation).await?;
-    ctx.save_runtime_session().await;
+    let commit = scene.commit(mutation).await?;
+    scene.save_runtime_session().await;
 
-    Ok(Some(DisplayZoneWritten {
-        scene_id,
-        zone,
-        change: ZoneChangeKind::ControlsPatched,
-        commit,
+    Ok(Some(DisplayControlsWritten {
+        effect,
+        written: DisplayZoneWritten {
+            scene_id,
+            zone,
+            change: ZoneChangeKind::ControlsPatched,
+            commit,
+        },
     }))
 }
 

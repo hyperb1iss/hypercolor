@@ -8,8 +8,7 @@ use serde::Deserialize;
 use hypercolor_types::api::scene::{
     PatchControlsRequest, ReorderLayersRequest, SceneDocument, ZoneResource,
 };
-use hypercolor_types::control::ControlValue as CanonicalControlValue;
-use hypercolor_types::effect::ControlValue;
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::layer::{SceneLayer, SceneLayerId};
 
 use super::client;
@@ -102,28 +101,28 @@ pub async fn delete_layer(
 pub async fn patch_layer_controls(
     zone_id: &str,
     layer_id: &str,
-    controls: &serde_json::Value,
+    controls: &std::collections::HashMap<String, ControlValue>,
 ) -> Result<(), String> {
-    let values = controls
-        .as_object()
-        .ok_or_else(|| "Controls must be a JSON object".to_owned())?
-        .iter()
-        .map(|(name, value)| {
-            control_value_from_json(value)
-                .and_then(|value| CanonicalControlValue::try_from(value).ok())
-                .map(|value| (name.clone(), value))
-                .ok_or_else(|| format!("Unsupported control value for {name}"))
-        })
-        .collect::<Result<BTreeMap<_, _>, _>>()?;
     client::patch_json_discard(
         &format!("/api/v1/scene/zones/{zone_id}/layers/{layer_id}/controls"),
-        &PatchControlsRequest {
-            values,
-            clear_bindings: Vec::new(),
-        },
+        &control_patch_request(controls, Vec::new()),
     )
     .await
     .map_err(Into::into)
+}
+
+#[must_use]
+pub fn control_patch_request(
+    controls: &std::collections::HashMap<String, ControlValue>,
+    clear_bindings: Vec<String>,
+) -> PatchControlsRequest {
+    PatchControlsRequest {
+        values: controls
+            .iter()
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .collect::<BTreeMap<_, _>>(),
+        clear_bindings,
+    }
 }
 
 pub async fn reorder_layers(
@@ -172,27 +171,4 @@ fn layer_stack(zone: ZoneResource, revision: u64) -> LayerStackResponse {
         items: zone.layers,
         revision,
     }
-}
-
-fn control_value_from_json(value: &serde_json::Value) -> Option<ControlValue> {
-    if let Some(value) = value.as_i64() {
-        return i32::try_from(value).ok().map(ControlValue::Integer);
-    }
-    if value.is_number() {
-        return serde_json::from_value::<f32>(value.clone())
-            .ok()
-            .map(ControlValue::Float);
-    }
-    if let Some(value) = value.as_bool() {
-        return Some(ControlValue::Boolean(value));
-    }
-    if let Some(value) = value.as_str() {
-        return Some(ControlValue::Text(value.to_owned()));
-    }
-    if let Ok(color) = serde_json::from_value::<[f32; 4]>(value.clone()) {
-        return Some(ControlValue::Color(color));
-    }
-    serde_json::from_value(value.clone())
-        .ok()
-        .map(ControlValue::Rect)
 }

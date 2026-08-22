@@ -1,16 +1,18 @@
 //! Tests for typed driver and device control surfaces.
 
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 use hypercolor_types::api::controls::ControlSurfaceListResponse;
+use hypercolor_types::control::{ControlValue, IpText, SecretRef};
 use hypercolor_types::controls::{
     ActionConfirmation, ActionConfirmationLevel, AppliedControlChange, ApplyControlChangesResponse,
     ApplyImpact, CONTROL_SURFACE_SCHEMA_VERSION, ControlAccess, ControlActionDescriptor,
     ControlActionStatus, ControlAvailability, ControlAvailabilityExpr, ControlAvailabilityState,
     ControlEnumOption, ControlFieldDescriptor, ControlGroupDescriptor, ControlGroupKind,
     ControlObjectField, ControlOwner, ControlPersistence, ControlSurfaceDocument,
-    ControlSurfaceEvent, ControlSurfaceScope, ControlValue, ControlValueType,
-    ControlValueValidationError, ControlVisibility, RejectedControlChange,
+    ControlSurfaceEvent, ControlSurfaceScope, ControlValueType, ControlValueValidationError,
+    ControlVisibility, RejectedControlChange,
 };
 use hypercolor_types::device::DeviceId;
 
@@ -33,28 +35,33 @@ fn control_value_type_roundtrips_with_explicit_kind() {
 }
 
 #[test]
-fn control_value_type_deserializes_unknown_kind_as_fallback() {
-    let value_type: ControlValueType = serde_json::from_value(serde_json::json!({
+fn control_value_type_requires_the_explicit_unknown_sentinel() {
+    let error = serde_json::from_value::<ControlValueType>(serde_json::json!({
         "kind": "vector3",
         "min": [0, 0, 0],
         "max": [1, 1, 1]
     }))
-    .expect("deserialize future value type");
+    .expect_err("undeclared value type must be rejected");
+    assert!(error.to_string().contains("unknown variant `vector3`"));
 
+    let value_type: ControlValueType = serde_json::from_value(serde_json::json!({
+        "kind": "unknown"
+    }))
+    .expect("explicit unknown sentinel should deserialize");
     assert_eq!(value_type, ControlValueType::Unknown);
     assert_eq!(
-        value_type.validate_value(&ControlValue::String("future".to_owned())),
+        value_type.validate_value(&ControlValue::Text("future".to_owned())),
         Err(ControlValueValidationError::UnsupportedValueType)
     );
 }
 
 #[test]
 fn control_value_roundtrips_with_explicit_kind_and_value() {
-    let value = ControlValue::DurationMs(1_500);
+    let value = ControlValue::Duration(Duration::from_millis(1_500));
 
     let json = serde_json::to_value(&value).expect("serialize value");
 
-    assert_eq!(json["kind"], "duration_ms");
+    assert_eq!(json["kind"], "duration");
     assert_eq!(json["value"], 1_500);
 
     let roundtrip: ControlValue = serde_json::from_value(json).expect("deserialize value");
@@ -62,13 +69,18 @@ fn control_value_roundtrips_with_explicit_kind_and_value() {
 }
 
 #[test]
-fn control_value_deserializes_unknown_kind_as_fallback() {
-    let value: ControlValue = serde_json::from_value(serde_json::json!({
+fn control_value_requires_the_explicit_unknown_sentinel() {
+    let error = serde_json::from_value::<ControlValue>(serde_json::json!({
         "kind": "vector3",
         "value": [0.1, 0.2, 0.3]
     }))
-    .expect("deserialize future value");
+    .expect_err("undeclared canonical tag must be rejected");
+    assert!(error.to_string().contains("unknown variant `vector3`"));
 
+    let value: ControlValue = serde_json::from_value(serde_json::json!({
+        "kind": "unknown"
+    }))
+    .expect("explicit unknown sentinel should deserialize");
     assert_eq!(value, ControlValue::Unknown);
 }
 
@@ -81,7 +93,7 @@ fn validation_accepts_matching_scalar_values() {
     };
 
     value_type
-        .validate_value(&ControlValue::Integer(25))
+        .validate_value(&ControlValue::Int(25))
         .expect("valid integer");
 }
 
@@ -90,22 +102,22 @@ fn validation_accepts_secret_refs_and_rejects_raw_secret_values() {
     let value_type = ControlValueType::Secret;
 
     value_type
-        .validate_value(&ControlValue::SecretRef(
-            "credential:fixture-driver:api_key".to_owned(),
-        ))
+        .validate_value(&ControlValue::SecretRef(SecretRef::new(
+            "credential:fixture-driver:api_key",
+        )))
         .expect("secret references should validate");
 
     let error = value_type
-        .validate_value(&ControlValue::String("raw-api-key".to_owned()))
+        .validate_value(&ControlValue::Text("raw-api-key".to_owned()))
         .expect_err("raw secret material should not validate as a secret reference");
     assert!(matches!(
         error,
         ControlValueValidationError::TypeMismatch { .. }
     ));
 
-    let json = serde_json::to_value(ControlValue::SecretRef(
-        "credential:fixture-driver:api_key".to_owned(),
-    ))
+    let json = serde_json::to_value(ControlValue::SecretRef(SecretRef::new(
+        "credential:fixture-driver:api_key",
+    )))
     .expect("serialize secret reference");
     assert_eq!(json["kind"], "secret_ref");
 
@@ -113,7 +125,7 @@ fn validation_accepts_secret_refs_and_rejects_raw_secret_values() {
         serde_json::from_value(json).expect("deserialize secret reference");
     assert_eq!(
         roundtrip,
-        ControlValue::SecretRef("credential:fixture-driver:api_key".to_owned())
+        ControlValue::SecretRef(SecretRef::new("credential:fixture-driver:api_key"))
     );
 }
 
@@ -126,7 +138,7 @@ fn validation_rejects_type_mismatch_and_bounds() {
     };
 
     let mismatch = value_type
-        .validate_value(&ControlValue::String("fast".to_owned()))
+        .validate_value(&ControlValue::Text("fast".to_owned()))
         .expect_err("string is not duration");
     assert!(matches!(
         mismatch,
@@ -134,12 +146,12 @@ fn validation_rejects_type_mismatch_and_bounds() {
     ));
 
     let too_low = value_type
-        .validate_value(&ControlValue::DurationMs(50))
+        .validate_value(&ControlValue::Duration(Duration::from_millis(50)))
         .expect_err("duration is below minimum");
     assert_eq!(too_low, ControlValueValidationError::BelowMinimum);
 
     let invalid_step = value_type
-        .validate_value(&ControlValue::DurationMs(150))
+        .validate_value(&ControlValue::Duration(Duration::from_millis(150)))
         .expect_err("duration misses step");
     assert_eq!(invalid_step, ControlValueValidationError::InvalidStep);
 }
@@ -184,16 +196,16 @@ fn validation_checks_nested_lists_and_objects() {
     };
 
     list_type
-        .validate_value(&ControlValue::List(vec![ControlValue::IpAddress(
-            "192.168.1.42".to_owned(),
+        .validate_value(&ControlValue::List(vec![ControlValue::Ip(
+            IpText::new("192.168.1.42").expect("valid IP"),
         )]))
         .expect("valid IP list");
 
     let list_error = list_type
-        .validate_value(&ControlValue::List(vec![ControlValue::IpAddress(
+        .validate_value(&ControlValue::List(vec![ControlValue::Text(
             "not-an-ip".to_owned(),
         )]))
-        .expect_err("invalid nested IP");
+        .expect_err("wrong nested value kind");
     assert!(matches!(
         list_error,
         ControlValueValidationError::InvalidItem { index: 0, .. }
@@ -210,7 +222,7 @@ fn validation_checks_nested_lists_and_objects() {
                     step: Some(1),
                 },
                 required: true,
-                default_value: Some(ControlValue::Integer(16)),
+                default_value: Some(ControlValue::Int(16)),
             },
             ControlObjectField {
                 id: "height".to_owned(),
@@ -221,17 +233,17 @@ fn validation_checks_nested_lists_and_objects() {
                     step: Some(1),
                 },
                 required: true,
-                default_value: Some(ControlValue::Integer(16)),
+                default_value: Some(ControlValue::Int(16)),
             },
         ],
     };
 
     let mut dimensions = BTreeMap::new();
-    dimensions.insert("width".to_owned(), ControlValue::Integer(16));
-    dimensions.insert("height".to_owned(), ControlValue::Integer(8));
+    dimensions.insert("width".to_owned(), ControlValue::Int(16));
+    dimensions.insert("height".to_owned(), ControlValue::Int(8));
 
     object_type
-        .validate_value(&ControlValue::Object(dimensions))
+        .validate_value(&ControlValue::Map(dimensions))
         .expect("valid object");
 }
 
@@ -362,7 +374,7 @@ fn apply_response_and_events_roundtrip() {
         revision: 4,
         accepted: vec![AppliedControlChange {
             field_id: "max_fps".to_owned(),
-            value: ControlValue::Integer(60),
+            value: ControlValue::Int(60),
         }],
         rejected: vec![RejectedControlChange {
             field_id: "color_order".to_owned(),
@@ -372,7 +384,7 @@ fn apply_response_and_events_roundtrip() {
             },
         }],
         impacts: vec![ApplyImpact::Live],
-        values: BTreeMap::from([("max_fps".to_owned(), ControlValue::Integer(60))]),
+        values: BTreeMap::from([("max_fps".to_owned(), ControlValue::Int(60))]),
     };
     let response_json = serde_json::to_string(&response).expect("serialize response");
     let response_roundtrip: ApplyControlChangesResponse =

@@ -32,7 +32,7 @@ use hypercolor_core::input::{
     SourceStatusWriter,
 };
 use hypercolor_types::audio::{AudioData, AudioPipelineConfig};
-use hypercolor_types::effect::ControlValue;
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::event::TimedInputEvent;
 use hypercolor_types::layer::{LayerSource, SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{Zone, ZoneId, ZoneRole};
@@ -89,7 +89,7 @@ fn prepared_effect_pool_commit_round(change_controls: bool) -> Stats {
     };
     let controls = HashMap::from([(
         "color".to_owned(),
-        ControlValue::Color([1.0, 0.0, 0.0, 1.0]),
+        ControlValue::linear_color([1.0, 0.0, 0.0, 1.0]),
     )]);
     let mut group = Zone {
         id: ZoneId::new(),
@@ -115,7 +115,7 @@ fn prepared_effect_pool_commit_round(change_controls: bool) -> Stats {
     pool.reconcile(std::slice::from_ref(&group), &registry, &HashMap::new())
         .expect("live effect pool should prepare");
     if change_controls {
-        let updated = ControlValue::Color([0.0, 0.0, 1.0, 1.0]);
+        let updated = ControlValue::linear_color([0.0, 0.0, 1.0, 1.0]);
         let LayerSource::Effect { controls, .. } = &mut group.layers[0].source else {
             panic!("fixture should store an effect layer");
         };
@@ -130,7 +130,7 @@ fn prepared_effect_pool_commit_round(change_controls: bool) -> Stats {
     region.reset();
     black_box(&mut pool)
         .commit_reconcile(black_box(prepared))
-        .expect("commit prepared effect pool");
+        .expect("prepared reconcile should commit");
     region.change()
 }
 

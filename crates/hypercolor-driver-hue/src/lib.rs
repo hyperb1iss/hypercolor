@@ -33,9 +33,10 @@ use hypercolor_driver_support::network::{
 use hypercolor_driver_support::pairing::{activate_if_requested, disconnect_after_unpair};
 use hypercolor_driver_support::{CredentialStore, control_apply, control_surface};
 use hypercolor_types::config::DriverConfigEntry;
+use hypercolor_types::control::{ControlValue, IpText};
 use hypercolor_types::controls::{
     ApplyControlChangesResponse, ApplyImpact, ControlChange, ControlFieldDescriptor,
-    ControlGroupKind, ControlSurfaceDocument, ControlValue, ControlValueMap, ControlValueType,
+    ControlGroupKind, ControlSurfaceDocument, ControlValueMap, ControlValueType,
 };
 use hypercolor_types::device::{DeviceClassHint, DriverPresentation, DriverTransportKind};
 use hypercolor_types::identity::BackendId;
@@ -283,7 +284,7 @@ pub fn hue_device_control_surface(device: &TrackedDeviceCtx<'_>) -> ControlSurfa
             "IP Address",
             "connection",
             ControlValueType::IpAddress,
-            ControlValue::IpAddress,
+            |raw| IpText::new(raw).ok().map(ControlValue::Ip),
             0,
         );
         if let Some(api_port) = metadata
@@ -297,7 +298,7 @@ pub fn hue_device_control_surface(device: &TrackedDeviceCtx<'_>) -> ControlSurfa
                 "API Port",
                 "connection",
                 control_surface::integer_value_type(0, Some(i64::from(u16::MAX))),
-                ControlValue::Integer(api_port),
+                ControlValue::Int(api_port),
                 10,
             );
         }
@@ -308,7 +309,7 @@ pub fn hue_device_control_surface(device: &TrackedDeviceCtx<'_>) -> ControlSurfa
             "Bridge ID",
             "connection",
             control_surface::string_value_type(Some(255)),
-            ControlValue::String,
+            |raw| Some(ControlValue::Text(raw)),
             20,
         );
         push_hue_metadata_field(
@@ -318,7 +319,7 @@ pub fn hue_device_control_surface(device: &TrackedDeviceCtx<'_>) -> ControlSurfa
             "Bridge Name",
             "connection",
             control_surface::string_value_type(Some(255)),
-            ControlValue::String,
+            |raw| Some(ControlValue::Text(raw)),
             30,
         );
         push_hue_metadata_field(
@@ -328,7 +329,7 @@ pub fn hue_device_control_surface(device: &TrackedDeviceCtx<'_>) -> ControlSurfa
             "Entertainment Config ID",
             "entertainment",
             control_surface::string_value_type(Some(255)),
-            ControlValue::String,
+            |raw| Some(ControlValue::Text(raw)),
             0,
         );
         push_hue_metadata_field(
@@ -338,7 +339,7 @@ pub fn hue_device_control_surface(device: &TrackedDeviceCtx<'_>) -> ControlSurfa
             "Entertainment Config",
             "entertainment",
             control_surface::string_value_type(Some(255)),
-            ControlValue::String,
+            |raw| Some(ControlValue::Text(raw)),
             10,
         );
     }
@@ -351,7 +352,7 @@ pub fn hue_device_control_surface(device: &TrackedDeviceCtx<'_>) -> ControlSurfa
             "Model",
             "diagnostics",
             control_surface::string_value_type(Some(80)),
-            ControlValue::String(model.clone()),
+            ControlValue::Text(model.clone()),
             0,
         );
     }
@@ -363,7 +364,7 @@ pub fn hue_device_control_surface(device: &TrackedDeviceCtx<'_>) -> ControlSurfa
             "Firmware",
             "diagnostics",
             control_surface::string_value_type(Some(80)),
-            ControlValue::String(firmware_version.clone()),
+            ControlValue::Text(firmware_version.clone()),
             10,
         );
     }
@@ -374,7 +375,7 @@ pub fn hue_device_control_surface(device: &TrackedDeviceCtx<'_>) -> ControlSurfa
         "LED Count",
         "diagnostics",
         control_surface::integer_value_type(0, None),
-        ControlValue::Integer(i64::from(device.info.total_led_count())),
+        ControlValue::Int(i64::from(device.info.total_led_count())),
         20,
     );
     control_surface::push_readonly_value(
@@ -384,7 +385,7 @@ pub fn hue_device_control_surface(device: &TrackedDeviceCtx<'_>) -> ControlSurfa
         "Max FPS",
         "diagnostics",
         control_surface::integer_value_type(0, None),
-        ControlValue::Integer(i64::from(device.info.capabilities.max_fps)),
+        ControlValue::Int(i64::from(device.info.capabilities.max_fps)),
         30,
     );
     control_surface::push_readonly_value(
@@ -394,7 +395,7 @@ pub fn hue_device_control_surface(device: &TrackedDeviceCtx<'_>) -> ControlSurfa
         "State",
         "diagnostics",
         control_surface::string_value_type(Some(32)),
-        ControlValue::String(device.current_state.to_string()),
+        ControlValue::Text(device.current_state.to_string()),
         40,
     );
 
@@ -454,7 +455,7 @@ fn push_hue_metadata_field(
     label: &str,
     group_id: &str,
     value_type: ControlValueType,
-    value: impl FnOnce(String) -> ControlValue,
+    value: impl FnOnce(String) -> Option<ControlValue>,
     ordering: i32,
 ) {
     control_surface::push_metadata_value(
@@ -478,7 +479,7 @@ fn hue_config_values(config: &HueConfig) -> ControlValueMap {
                 config
                     .bridge_ips
                     .iter()
-                    .map(|ip| ControlValue::IpAddress(ip.to_string()))
+                    .map(|ip| ControlValue::Ip(IpText::from(*ip)))
                     .collect(),
             ),
         ),

@@ -28,9 +28,8 @@ use tempfile::NamedTempFile;
 
 use hypercolor_types::api::scene::SideEffectOutcome;
 use hypercolor_types::config::EffectErrorFallbackPolicy;
-use hypercolor_types::effect::{
-    ControlValue, EffectCategory, EffectId, EffectMetadata, EffectSource,
-};
+use hypercolor_types::control::ControlValue;
+use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
 use hypercolor_types::event::{EffectRef, EffectStopReason, ZoneChangeKind};
 use hypercolor_types::layer::LayerSource;
 use hypercolor_types::library::PresetId;
@@ -42,7 +41,7 @@ use crate::domain::commit::SceneCommit;
 use crate::domain::context::SceneContext;
 use crate::domain::output::OutputContext;
 use crate::domain::spatial::SpatialService;
-use crate::domain::{DomainError, MutationContext};
+use crate::domain::{DomainError, MutationContext, ResourceKind};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum IdentityMigrationPersistence {
@@ -137,6 +136,29 @@ impl ResolvedEffect {
 /// Shared read admission that excludes catalog identity publication.
 pub struct EffectMutationAdmission {
     _guard: OwnedRwLockReadGuard<()>,
+}
+
+/// Effect controls validated against one catalog generation.
+pub(crate) struct AdmittedEffectControls {
+    metadata: EffectMetadata,
+    values: HashMap<String, ControlValue>,
+    admission: EffectMutationAdmission,
+}
+
+impl AdmittedEffectControls {
+    pub(crate) const fn metadata(&self) -> &EffectMetadata {
+        &self.metadata
+    }
+
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        EffectMetadata,
+        HashMap<String, ControlValue>,
+        EffectMutationAdmission,
+    ) {
+        (self.metadata, self.values, self.admission)
+    }
 }
 
 impl EffectContext {
@@ -271,6 +293,55 @@ impl EffectContext {
         Ok(EffectMutationAdmission { _guard: guard })
     }
 
+    pub(crate) async fn admit_resolved_controls(
+        &self,
+        effect: ResolvedEffect,
+        values: &HashMap<String, ControlValue>,
+    ) -> Result<AdmittedEffectControls, DomainError> {
+        let admission = self.admit(&effect).await?;
+        let metadata = effect.into_metadata();
+        let values = validate_control_values(&metadata, values)?;
+        Ok(AdmittedEffectControls {
+            metadata,
+            values,
+            admission,
+        })
+    }
+
+    pub(crate) async fn admit_current_controls(
+        &self,
+        effect_id: EffectId,
+        values: &HashMap<String, ControlValue>,
+    ) -> Result<AdmittedEffectControls, DomainError> {
+        let admission = self.admit_current().await;
+        let (metadata, values) = self
+            .resolve_controls_under_admission(&admission, effect_id, values)
+            .await?;
+        Ok(AdmittedEffectControls {
+            metadata,
+            values,
+            admission,
+        })
+    }
+
+    pub(crate) async fn resolve_controls_under_admission(
+        &self,
+        _admission: &EffectMutationAdmission,
+        effect_id: EffectId,
+        values: &HashMap<String, ControlValue>,
+    ) -> Result<(EffectMetadata, HashMap<String, ControlValue>), DomainError> {
+        let registry = self.registry.read().await;
+        let metadata = registry
+            .get(&effect_id)
+            .map(|entry| entry.metadata.clone())
+            .ok_or_else(|| DomainError::not_found(ResourceKind::Effect, effect_id))?;
+        let values = validate_control_values(&metadata, values)?;
+        drop(registry);
+        #[cfg(test)]
+        self.pause_after_resolution_for_test().await;
+        Ok((metadata, values))
+    }
+
     /// Admit a mutation that will resolve its effects while the guard is held.
     pub(crate) async fn admit_current(&self) -> EffectMutationAdmission {
         EffectMutationAdmission {
@@ -282,32 +353,32 @@ impl EffectContext {
     /// that generation through the caller's scene commit.
     pub(crate) async fn admit_layer_sources<'a>(
         &self,
-        sources: impl IntoIterator<Item = &'a LayerSource>,
+        sources: impl IntoIterator<Item = &'a mut LayerSource>,
     ) -> Result<Option<EffectMutationAdmission>, DomainError> {
-        let effect_ids = sources
-            .into_iter()
-            .filter_map(|source| match source {
-                LayerSource::Effect { effect_id, .. } => Some(*effect_id),
-                LayerSource::Media { .. }
-                | LayerSource::ScreenRegion { .. }
-                | LayerSource::WebViewport { .. }
-                | LayerSource::ColorFill { .. } => None,
-            })
-            .collect::<Vec<_>>();
-        if effect_ids.is_empty() {
+        let sources = sources.into_iter().collect::<Vec<_>>();
+        if !sources
+            .iter()
+            .any(|source| matches!(source, LayerSource::Effect { .. }))
+        {
             return Ok(None);
         }
 
         let guard = Arc::clone(&self.update_gate).read_owned().await;
         let registry = self.registry.read().await;
-        if let Some(effect_id) = effect_ids
-            .into_iter()
-            .find(|effect_id| registry.get(effect_id).is_none())
-        {
-            return Err(DomainError::not_found(
-                crate::domain::ResourceKind::Effect,
+        for source in sources {
+            let LayerSource::Effect {
                 effect_id,
-            ));
+                controls,
+                ..
+            } = source
+            else {
+                continue;
+            };
+            let metadata = registry
+                .get(effect_id)
+                .map(|entry| &entry.metadata)
+                .ok_or_else(|| DomainError::not_found(ResourceKind::Effect, *effect_id))?;
+            *controls = validate_control_values(metadata, &*controls)?;
         }
         drop(registry);
         #[cfg(test)]
@@ -804,7 +875,7 @@ impl AppliedTransition {
 pub struct ApplyEffect {
     /// The effect to load, bound to the catalog generation that resolved it.
     pub effect: ResolvedEffect,
-    /// Control values, already normalized against the effect's schema.
+    /// Canonical control values to validate against the resolved effect.
     pub controls: HashMap<String, ControlValue>,
     /// Preset provenance to record on the zone.
     pub preset_id: Option<PresetId>,
@@ -866,8 +937,10 @@ pub async fn apply_effect(
     meta: MutationContext,
 ) -> Result<EffectApplied, DomainError> {
     let transition = command.transition.resolve()?;
-    let _admission = ctx.admit(&command.effect).await?;
-    let metadata = command.effect.into_metadata();
+    let admitted = ctx
+        .admit_resolved_controls(command.effect, &command.controls)
+        .await?;
+    let (metadata, controls, _admission) = admitted.into_parts();
 
     // Resolving the outgoing effect's name needs the registry, and the
     // outgoing effect is not known until the scene snapshot is in hand.
@@ -913,7 +986,7 @@ pub async fn apply_effect(
         let zone = mutation.apply_effect_to_zone(
             zone_id,
             &metadata,
-            command.controls,
+            controls,
             command.preset_id,
             meta.trigger,
             previous_effect.clone(),
@@ -927,7 +1000,7 @@ pub async fn apply_effect(
         };
         let zone = mutation.upsert_primary_zone(
             &metadata,
-            command.controls,
+            controls,
             command.preset_id,
             layout,
             meta.trigger,
@@ -1272,17 +1345,30 @@ pub fn effect_ref(metadata: &EffectMetadata) -> EffectRef {
 
 /// Validate and normalize typed control values against an effect schema.
 #[must_use]
-pub fn normalize_control_values(
+pub fn normalize_control_values<'a>(
     metadata: &EffectMetadata,
-    control_values: &HashMap<String, ControlValue>,
+    control_values: impl IntoIterator<Item = (&'a String, &'a ControlValue)>,
 ) -> (HashMap<String, ControlValue>, Vec<String>) {
     let mut normalized = HashMap::new();
     let mut rejected = Vec::new();
 
     for (name, value) in control_values {
-        let result = metadata.control_by_id(name).map_or_else(
-            || Ok(value.clone()),
-            |control| control.validate_value(value),
+        let result: Result<ControlValue, String> = metadata.control_by_id(name).map_or_else(
+            || {
+                value
+                    .try_to_effect_json()
+                    .map_err(|error| error.to_string())?;
+                Ok(value.clone())
+            },
+            |control| {
+                let normalized = control
+                    .validate_value(value)
+                    .map_err(|error| error.to_string())?;
+                normalized
+                    .try_to_effect_json()
+                    .map_err(|error| error.to_string())?;
+                Ok(normalized)
+            },
         );
         match result {
             Ok(control_value) => {
@@ -1293,6 +1379,21 @@ pub fn normalize_control_values(
     }
 
     (normalized, rejected)
+}
+
+fn validate_control_values<'a>(
+    metadata: &EffectMetadata,
+    control_values: impl IntoIterator<Item = (&'a String, &'a ControlValue)>,
+) -> Result<HashMap<String, ControlValue>, DomainError> {
+    let (normalized, rejected) = normalize_control_values(metadata, control_values);
+    if rejected.is_empty() {
+        Ok(normalized)
+    } else {
+        Err(DomainError::validation_details(
+            "one or more control values were rejected",
+            serde_json::json!({ "rejected": rejected }),
+        ))
+    }
 }
 
 /// Materialize an effect schema's default control set.

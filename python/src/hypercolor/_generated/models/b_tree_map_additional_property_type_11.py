@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
@@ -10,26 +10,33 @@ from ..models.b_tree_map_additional_property_type_11_kind import (
     BTreeMapAdditionalPropertyType11Kind,
 )
 
+if TYPE_CHECKING:
+    from ..models.linear_rgba import LinearRgba
+
+
 T = TypeVar("T", bound="BTreeMapAdditionalPropertyType11")
 
 
 @_attrs_define
 class BTreeMapAdditionalPropertyType11:
-    """Single enum option value.
-
+    """
     Attributes:
         kind (BTreeMapAdditionalPropertyType11Kind):
-        value (str): Single enum option value.
+        value (LinearRgba): Linear-light RGBA color with straight alpha, `0.0..=1.0` per channel.
+
+            All interpolation, blending, and perceptual conversion happens here.
+            Out-of-range values are legal mid-pipeline (HDR headroom, out-of-gamut
+            Oklab results) and clamp on conversion back to bytes.
     """
 
     kind: BTreeMapAdditionalPropertyType11Kind
-    value: str
+    value: LinearRgba
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         kind = self.kind.value
 
-        value = self.value
+        value = self.value.to_dict()
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -44,10 +51,12 @@ class BTreeMapAdditionalPropertyType11:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.linear_rgba import LinearRgba
+
         d = dict(src_dict)
         kind = BTreeMapAdditionalPropertyType11Kind(d.pop("kind"))
 
-        value = d.pop("value")
+        value = LinearRgba.from_dict(d.pop("value"))
 
         b_tree_map_additional_property_type_11 = cls(
             kind=kind,

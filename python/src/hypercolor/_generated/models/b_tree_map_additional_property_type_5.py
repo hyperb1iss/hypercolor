@@ -15,11 +15,10 @@ T = TypeVar("T", bound="BTreeMapAdditionalPropertyType5")
 
 @_attrs_define
 class BTreeMapAdditionalPropertyType5:
-    """Reference to a secret in the credential store.
-
+    """
     Attributes:
         kind (BTreeMapAdditionalPropertyType5Kind):
-        value (str): Reference to a secret in the credential store.
+        value (str):
     """
 
     kind: BTreeMapAdditionalPropertyType5Kind

@@ -9,7 +9,6 @@ use crossterm::ExecutableCommand;
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
 use hypercolor_types::api::scene::PatchControlsRequest;
-use hypercolor_types::control::ControlValue as CanonicalControlValue;
 use ratatui::DefaultTerminal;
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -858,10 +857,9 @@ impl App {
                     let id = effect_id.clone();
                     let ctrl = controls.clone();
                     async move {
-                        let body = serde_json::to_value(&ctrl)?;
                         let target_zone_id = target.as_ref().map(|(zone_id, _)| zone_id.as_str());
                         client
-                            .apply_effect(&id, Some(&body), target_zone_id)
+                            .apply_effect(&id, Some(&ctrl), target_zone_id)
                             .await?;
                         let mut actions = refresh_status_and_scene(client).await?;
                         let message = match &target {
@@ -899,7 +897,6 @@ impl App {
                 });
             }
             Action::UpdateControl(control_id, value) => {
-                let json_value = control_value_to_json(value);
                 if let Some((zone_id, layer_id)) = self.zone_patch_target() {
                     // Optimistic local update so re-renders show the new
                     // value immediately; zone_changed confirms.
@@ -907,11 +904,13 @@ impl App {
                     self.spawn_actions({
                         let client = self.client.clone();
                         let id = control_id.clone();
+                        let value = value.clone();
                         async move {
-                            let mut controls = serde_json::Map::new();
-                            controls.insert(id, json_value);
-                            let body = serde_json::Value::Object(controls);
-                            match client.patch_zone_controls(&zone_id, &layer_id, &body).await {
+                            let controls = BTreeMap::from([(id, value)]);
+                            match client
+                                .patch_zone_controls(&zone_id, &layer_id, &controls)
+                                .await
+                            {
                                 Ok(()) => Ok(Vec::new()), // silent success
                                 Err(error) => {
                                     let mut actions = vec![Action::Notify(Notification {
@@ -930,8 +929,9 @@ impl App {
                     self.spawn_command({
                         let client = self.client.clone();
                         let id = control_id.clone();
+                        let value = value.clone();
                         async move {
-                            client.update_control(&id, &json_value).await?;
+                            client.update_control(&id, &value).await?;
                             Ok(Action::Tick) // silent success, no notification
                         }
                     });
@@ -1075,16 +1075,13 @@ impl App {
                     let field_id = field_id.clone();
                     let value = value.clone();
                     async move {
-                        let value = match CanonicalControlValue::try_from(value) {
-                            Ok(value) => value,
-                            Err(error) => {
-                                return Ok(Action::DeviceControlChangeFailed {
-                                    device_id,
-                                    surface_id,
-                                    error: error.to_string(),
-                                });
-                            }
-                        };
+                        if let Err(error) = value.validate() {
+                            return Ok(Action::DeviceControlChangeFailed {
+                                device_id,
+                                surface_id,
+                                error: error.to_string(),
+                            });
+                        }
                         let request = PatchControlsRequest {
                             values: BTreeMap::from([(field_id, value)]),
                             clear_bindings: Vec::new(),
@@ -1727,17 +1724,6 @@ impl App {
 
         let info = Paragraph::new(info_line).style(Style::default().bg(Color::Rgb(20, 20, 30)));
         frame.render_widget(info, info_area);
-    }
-}
-
-/// Convert a `ControlValue` to a JSON value for the REST API.
-fn control_value_to_json(value: &ControlValue) -> serde_json::Value {
-    match value {
-        ControlValue::Float(v) => serde_json::json!(v),
-        ControlValue::Integer(v) => serde_json::json!(v),
-        ControlValue::Boolean(v) => serde_json::json!(v),
-        ControlValue::Color(c) => serde_json::json!(c),
-        ControlValue::Text(s) => serde_json::json!(s),
     }
 }
 

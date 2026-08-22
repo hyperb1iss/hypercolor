@@ -12,9 +12,10 @@ use http::{Request, StatusCode};
 use hypercolor_core::effect::EffectEntry;
 use hypercolor_daemon::api;
 use hypercolor_daemon::app_state::AppState;
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::effect::{
-    ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory, EffectId,
-    EffectMetadata, EffectSource, EffectState, PresetTemplate,
+    ControlDefinition, ControlKind, ControlType, EffectCategory, EffectId, EffectMetadata,
+    EffectSource, EffectState, PresetTemplate,
 };
 use hypercolor_types::library::PresetId;
 use serde_json::Value;

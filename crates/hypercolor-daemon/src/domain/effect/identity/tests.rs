@@ -13,7 +13,7 @@ use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
     DeviceInfo, DeviceOrigin, DeviceTopologyHint, SegmentInfo,
 };
-use hypercolor_types::effect::EffectId;
+use hypercolor_types::effect::{EffectCategory, EffectId};
 use hypercolor_types::layer::{LayerSource, SceneLayer, SceneLayerId};
 use hypercolor_types::library::{
     EffectPlaylist, EffectPreset, PlaylistId, PlaylistItem, PlaylistItemId, PlaylistItemTarget,
@@ -70,6 +70,20 @@ fn installable_effect(title: &str, marker: &str) -> String {
     format!(
         "<!DOCTYPE html><html><head><title>{title}</title></head><body><canvas id=\"exCanvas\"></canvas><script>{marker}</script></body></html>"
     )
+}
+
+async fn promote_effect_to_display(state: &AppState, effect_id: EffectId) {
+    let mut entry = state
+        .domains
+        .effects
+        .registry_handle()
+        .read()
+        .await
+        .get(&effect_id)
+        .cloned()
+        .expect("fixture effect should exist");
+    entry.metadata.category = EffectCategory::Display;
+    state.domains.effects.register(entry).await;
 }
 
 async fn late_migration_fixture(temp: &TempDir) -> LateMigrationFixture {
@@ -1132,6 +1146,7 @@ async fn default_overlay_reconciliation_holds_admission_through_scene_commit() {
     let device_id = fixture.device_id;
     let canonical_id = fixture.canonical_id;
     register_display_device(&fixture.state, device_id).await;
+    promote_effect_to_display(&fixture.state, fixture.legacy_id).await;
     let state = Arc::new(fixture.state);
     let barrier = state.domains.effects.pause_next_resolution_for_test();
     let overlay_state = Arc::clone(&state);
@@ -1161,6 +1176,91 @@ async fn default_overlay_reconciliation_holds_admission_through_scene_commit() {
             .iter()
             .flat_map(hypercolor_types::scene::Zone::effect_ids)
             .all(|effect_id| effect_id == canonical_id)
+    );
+}
+
+#[tokio::test]
+async fn rejected_default_overlay_holds_admission_through_retraction() {
+    let temp = TempDir::new().expect("tempdir");
+    let fixture = late_migration_fixture(&temp).await;
+    let device_id = fixture.device_id;
+    register_display_device(&fixture.state, device_id).await;
+    let state = Arc::new(fixture.state);
+    let barrier = state.domains.effects.pause_next_resolution_for_test();
+    let overlay_state = Arc::clone(&state);
+    let overlay = tokio::spawn(async move {
+        crate::api::displays::apply_display_preference_overlay(overlay_state.as_ref(), device_id)
+            .await
+    });
+
+    barrier.wait_until_entered().await;
+    let migration = assert_migration_is_blocked(Arc::clone(&state)).await;
+    barrier.release();
+
+    assert!(
+        overlay
+            .await
+            .expect("overlay reconciliation should not panic")
+            .is_none()
+    );
+    migration
+        .await
+        .expect("migration should not panic")
+        .expect("migration should publish after overlay retraction");
+    assert!(
+        state
+            .scene_manager
+            .snapshot()
+            .await
+            .default_display_group_for(device_id)
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn default_overlay_reconciliation_retries_a_replaced_preference() {
+    let temp = TempDir::new().expect("tempdir");
+    let fixture = late_migration_fixture(&temp).await;
+    let device_id = fixture.device_id;
+    register_display_device(&fixture.state, device_id).await;
+    promote_effect_to_display(&fixture.state, fixture.legacy_id).await;
+    let state = Arc::new(fixture.state);
+    let barrier = state.domains.effects.pause_next_resolution_for_test();
+    let overlay_state = Arc::clone(&state);
+    let overlay = tokio::spawn(async move {
+        crate::api::displays::apply_display_preference_overlay(overlay_state.as_ref(), device_id)
+            .await
+    });
+
+    barrier.wait_until_entered().await;
+    {
+        let mut store = state.display_preferences.write().await;
+        let mut replacement = store
+            .get(device_id)
+            .cloned()
+            .expect("fixture should have a display preference");
+        replacement.opacity = 0.25;
+        store
+            .set(device_id, replacement)
+            .expect("replacement preference should persist");
+    }
+    barrier.release();
+
+    let zone = overlay
+        .await
+        .expect("overlay reconciliation should not panic");
+    let manager = state.scene_manager.snapshot().await;
+    assert_eq!(
+        (
+            zone.as_ref()
+                .and_then(|zone| zone.display_target.as_ref())
+                .map(|target| target.opacity),
+            manager
+                .default_display_group_for(device_id)
+                .and_then(|zone| zone.display_target.as_ref())
+                .map(|target| target.opacity),
+        ),
+        (Some(0.25), Some(0.25))
     );
 }
 

@@ -25,7 +25,7 @@ use hypercolor_types::device::{
 use hypercolor_types::effect::EffectMetadata;
 use hypercolor_types::spatial::LedTopology;
 
-use crate::effect::{ControlError, EffectRenderer, FrameInput};
+use crate::effect::{EffectRenderer, FrameInput};
 
 // ── Call Tracking ───────────────────────────────────────────────────────────
 
@@ -460,7 +460,7 @@ impl EffectRenderer for MockEffectRenderer {
         Ok(())
     }
 
-    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> Result<(), ControlError> {
+    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> anyhow::Result<()> {
         self.controls.extend(
             batch
                 .changes

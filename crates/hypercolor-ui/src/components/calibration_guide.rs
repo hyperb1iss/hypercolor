@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use hypercolor_types::effect::ControlValue;
+use hypercolor_types::control::ControlValue;
 use leptos::prelude::*;
 use leptos_icons::Icon;
 
@@ -219,17 +219,28 @@ pub fn CalibrationGuide(
                                 return;
                             };
                             let target_zone = zones_ctx.focused_zone_id_untracked();
+                            let Some((observed_target, expected_revision)) = zones_ctx
+                                .effect_target_untracked(
+                                    &active_effect_id,
+                                    target_zone.as_deref(),
+                                )
+                            else {
+                                toasts::toast_error("Calibration effect is no longer active");
+                                return;
+                            };
                             let preset_id = template.id;
                             let preset_name = template.name;
                             leptos::task::spawn_local(async move {
                                 match api::apply_effect_preset(
                                     &active_effect_id,
                                     &preset_id,
-                                    target_zone.as_deref(),
+                                    Some(&observed_target.zone_id),
+                                    expected_revision,
                                 )
                                 .await
                                 {
-                                    Ok(()) => {
+                                    Ok(target) => {
+                                        fx.adopt_replacement_target(&observed_target, target);
                                         fx.refresh_active_effect();
                                         toasts::toast_success(&format!("Loaded {preset_name}"));
                                     }
@@ -321,11 +332,11 @@ fn control_label(values: &HashMap<String, ControlValue>, key: &str) -> Option<St
 fn control_bool(values: &HashMap<String, ControlValue>, key: &str) -> bool {
     values
         .get(key)
-        .is_some_and(|value| matches!(value, ControlValue::Boolean(true)))
+        .is_some_and(|value| matches!(value, ControlValue::Bool(true)))
 }
 
 fn control_number(values: &HashMap<String, ControlValue>, key: &str) -> Option<f32> {
-    values.get(key).and_then(ControlValue::as_f32)
+    values.get(key).and_then(ControlValue::as_effect_f32)
 }
 
 fn speed_feel(speed: f32) -> &'static str {

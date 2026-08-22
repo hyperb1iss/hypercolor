@@ -1,22 +1,16 @@
 use std::fmt::Write as _;
 
-/// Query parameters for `GET /api/v1/control-surfaces`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct ControlSurfaceListQuery<'a> {
-    pub device_id: Option<&'a str>,
-    pub driver_id: Option<&'a str>,
-    pub include_driver: bool,
-}
+pub use hypercolor_types::api::controls::ControlSurfaceListQuery;
 
-pub fn control_surface_list_url(query: ControlSurfaceListQuery<'_>) -> String {
+pub fn control_surface_list_url(query: &ControlSurfaceListQuery) -> String {
     let mut parts = Vec::new();
-    if let Some(device_id) = query.device_id {
+    if let Some(device_id) = query.device_id.as_deref() {
         parts.push(format!("device_id={}", query_value(device_id)));
     }
-    if let Some(driver_id) = query.driver_id {
+    if let Some(driver_id) = query.driver_id.as_deref() {
         parts.push(format!("driver_id={}", query_value(driver_id)));
     }
-    if query.include_driver {
+    if query.include_driver == Some(true) {
         parts.push("include_driver=true".to_string());
     }
 
@@ -72,10 +66,10 @@ mod tests {
 
     #[test]
     fn control_surface_list_url_encodes_device_queries() {
-        let url = control_surface_list_url(ControlSurfaceListQuery {
-            device_id: Some("usb:driver:desk strip"),
+        let url = control_surface_list_url(&ControlSurfaceListQuery {
+            device_id: Some("usb:driver:desk strip".to_owned()),
             driver_id: None,
-            include_driver: true,
+            include_driver: Some(true),
         });
 
         assert_eq!(
