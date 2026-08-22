@@ -5,16 +5,16 @@
 //! traits and shared request/response types instead of reaching into daemon
 //! internals directly.
 
-pub mod backend;
-pub mod config;
-pub mod controls;
-pub mod descriptor;
-pub mod discovery;
-pub mod driver_discovery;
-pub mod error;
-pub mod host;
-pub mod module;
-pub mod pairing;
+mod backend;
+mod config;
+mod controls;
+mod descriptor;
+mod discovery;
+mod driver_discovery;
+mod error;
+mod host;
+mod module;
+mod pairing;
 
 pub use backend::{
     BackendInfo, ConnectExecution, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId,
