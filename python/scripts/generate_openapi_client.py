@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import shutil
 import subprocess
 import sys
@@ -275,12 +274,9 @@ def run(
     cwd: Path,
     stdout: int | IO[str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    env = os.environ.copy()
-    env.setdefault("CARGO_TARGET_DIR", str(Path.home() / ".cache" / "hypercolor" / "target"))
     return subprocess.run(
         command,
         cwd=cwd,
-        env=env,
         stdout=stdout,
         text=True,
         encoding="utf-8",
