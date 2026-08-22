@@ -38,10 +38,7 @@ pub use attachments::{
     update_attachments,
 };
 pub use discovery::{DiscoverRequest, discover_devices};
-pub use pairing::{
-    DeletePairingResponse, GenericPairDeviceRequest, GenericPairDeviceResponse, delete_pairing,
-    pair_device,
-};
+pub use pairing::{DeletePairingResponse, PairDeviceResponse, delete_pairing, pair_device};
 
 // ── Request / Response Types ─────────────────────────────────────────────
 

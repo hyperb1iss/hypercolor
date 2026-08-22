@@ -10,9 +10,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 
-// ── Meta ─────────────────────────────────────────────────────────────────
-
-pub use hypercolor_types::api::envelope::{ApiResponse, ResponseMeta as Meta};
+pub use hypercolor_types::api::envelope::ApiResponse;
 
 // ── Success Envelope ─────────────────────────────────────────────────────
 

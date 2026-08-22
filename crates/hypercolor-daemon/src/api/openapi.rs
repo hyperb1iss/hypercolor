@@ -12,13 +12,11 @@ use utoipa::{Modify, OpenApi};
 use utoipa_axum::router::UtoipaMethodRouter;
 use utoipa_swagger_ui::SwaggerUi;
 
-use crate::api::envelope;
-
 #[derive(OpenApi)]
 #[openapi(
     components(
         schemas(
-            envelope::Meta,
+            hypercolor_types::api::envelope::ResponseMeta,
             hypercolor_types::api::envelope::ApiErrorDetail,
             hypercolor_types::api::envelope::ApiErrorBody,
         )

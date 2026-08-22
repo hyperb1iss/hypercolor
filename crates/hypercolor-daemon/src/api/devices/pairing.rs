@@ -9,7 +9,7 @@ use axum::response::{IntoResponse, Response};
 use tracing::warn;
 
 use hypercolor_driver_api::{
-    DeviceAuthState, DeviceAuthSummary, DriverError, PairDeviceStatus as GenericPairDeviceStatus,
+    DeviceAuthState, DeviceAuthSummary, DriverError, PairDeviceRequest, PairDeviceStatus,
     TrackedDeviceCtx,
 };
 use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceState};
@@ -21,17 +21,13 @@ use crate::domain::{DomainError, ResourceKind};
 
 use super::{refreshed_device_summary, resolve_device_id_or_error};
 
-pub type GenericPairDeviceRequest = hypercolor_driver_api::PairDeviceRequest;
-
-pub use hypercolor_types::api::devices::{
-    DeletePairingResponse, PairDeviceResponse as GenericPairDeviceResponse,
-};
+pub use hypercolor_types::api::devices::{DeletePairingResponse, PairDeviceResponse};
 
 /// `POST /api/v1/devices/{id}/pair` — pair a discovered driver-backed device.
 pub async fn pair_device(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-    Json(payload): Json<GenericPairDeviceRequest>,
+    Json(payload): Json<PairDeviceRequest>,
 ) -> Response {
     let device_id = match resolve_device_id_or_error(&state, &id).await {
         Ok(id) => id,
@@ -121,8 +117,8 @@ fn publish_pairing_state_changed(
 async fn pair_device_for_ui(
     state: &Arc<AppState>,
     device_id: DeviceId,
-    request: GenericPairDeviceRequest,
-) -> Result<GenericPairDeviceResponse, DomainError> {
+    request: PairDeviceRequest,
+) -> Result<PairDeviceResponse, DomainError> {
     let Some(tracked) = state.device_registry.get(&device_id).await else {
         return Err(DomainError::not_found(ResourceKind::Device, device_id));
     };
@@ -160,7 +156,7 @@ async fn pair_device_for_ui(
             ))
         })?;
 
-    if matches!(outcome.status, GenericPairDeviceStatus::InvalidInput) {
+    if matches!(outcome.status, PairDeviceStatus::InvalidInput) {
         return Err(DomainError::validation(outcome.message));
     }
 
@@ -171,7 +167,7 @@ async fn pair_device_for_ui(
         outcome.activated,
     );
 
-    Ok(GenericPairDeviceResponse {
+    Ok(PairDeviceResponse {
         status: outcome.status,
         message: outcome.message,
         activated: outcome.activated,
