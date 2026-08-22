@@ -9,6 +9,7 @@ use hypercolor_core::scene::SceneManager;
 use hypercolor_types::scene::{Scene, SceneId, SceneKind};
 use serde::{Deserialize, Serialize};
 
+use crate::effect_id_migration::{EffectIdMigrations, remap_zones};
 use crate::persistence::{
     AdmittedAtomicWrite, AtomicFileWriter, AtomicWriteCommitResult, AtomicWriteOutcome,
     PersistenceError, serialize_json_pretty,
@@ -187,6 +188,26 @@ impl SceneStore {
         self.scenes = named_scenes(scenes);
     }
 
+    /// Rewrite path-derived effect IDs before installing persisted scenes.
+    pub fn migrate_effect_ids(&mut self, migrations: &EffectIdMigrations) -> anyhow::Result<usize> {
+        let mut scenes = self.scenes.clone();
+        let migrated = scenes
+            .values_mut()
+            .map(|scene| remap_zones(&mut scene.zones, migrations))
+            .sum();
+        if migrated == 0 {
+            return Ok(0);
+        }
+
+        let pending = self.reserve_save(scenes.into_values())?;
+        match self.save_reserved(pending)? {
+            AtomicWriteOutcome::Written => Ok(migrated),
+            AtomicWriteOutcome::Superseded => {
+                bail!("effect ID migration was superseded by a newer scene snapshot")
+            }
+        }
+    }
+
     pub fn sync_from_manager(&mut self, manager: &SceneManager) {
         self.replace_named_scenes(manager.list().into_iter().cloned());
     }
@@ -236,4 +257,64 @@ fn persist_reserved(
 ) -> anyhow::Result<(AtomicWriteOutcome, HashMap<SceneId, Scene>)> {
     let outcome = pending.write.commit().context("failed to persist scenes")?;
     Ok((outcome, pending.scenes))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use hypercolor_core::scene::SceneManager;
+    use hypercolor_types::effect::EffectId;
+    use hypercolor_types::layer::{SceneLayer, SceneLayerId};
+    use hypercolor_types::scene::{SceneId, SceneKind, SceneMutationMode};
+    use tempfile::TempDir;
+
+    use super::SceneStore;
+
+    #[test]
+    fn scene_effect_id_migration_rewrites_the_durable_store() {
+        let temp = TempDir::new().expect("tempdir");
+        let path = temp.path().join("scenes.json");
+        let legacy_id = EffectId::new(uuid::Uuid::now_v7());
+        let canonical_id = EffectId::new(uuid::Uuid::now_v7());
+        let mut scene = SceneManager::with_default()
+            .get(&SceneId::DEFAULT)
+            .cloned()
+            .expect("default scene should exist");
+        scene.id = SceneId::new();
+        scene.name = "Migrated scene".to_owned();
+        scene.kind = SceneKind::Named;
+        scene.mutation_mode = SceneMutationMode::Live;
+        scene.zones[0].layers = vec![SceneLayer::from_effect(
+            SceneLayerId::new(),
+            legacy_id,
+            HashMap::new(),
+            HashMap::new(),
+            None,
+        )];
+
+        let mut store = SceneStore::new(path.clone()).expect("store should open");
+        store.replace_named_scenes([scene]);
+        store.save().expect("legacy scene should persist");
+        assert_eq!(
+            store
+                .migrate_effect_ids(&HashMap::from([(legacy_id, canonical_id)]))
+                .expect("migration should persist"),
+            1
+        );
+        drop(store);
+
+        let reopened = SceneStore::load(&path).expect("scene store should reopen");
+        let effect_ids = reopened
+            .list()
+            .flat_map(|scene| &scene.zones)
+            .flat_map(hypercolor_types::scene::Zone::effect_ids)
+            .collect::<Vec<_>>();
+        assert_eq!(effect_ids, vec![canonical_id]);
+        assert!(
+            !std::fs::read_to_string(path)
+                .expect("scene file should read")
+                .contains(&legacy_id.to_string())
+        );
+    }
 }

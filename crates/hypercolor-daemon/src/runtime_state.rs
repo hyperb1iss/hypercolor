@@ -8,6 +8,7 @@ use hypercolor_core::scene::SceneManager;
 use hypercolor_types::scene::{SceneId, Zone};
 use serde::{Deserialize, Serialize};
 
+use crate::effect_id_migration::{EffectIdMigrations, remap_zones};
 use crate::path_migration::{
     MigratedStore, MigrationOutcome, PathMigrationEntry, PathMigrationError, VersionedDocument,
     migrate,
@@ -35,6 +36,13 @@ pub struct RuntimeSessionSnapshot {
 
     /// Explicit user pause state. Transient OS sleep is never persisted.
     pub manual_paused: bool,
+}
+
+impl RuntimeSessionSnapshot {
+    /// Rewrite path-derived effect IDs in the persisted default scene.
+    pub fn migrate_effect_ids(&mut self, migrations: &EffectIdMigrations) -> usize {
+        remap_zones(&mut self.default_scene_groups, migrations)
+    }
 }
 
 /// A runtime snapshot write ordered at the owning mutation boundary.
@@ -302,6 +310,55 @@ mod tests {
             .expect("snapshot should reload")
             .expect("snapshot should exist");
         assert_eq!(reloaded.default_scene_groups[0].layers[0].id, loaded_id);
+    }
+
+    #[test]
+    fn runtime_snapshot_effect_id_migration_is_durable() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let path = tempdir.path().join("runtime-state.json");
+        let legacy_id = EffectId::from(Uuid::now_v7());
+        let canonical_id = EffectId::from(Uuid::now_v7());
+        let mut zone = SceneManager::with_default()
+            .get(&SceneId::DEFAULT)
+            .and_then(|scene| scene.zones.first())
+            .cloned()
+            .expect("default scene should have a primary zone");
+        zone.layers = vec![SceneLayer::from_effect(
+            SceneLayerId::new(),
+            legacy_id,
+            std::collections::HashMap::new(),
+            std::collections::HashMap::new(),
+            None,
+        )];
+        let mut snapshot = RuntimeSessionSnapshot {
+            default_scene_groups: vec![zone],
+            ..RuntimeSessionSnapshot::default()
+        };
+        save(&path, &snapshot).expect("legacy snapshot should persist");
+
+        assert_eq!(
+            snapshot.migrate_effect_ids(&std::collections::HashMap::from([(
+                legacy_id,
+                canonical_id,
+            )])),
+            1
+        );
+        save(&path, &snapshot).expect("migrated snapshot should persist");
+
+        let reopened = load(&path)
+            .expect("snapshot should reload")
+            .expect("snapshot should exist");
+        assert_eq!(
+            reopened.default_scene_groups[0]
+                .effect_ids()
+                .collect::<Vec<_>>(),
+            vec![canonical_id]
+        );
+        assert!(
+            !std::fs::read_to_string(path)
+                .expect("snapshot should read")
+                .contains(&legacy_id.to_string())
+        );
     }
 
     #[test]

@@ -7,8 +7,8 @@ use tempfile::TempDir;
 
 use hypercolor_core::effect::{
     EffectRegistry, builtin::register_builtin_effects, bundled_effects_root,
-    default_effect_search_paths, html_path_effect_id_for_testing, load_html_effect_file,
-    parse_html_effect_metadata, register_html_effects,
+    default_effect_search_paths, load_html_effect_file, parse_html_effect_metadata,
+    register_html_effects,
 };
 use hypercolor_types::canvas::srgb_to_linear;
 use hypercolor_types::effect::{EffectCategory, EffectSource};
@@ -240,7 +240,7 @@ fn bundled_html_effect_ids_are_stable_across_build_roots() {
 }
 
 #[test]
-fn registry_resolves_legacy_bundled_html_path_aliases() {
+fn discovery_reports_legacy_bundled_ids_without_installing_runtime_aliases() {
     let temp = TempDir::new().expect("failed to create tempdir");
     let root = temp.path().join("effects");
     let html = r#"
@@ -250,26 +250,24 @@ fn registry_resolves_legacy_bundled_html_path_aliases() {
   <meta publisher="Hypercolor" />
 </head>
 "#;
-    let source_path = root.join("hypercolor/poisonous.html");
     let installed_path = root.join("bundled/poisonous.html");
-    write_html(&source_path, html);
     write_html(&installed_path, html);
 
-    let installed_entry = load_html_effect_file(&installed_path)
-        .expect("installed effect should load")
-        .expect("installed effect should register");
-    let canonical_id = installed_entry.metadata.id;
-    let legacy_id = html_path_effect_id_for_testing(&source_path);
-    assert_ne!(legacy_id, canonical_id);
+    let mut registry = EffectRegistry::new(vec![root.clone()]);
+    let report = register_html_effects(&mut registry, &[root]);
 
-    let mut registry = EffectRegistry::new(vec![root]);
-    registry.register(installed_entry);
-
-    assert_eq!(registry.resolve_id(&legacy_id), Some(canonical_id));
-    let effect = registry
-        .get(&legacy_id)
-        .expect("legacy path id should resolve to the installed effect");
-    assert_eq!(effect.metadata.name, "Poisonous");
+    assert_eq!(registry.len(), 1);
+    assert!(!report.legacy_effect_ids.is_empty());
+    for (legacy_id, canonical_id) in report.legacy_effect_ids {
+        assert_ne!(legacy_id, canonical_id);
+        assert!(registry.get(&legacy_id).is_none());
+        assert_eq!(
+            registry
+                .get(&canonical_id)
+                .map(|effect| effect.metadata.name.as_str()),
+            Some("Poisonous")
+        );
+    }
 }
 
 #[test]
@@ -720,8 +718,6 @@ fn stale_screen_cast_html_coexists_with_native_and_current_canvas_port() {
             &html_entry.1.metadata.source,
             EffectSource::Html { .. }
         ));
-        let path_alias = html_path_effect_id_for_testing(&path);
-        assert_eq!(registry.resolve_id(&path_alias), Some(html_entry.0));
     }
 }
 

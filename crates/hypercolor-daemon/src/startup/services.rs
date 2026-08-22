@@ -79,6 +79,7 @@ use super::config::resolve_server_identity;
 use super::resolve_compositor_acceleration_mode;
 use crate::render_thread::ConfiguredFpsTier;
 
+#[cfg(test)]
 fn open_persisted_library_store(
     path: &std::path::Path,
 ) -> Result<Arc<dyn crate::library::LibraryStore>> {
@@ -86,6 +87,24 @@ fn open_persisted_library_store(
         crate::library::JsonLibraryStore::open(path.to_owned()).with_context(|| {
             format!(
                 "failed to open persisted library store at {}",
+                path.display()
+            )
+        })?,
+    ))
+}
+
+fn open_persisted_library_store_with_effect_id_migrations(
+    path: &std::path::Path,
+    migrations: &crate::effect_id_migration::EffectIdMigrations,
+) -> Result<Arc<dyn crate::library::LibraryStore>> {
+    Ok(Arc::new(
+        crate::library::JsonLibraryStore::open_with_effect_id_migrations(
+            path.to_owned(),
+            migrations,
+        )
+        .with_context(|| {
+            format!(
+                "failed to migrate persisted library store at {}",
                 path.display()
             )
         })?,
@@ -250,6 +269,7 @@ impl DaemonState {
             html_failed = html_report.failed_files(),
             "Effect registry created"
         );
+        let effect_id_migrations = html_report.legacy_effect_ids;
 
         let default_layout = SpatialLayout {
             id: "default".into(),
@@ -309,6 +329,16 @@ impl DaemonState {
             crate::profile_import::ProfileImportOutcome::Imported { profiles, backup } => {
                 info!(profiles, backup = %backup.display(), "Imported legacy profiles as scenes");
             }
+        }
+        let migrated_scene_effect_ids = scene_store_inner
+            .migrate_effect_ids(&effect_id_migrations)
+            .context("failed to migrate persisted scene effect IDs")?;
+        if migrated_scene_effect_ids > 0 {
+            info!(
+                migrated = migrated_scene_effect_ids,
+                path = %scenes_path.display(),
+                "Migrated persisted scene effect IDs"
+            );
         }
         let mut scene_manager_inner = SceneManager::with_default_layout(default_layout.clone());
         for scene in scene_store_inner.list().cloned() {
@@ -486,6 +516,17 @@ impl DaemonState {
                         ?migration,
                         "Display preferences store ready"
                     );
+                    let mut store = store;
+                    let migrated = store
+                        .migrate_effect_ids(&effect_id_migrations)
+                        .context("failed to migrate display preference effect IDs")?;
+                    if migrated > 0 {
+                        info!(
+                            migrated,
+                            path = %display_preferences_path.display(),
+                            "Migrated display preference effect IDs"
+                        );
+                    }
                     store
                 }
                 Err(error) => {
@@ -575,7 +616,7 @@ impl DaemonState {
 
         // ── Runtime Session Store ───────────────────────────────────
         let runtime_state_path = state_dir.join("runtime-state.json");
-        let startup_runtime_snapshot = match crate::runtime_state::load_migrated(
+        let mut startup_runtime_snapshot = match crate::runtime_state::load_migrated(
             &data_dir.join("runtime-state.json"),
             &runtime_state_path,
         ) {
@@ -596,6 +637,18 @@ impl DaemonState {
                 None
             }
         };
+        if let Some(snapshot) = startup_runtime_snapshot.as_mut() {
+            let migrated = snapshot.migrate_effect_ids(&effect_id_migrations);
+            if migrated > 0 {
+                crate::runtime_state::save(&runtime_state_path, snapshot)
+                    .context("failed to migrate runtime session effect IDs")?;
+                info!(
+                    migrated,
+                    path = %runtime_state_path.display(),
+                    "Migrated runtime session effect IDs"
+                );
+            }
+        }
 
         let device_aliases_path = state_dir.join(crate::device_aliases::DEVICE_ALIASES_FILE);
         let startup_device_aliases = match crate::device_aliases::load_migrated(
@@ -687,7 +740,10 @@ impl DaemonState {
         info!("Device backends registered");
 
         let library_path = ConfigManager::data_dir().join("library.json");
-        let library_store = open_persisted_library_store(&library_path)?;
+        let library_store = open_persisted_library_store_with_effect_id_migrations(
+            &library_path,
+            &effect_id_migrations,
+        )?;
         let start_time = Instant::now();
         let runtime_session = RuntimeSessionService::new(
             runtime_state_path.clone(),

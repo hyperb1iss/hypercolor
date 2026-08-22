@@ -14,12 +14,13 @@ use tracing::warn;
 
 use hypercolor_types::effect::EffectId;
 use hypercolor_types::library::{
-    EffectPlaylist, EffectPreset, FavoriteEffect, PlaylistId, PresetId,
+    EffectPlaylist, EffectPreset, FavoriteEffect, PlaylistId, PlaylistItemTarget, PresetId,
 };
 
+use crate::effect_id_migration::{EffectIdMigrations, remap_effect_id};
 use crate::persistence::{
-    AdmittedAtomicWrite, AtomicFileWriter, AtomicWriteCommitResult, PersistenceError,
-    serialize_json_pretty,
+    AdmittedAtomicWrite, AtomicFileWriter, AtomicWriteCommitResult, AtomicWriteOutcome,
+    PersistenceError, serialize_json_pretty,
 };
 
 /// Storage-layer errors for library entities.
@@ -78,6 +79,20 @@ pub enum JsonLibraryStoreOpenError {
         #[source]
         source: PersistenceError,
     },
+    #[error("failed to serialize migrated library snapshot at {path}: {source}")]
+    SerializeMigration {
+        path: PathBuf,
+        #[source]
+        source: serde_json::Error,
+    },
+    #[error("failed to persist migrated library snapshot at {path}: {source}")]
+    PersistMigration {
+        path: PathBuf,
+        #[source]
+        source: PersistenceError,
+    },
+    #[error("effect ID migration was superseded by a newer library snapshot at {path}")]
+    MigrationSuperseded { path: PathBuf },
 }
 
 /// Persistence contract for saved effect library data.
@@ -121,6 +136,45 @@ struct InMemoryLibraryData {
 }
 
 impl InMemoryLibraryData {
+    fn migrate_effect_ids(&mut self, migrations: &EffectIdMigrations) -> usize {
+        let mut migrated = 0;
+        let mut favorites = HashMap::<EffectId, FavoriteEffect>::new();
+        for (_, mut favorite) in std::mem::take(&mut self.favorites) {
+            migrated += usize::from(remap_effect_id(&mut favorite.effect_id, migrations));
+            favorites
+                .entry(favorite.effect_id)
+                .and_modify(|current| {
+                    if favorite.added_at_ms > current.added_at_ms {
+                        *current = favorite.clone();
+                    }
+                })
+                .or_insert(favorite);
+        }
+        self.favorites = favorites;
+
+        let mut revisions = HashMap::<EffectId, u64>::new();
+        for (mut effect_id, revision) in std::mem::take(&mut self.favorite_revisions) {
+            migrated += usize::from(remap_effect_id(&mut effect_id, migrations));
+            revisions
+                .entry(effect_id)
+                .and_modify(|current| *current = (*current).max(revision))
+                .or_insert(revision);
+        }
+        self.favorite_revisions = revisions;
+
+        for preset in self.presets.values_mut() {
+            migrated += usize::from(remap_effect_id(&mut preset.effect_id, migrations));
+        }
+        for playlist in self.playlists.values_mut() {
+            for item in &mut playlist.items {
+                if let PlaylistItemTarget::Effect { effect_id } = &mut item.target {
+                    migrated += usize::from(remap_effect_id(effect_id, migrations));
+                }
+            }
+        }
+        migrated
+    }
+
     fn favorite_state(&self, effect_id: EffectId) -> Option<u64> {
         self.favorites
             .get(&effect_id)
@@ -347,13 +401,28 @@ impl JsonLibraryStore {
     ///
     /// Returns an error if an existing snapshot cannot be read or parsed.
     pub fn open(path: PathBuf) -> Result<Self, JsonLibraryStoreOpenError> {
+        Self::open_inner(path, None)
+    }
+
+    /// Open a persisted library and durably replace path-derived effect IDs.
+    pub fn open_with_effect_id_migrations(
+        path: PathBuf,
+        migrations: &EffectIdMigrations,
+    ) -> Result<Self, JsonLibraryStoreOpenError> {
+        Self::open_inner(path, Some(migrations))
+    }
+
+    fn open_inner(
+        path: PathBuf,
+        migrations: Option<&EffectIdMigrations>,
+    ) -> Result<Self, JsonLibraryStoreOpenError> {
         let snapshot_exists =
             path.try_exists()
                 .map_err(|source| JsonLibraryStoreOpenError::Read {
                     path: path.clone(),
                     source,
                 })?;
-        let data = if snapshot_exists {
+        let mut data = if snapshot_exists {
             let raw = std::fs::read_to_string(&path).map_err(|source| {
                 JsonLibraryStoreOpenError::Read {
                     path: path.clone(),
@@ -375,6 +444,29 @@ impl JsonLibraryStore {
                 source,
             }
         })?;
+
+        if let Some(migrations) = migrations
+            && data.migrate_effect_ids(migrations) > 0
+        {
+            let payload =
+                serialize_json_pretty(&LibrarySnapshot::from_data(&data)).map_err(|source| {
+                    JsonLibraryStoreOpenError::SerializeMigration {
+                        path: path.clone(),
+                        source,
+                    }
+                })?;
+            match writer.write(&payload).map_err(|source| {
+                JsonLibraryStoreOpenError::PersistMigration {
+                    path: path.clone(),
+                    source,
+                }
+            })? {
+                AtomicWriteOutcome::Written => {}
+                AtomicWriteOutcome::Superseded => {
+                    return Err(JsonLibraryStoreOpenError::MigrationSuperseded { path });
+                }
+            }
+        }
 
         Ok(Self {
             path,
@@ -986,8 +1078,9 @@ mod tests {
     use std::collections::HashMap;
 
     use super::{
-        ConditionalFavoriteMutation, ConditionalFavoriteMutationOutcome, InMemoryLibraryStore,
-        JsonLibraryStore, JsonLibraryStoreOpenError, LibraryStore, ProjectedFavoriteState,
+        ConditionalFavoriteMutation, ConditionalFavoriteMutationOutcome, InMemoryLibraryData,
+        InMemoryLibraryStore, JsonLibraryStore, JsonLibraryStoreOpenError, LibrarySnapshot,
+        LibraryStore, ProjectedFavoriteState,
     };
     use hypercolor_types::effect::EffectId;
     use hypercolor_types::library::{
@@ -1040,6 +1133,103 @@ mod tests {
                 .await
                 .expect("remove missing favorite")
         );
+    }
+
+    #[tokio::test]
+    async fn opening_a_library_durably_migrates_every_direct_effect_reference() {
+        let temp = TempDir::new().expect("tempdir");
+        let path = temp.path().join("library.json");
+        let legacy_id = EffectId::new(Uuid::now_v7());
+        let canonical_id = EffectId::new(Uuid::now_v7());
+        let preset_id = PresetId::new();
+        let playlist_id = PlaylistId::new();
+        let mut data = InMemoryLibraryData::default();
+        data.favorites.insert(
+            legacy_id,
+            FavoriteEffect {
+                effect_id: legacy_id,
+                added_at_ms: 10,
+            },
+        );
+        data.favorites.insert(
+            canonical_id,
+            FavoriteEffect {
+                effect_id: canonical_id,
+                added_at_ms: 20,
+            },
+        );
+        data.favorite_revisions.insert(legacy_id, 3);
+        data.favorite_revisions.insert(canonical_id, 5);
+        data.presets.insert(
+            preset_id,
+            EffectPreset {
+                id: preset_id,
+                name: "Migrated preset".to_owned(),
+                description: None,
+                effect_id: legacy_id,
+                controls: HashMap::new(),
+                tags: Vec::new(),
+                created_at_ms: 1,
+                updated_at_ms: 2,
+            },
+        );
+        data.playlists.insert(
+            playlist_id,
+            EffectPlaylist {
+                id: playlist_id,
+                name: "Migrated playlist".to_owned(),
+                description: None,
+                items: vec![PlaylistItem {
+                    id: PlaylistItemId::new(),
+                    target: PlaylistItemTarget::Effect {
+                        effect_id: legacy_id,
+                    },
+                    duration_ms: None,
+                    transition_ms: None,
+                }],
+                loop_enabled: false,
+                created_at_ms: 1,
+                updated_at_ms: 2,
+            },
+        );
+        std::fs::write(
+            &path,
+            serde_json::to_vec_pretty(&LibrarySnapshot::from_data(&data))
+                .expect("snapshot should serialize"),
+        )
+        .expect("snapshot should write");
+
+        let store = JsonLibraryStore::open_with_effect_id_migrations(
+            path.clone(),
+            &HashMap::from([(legacy_id, canonical_id)]),
+        )
+        .expect("library migration should succeed");
+
+        let favorites = store.list_favorites().await;
+        assert_eq!(favorites.len(), 1);
+        assert_eq!(favorites[0].effect_id, canonical_id);
+        assert_eq!(favorites[0].added_at_ms, 20);
+        assert_eq!(
+            store
+                .get_preset(preset_id)
+                .await
+                .expect("preset should survive")
+                .effect_id,
+            canonical_id
+        );
+        let playlist = store
+            .get_playlist(playlist_id)
+            .await
+            .expect("playlist should survive");
+        assert!(matches!(
+            playlist.items[0].target,
+            PlaylistItemTarget::Effect { effect_id } if effect_id == canonical_id
+        ));
+        drop(store);
+
+        let durable = std::fs::read_to_string(path).expect("migrated snapshot should read");
+        assert!(!durable.contains(&legacy_id.to_string()));
+        assert!(durable.contains(&canonical_id.to_string()));
     }
 
     #[tokio::test]

@@ -1,6 +1,6 @@
 //! HTML effect discovery and registry loading.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -43,6 +43,8 @@ pub struct HtmlDiscoveryReport {
     pub replaced_effects: usize,
     pub skipped_files: usize,
     pub errors: Vec<HtmlDiscoveryError>,
+    /// Path-derived IDs that persisted documents must replace before use.
+    pub legacy_effect_ids: HashMap<EffectId, EffectId>,
 }
 
 impl HtmlDiscoveryReport {
@@ -126,6 +128,11 @@ pub fn register_html_effects(
                     continue;
                 }
             };
+
+            let canonical_id = entry.metadata.id;
+            for legacy_id in html_effect_id_migrations(&entry) {
+                report.legacy_effect_ids.insert(legacy_id, canonical_id);
+            }
 
             if registry.register(entry).is_some() {
                 report.replaced_effects += 1;
@@ -308,36 +315,29 @@ fn html_effect_id(
         .unwrap_or_else(|| deterministic_html_effect_id(source_path))
 }
 
-pub(super) fn html_effect_aliases(entry: &EffectEntry) -> Vec<EffectId> {
+fn html_effect_id_migrations(entry: &EffectEntry) -> Vec<EffectId> {
     if !matches!(&entry.metadata.source, EffectSource::Html { .. }) {
         return Vec::new();
     }
 
     let canonical = entry.metadata.id;
-    let mut aliases = Vec::new();
+    let mut legacy_ids = Vec::new();
     let mut seen = HashSet::new();
-    let mut push_alias = |alias: EffectId| {
-        if alias != canonical && seen.insert(alias) {
-            aliases.push(alias);
+    let mut push_legacy_id = |legacy_id: EffectId| {
+        if legacy_id != canonical && seen.insert(legacy_id) {
+            legacy_ids.push(legacy_id);
         }
     };
 
-    push_alias(deterministic_html_effect_id(&entry.source_path));
+    push_legacy_id(deterministic_html_effect_id(&entry.source_path));
 
     if bundled_effect_slug(&entry.source_path).is_some() {
         for path in related_bundled_effect_paths(&entry.source_path) {
-            push_alias(deterministic_html_effect_id(&path));
+            push_legacy_id(deterministic_html_effect_id(&path));
         }
     }
 
-    aliases
-}
-
-/// Return the legacy path-derived HTML effect id for compatibility tests.
-#[doc(hidden)]
-#[must_use]
-pub fn html_path_effect_id_for_testing(path: &Path) -> EffectId {
-    deterministic_html_effect_id(&normalize_path(path))
+    legacy_ids
 }
 
 fn bundled_effect_slug(source_path: &Path) -> Option<String> {

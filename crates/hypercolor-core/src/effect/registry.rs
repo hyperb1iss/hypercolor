@@ -3,7 +3,7 @@
 //! The [`EffectRegistry`] scans effect directories, parses metadata, and
 //! provides lookup/search/filter operations over the known effect catalog.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -73,9 +73,6 @@ pub struct EffectRegistry {
     /// All known effects, indexed by their unique id.
     effects: HashMap<EffectId, EffectEntry>,
 
-    /// Compatibility ids that resolve to canonical effect ids.
-    aliases: HashMap<EffectId, EffectId>,
-
     /// Root directories to scan for effects.
     search_paths: Vec<PathBuf>,
 
@@ -90,7 +87,6 @@ impl EffectRegistry {
         info!(paths = ?search_paths, "Creating effect registry");
         Self {
             effects: HashMap::new(),
-            aliases: HashMap::new(),
             search_paths,
             generation: 0,
         }
@@ -126,10 +122,6 @@ impl EffectRegistry {
     /// the old entry is returned.
     pub fn register(&mut self, entry: EffectEntry) -> Option<EffectEntry> {
         let id = entry.metadata.id;
-        let new_aliases = super::loader::html_effect_aliases(&entry)
-            .into_iter()
-            .collect::<HashSet<_>>();
-        let aliases_changed = self.aliases_for(id) != new_aliases;
         let existing = self.effects.get(&id);
         if let Some(existing) = existing {
             debug!(
@@ -144,12 +136,7 @@ impl EffectRegistry {
         let invalidates =
             existing.is_none_or(|existing| !existing.matches_active_scene_semantics(&entry));
         let replaced = self.effects.insert(id, entry);
-        self.aliases
-            .retain(|alias, canonical| *alias != id && *canonical != id);
-        for alias in new_aliases {
-            self.aliases.insert(alias, id);
-        }
-        if invalidates || aliases_changed {
+        if invalidates {
             self.bump_generation();
         }
         replaced
@@ -160,17 +147,8 @@ impl EffectRegistry {
     /// Returns the removed entry, or `None` if not found.
     pub fn remove(&mut self, id: &EffectId) -> Option<EffectEntry> {
         debug!(id = %id, "Removing effect from registry");
-        let canonical_id = if self.effects.contains_key(id) {
-            *id
-        } else {
-            self.aliases.get(id).copied().unwrap_or(*id)
-        };
-        let removed = self.effects.remove(&canonical_id);
-        let alias_count_before = self.aliases.len();
-        self.aliases.retain(|alias, canonical| {
-            *alias != *id && *alias != canonical_id && *canonical != canonical_id
-        });
-        if removed.is_some() || self.aliases.len() != alias_count_before {
+        let removed = self.effects.remove(id);
+        if removed.is_some() {
             self.bump_generation();
         }
         removed
@@ -179,28 +157,13 @@ impl EffectRegistry {
     /// Look up an effect by its unique id.
     #[must_use]
     pub fn get(&self, id: &EffectId) -> Option<&EffectEntry> {
-        self.resolve_id(id)
-            .and_then(|resolved_id| self.effects.get(&resolved_id))
-    }
-
-    /// Resolve a canonical id from a current id or a compatibility alias.
-    #[must_use]
-    pub fn resolve_id(&self, id: &EffectId) -> Option<EffectId> {
-        if self.effects.contains_key(id) {
-            return Some(*id);
-        }
-
-        self.aliases
-            .get(id)
-            .copied()
-            .filter(|resolved_id| self.effects.contains_key(resolved_id))
+        self.effects.get(id)
     }
 
     /// Apply a semantic mutation to an effect entry and advance generation.
     pub fn update(&mut self, id: &EffectId, update: impl FnOnce(&mut EffectEntry)) -> Option<bool> {
-        let canonical_id = self.resolve_id(id)?;
         let invalidates = {
-            let entry = self.effects.get_mut(&canonical_id)?;
+            let entry = self.effects.get_mut(id)?;
             let before = entry.clone();
             update(entry);
             !before.matches_active_scene_semantics(entry)
@@ -424,13 +387,6 @@ impl EffectRegistry {
 
     fn bump_generation(&mut self) {
         self.generation = self.generation.saturating_add(1);
-    }
-
-    fn aliases_for(&self, canonical_id: EffectId) -> HashSet<EffectId> {
-        self.aliases
-            .iter()
-            .filter_map(|(alias, target)| (*target == canonical_id).then_some(*alias))
-            .collect()
     }
 }
 
