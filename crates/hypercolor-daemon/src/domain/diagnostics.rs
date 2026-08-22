@@ -207,10 +207,6 @@ pub(crate) fn default_safe_checks() -> Vec<String> {
     DEFAULT_SAFE_CHECKS.into_iter().map(str::to_owned).collect()
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "diagnostics response assembly keeps checks and snapshot state together"
-)]
 pub(crate) async fn collect_diagnostics(
     state: &AppState,
     requested: &[String],
@@ -222,10 +218,6 @@ pub(crate) async fn collect_diagnostics(
     let display_output_metrics = state.display_frames.read().await.metrics_snapshot();
     let device_metrics = state.device_metrics.load_full();
     let input = input_status_snapshot(&state);
-    #[allow(
-        unused_mut,
-        reason = "macOS parity attaches its report only in the feature-gated build"
-    )]
     let mut snapshot = build_diagnose_snapshot(
         input,
         &performance,
@@ -239,217 +231,16 @@ pub(crate) async fn collect_diagnostics(
 
     for check in requested {
         match check.as_str() {
-            "daemon" => {
-                checks.push(DiagnoseCheck {
-                    category: "system".to_owned(),
-                    name: "daemon_running".to_owned(),
-                    status: "pass".to_owned(),
-                    detail: env!("CARGO_PKG_VERSION").to_owned(),
-                });
-            }
+            "daemon" => checks.push(daemon_check()),
             "render" => {
-                let loop_guard = state.render_loop.read().await;
-                let running = loop_guard.is_running();
-                let render_loop_stats = loop_guard.stats();
-                checks.push(DiagnoseCheck {
-                    category: "render".to_owned(),
-                    name: "render_loop".to_owned(),
-                    status: if running { "pass" } else { "warning" }.to_owned(),
-                    detail: format!(
-                        "state={}, tier={}",
-                        render_loop_stats.state, render_loop_stats.tier
-                    ),
-                });
-                if running {
-                    let (status, detail) = render_frame_liveness_status(
-                        performance.latest_frame.as_ref(),
-                        render_elapsed_ms,
-                    );
-                    checks.push(DiagnoseCheck {
-                        category: "render".to_owned(),
-                        name: "frame_liveness".to_owned(),
-                        status: status.to_owned(),
-                        detail,
-                    });
-
-                    let (status, detail) =
-                        render_led_freshness_status(performance.latest_frame.as_ref());
-                    checks.push(DiagnoseCheck {
-                        category: "render".to_owned(),
-                        name: "led_freshness".to_owned(),
-                        status: status.to_owned(),
-                        detail,
-                    });
-
-                    checks.push(DiagnoseCheck {
-                        category: "render".to_owned(),
-                        name: "recent_output_sources".to_owned(),
-                        status: "pass".to_owned(),
-                        detail: format!(
-                            "frames={}, current_frame={}, published_frame={}, routed_reuse={}, reused_published_frame={}, gpu_sample_stale={}",
-                            performance.frame_count,
-                            performance.pacing.output_current_frame,
-                            performance.pacing.output_published_frame,
-                            performance.pacing.output_routed_reuse,
-                            performance.pacing.output_reused_published_frame,
-                            performance.pacing.gpu_sample_stale
-                        ),
-                    });
-                }
+                checks.extend(render_checks(state, &performance, render_elapsed_ms).await);
             }
-            "devices" => {
-                let count = state.device_registry.len().await;
-                checks.push(DiagnoseCheck {
-                    category: "devices".to_owned(),
-                    name: "registry".to_owned(),
-                    status: "pass".to_owned(),
-                    detail: format!("{count} tracked"),
-                });
-
-                let output_status = if snapshot.device_output.worker_finished_queues > 0
-                    || snapshot.device_output.errors_total > 0
-                {
-                    "fail"
-                } else if snapshot.device_output.lagging_queues > 0
-                    || snapshot.device_output.dropped_frames_total > 0
-                {
-                    "warning"
-                } else {
-                    "pass"
-                };
-                checks.push(DiagnoseCheck {
-                    category: "devices".to_owned(),
-                    name: "output_queues".to_owned(),
-                    status: output_status.to_owned(),
-                    detail: format!(
-                        "queues={}, usb_queues={}, lagging={}, worker_finished={}, dropped_total={}, errors_total={}",
-                        snapshot.device_output.queues,
-                        snapshot.device_output.usb_queues,
-                        snapshot.device_output.lagging_queues,
-                        snapshot.device_output.worker_finished_queues,
-                        snapshot.device_output.dropped_frames_total,
-                        snapshot.device_output.errors_total
-                    ),
-                });
-                checks.push(DiagnoseCheck {
-                    category: "devices".to_owned(),
-                    name: "usb_actor_display_lane".to_owned(),
-                    status: if snapshot.usb.display_led_priority_wait_max_ms >= 2.0 {
-                        "warning"
-                    } else {
-                        "pass"
-                    }
-                    .to_owned(),
-                    detail: format!(
-                        "display_frames={}, delayed_for_led={}, wait_avg_ms={:.2}, wait_max_ms={:.2}",
-                        snapshot.usb.display_frames_total,
-                        snapshot.usb.display_frames_delayed_for_led_total,
-                        snapshot.usb.display_led_priority_wait_avg_ms,
-                        snapshot.usb.display_led_priority_wait_max_ms
-                    ),
-                });
-                checks.push(DiagnoseCheck {
-                    category: "devices".to_owned(),
-                    name: "display_output_encoder".to_owned(),
-                    status: if snapshot.display_output.encode_failures_total > 0 {
-                        "warning"
-                    } else {
-                        "pass"
-                    }
-                    .to_owned(),
-                    detail: format!(
-                        "attempts={}, successes={}, failures={}, avg_ms={:.2}, max_ms={:.2}, last_ms={}, last_bytes={}",
-                        snapshot.display_output.encode_attempts_total,
-                        snapshot.display_output.encode_successes_total,
-                        snapshot.display_output.encode_failures_total,
-                        snapshot.display_output.encode_avg_ms,
-                        snapshot.display_output.encode_max_ms,
-                        snapshot
-                            .display_output
-                            .encode_last_ms
-                            .map_or_else(|| "none".to_owned(), |value| format!("{value:.2}")),
-                        snapshot.display_output.encoded_last_bytes
-                    ),
-                });
-            }
-            "config" => {
-                let has_manager = state.config_manager.is_some();
-                checks.push(DiagnoseCheck {
-                    category: "config".to_owned(),
-                    name: "config_manager".to_owned(),
-                    status: if has_manager { "pass" } else { "warning" }.to_owned(),
-                    detail: if has_manager {
-                        "available".to_owned()
-                    } else {
-                        "using defaults/test state".to_owned()
-                    },
-                });
-            }
-            "input" => {
-                let diagnostics = actionable_input_diagnostics(&snapshot.input);
-                if diagnostics.is_empty() {
-                    checks.push(DiagnoseCheck {
-                        category: "input".to_owned(),
-                        name: "source_health".to_owned(),
-                        status: "pass".to_owned(),
-                        detail: format!(
-                            "{} source(s), graph generation {}",
-                            snapshot.input.sources.len(),
-                            snapshot.input.source_graph_generation
-                        ),
-                    });
-                } else {
-                    checks.extend(diagnostics.into_iter().map(|diagnostic| DiagnoseCheck {
-                        category: "input".to_owned(),
-                        name: diagnostic.source_id,
-                        status: diagnostic.status.to_owned(),
-                        detail: diagnostic.detail,
-                    }));
-                }
-            }
+            "devices" => checks.extend(device_checks(state, &snapshot).await),
+            "config" => checks.push(config_check(state)),
+            "input" => checks.extend(input_checks(&snapshot.input)),
             "memory" => checks.push(servo_memory_check().await),
             "macos_screen_parity" => {
-                #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
-                match super::macos_screen_parity::run_macos_screen_parity(state).await {
-                    Ok(report) => {
-                        let detail = report.detail();
-                        match serde_json::to_value(report) {
-                            Ok(report) => {
-                                snapshot.macos_screen_parity = Some(report);
-                                checks.push(DiagnoseCheck {
-                                    category: "input".to_owned(),
-                                    name: "macos_screen_parity".to_owned(),
-                                    status: "pass".to_owned(),
-                                    detail,
-                                });
-                            }
-                            Err(_) => checks.push(DiagnoseCheck {
-                                category: "input".to_owned(),
-                                name: "macos_screen_parity".to_owned(),
-                                status: "fail".to_owned(),
-                                detail: "the parity report could not be serialized".to_owned(),
-                            }),
-                        }
-                    }
-                    Err(error) => checks.push(DiagnoseCheck {
-                        category: "input".to_owned(),
-                        name: "macos_screen_parity".to_owned(),
-                        status: error.status().to_owned(),
-                        detail: error.detail().to_owned(),
-                    }),
-                }
-
-                #[cfg(not(all(
-                    target_os = "macos",
-                    feature = "wgpu",
-                    feature = "screen-capture"
-                )))]
-                checks.push(DiagnoseCheck {
-                    category: "input".to_owned(),
-                    name: "macos_screen_parity".to_owned(),
-                    status: "warning".to_owned(),
-                    detail: "macOS screen parity is unavailable in this build".to_owned(),
-                });
+                checks.push(macos_screen_parity_check(state, &mut snapshot).await);
             }
             other => {
                 checks.push(DiagnoseCheck {
@@ -492,6 +283,234 @@ pub(crate) async fn collect_diagnostics(
         },
         snapshot,
     }
+}
+
+fn daemon_check() -> DiagnoseCheck {
+    DiagnoseCheck {
+        category: "system".to_owned(),
+        name: "daemon_running".to_owned(),
+        status: "pass".to_owned(),
+        detail: env!("CARGO_PKG_VERSION").to_owned(),
+    }
+}
+
+async fn render_checks(
+    state: &AppState,
+    performance: &PerformanceSnapshot,
+    render_elapsed_ms: f64,
+) -> Vec<DiagnoseCheck> {
+    let loop_guard = state.render_loop.read().await;
+    let running = loop_guard.is_running();
+    let render_loop_stats = loop_guard.stats();
+    let mut checks = vec![DiagnoseCheck {
+        category: "render".to_owned(),
+        name: "render_loop".to_owned(),
+        status: if running { "pass" } else { "warning" }.to_owned(),
+        detail: format!(
+            "state={}, tier={}",
+            render_loop_stats.state, render_loop_stats.tier
+        ),
+    }];
+    if !running {
+        return checks;
+    }
+
+    let (status, detail) =
+        render_frame_liveness_status(performance.latest_frame.as_ref(), render_elapsed_ms);
+    checks.push(DiagnoseCheck {
+        category: "render".to_owned(),
+        name: "frame_liveness".to_owned(),
+        status: status.to_owned(),
+        detail,
+    });
+
+    let (status, detail) = render_led_freshness_status(performance.latest_frame.as_ref());
+    checks.push(DiagnoseCheck {
+        category: "render".to_owned(),
+        name: "led_freshness".to_owned(),
+        status: status.to_owned(),
+        detail,
+    });
+    checks.push(DiagnoseCheck {
+        category: "render".to_owned(),
+        name: "recent_output_sources".to_owned(),
+        status: "pass".to_owned(),
+        detail: format!(
+            "frames={}, current_frame={}, published_frame={}, routed_reuse={}, reused_published_frame={}, gpu_sample_stale={}",
+            performance.frame_count,
+            performance.pacing.output_current_frame,
+            performance.pacing.output_published_frame,
+            performance.pacing.output_routed_reuse,
+            performance.pacing.output_reused_published_frame,
+            performance.pacing.gpu_sample_stale
+        ),
+    });
+    checks
+}
+
+async fn device_checks(state: &AppState, snapshot: &DiagnoseSnapshot) -> Vec<DiagnoseCheck> {
+    let count = state.device_registry.len().await;
+    let output_status = if snapshot.device_output.worker_finished_queues > 0
+        || snapshot.device_output.errors_total > 0
+    {
+        "fail"
+    } else if snapshot.device_output.lagging_queues > 0
+        || snapshot.device_output.dropped_frames_total > 0
+    {
+        "warning"
+    } else {
+        "pass"
+    };
+    vec![
+        DiagnoseCheck {
+            category: "devices".to_owned(),
+            name: "registry".to_owned(),
+            status: "pass".to_owned(),
+            detail: format!("{count} tracked"),
+        },
+        DiagnoseCheck {
+            category: "devices".to_owned(),
+            name: "output_queues".to_owned(),
+            status: output_status.to_owned(),
+            detail: format!(
+                "queues={}, usb_queues={}, lagging={}, worker_finished={}, dropped_total={}, errors_total={}",
+                snapshot.device_output.queues,
+                snapshot.device_output.usb_queues,
+                snapshot.device_output.lagging_queues,
+                snapshot.device_output.worker_finished_queues,
+                snapshot.device_output.dropped_frames_total,
+                snapshot.device_output.errors_total
+            ),
+        },
+        DiagnoseCheck {
+            category: "devices".to_owned(),
+            name: "usb_actor_display_lane".to_owned(),
+            status: if snapshot.usb.display_led_priority_wait_max_ms >= 2.0 {
+                "warning"
+            } else {
+                "pass"
+            }
+            .to_owned(),
+            detail: format!(
+                "display_frames={}, delayed_for_led={}, wait_avg_ms={:.2}, wait_max_ms={:.2}",
+                snapshot.usb.display_frames_total,
+                snapshot.usb.display_frames_delayed_for_led_total,
+                snapshot.usb.display_led_priority_wait_avg_ms,
+                snapshot.usb.display_led_priority_wait_max_ms
+            ),
+        },
+        DiagnoseCheck {
+            category: "devices".to_owned(),
+            name: "display_output_encoder".to_owned(),
+            status: if snapshot.display_output.encode_failures_total > 0 {
+                "warning"
+            } else {
+                "pass"
+            }
+            .to_owned(),
+            detail: format!(
+                "attempts={}, successes={}, failures={}, avg_ms={:.2}, max_ms={:.2}, last_ms={}, last_bytes={}",
+                snapshot.display_output.encode_attempts_total,
+                snapshot.display_output.encode_successes_total,
+                snapshot.display_output.encode_failures_total,
+                snapshot.display_output.encode_avg_ms,
+                snapshot.display_output.encode_max_ms,
+                snapshot
+                    .display_output
+                    .encode_last_ms
+                    .map_or_else(|| "none".to_owned(), |value| format!("{value:.2}")),
+                snapshot.display_output.encoded_last_bytes
+            ),
+        },
+    ]
+}
+
+fn config_check(state: &AppState) -> DiagnoseCheck {
+    let has_manager = state.config_manager.is_some();
+    DiagnoseCheck {
+        category: "config".to_owned(),
+        name: "config_manager".to_owned(),
+        status: if has_manager { "pass" } else { "warning" }.to_owned(),
+        detail: if has_manager {
+            "available".to_owned()
+        } else {
+            "using defaults/test state".to_owned()
+        },
+    }
+}
+
+fn input_checks(input: &InputStatus) -> Vec<DiagnoseCheck> {
+    let diagnostics = actionable_input_diagnostics(input);
+    if diagnostics.is_empty() {
+        return vec![DiagnoseCheck {
+            category: "input".to_owned(),
+            name: "source_health".to_owned(),
+            status: "pass".to_owned(),
+            detail: format!(
+                "{} source(s), graph generation {}",
+                input.sources.len(),
+                input.source_graph_generation
+            ),
+        }];
+    }
+
+    diagnostics
+        .into_iter()
+        .map(|diagnostic| DiagnoseCheck {
+            category: "input".to_owned(),
+            name: diagnostic.source_id,
+            status: diagnostic.status.to_owned(),
+            detail: diagnostic.detail,
+        })
+        .collect()
+}
+
+#[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
+async fn macos_screen_parity_check(
+    state: &AppState,
+    snapshot: &mut DiagnoseSnapshot,
+) -> DiagnoseCheck {
+    match super::macos_screen_parity::run_macos_screen_parity(state).await {
+        Ok(report) => {
+            let detail = report.detail();
+            match serde_json::to_value(report) {
+                Ok(report) => {
+                    snapshot.macos_screen_parity = Some(report);
+                    DiagnoseCheck {
+                        category: "input".to_owned(),
+                        name: "macos_screen_parity".to_owned(),
+                        status: "pass".to_owned(),
+                        detail,
+                    }
+                }
+                Err(_) => DiagnoseCheck {
+                    category: "input".to_owned(),
+                    name: "macos_screen_parity".to_owned(),
+                    status: "fail".to_owned(),
+                    detail: "the parity report could not be serialized".to_owned(),
+                },
+            }
+        }
+        Err(error) => DiagnoseCheck {
+            category: "input".to_owned(),
+            name: "macos_screen_parity".to_owned(),
+            status: error.status().to_owned(),
+            detail: error.detail().to_owned(),
+        },
+    }
+}
+
+#[cfg(not(all(target_os = "macos", feature = "wgpu", feature = "screen-capture")))]
+fn macos_screen_parity_check(
+    _state: &AppState,
+    _snapshot: &mut DiagnoseSnapshot,
+) -> std::future::Ready<DiagnoseCheck> {
+    std::future::ready(DiagnoseCheck {
+        category: "input".to_owned(),
+        name: "macos_screen_parity".to_owned(),
+        status: "warning".to_owned(),
+        detail: "macOS screen parity is unavailable in this build".to_owned(),
+    })
 }
 
 fn render_frame_liveness_status(
