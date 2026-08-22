@@ -6,7 +6,7 @@
 
 use hypercolor_color::{Rgb, Rgba};
 use hypercolor_types::api::assets::AssetUpdateRequest;
-use hypercolor_types::api::controls::InvokeControlActionRequest;
+use hypercolor_types::api::controls::{ControlSurfaceListResponse, InvokeControlActionRequest};
 use hypercolor_types::api::devices::{
     DiscoverRequest, IdentifyAttachmentRequest, IdentifyRequest, UpdateAttachmentsRequest,
 };
@@ -19,6 +19,21 @@ use hypercolor_types::control::{ControlValue, IpText, MacText, SecretRef};
 use hypercolor_types::controls::ControlValueMap;
 use hypercolor_types::pairing::PairDeviceRequest;
 use serde_json::json;
+
+#[test]
+fn control_surface_list_response_round_trips() {
+    let response = ControlSurfaceListResponse {
+        surfaces: Vec::new(),
+    };
+
+    let wire = serde_json::to_value(&response).expect("control surface list serializes");
+    assert_eq!(wire, json!({ "surfaces": [] }));
+    assert_eq!(
+        serde_json::from_value::<ControlSurfaceListResponse>(wire)
+            .expect("control surface list deserializes"),
+        response
+    );
+}
 
 /// Assert that a payload carrying explicit `null`s for the named fields
 /// decodes to the same value as one that omits them entirely.

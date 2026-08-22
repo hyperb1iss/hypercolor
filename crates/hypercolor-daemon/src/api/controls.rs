@@ -2,6 +2,12 @@
 
 use std::sync::Arc;
 
+use crate::api::AppState;
+use crate::api::devices;
+use crate::api::envelope;
+use crate::discovery as core_discovery;
+use crate::domain::{DomainError, ResourceKind};
+use crate::network;
 use anyhow::bail;
 use axum::Json;
 use axum::extract::{Path, Query, State};
@@ -19,27 +25,15 @@ use hypercolor_types::controls::{
 };
 use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceState, DeviceUserSettings};
 use hypercolor_types::event::HypercolorEvent;
-use serde::Serialize;
-use utoipa::ToSchema;
 
-use crate::api::AppState;
-use crate::api::devices;
-use crate::api::envelope;
-use crate::discovery as core_discovery;
-use crate::domain::{DomainError, ResourceKind};
-use crate::network;
-
-pub use hypercolor_types::api::controls::{ControlSurfaceListQuery, InvokeControlActionRequest};
+pub use hypercolor_types::api::controls::{
+    ControlSurfaceListQuery, ControlSurfaceListResponse, InvokeControlActionRequest,
+};
 
 const DEVICE_FIELD_NAME: &str = "name";
 const DEVICE_FIELD_ENABLED: &str = "enabled";
 const DEVICE_FIELD_BRIGHTNESS: &str = "brightness";
 const DEVICE_ACTION_IDENTIFY: &str = "identify";
-
-#[derive(Debug, Serialize, ToSchema)]
-pub struct ControlSurfaceListResponse {
-    pub surfaces: Vec<ControlSurfaceDocument>,
-}
 
 /// `GET /api/v1/control-surfaces` - Return control surfaces for a UI view.
 pub async fn list_control_surfaces(

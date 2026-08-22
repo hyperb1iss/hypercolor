@@ -8,19 +8,12 @@ use crate::control_surface_api::{
     control_surface_action_url, control_surface_list_url, control_surface_values_url, path_segment,
 };
 use hypercolor_types::api::scene::PatchControlsRequest;
+use hypercolor_types::api::controls::ControlSurfaceListResponse;
 use hypercolor_types::control::ControlValue;
 use hypercolor_types::controls::{
     ApplyControlChangesResponse, ControlActionResult, ControlSurfaceDocument, ControlValueMap,
 };
-use serde::Deserialize;
-
 use super::client;
-
-/// Response from `GET /api/v1/control-surfaces`.
-#[derive(Debug, Clone, Deserialize, PartialEq)]
-pub struct ControlSurfaceListResponse {
-    pub surfaces: Vec<ControlSurfaceDocument>,
-}
 
 pub use hypercolor_types::api::controls::InvokeControlActionRequest;
 

@@ -2,6 +2,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 const CANONICAL_DEFINITION: &str = "hypercolor-types/src/control/mod.rs";
+const CANONICAL_CONTROL_SURFACE_LIST_RESPONSE: &str = "hypercolor-types/src/api/controls.rs";
 const FENCE_SOURCE: &str = "hypercolor-types/tests/control_value_authority_tests.rs";
 
 fn workspace_root() -> PathBuf {
@@ -267,6 +268,16 @@ fn legacy_generated_models() -> Vec<String> {
         .collect()
 }
 
+fn disallowed_control_surface_list_responses(path: &str, source: &str) -> Vec<String> {
+    declarations_after(source, "struct")
+        .into_iter()
+        .filter(|(name, _)| {
+            name == "ControlSurfaceListResponse" && path != CANONICAL_CONTROL_SURFACE_LIST_RESPONSE
+        })
+        .map(|(name, _)| name)
+        .collect()
+}
+
 #[test]
 fn control_value_has_one_definition_and_no_legacy_projection_paths() {
     let sources = rust_sources();
@@ -274,6 +285,7 @@ fn control_value_has_one_definition_and_no_legacy_projection_paths() {
     let mut legacy_paths = Vec::new();
     let mut mirror_enums = Vec::new();
     let mut manual_authorities = Vec::new();
+    let mut response_mirrors = Vec::new();
 
     for (path, source) in &sources {
         if declarations_after(source, "enum")
@@ -306,6 +318,11 @@ fn control_value_has_one_definition_and_no_legacy_projection_paths() {
                 .into_iter()
                 .map(|name| format!("{path}: {name}")),
         );
+        response_mirrors.extend(
+            disallowed_control_surface_list_responses(path, source)
+                .into_iter()
+                .map(|name| format!("{path}: {name}")),
+        );
     }
 
     assert_eq!(definitions, [CANONICAL_DEFINITION]);
@@ -324,6 +341,10 @@ fn control_value_has_one_definition_and_no_legacy_projection_paths() {
     assert!(
         legacy_generated_models().is_empty(),
         "generated clients still contain retired control-value models"
+    );
+    assert!(
+        response_mirrors.is_empty(),
+        "control-surface list response mirrors remain in {response_mirrors:#?}"
     );
 }
 
@@ -364,4 +385,14 @@ fn authority_fence_detects_renamed_mirrors_and_manual_parsers() {
         ) -> ControlValue { value_type.admit(value) }
     ";
     assert!(manual_json_authorities("fixture.rs", schema_adapter).is_empty());
+
+    let response_mirror = r"
+        struct ControlSurfaceListResponse {
+            surfaces: Vec<ControlSurfaceDocument>,
+        }
+    ";
+    assert_eq!(
+        disallowed_control_surface_list_responses("fixture.rs", response_mirror),
+        ["ControlSurfaceListResponse"]
+    );
 }
