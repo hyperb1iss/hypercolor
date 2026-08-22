@@ -1,10 +1,10 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::AtomicBool;
 
-use anyhow::{Result, bail};
+use anyhow::{Context as _, Result, bail};
 use async_trait::async_trait;
 use hypercolor_core::attachment::ComponentRegistry;
 use hypercolor_core::bus::HypercolorBus;
@@ -21,12 +21,11 @@ use hypercolor_driver_api::{
 };
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::HypercolorConfig;
-use hypercolor_types::control::ControlValue;
 use hypercolor_types::controls::{ControlSurfaceEvent, ControlValueMap};
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::event::{DisconnectReason, HypercolorEvent};
 use hypercolor_types::spatial::SpatialLayout;
-use serde_json::{Number, Value};
+use serde_json::Value;
 use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
 use tracing::warn;
@@ -305,10 +304,27 @@ impl DriverControlStore for DaemonDriverHost {
         let Some(entry) = config.drivers.get(driver_id) else {
             return Ok(ControlValueMap::new());
         };
-        Ok(entry
-            .settings
-            .iter()
-            .map(|(key, value)| (key.clone(), config_json_to_control_value(value)))
+        let Some(driver) = self.driver_registry.get(driver_id) else {
+            bail!("driver '{driver_id}' is not registered");
+        };
+        let Some(provider) = driver.controls() else {
+            return Ok(ControlValueMap::new());
+        };
+        let config = DriverConfigView { driver_id, entry };
+        let Some(document) = provider.driver_surface(self, config).await? else {
+            return Ok(ControlValueMap::new());
+        };
+        Ok(document
+            .values
+            .into_iter()
+            .map(|(key, projected)| {
+                let persisted = entry
+                    .settings
+                    .get(&key)
+                    .and_then(|value| serde_json::from_value(value.clone()).ok())
+                    .unwrap_or(projected);
+                (key, persisted)
+            })
             .collect())
     }
 
@@ -323,9 +339,9 @@ impl DriverControlStore for DaemonDriverHost {
             .cloned()
             .unwrap_or_default();
         for (key, value) in values {
-            entry
-                .settings
-                .insert(key, control_value_to_config_json(value));
+            let persisted = serde_json::to_value(value)
+                .with_context(|| format!("failed to serialize driver control '{key}'"))?;
+            entry.settings.insert(key, persisted);
         }
         if let Some(driver) = self.driver_registry.get(driver_id)
             && let Some(provider) = driver.config()
@@ -462,74 +478,5 @@ impl DriverControlHost for DaemonDriverHost {
     fn publish_control_event(&self, event: ControlSurfaceEvent) {
         self.event_bus
             .publish(HypercolorEvent::ControlSurfaceChanged(event));
-    }
-}
-
-fn control_value_to_config_json(value: ControlValue) -> Value {
-    match value {
-        ControlValue::Null | ControlValue::Unknown => Value::Null,
-        ControlValue::Bool(value) => Value::Bool(value),
-        ControlValue::Int(value) => Value::Number(Number::from(value)),
-        ControlValue::Float(value) => Number::from_f64(value).map_or(Value::Null, Value::Number),
-        ControlValue::Text(value) | ControlValue::Enum(value) => Value::String(value),
-        ControlValue::SecretRef(value) => Value::String(value.as_str().to_owned()),
-        ControlValue::Ip(value) => Value::String(value.as_str().to_owned()),
-        ControlValue::Mac(value) => Value::String(value.as_str().to_owned()),
-        ControlValue::ColorRgb(value) => Value::Array(
-            [value.r, value.g, value.b]
-                .into_iter()
-                .map(|channel| Value::Number(Number::from(channel)))
-                .collect(),
-        ),
-        ControlValue::ColorRgba(value) => Value::Array(
-            [value.r, value.g, value.b, value.a]
-                .into_iter()
-                .map(|channel| Value::Number(Number::from(channel)))
-                .collect(),
-        ),
-        ControlValue::Duration(value) => u64::try_from(value.as_millis())
-            .map_or(Value::Null, |value| Value::Number(Number::from(value))),
-        ControlValue::Flags(values) => {
-            Value::Array(values.into_iter().map(Value::String).collect())
-        }
-        ControlValue::List(values) => Value::Array(
-            values
-                .into_iter()
-                .map(control_value_to_config_json)
-                .collect(),
-        ),
-        ControlValue::Map(values) => Value::Object(
-            values
-                .into_iter()
-                .map(|(key, value)| (key, control_value_to_config_json(value)))
-                .collect(),
-        ),
-        ControlValue::ColorLinear(_) | ControlValue::Gradient(_) | ControlValue::Rect(_) => {
-            Value::Null
-        }
-    }
-}
-
-fn config_json_to_control_value(value: &Value) -> ControlValue {
-    match value {
-        Value::Null => ControlValue::Null,
-        Value::Bool(value) => ControlValue::Bool(*value),
-        Value::Number(value) => value.as_i64().map_or_else(
-            || ControlValue::Float(value.as_f64().unwrap_or_default()),
-            ControlValue::Int,
-        ),
-        Value::String(value) => ControlValue::Text(value.clone()),
-        Value::Array(values) => ControlValue::List(
-            values
-                .iter()
-                .map(config_json_to_control_value)
-                .collect::<Vec<_>>(),
-        ),
-        Value::Object(values) => ControlValue::Map(
-            values
-                .iter()
-                .map(|(key, value)| (key.clone(), config_json_to_control_value(value)))
-                .collect::<BTreeMap<_, _>>(),
-        ),
     }
 }
