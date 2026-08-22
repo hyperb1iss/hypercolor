@@ -209,15 +209,11 @@ fn parse_preset_controls(
     let mut normalized = HashMap::new();
     let mut rejected = Vec::new();
     for (name, raw_value) in control_map {
-        let Ok(parsed) = ControlValue::try_from_effect_json(raw_value) else {
-            rejected.push(format!("{name} (unsupported JSON shape or numeric range)"));
-            continue;
-        };
         let Some(definition) = effect.control_by_id(name) else {
             rejected.push(format!("{name} (unknown control)"));
             continue;
         };
-        match definition.validate_value(&parsed) {
+        match definition.admit_effect_json(raw_value) {
             Ok(validated) => {
                 normalized.insert(name.clone(), validated);
             }
@@ -229,5 +225,79 @@ fn parse_preset_controls(
         Ok(normalized)
     } else {
         Err(rejected)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use hypercolor_types::control::ControlValue;
+    use hypercolor_types::effect::{
+        ControlDefinition, ControlKind, ControlType, EffectCategory, EffectId, EffectMetadata,
+        EffectSource,
+    };
+
+    use super::parse_preset_controls;
+
+    fn metadata() -> EffectMetadata {
+        EffectMetadata {
+            id: EffectId::new(uuid::Uuid::now_v7()),
+            name: "preset fixture".to_owned(),
+            author: "test".to_owned(),
+            version: "1".to_owned(),
+            description: String::new(),
+            category: EffectCategory::Ambient,
+            tags: Vec::new(),
+            controls: vec![ControlDefinition {
+                id: "accent".to_owned(),
+                name: "Accent".to_owned(),
+                kind: ControlKind::Color,
+                control_type: ControlType::ColorPicker,
+                default_value: ControlValue::linear_color([1.0, 1.0, 1.0, 1.0]),
+                min: None,
+                max: None,
+                step: None,
+                labels: Vec::new(),
+                group: None,
+                tooltip: None,
+                aspect_lock: None,
+                preview_source: None,
+                binding: None,
+            }],
+            presets: Vec::new(),
+            audio_reactive: false,
+            screen_reactive: false,
+            input_reactive: false,
+            source: EffectSource::Native {
+                path: "fixture".into(),
+            },
+            license: None,
+        }
+    }
+
+    #[test]
+    fn preset_controls_admit_schema_confirmed_rgba_arrays() {
+        let payload = serde_json::json!({
+            "accent": [0.125, 0.25, 0.5, 1.0],
+        });
+
+        let controls = parse_preset_controls(&metadata(), Some(&payload))
+            .expect("schema-confirmed color should be admitted");
+
+        assert_eq!(
+            controls.get("accent"),
+            Some(&ControlValue::linear_color([0.125, 0.25, 0.5, 1.0]))
+        );
+    }
+
+    #[test]
+    fn preset_controls_reject_unknown_control_ids() {
+        let payload = serde_json::json!({
+            "missing": 0.5,
+        });
+
+        let rejected = parse_preset_controls(&metadata(), Some(&payload))
+            .expect_err("unknown controls must be rejected");
+
+        assert_eq!(rejected, vec!["missing (unknown control)"]);
     }
 }
