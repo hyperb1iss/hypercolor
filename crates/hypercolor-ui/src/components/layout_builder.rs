@@ -28,7 +28,7 @@ use crate::components::page_header::{HeaderToolbar, HeaderTrailing, PageAccent, 
 use crate::components::silk_select::SilkSelect;
 use crate::icons::*;
 use crate::layout_geometry;
-use crate::layout_history::{LayoutEditorSnapshot, LayoutHistoryState};
+use crate::layout_history::{LayoutEditorSnapshot, LayoutHistoryState, RemovedZoneCache};
 use crate::storage;
 use crate::toasts;
 use hypercolor_leptos_ext::events::{Input, target_is_text_entry};
@@ -87,8 +87,8 @@ pub struct LayoutWriteHandle {
     set_selected_zone_ids: WriteSignal<std::collections::HashSet<String>>,
     compound_depth: ReadSignal<crate::compound_selection::CompoundDepth>,
     set_compound_depth: WriteSignal<crate::compound_selection::CompoundDepth>,
-    removed_zone_cache: ReadSignal<crate::layout_utils::ZoneCache>,
-    set_removed_zone_cache: WriteSignal<crate::layout_utils::ZoneCache>,
+    removed_zone_cache: ReadSignal<RemovedZoneCache>,
+    set_removed_zone_cache: WriteSignal<RemovedZoneCache>,
     history: RwSignal<LayoutHistoryState>,
     set_dirty: WriteSignal<bool>,
 }

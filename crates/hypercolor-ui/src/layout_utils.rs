@@ -8,12 +8,10 @@ use leptos::prelude::*;
 use crate::api::{self, SegmentSummary};
 use crate::channel_names;
 use crate::layout_geometry;
+use crate::layout_history::RemovedZoneCache;
 use crate::style_utils::uuid_v4_hex;
 pub use hypercolor_types::attachment::{slot_id_matches_zone_name, zone_name_matches_slot_alias};
 use hypercolor_types::spatial::{NormalizedPosition, Output, SpatialLayout};
-
-/// Type alias for the removed-zone stash, keyed by (device_id, zone_name).
-pub type ZoneCache = std::collections::HashMap<(String, Option<String>), Output>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ZoneIdentifyTarget {
@@ -121,7 +119,7 @@ pub fn remove_device_zone(
     set_layout: &crate::components::layout_builder::LayoutWriteHandle,
     set_selected_zone_ids: &WriteSignal<HashSet<String>>,
     set_is_dirty: &WriteSignal<bool>,
-    set_removed_zone_cache: &WriteSignal<ZoneCache>,
+    set_removed_zone_cache: &WriteSignal<RemovedZoneCache>,
 ) {
     set_layout.update(|l| {
         if let Some(layout) = l
@@ -148,7 +146,7 @@ pub fn remove_all_device_zones(
     set_layout: &crate::components::layout_builder::LayoutWriteHandle,
     set_selected_zone_ids: &WriteSignal<HashSet<String>>,
     set_is_dirty: &WriteSignal<bool>,
-    set_removed_zone_cache: &WriteSignal<ZoneCache>,
+    set_removed_zone_cache: &WriteSignal<RemovedZoneCache>,
 ) {
     set_layout.update(|l| {
         if let Some(layout) = l {
@@ -177,8 +175,8 @@ pub fn add_all_device_zones(
     set_layout: &crate::components::layout_builder::LayoutWriteHandle,
     set_selected_zone_ids: &WriteSignal<HashSet<String>>,
     set_is_dirty: &WriteSignal<bool>,
-    removed_zone_cache: &Signal<ZoneCache>,
-    set_removed_zone_cache: &WriteSignal<ZoneCache>,
+    removed_zone_cache: &Signal<RemovedZoneCache>,
+    set_removed_zone_cache: &WriteSignal<RemovedZoneCache>,
 ) {
     let (canvas_width, canvas_height) = current_canvas_dimensions(layout);
     let existing_zone_names: std::collections::HashSet<Option<String>> =
