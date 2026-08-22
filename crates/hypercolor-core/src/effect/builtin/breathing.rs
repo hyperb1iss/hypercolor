@@ -13,7 +13,7 @@ use hypercolor_types::effect::{
 };
 
 use super::common::{builtin_effect_id, color_control, preset, preset_with_desc, slider_control};
-use crate::effect::traits::{ControlError, EffectRenderer, FrameInput, prepare_target_canvas};
+use crate::effect::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
 
 /// Pulsing brightness effect with sinusoidal modulation.
 pub struct BreathingRenderer {
@@ -75,7 +75,7 @@ impl EffectRenderer for BreathingRenderer {
         Ok(())
     }
 
-    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> Result<(), ControlError> {
+    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) {
         for (control_id, value) in batch.changes {
             match control_id.as_str() {
                 "color" => {
@@ -101,7 +101,6 @@ impl EffectRenderer for BreathingRenderer {
                 _ => {}
             }
         }
-        Ok(())
     }
     fn destroy(&mut self) {}
 }

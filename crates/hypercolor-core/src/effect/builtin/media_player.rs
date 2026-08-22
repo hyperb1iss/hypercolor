@@ -16,7 +16,7 @@ use super::common::{
 };
 use crate::asset::AssetLibrary;
 use crate::effect::media::MediaProducer;
-use crate::effect::traits::{ControlError, EffectRenderer, FrameInput, prepare_target_canvas};
+use crate::effect::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
 
 pub struct MediaPlayerRenderer {
     asset: String,
@@ -136,7 +136,7 @@ impl EffectRenderer for MediaPlayerRenderer {
         Ok(())
     }
 
-    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> Result<(), ControlError> {
+    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) {
         for (control_id, value) in batch.changes {
             match control_id.as_str() {
                 "asset" => match value {
@@ -183,7 +183,6 @@ impl EffectRenderer for MediaPlayerRenderer {
                 _ => {}
             }
         }
-        Ok(())
     }
 
     fn bind_asset_library(&mut self, library: Arc<RwLock<AssetLibrary>>) {

@@ -22,7 +22,7 @@ use hypercolor_types::effect::{
 };
 
 use super::common::{builtin_effect_id, color_control, preset_with_desc, slider_control};
-use crate::effect::traits::{ControlError, EffectRenderer, FrameInput, prepare_target_canvas};
+use crate::effect::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
 
 /// Hard cap on concurrent rings. At 120 BPM and the default wave speed a ring
 /// lives ~1.7 s, so four or five are typical; the cap guards against runaway
@@ -210,7 +210,7 @@ impl EffectRenderer for AudioPulseRenderer {
         Ok(())
     }
 
-    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> Result<(), ControlError> {
+    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) {
         for (control_id, value) in batch.changes {
             match control_id.as_str() {
                 "base_color" => {
@@ -253,7 +253,6 @@ impl EffectRenderer for AudioPulseRenderer {
                 _ => {}
             }
         }
-        Ok(())
     }
     fn destroy(&mut self) {
         self.waves.clear();

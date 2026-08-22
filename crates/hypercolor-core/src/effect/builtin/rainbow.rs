@@ -11,7 +11,7 @@ use hypercolor_types::control::{ControlDeltaBatch, ControlValue};
 use hypercolor_types::effect::{ControlDefinition, EffectCategory, EffectMetadata, EffectSource};
 
 use super::common::{builtin_effect_id, dropdown_control, slider_control};
-use crate::effect::traits::{ControlError, EffectRenderer, FrameInput, prepare_target_canvas};
+use crate::effect::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
 
 /// Axis along which the hue gradient sweeps.
 ///
@@ -143,7 +143,7 @@ impl EffectRenderer for RainbowRenderer {
         Ok(())
     }
 
-    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> Result<(), ControlError> {
+    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) {
         for (control_id, value) in batch.changes {
             match control_id.as_str() {
                 "speed" => {
@@ -174,7 +174,6 @@ impl EffectRenderer for RainbowRenderer {
                 _ => {}
             }
         }
-        Ok(())
     }
     fn destroy(&mut self) {}
 }

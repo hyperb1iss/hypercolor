@@ -24,7 +24,7 @@ use hypercolor_types::spatial::LedTopology;
 
 use super::traits::{BackendInfo, DeviceBackend};
 use crate::device::{DiscoveredDevice, DiscoveryConnectBehavior};
-use crate::effect::{ControlError, EffectRenderer, FrameInput};
+use crate::effect::{EffectRenderer, FrameInput};
 
 // ── Call Tracking ───────────────────────────────────────────────────────────
 
@@ -459,14 +459,13 @@ impl EffectRenderer for MockEffectRenderer {
         Ok(())
     }
 
-    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> Result<(), ControlError> {
+    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) {
         self.controls.extend(
             batch
                 .changes
                 .iter()
                 .map(|(control_id, value)| (control_id.to_string(), value.clone())),
         );
-        Ok(())
     }
 
     fn destroy(&mut self) {

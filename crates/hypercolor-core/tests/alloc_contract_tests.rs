@@ -128,9 +128,7 @@ fn prepared_effect_pool_commit_round(change_controls: bool) -> Stats {
 
     let mut region = Region::new(GLOBAL);
     region.reset();
-    black_box(&mut pool)
-        .commit_reconcile(black_box(prepared))
-        .expect("commit prepared effect pool");
+    black_box(&mut pool).commit_reconcile(black_box(prepared));
     region.change()
 }
 

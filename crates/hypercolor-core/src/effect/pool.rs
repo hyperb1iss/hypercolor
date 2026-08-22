@@ -100,7 +100,8 @@ impl EffectPool {
         display_descriptors: &HashMap<ZoneId, DisplayDescriptor>,
     ) -> Result<()> {
         let prepared = self.prepare_reconcile(groups, registry, display_descriptors)?;
-        self.commit_reconcile(prepared)
+        self.commit_reconcile(prepared);
+        Ok(())
     }
 
     /// Construct every replacement renderer before changing the live pool.
@@ -182,27 +183,37 @@ impl EffectPool {
     }
 
     /// Commit a previously prepared reconciliation without allocating.
-    pub fn commit_reconcile(&mut self, prepared: PreparedEffectPoolReconcile) -> Result<()> {
+    ///
+    /// The prepared value is tied to the pool state that produced it. Commit
+    /// validates that invariant before changing any live renderer or slot.
+    pub fn commit_reconcile(&mut self, prepared: PreparedEffectPoolReconcile) {
         let PreparedEffectPoolReconcile {
             mut slots,
             reused_keys,
             control_updates,
         } = prepared;
+        assert!(
+            reused_keys.iter().all(|key| self.slots.contains_key(key))
+                && control_updates
+                    .iter()
+                    .all(|update| self.slots.contains_key(&update.key)),
+            "prepared effect pool must commit against its source state"
+        );
         for update in control_updates {
             let slot = self
                 .slots
                 .get_mut(&update.key)
-                .ok_or_else(|| anyhow!("prepared effect slot disappeared before commit"))?;
-            slot.commit_prepared_layer_state(update.state)?;
+                .expect("prepared effect slot must remain live until commit");
+            slot.commit_prepared_layer_state(update.state);
         }
         let mut live_slots = std::mem::take(&mut self.slots);
         for key in reused_keys {
-            if let Some(slot) = live_slots.remove(&key) {
-                slots.insert(key, slot);
-            }
+            let slot = live_slots
+                .remove(&key)
+                .expect("prepared effect slot was validated before commit");
+            slots.insert(key, slot);
         }
         self.slots = slots;
-        Ok(())
     }
 
     pub fn clear(&mut self) {
@@ -494,7 +505,8 @@ impl EffectSlot {
 
     fn sync_layer_state(&mut self, source: LayerEffectSource, revision: SetRevision) -> Result<()> {
         let prepared = self.prepare_layer_state(source, revision)?;
-        self.commit_prepared_layer_state(prepared)
+        self.commit_prepared_layer_state(prepared);
+        Ok(())
     }
 
     fn prepare_layer_state(
@@ -555,19 +567,14 @@ impl EffectSlot {
         })
     }
 
-    fn commit_prepared_layer_state(&mut self, prepared: PreparedLayerState) -> Result<()> {
+    fn commit_prepared_layer_state(&mut self, prepared: PreparedLayerState) {
         if self.controls_initialized {
             if !prepared.changes.is_empty() {
                 let batch = ControlDeltaBatch::new(prepared.revision, 0, &prepared.changes);
-                if self.renderer.apply_controls(&batch).is_err() {
-                    self.renderer
-                        .initialize_controls(prepared.revision, &prepared.controls)?;
-                    self.binding_state.clear();
-                }
+                self.renderer.apply_controls(&batch);
             }
         } else {
-            self.renderer
-                .initialize_controls(prepared.revision, &prepared.controls)?;
+            self.renderer.initialize_controls(&prepared.controls);
         }
 
         for control_id in prepared.changed_bindings {
@@ -577,7 +584,6 @@ impl EffectSlot {
         self.control_bindings = prepared.control_bindings;
         self.controls_initialized = true;
         self.resolution_seq = 0;
-        Ok(())
     }
 
     #[expect(
@@ -834,11 +840,17 @@ fn canonical_control_set(
     let mut controls = ControlSet::new(revision);
     for definition in &metadata.controls {
         let control_id = definition.control_id();
-        let value = source
+        let authored_value = source
             .controls
             .get(control_id)
             .unwrap_or(&definition.default_value);
-        controls.insert(ControlId::from(control_id), value.clone())?;
+        let value = definition.validate_value(authored_value).map_err(|error| {
+            anyhow!(
+                "effect '{}' control '{control_id}' is invalid: {error}",
+                metadata.id
+            )
+        })?;
+        controls.insert(ControlId::from(control_id), value)?;
     }
     for (control_id, value) in &source.controls {
         if controls.get(control_id).is_none() {
@@ -923,11 +935,7 @@ fn apply_sensor_bindings(
         .checked_add(1)
         .ok_or_else(|| anyhow!("control resolution sequence overflowed"))?;
     let batch = ControlDeltaBatch::new(controls.set_revision(), next_sequence, &changes);
-    if let Err(error) = renderer.apply_controls(&batch) {
-        renderer.initialize_controls(controls.set_revision(), controls)?;
-        binding_state.clear();
-        return Err(error.into());
-    }
+    renderer.apply_controls(&batch);
 
     *binding_state = next_binding_state;
     *resolution_seq = next_sequence;
@@ -1003,7 +1011,7 @@ mod tests {
     use super::{EffectPool, EffectSlot, EffectSlotKey};
     use crate::effect::builtin::register_builtin_effects;
     use crate::effect::registry::EffectRegistry;
-    use crate::effect::traits::{ControlError, EffectRenderer, FrameDataSources, FrameInput};
+    use crate::effect::traits::{EffectRenderer, FrameDataSources, FrameInput};
     use crate::input::InteractionData;
     use hypercolor_types::audio::AudioData;
     use hypercolor_types::canvas::Canvas;
@@ -1031,8 +1039,7 @@ mod tests {
         advanced: Arc<AtomicU64>,
     }
 
-    struct RejectOnceRenderer {
-        reject_next: bool,
+    struct ControlLifecycleSpyRenderer {
         initialized: Arc<Mutex<Vec<ControlSet>>>,
         applied: SharedControlBatchLog,
     }
@@ -1060,9 +1067,7 @@ mod tests {
             Ok(())
         }
 
-        fn apply_controls(&mut self, _batch: &ControlDeltaBatch<'_>) -> Result<(), ControlError> {
-            Ok(())
-        }
+        fn apply_controls(&mut self, _batch: &ControlDeltaBatch<'_>) {}
 
         fn destroy(&mut self) {
             self.destroyed.store(true, Ordering::SeqCst);
@@ -1085,9 +1090,7 @@ mod tests {
             Ok(())
         }
 
-        fn apply_controls(&mut self, _batch: &ControlDeltaBatch<'_>) -> Result<(), ControlError> {
-            Ok(())
-        }
+        fn apply_controls(&mut self, _batch: &ControlDeltaBatch<'_>) {}
 
         fn destroy(&mut self) {}
     }
@@ -1101,20 +1104,19 @@ mod tests {
             Ok(())
         }
 
-        fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> Result<(), ControlError> {
+        fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) {
             self.applied.extend(
                 batch
                     .changes
                     .iter()
                     .map(|(control_id, value)| (control_id.to_string(), value.clone())),
             );
-            Ok(())
         }
 
         fn destroy(&mut self) {}
     }
 
-    impl EffectRenderer for RejectOnceRenderer {
+    impl EffectRenderer for ControlLifecycleSpyRenderer {
         fn init(&mut self, _metadata: &EffectMetadata) -> Result<()> {
             Ok(())
         }
@@ -1123,19 +1125,14 @@ mod tests {
             Ok(())
         }
 
-        fn initialize_controls(
-            &mut self,
-            _revision: SetRevision,
-            controls: &ControlSet,
-        ) -> Result<(), ControlError> {
+        fn initialize_controls(&mut self, controls: &ControlSet) {
             self.initialized
                 .lock()
                 .expect("control initialization log should be available")
                 .push(controls.clone());
-            Ok(())
         }
 
-        fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> Result<(), ControlError> {
+        fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) {
             self.applied
                 .lock()
                 .expect("control delta log should be available")
@@ -1146,13 +1143,6 @@ mod tests {
                         .map(|(control_id, value)| (control_id.to_string(), value.clone()))
                         .collect(),
                 );
-            if self.reject_next {
-                self.reject_next = false;
-                return Err(ControlError::Rejected {
-                    reason: "injected rejection".to_owned(),
-                });
-            }
-            Ok(())
         }
 
         fn destroy(&mut self) {}
@@ -1323,7 +1313,7 @@ mod tests {
     }
 
     #[test]
-    fn rejected_authored_delta_replays_the_authoritative_snapshot() {
+    fn authored_delta_updates_the_derived_cache_without_snapshot_replay() {
         let effect_id = EffectId::new(uuid::Uuid::now_v7());
         let mut metadata = spy_metadata(effect_id);
         metadata.controls.push(ControlDefinition {
@@ -1347,16 +1337,15 @@ mod tests {
         let mut slot = EffectSlot {
             effect_id,
             registry_metadata: metadata.clone(),
-            registry_source_path: PathBuf::from("mock/reject-once.wgsl"),
+            registry_source_path: PathBuf::from("mock/control-lifecycle-spy.wgsl"),
             registry_modified: SystemTime::UNIX_EPOCH,
             metadata,
             display_descriptor: None,
             canvas_width: 1,
             canvas_height: 1,
-            renderer: Box::new(RejectOnceRenderer {
-                reject_next: true,
+            renderer: Box::new(ControlLifecycleSpyRenderer {
                 initialized: Arc::clone(&initialized),
-                applied,
+                applied: Arc::clone(&applied),
             }),
             controls: ControlSet::try_from_entries(
                 SetRevision::default(),
@@ -1377,21 +1366,28 @@ mod tests {
         };
 
         slot.sync_layer_state(source, SetRevision::new(1))
-            .expect("snapshot replay should recover the renderer");
+            .expect("canonical control update should prepare");
 
         assert_eq!(
             initialized
                 .lock()
                 .expect("control initialization log should be available")
                 .len(),
-            1
+            0
+        );
+        assert_eq!(
+            applied
+                .lock()
+                .expect("control delta log should be available")
+                .as_slice(),
+            &[vec![("speed".into(), ControlValue::Float(2.0))]]
         );
         assert_eq!(slot.controls.set_revision(), SetRevision::new(1));
         assert_eq!(slot.controls.get("speed"), Some(&ControlValue::Float(2.0)));
     }
 
     #[test]
-    fn snapshot_replay_invalidates_active_sensor_resolution() {
+    fn authored_delta_preserves_active_sensor_resolution() {
         let effect_id = EffectId::new(uuid::Uuid::now_v7());
         let binding = ControlBinding {
             sensor: "cpu_temp".into(),
@@ -1442,14 +1438,13 @@ mod tests {
         let mut slot = EffectSlot {
             effect_id,
             registry_metadata: metadata.clone(),
-            registry_source_path: PathBuf::from("mock/reject-once.wgsl"),
+            registry_source_path: PathBuf::from("mock/control-lifecycle-spy.wgsl"),
             registry_modified: SystemTime::UNIX_EPOCH,
             metadata,
             display_descriptor: None,
             canvas_width: 1,
             canvas_height: 1,
-            renderer: Box::new(RejectOnceRenderer {
-                reject_next: true,
+            renderer: Box::new(ControlLifecycleSpyRenderer {
                 initialized: Arc::clone(&initialized),
                 applied: Arc::clone(&applied),
             }),
@@ -1484,16 +1479,29 @@ mod tests {
         };
 
         slot.sync_layer_state(source, SetRevision::new(1))
-            .expect("snapshot replay should recover the renderer");
+            .expect("canonical control update should prepare");
 
-        assert!(slot.binding_state.is_empty());
+        assert_eq!(
+            slot.binding_state.get("speed"),
+            Some(&super::ActiveBindingState {
+                sensor_value: Some(58.0),
+                control_value: ControlValue::Float(4.0),
+            })
+        );
         assert_eq!(slot.resolution_seq, 0);
         assert_eq!(
             initialized
                 .lock()
-                .expect("control initialization log should be available")[0]
-                .get("speed"),
-            Some(&ControlValue::Float(5.0))
+                .expect("control initialization log should be available")
+                .len(),
+            0
+        );
+        assert_eq!(
+            applied
+                .lock()
+                .expect("control delta log should be available")
+                .as_slice(),
+            &[vec![("brightness".into(), ControlValue::Float(2.0))]]
         );
 
         let sensors = hypercolor_types::sensor::SystemSnapshot {
@@ -1509,15 +1517,15 @@ mod tests {
             &mut slot.resolution_seq,
             &sensors,
         )
-        .expect("sensor value should be redelivered after snapshot replay");
+        .expect("unchanged sensor value should remain resolved");
 
-        assert_eq!(slot.resolution_seq, 1);
+        assert_eq!(slot.resolution_seq, 0);
         assert_eq!(
             applied
                 .lock()
                 .expect("control delta log should be available")
-                .last(),
-            Some(&vec![("speed".into(), ControlValue::Float(4.0))])
+                .len(),
+            1
         );
     }
 

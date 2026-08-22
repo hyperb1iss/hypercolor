@@ -203,6 +203,49 @@ fn failed_effect_pool_preparation_preserves_live_slots() {
 }
 
 #[test]
+fn invalid_effect_control_is_rejected_before_live_state_changes() {
+    let registry = registry_with_builtins();
+    let solid_id = builtin_effect_id(&registry, "solid_color");
+    let mut live_group = render_group(ZoneId::new(), solid_id);
+    set_effect_control(
+        &mut live_group,
+        "color",
+        ControlValue::linear_color([1.0, 0.0, 0.0, 1.0]),
+    );
+    let mut candidate_group = live_group.clone();
+    set_effect_control(&mut candidate_group, "color", ControlValue::Bool(true));
+    candidate_group.controls_version += 1;
+    let mut pool = EffectPool::new();
+    pool.reconcile(
+        std::slice::from_ref(&live_group),
+        &registry,
+        &HashMap::new(),
+    )
+    .expect("live controls should reconcile");
+
+    let result = pool.prepare_reconcile(
+        std::slice::from_ref(&candidate_group),
+        &registry,
+        &HashMap::new(),
+    );
+
+    assert!(result.is_err());
+    let mut canvas = Canvas::new(1, 1);
+    pool.render_group_into(
+        &live_group,
+        0.016,
+        &AudioData::silence(),
+        &InteractionData::default(),
+        None,
+        &EMPTY_SENSORS,
+        hypercolor_core::effect::FrameDataSources::default(),
+        &mut canvas,
+    )
+    .expect("rejected controls must not disturb the live renderer");
+    assert_eq!(top_left(&canvas), Rgba::new(255, 0, 0, 255));
+}
+
+#[test]
 fn abandoned_prepared_effect_pool_keeps_live_slots_renderable() {
     let registry = registry_with_builtins();
     let solid_id = builtin_effect_id(&registry, "solid_color");
@@ -282,7 +325,7 @@ fn changed_controls_update_slot_only_when_prepared_pool_commits() {
     .expect("live slot should remain unchanged during preparation");
     assert_eq!(top_left(&canvas), Rgba::new(255, 0, 0, 255));
 
-    pool.commit_reconcile(prepared).expect("commit reconcile");
+    pool.commit_reconcile(prepared);
     pool.render_group_into(
         &candidate_group,
         0.016,
@@ -295,6 +338,69 @@ fn changed_controls_update_slot_only_when_prepared_pool_commits() {
     )
     .expect("committed control update should render");
     assert_eq!(top_left(&canvas), Rgba::new(0, 0, 255, 255));
+}
+
+#[test]
+fn stale_prepared_pool_is_rejected_before_any_live_control_update() {
+    let registry = registry_with_builtins();
+    let solid_id = builtin_effect_id(&registry, "solid_color");
+    let mut live_a = render_group(ZoneId::new(), solid_id);
+    let mut live_b = render_group(ZoneId::new(), solid_id);
+    set_effect_control(
+        &mut live_a,
+        "color",
+        ControlValue::linear_color([1.0, 0.0, 0.0, 1.0]),
+    );
+    set_effect_control(
+        &mut live_b,
+        "color",
+        ControlValue::linear_color([1.0, 0.0, 0.0, 1.0]),
+    );
+    let mut candidate_a = live_a.clone();
+    let mut candidate_b = live_b.clone();
+    set_effect_control(
+        &mut candidate_a,
+        "color",
+        ControlValue::linear_color([0.0, 0.0, 1.0, 1.0]),
+    );
+    set_effect_control(
+        &mut candidate_b,
+        "color",
+        ControlValue::linear_color([0.0, 1.0, 0.0, 1.0]),
+    );
+    candidate_a.controls_version += 1;
+    candidate_b.controls_version += 1;
+
+    let mut pool = EffectPool::new();
+    pool.reconcile(
+        &[live_a.clone(), live_b.clone()],
+        &registry,
+        &HashMap::new(),
+    )
+    .expect("live groups should reconcile");
+    let prepared = pool
+        .prepare_reconcile(&[candidate_a, candidate_b], &registry, &HashMap::new())
+        .expect("candidate controls should prepare");
+    pool.remove_group(live_b.id);
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        pool.commit_reconcile(prepared);
+    }));
+
+    assert!(result.is_err());
+    let mut canvas = Canvas::new(1, 1);
+    pool.render_group_into(
+        &live_a,
+        0.016,
+        &AudioData::silence(),
+        &InteractionData::default(),
+        None,
+        &EMPTY_SENSORS,
+        hypercolor_core::effect::FrameDataSources::default(),
+        &mut canvas,
+    )
+    .expect("untouched live slot should remain renderable");
+    assert_eq!(top_left(&canvas), Rgba::new(255, 0, 0, 255));
 }
 
 #[test]

@@ -5,8 +5,7 @@ use std::sync::LazyLock;
 use std::time::SystemTime;
 
 use hypercolor_core::effect::{
-    ControlError, EffectEntry, EffectRegistry, EffectRenderer, FrameInput,
-    create_renderer_for_metadata,
+    EffectEntry, EffectRegistry, EffectRenderer, FrameInput, create_renderer_for_metadata,
 };
 use hypercolor_core::input::InteractionData;
 use hypercolor_types::audio::AudioData;
@@ -73,9 +72,7 @@ impl EffectRenderer for MockRenderer {
         Ok(())
     }
 
-    fn apply_controls(&mut self, _batch: &ControlDeltaBatch<'_>) -> Result<(), ControlError> {
-        Ok(())
-    }
+    fn apply_controls(&mut self, _batch: &ControlDeltaBatch<'_>) {}
 
     fn destroy(&mut self) {
         self.destroyed = true;

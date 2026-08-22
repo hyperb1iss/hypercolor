@@ -16,7 +16,7 @@ use super::common::{
     builtin_effect_id, color_control, dropdown_control, preset_with_desc, slider_control,
 };
 use crate::blend_math::{decode_srgb_channel, encode_srgb_channel};
-use crate::effect::traits::{ControlError, EffectRenderer, FrameInput, prepare_target_canvas};
+use crate::effect::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WaveDirection {
@@ -401,7 +401,7 @@ impl EffectRenderer for ColorWaveRenderer {
         Ok(canvas)
     }
 
-    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> Result<(), ControlError> {
+    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) {
         for (control_id, value) in batch.changes {
             match control_id.as_str() {
                 "color" | "wave_color" => {
@@ -459,7 +459,6 @@ impl EffectRenderer for ColorWaveRenderer {
                 _ => {}
             }
         }
-        Ok(())
     }
     fn destroy(&mut self) {
         self.reset_state();

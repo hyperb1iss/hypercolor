@@ -16,7 +16,7 @@ use super::common::{
     builtin_effect_id, color_control, dropdown_control, preset, preset_with_desc, slider_control,
     toggle_control,
 };
-use crate::effect::traits::{ControlError, EffectRenderer, FrameInput, prepare_target_canvas};
+use crate::effect::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
 
 /// High-level gradient shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -448,7 +448,7 @@ impl EffectRenderer for GradientRenderer {
         clippy::too_many_lines,
         reason = "control dispatch mirrors the public schema and keeps cache invalidation local"
     )]
-    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> Result<(), ControlError> {
+    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) {
         for (control_id, value) in batch.changes {
             match control_id.as_str() {
                 "color_start" => {
@@ -556,7 +556,6 @@ impl EffectRenderer for GradientRenderer {
                 _ => {}
             }
         }
-        Ok(())
     }
     fn destroy(&mut self) {
         self.invalidate_cache();

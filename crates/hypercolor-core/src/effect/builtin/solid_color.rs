@@ -10,7 +10,7 @@ use hypercolor_types::control::{ControlDeltaBatch, ControlValue};
 use hypercolor_types::effect::{ControlDefinition, EffectCategory, EffectMetadata, EffectSource};
 
 use super::common::{builtin_effect_id, color_control, dropdown_control, slider_control};
-use crate::effect::traits::{ControlError, EffectRenderer, FrameInput, prepare_target_canvas};
+use crate::effect::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
 
 /// Utility scene patterns layered on top of the solid fill renderer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -171,7 +171,7 @@ impl EffectRenderer for SolidColorRenderer {
         Ok(())
     }
 
-    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> Result<(), ControlError> {
+    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) {
         for (control_id, value) in batch.changes {
             match control_id.as_str() {
                 "color" => {
@@ -212,7 +212,6 @@ impl EffectRenderer for SolidColorRenderer {
                 _ => {}
             }
         }
-        Ok(())
     }
     fn destroy(&mut self) {}
 }

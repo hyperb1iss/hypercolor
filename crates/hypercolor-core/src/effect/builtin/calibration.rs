@@ -18,7 +18,7 @@ use super::common::{
     builtin_effect_id, color_control, dropdown_control, preset_with_desc, slider_control,
     toggle_control,
 };
-use crate::effect::traits::{ControlError, EffectRenderer, FrameInput, prepare_target_canvas};
+use crate::effect::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
 
 const LEAD_COLOR: [f32; 4] = [0.07, 1.00, 0.96, 1.0];
 const TRAIL_COLOR: [f32; 4] = [1.00, 0.12, 0.86, 1.0];
@@ -444,7 +444,7 @@ impl EffectRenderer for CalibrationRenderer {
         Ok(())
     }
 
-    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> Result<(), ControlError> {
+    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) {
         for (control_id, value) in batch.changes {
             match control_id.as_str() {
                 "pattern" => {
@@ -510,7 +510,6 @@ impl EffectRenderer for CalibrationRenderer {
                 _ => {}
             }
         }
-        Ok(())
     }
     fn destroy(&mut self) {}
 }

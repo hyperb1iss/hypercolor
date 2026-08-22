@@ -11,7 +11,6 @@ where
 {
     fn apply_test_control(&mut self, control_id: &str, value: &ControlValue) {
         let changes = [(ControlId::from(control_id), value.clone())];
-        self.apply_controls(&ControlDeltaBatch::new(SetRevision::default(), 0, &changes))
-            .expect("test control delivery");
+        self.apply_controls(&ControlDeltaBatch::new(SetRevision::default(), 0, &changes));
     }
 }

@@ -13,7 +13,7 @@ use hypercolor_types::effect::{
 use hypercolor_types::viewport::{FitMode, ViewportRect};
 
 use super::common::{builtin_effect_id, dropdown_control, rect_control, slider_control};
-use crate::effect::traits::{ControlError, EffectRenderer, FrameInput, prepare_target_canvas};
+use crate::effect::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
 use crate::spatial::sample_viewport;
 
 /// Screen-reactive renderer backed by the current capture snapshot.
@@ -69,7 +69,7 @@ impl EffectRenderer for ScreenCastRenderer {
         Ok(())
     }
 
-    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> Result<(), ControlError> {
+    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) {
         for (control_id, value) in batch.changes {
             match control_id.as_str() {
                 "viewport" => {
@@ -91,7 +91,6 @@ impl EffectRenderer for ScreenCastRenderer {
                 _ => {}
             }
         }
-        Ok(())
     }
     fn destroy(&mut self) {}
 }

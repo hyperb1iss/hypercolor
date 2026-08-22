@@ -17,7 +17,7 @@ use crate::effect::servo::{
     ServoProducerRole, ServoRenderStatus, ServoSessionHandle, SessionConfig,
     note_servo_session_error,
 };
-use crate::effect::traits::{ControlError, EffectRenderer, FrameInput, prepare_target_canvas};
+use crate::effect::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
 use crate::spatial::sample_viewport;
 
 const URL_LOAD_DEBOUNCE: Duration = Duration::from_millis(250);
@@ -286,7 +286,7 @@ impl EffectRenderer for WebViewportRenderer {
         Ok(())
     }
 
-    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> Result<(), ControlError> {
+    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) {
         for (control_id, value) in batch.changes {
             match control_id.as_str() {
                 "url" => {
@@ -351,7 +351,6 @@ impl EffectRenderer for WebViewportRenderer {
                 _ => {}
             }
         }
-        Ok(())
     }
 
     fn preview_canvas(&self) -> Option<Canvas> {
@@ -636,9 +635,7 @@ mod tests {
 
     fn apply_control(renderer: &mut WebViewportRenderer, name: &str, value: ControlValue) {
         let changes = [(ControlId::from(name), value)];
-        renderer
-            .apply_controls(&ControlDeltaBatch::new(SetRevision::default(), 0, &changes))
-            .expect("test control delivery");
+        renderer.apply_controls(&ControlDeltaBatch::new(SetRevision::default(), 0, &changes));
     }
 
     #[test]
