@@ -79,7 +79,7 @@ use hypercolor_worker_retention::{retain_worker, spawn_worker};
 use super::adapter::{
     CaptureExactCommand, CaptureExactCommandEndpoint, CaptureExactCommandRejected,
     CaptureExactPublicationShared, CaptureExactRuntimeOwner, CaptureOwnedSource,
-    CapturePublication as AdapterCapturePublication, CapturePublicationEpoch,
+    CapturePublication as AdapterCapturePublication, CapturePublicationFence,
     CapturePublicationSource, begin_capture_exact_preparation, begin_capture_exact_retirement,
     bind_current_capture_exact_runtime, execute_capture_exact_command,
 };
@@ -282,15 +282,37 @@ struct ActiveCaptureEpoch {
     duplication_generation: u64,
 }
 
-type CapturePublication<T> = AdapterCapturePublication<ActiveCaptureEpoch, T>;
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct CaptureAuthorityFence {
+    source_generation: u64,
+    activity_generation: u64,
+}
 
-impl CapturePublicationEpoch for ActiveCaptureEpoch {
-    fn source_generation(&self) -> u64 {
-        self.source_generation
+type CapturePublication<T> =
+    AdapterCapturePublication<CaptureAuthorityFence, ActiveCaptureEpoch, T>;
+
+impl CapturePublicationFence<ActiveCaptureEpoch> for CaptureAuthorityFence {
+    fn admits(&self, epoch: &ActiveCaptureEpoch) -> bool {
+        epoch.source_generation == self.source_generation
+            && epoch.activity_generation == self.activity_generation
+    }
+}
+
+impl<T> CapturePublication<T> {
+    fn fence_source(&mut self, source_generation: u64) -> Option<T> {
+        self.replace_fence(CaptureAuthorityFence {
+            source_generation,
+            ..*self.fence()
+        })
+        .latest
     }
 
-    fn activity_generation(&self) -> u64 {
-        self.activity_generation
+    fn fence_activity(&mut self, activity_generation: u64) -> Option<T> {
+        self.replace_fence(CaptureAuthorityFence {
+            activity_generation,
+            ..*self.fence()
+        })
+        .latest
     }
 }
 
@@ -612,11 +634,13 @@ impl WindowsScreenCaptureFixture {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             analyze_capture_frame(&mut analyzer, &active, frame)?
         };
-        let published = self
-            .publication
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .publish(&active, snapshot);
+        let publication = {
+            self.publication
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .publish(&active, snapshot)
+        };
+        let published = publication.is_ok();
         if published && let Some(status) = self.status_session.load() {
             status.record_sample(captured_at, fresh_until, 1)?;
         }
@@ -1219,10 +1243,13 @@ impl WindowsScreenCaptureInput {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = prepared.analyzer;
         if snapshot.source_generation != prepared.source_generation {
-            self.publication
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .fence_source(prepared.source_generation);
+            let displaced = {
+                self.publication
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .fence_source(prepared.source_generation)
+            };
+            drop(displaced);
         }
     }
 
@@ -1267,12 +1294,11 @@ impl WindowsScreenCaptureInput {
         };
         #[cfg(not(feature = "windows-capture-fixtures"))]
         drop(admission);
-        let previous_latest = self
+        let previous_publication = self
             .publication
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .latest
-            .clone();
+            .checkpoint();
         let activity_changed = previous.is_active() != demand.is_active();
         let activity_generation = if activity_changed {
             let generation = self
@@ -1280,10 +1306,13 @@ impl WindowsScreenCaptureInput {
                 .activity_generation
                 .fetch_add(1, Ordering::AcqRel)
                 .wrapping_add(1);
-            self.publication
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .fence_activity(generation);
+            let displaced = {
+                self.publication
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .fence_activity(generation)
+            };
+            drop(displaced);
             generation
         } else {
             self.settings.activity_generation.load(Ordering::Acquire)
@@ -1321,26 +1350,49 @@ impl WindowsScreenCaptureInput {
                     .activity_generation
                     .fetch_add(1, Ordering::AcqRel)
                     .wrapping_add(1);
-                self.publication
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .fence_activity(rollback_generation);
+                let displaced = {
+                    self.publication
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .fence_activity(rollback_generation)
+                };
+                drop(displaced);
                 if let Err(rollback_error) = self.activate_backend(rollback_generation) {
                     return Err(error.context(format!(
                         "failed to restore previous Windows capture demand: {rollback_error}"
                     )));
                 }
-                self.publication
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .latest = previous_latest;
+                let displaced = {
+                    let mut publication = self
+                        .publication
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let active = publication
+                        .active()
+                        .cloned()
+                        .expect("reactivated Windows capture installs an active epoch");
+                    let Ok(displaced) =
+                        publication.restore_checkpoint(Some(&active), previous_publication)
+                    else {
+                        unreachable!("reactivated Windows capture retains its publication epoch");
+                    };
+                    displaced
+                };
+                drop(displaced);
             } else {
-                let mut publication = self
-                    .publication
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                publication.active = None;
-                publication.latest = previous_latest;
+                let (cleared, displaced) = {
+                    let mut publication = self
+                        .publication
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let cleared = publication.clear();
+                    let Ok(displaced) = publication.restore_checkpoint(None, previous_publication)
+                    else {
+                        unreachable!("inactive Windows capture has no active publication epoch");
+                    };
+                    (cleared, displaced)
+                };
+                drop((cleared, displaced));
             }
             return Err(error);
         }
@@ -1459,20 +1511,18 @@ impl InputSource for WindowsScreenCaptureInput {
             .publication
             .lock()
             .map_err(|_| anyhow!("windows screen capture publication mutex poisoned"))?;
-        let Some(active) = publication.active.as_ref() else {
-            return Ok(InputData::None);
-        };
-        let Some(snapshot) = publication.latest.as_ref() else {
+        let Some(snapshot) = publication.snapshot() else {
             return Ok(InputData::None);
         };
         if snapshot
+            .value
             .geometry_frame()
-            .validate_epoch(&active.epoch)
+            .validate_epoch(&snapshot.epoch.epoch)
             .is_err()
         {
             return Ok(InputData::None);
         }
-        Ok(InputData::Screen(snapshot.data().clone()))
+        Ok(InputData::Screen(snapshot.value.data().clone()))
     }
 
     fn is_running(&self) -> bool {
@@ -1932,17 +1982,23 @@ fn activate_capture_epoch(
     publication: &Mutex<CapturePublication<AnalyzedScreenSnapshot>>,
     active: ActiveCaptureEpoch,
 ) -> bool {
-    publication
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .activate(active)
+    let activation = {
+        publication
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .activate(active)
+    };
+    activation.is_ok()
 }
 
 fn clear_capture_publication(publication: &Mutex<CapturePublication<AnalyzedScreenSnapshot>>) {
-    publication
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clear();
+    let displaced = {
+        publication
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear()
+    };
+    drop(displaced);
 }
 
 fn settle_inactive_capture<T>(
@@ -3659,10 +3715,13 @@ fn run_worker(
                 let raw_frame = build_capture_frame(frame, session_generation, freshness_deadline);
                 let published = raw_frame.and_then(|frame| {
                     let snapshot = analyze_capture_frame(&mut analyzer, &current_epoch, frame)?;
-                    Ok(publication
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .publish(&current_epoch, snapshot))
+                    let publication = {
+                        publication
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .publish(&current_epoch, snapshot)
+                    };
+                    Ok(publication.is_ok())
                 });
                 let published = match published {
                     Ok(published) => published,
@@ -4004,10 +4063,13 @@ fn adopt_prepared_worker_settings(
     );
     *analyzer = prepared.analyzer;
     if source_changed {
-        publication
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .fence_source(*source_generation);
+        let displaced = {
+            publication
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .fence_source(*source_generation)
+        };
+        drop(displaced);
     }
     let _ = done.send(());
 }

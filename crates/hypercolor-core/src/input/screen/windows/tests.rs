@@ -1238,17 +1238,25 @@ fn activity_fence_rejects_a_pre_deactivation_frame_after_reactivation() {
     let mut publication = CapturePublication::default();
 
     publication.fence_activity(1);
-    assert!(publication.activate(old_activity.clone()));
-    assert!(publication.publish(&old_activity, "old frame"));
+    assert!(publication.activate(old_activity.clone()).is_ok());
+    assert!(publication.publish(&old_activity, "old frame").is_ok());
     publication.fence_activity(2);
     publication.fence_activity(3);
 
-    assert!(!publication.activate(old_activity.clone()));
-    assert!(!publication.publish(&old_activity, "in-flight old frame"));
-    assert!(publication.active.is_none());
-    assert!(publication.latest.is_none());
-    assert!(publication.activate(reactivated.clone()));
-    assert!(publication.publish(&reactivated, "reactivated frame"));
+    assert!(publication.activate(old_activity.clone()).is_err());
+    assert!(
+        publication
+            .publish(&old_activity, "in-flight old frame")
+            .is_err()
+    );
+    assert!(publication.active().is_none());
+    assert!(publication.latest().is_none());
+    assert!(publication.activate(reactivated.clone()).is_ok());
+    assert!(
+        publication
+            .publish(&reactivated, "reactivated frame")
+            .is_ok()
+    );
 }
 
 #[test]
@@ -1368,16 +1376,16 @@ fn source_fence_prevents_an_in_flight_worker_from_reactivating_old_frames() {
     new_source.source_generation = 1;
     let mut publication = CapturePublication::default();
 
-    assert!(publication.activate(old_source.clone()));
-    assert!(publication.publish(&old_source, "old frame"));
+    assert!(publication.activate(old_source.clone()).is_ok());
+    assert!(publication.publish(&old_source, "old frame").is_ok());
     publication.fence_source(1);
 
-    assert!(!publication.activate(old_source.clone()));
-    assert!(!publication.publish(&old_source, "late old frame"));
-    assert!(publication.active.is_none());
-    assert!(publication.latest.is_none());
-    assert!(publication.activate(new_source.clone()));
-    assert!(publication.publish(&new_source, "new frame"));
+    assert!(publication.activate(old_source.clone()).is_err());
+    assert!(publication.publish(&old_source, "late old frame").is_err());
+    assert!(publication.active().is_none());
+    assert!(publication.latest().is_none());
+    assert!(publication.activate(new_source.clone()).is_ok());
+    assert!(publication.publish(&new_source, "new frame").is_ok());
 }
 
 #[test]
@@ -1386,15 +1394,19 @@ fn publication_rejects_frames_from_a_replaced_source() {
     let replacement = active_epoch("display:replacement", 3, 7, 1);
     let mut publication = CapturePublication::default();
 
-    assert!(publication.activate(first.clone()));
-    assert!(publication.publish(&first, "first frame"));
-    assert_eq!(publication.latest, Some("first frame"));
+    assert!(publication.activate(first.clone()).is_ok());
+    assert!(publication.publish(&first, "first frame").is_ok());
+    assert_eq!(publication.latest(), Some(&"first frame"));
 
-    assert!(publication.activate(replacement.clone()));
-    assert!(publication.latest.is_none());
-    assert!(!publication.publish(&first, "stale frame"));
-    assert!(publication.publish(&replacement, "replacement frame"));
-    assert_eq!(publication.latest, Some("replacement frame"));
+    assert!(publication.activate(replacement.clone()).is_ok());
+    assert!(publication.latest().is_none());
+    assert!(publication.publish(&first, "stale frame").is_err());
+    assert!(
+        publication
+            .publish(&replacement, "replacement frame")
+            .is_ok()
+    );
+    assert_eq!(publication.latest(), Some(&"replacement frame"));
 }
 
 #[test]
@@ -1403,13 +1415,17 @@ fn publication_rejects_frames_from_a_replaced_topology() {
     let replacement = active_epoch("display:main", 4, 7, 1);
     let mut publication = CapturePublication::default();
 
-    assert!(publication.activate(first.clone()));
-    assert!(publication.publish(&first, "first frame"));
-    assert!(publication.activate(replacement.clone()));
+    assert!(publication.activate(first.clone()).is_ok());
+    assert!(publication.publish(&first, "first frame").is_ok());
+    assert!(publication.activate(replacement.clone()).is_ok());
 
-    assert!(publication.latest.is_none());
-    assert!(!publication.publish(&first, "stale topology frame"));
-    assert!(publication.publish(&replacement, "replacement frame"));
+    assert!(publication.latest().is_none());
+    assert!(publication.publish(&first, "stale topology frame").is_err());
+    assert!(
+        publication
+            .publish(&replacement, "replacement frame")
+            .is_ok()
+    );
 }
 
 #[test]
@@ -1418,13 +1434,13 @@ fn publication_rejects_frames_from_a_replaced_worker_session() {
     let restarted = active_epoch("display:main", 3, 8, 1);
     let mut publication = CapturePublication::default();
 
-    assert!(publication.activate(first.clone()));
-    assert!(publication.publish(&first, "first frame"));
-    assert!(publication.activate(restarted.clone()));
+    assert!(publication.activate(first.clone()).is_ok());
+    assert!(publication.publish(&first, "first frame").is_ok());
+    assert!(publication.activate(restarted.clone()).is_ok());
 
-    assert!(publication.latest.is_none());
-    assert!(!publication.publish(&first, "stale worker frame"));
-    assert!(publication.publish(&restarted, "restarted frame"));
+    assert!(publication.latest().is_none());
+    assert!(publication.publish(&first, "stale worker frame").is_err());
+    assert!(publication.publish(&restarted, "restarted frame").is_ok());
 }
 
 #[test]
@@ -1433,13 +1449,13 @@ fn publication_rejects_frames_from_a_rebuilt_duplication_interface() {
     let rebuilt = active_epoch("display:main", 3, 7, 2);
     let mut publication = CapturePublication::default();
 
-    assert!(publication.activate(first.clone()));
-    assert!(publication.publish(&first, "first frame"));
-    assert!(publication.activate(rebuilt.clone()));
+    assert!(publication.activate(first.clone()).is_ok());
+    assert!(publication.publish(&first, "first frame").is_ok());
+    assert!(publication.activate(rebuilt.clone()).is_ok());
 
-    assert!(publication.latest.is_none());
-    assert!(!publication.publish(&first, "access-lost frame"));
-    assert!(publication.publish(&rebuilt, "rebuilt frame"));
+    assert!(publication.latest().is_none());
+    assert!(publication.publish(&first, "access-lost frame").is_err());
+    assert!(publication.publish(&rebuilt, "rebuilt frame").is_ok());
 }
 
 #[test]
@@ -1447,13 +1463,13 @@ fn cleared_publication_fails_closed_until_a_new_epoch_is_activated() {
     let active = active_epoch("display:main", 3, 7, 1);
     let mut publication = CapturePublication::default();
 
-    assert!(publication.activate(active.clone()));
-    assert!(publication.publish(&active, "frame"));
+    assert!(publication.activate(active.clone()).is_ok());
+    assert!(publication.publish(&active, "frame").is_ok());
     publication.clear();
 
-    assert!(publication.active.is_none());
-    assert!(publication.latest.is_none());
-    assert!(!publication.publish(&active, "late frame"));
+    assert!(publication.active().is_none());
+    assert!(publication.latest().is_none());
+    assert!(publication.publish(&active, "late frame").is_err());
 }
 
 #[test]

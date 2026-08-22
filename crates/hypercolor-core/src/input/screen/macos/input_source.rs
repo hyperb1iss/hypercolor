@@ -53,15 +53,13 @@ impl InputSource for MacosScreenCaptureInput {
         {
             let data = {
                 let publication = lock(&self.publication);
-                if publication.worker_generation == self.worker_generation {
-                    publication
-                        .latest
-                        .as_deref()
-                        .cloned()
-                        .unwrap_or(InputData::None)
-                } else {
-                    InputData::None
-                }
+                publication
+                    .snapshot()
+                    .filter(|snapshot| snapshot.epoch == self.worker_generation)
+                    .map_or(InputData::None, |snapshot| {
+                        let _publication_revision = snapshot.revision;
+                        snapshot.value.as_ref().clone()
+                    })
             };
             if !matches!(data, InputData::None) {
                 self.refresh_platform_status()?;
@@ -88,9 +86,10 @@ impl InputSource for MacosScreenCaptureInput {
         {
             let data = {
                 let publication = lock(&self.publication);
-                (publication.worker_generation == self.worker_generation)
-                    .then(|| publication.latest.clone())
-                    .flatten()
+                publication
+                    .snapshot()
+                    .filter(|snapshot| snapshot.epoch == self.worker_generation)
+                    .map(|snapshot| snapshot.value)
             };
             if data.is_some() {
                 self.refresh_platform_status()?;

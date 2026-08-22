@@ -450,71 +450,190 @@ where
     }
 }
 
-#[cfg(any(target_os = "windows", test))]
-pub trait CapturePublicationEpoch: PartialEq {
-    fn source_generation(&self) -> u64;
-
-    fn activity_generation(&self) -> u64;
+pub trait CapturePublicationFence<E> {
+    fn admits(&self, epoch: &E) -> bool;
 }
 
-#[cfg(any(target_os = "windows", test))]
-pub struct CapturePublication<E, T> {
-    source_generation: u64,
-    activity_generation: u64,
-    pub(super) active: Option<E>,
+pub struct CapturePublicationCheckpoint<T> {
+    latest: Option<T>,
+}
+
+#[cfg(any(
+    feature = "macos-capture-fixtures",
+    target_os = "linux",
+    target_os = "windows",
+    test
+))]
+pub struct CapturePublicationSnapshot<E, T> {
+    pub(super) epoch: E,
+    pub(super) revision: u64,
+    pub(super) value: T,
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows", test))]
+pub struct DisplacedCapturePublication<T> {
     pub(super) latest: Option<T>,
 }
 
-#[cfg(any(target_os = "windows", test))]
-impl<E, T> Default for CapturePublication<E, T> {
+pub struct CapturePublication<F, E, T> {
+    fence: F,
+    revision: u64,
+    active: Option<E>,
+    latest: Option<T>,
+}
+
+impl<F, E, T> Default for CapturePublication<F, E, T>
+where
+    F: Default,
+{
     fn default() -> Self {
         Self {
-            source_generation: 0,
-            activity_generation: 0,
+            fence: F::default(),
+            revision: 0,
             active: None,
             latest: None,
         }
     }
 }
 
-#[cfg(any(target_os = "windows", test))]
-impl<E, T> CapturePublication<E, T>
+impl<F, E, T> CapturePublication<F, E, T>
 where
-    E: CapturePublicationEpoch,
+    F: CapturePublicationFence<E>,
+    E: PartialEq,
 {
-    pub fn activate(&mut self, active: E) -> bool {
-        if active.source_generation() != self.source_generation
-            || active.activity_generation() != self.activity_generation
-        {
-            return false;
+    #[cfg(any(target_os = "linux", target_os = "windows", test))]
+    pub fn activate(&mut self, active: E) -> Result<Option<DisplacedCapturePublication<T>>, E> {
+        if !self.fence.admits(&active) {
+            return Err(active);
         }
         if self.active.as_ref() != Some(&active) {
-            self.latest = None;
+            let displaced = DisplacedCapturePublication {
+                latest: self.latest.take(),
+            };
             self.active = Some(active);
+            return Ok(Some(displaced));
         }
-        true
+        Ok(None)
     }
 
-    pub fn fence_source(&mut self, source_generation: u64) {
-        self.source_generation = source_generation;
-        self.clear();
+    pub fn activate_preserving_latest(&mut self, active: E) -> Result<Option<E>, E> {
+        if !self.fence.admits(&active) {
+            return Err(active);
+        }
+        if self.active.as_ref() == Some(&active) {
+            return Ok(None);
+        }
+        Ok(self.active.replace(active))
     }
 
-    pub fn fence_activity(&mut self, activity_generation: u64) {
-        self.activity_generation = activity_generation;
-        self.clear();
+    pub fn replace_fence_preserving_latest(&mut self, fence: F, active: E) -> Result<Option<E>, E> {
+        self.fence = fence;
+        self.activate_preserving_latest(active)
     }
 
-    pub fn clear(&mut self) {
+    #[cfg(any(target_os = "linux", target_os = "windows", test))]
+    pub fn replace_fence(&mut self, fence: F) -> DisplacedCapturePublication<T> {
+        self.fence = fence;
+        self.clear()
+    }
+
+    #[cfg(any(target_os = "linux", test))]
+    pub fn replace_fence_if_changed(&mut self, fence: F) -> Option<DisplacedCapturePublication<T>>
+    where
+        F: PartialEq,
+    {
+        (self.fence != fence).then(|| self.replace_fence(fence))
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "windows", test))]
+    pub fn fence(&self) -> &F {
+        &self.fence
+    }
+
+    #[cfg(any(
+        feature = "macos-capture-fixtures",
+        target_os = "linux",
+        target_os = "windows",
+        test
+    ))]
+    pub fn is_active(&self, active: &E) -> bool {
+        self.active.as_ref() == Some(active)
+    }
+
+    #[cfg(any(target_os = "windows", test))]
+    pub fn active(&self) -> Option<&E> {
+        self.active.as_ref()
+    }
+
+    #[cfg(any(target_os = "windows", test))]
+    pub fn latest(&self) -> Option<&T> {
+        self.latest.as_ref()
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "windows", test))]
+    pub fn clear(&mut self) -> DisplacedCapturePublication<T> {
         self.active = None;
-        self.latest = None;
+        DisplacedCapturePublication {
+            latest: self.latest.take(),
+        }
     }
 
-    pub fn publish(&mut self, active: &E, value: T) -> bool {
-        if self.active.as_ref() != Some(active) {
-            return false;
+    pub fn clear_latest(&mut self) -> Option<T> {
+        self.latest.take()
+    }
+
+    pub fn checkpoint(&self) -> CapturePublicationCheckpoint<T>
+    where
+        T: Clone,
+    {
+        CapturePublicationCheckpoint {
+            latest: self.latest.clone(),
         }
-        self.latest = Some(value);
-        true
+    }
+
+    pub fn restore_checkpoint(
+        &mut self,
+        active: Option<&E>,
+        checkpoint: CapturePublicationCheckpoint<T>,
+    ) -> Result<Option<T>, CapturePublicationCheckpoint<T>> {
+        if self.active.as_ref() != active {
+            return Err(checkpoint);
+        }
+        if checkpoint.latest.is_some() {
+            self.revision = self.revision.wrapping_add(1);
+        }
+        Ok(std::mem::replace(&mut self.latest, checkpoint.latest))
+    }
+
+    #[cfg(any(
+        feature = "macos-capture-fixtures",
+        target_os = "linux",
+        target_os = "windows",
+        test
+    ))]
+    pub fn publish(&mut self, active: &E, value: T) -> Result<Option<T>, T> {
+        if self.active.as_ref() != Some(active) {
+            return Err(value);
+        }
+        self.revision = self.revision.wrapping_add(1);
+        Ok(self.latest.replace(value))
+    }
+
+    #[cfg(any(
+        feature = "macos-capture-fixtures",
+        target_os = "linux",
+        target_os = "windows",
+        test
+    ))]
+    pub fn snapshot(&self) -> Option<CapturePublicationSnapshot<E, T>>
+    where
+        E: Clone,
+        T: Clone,
+    {
+        Some(CapturePublicationSnapshot {
+            epoch: self.active.as_ref()?.clone(),
+            revision: self.revision,
+            value: self.latest.as_ref()?.clone(),
+        })
     }
 }

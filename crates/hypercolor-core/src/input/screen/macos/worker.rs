@@ -140,7 +140,8 @@ pub(super) fn synchronize_macos_invalidation_generation(
     if delivered > *observed {
         #[cfg(feature = "macos-capture-fixtures")]
         {
-            lock(publication).latest = None;
+            let latest = { lock(publication).clear_latest() };
+            drop(latest);
         }
         invalidate_macos_worker(exact, runtimes)?;
         *observed = delivered;

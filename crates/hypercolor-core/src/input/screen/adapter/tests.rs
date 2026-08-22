@@ -1,6 +1,6 @@
 use super::{
     CaptureExactCommand, CaptureExactCommandEndpoint, CaptureExactCommandRejected,
-    CaptureExactPublicationShared, CaptureOwnedSource, CapturePublication, CapturePublicationEpoch,
+    CaptureExactPublicationShared, CaptureOwnedSource, CapturePublication, CapturePublicationFence,
     CapturePublicationSource, begin_capture_exact_retirement,
 };
 use crate::input::screen::{
@@ -71,13 +71,15 @@ struct FakeEpoch {
     resource: u64,
 }
 
-impl CapturePublicationEpoch for FakeEpoch {
-    fn source_generation(&self) -> u64 {
-        self.source
-    }
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct FakeFence {
+    source: u64,
+    activity: u64,
+}
 
-    fn activity_generation(&self) -> u64 {
-        self.activity
+impl CapturePublicationFence<FakeEpoch> for FakeFence {
+    fn admits(&self, epoch: &FakeEpoch) -> bool {
+        epoch.source == self.source && epoch.activity == self.activity
     }
 }
 
@@ -90,12 +92,26 @@ fn publication_fences_every_epoch_dimension_and_keeps_only_the_latest_value() {
         topology: 2,
         resource: 3,
     };
-    let mut publication = CapturePublication::default();
+    let mut publication = CapturePublication::<FakeFence, _, _>::default();
 
-    assert!(publication.activate(initial));
-    assert!(publication.publish(&initial, "first"));
-    assert!(publication.publish(&initial, "latest"));
-    assert_eq!(publication.latest, Some("latest"));
+    assert_eq!(publication.fence(), &FakeFence::default());
+    assert!(
+        publication
+            .replace_fence_if_changed(FakeFence::default())
+            .is_none()
+    );
+    assert!(publication.activate(initial).is_ok());
+    assert!(publication.is_active(&initial));
+    assert!(publication.publish(&initial, "first").is_ok());
+    assert!(publication.publish(&initial, "latest").is_ok());
+    assert_eq!(publication.latest(), Some(&"latest"));
+    assert_eq!(
+        publication
+            .snapshot()
+            .expect("latest publication remains visible")
+            .revision,
+        2
+    );
 
     for stale in [
         FakeEpoch {
@@ -119,8 +135,8 @@ fn publication_fences_every_epoch_dimension_and_keeps_only_the_latest_value() {
             ..initial
         },
     ] {
-        assert!(!publication.publish(&stale, "stale"));
-        assert_eq!(publication.latest, Some("latest"));
+        assert!(publication.publish(&stale, "stale").is_err());
+        assert_eq!(publication.latest(), Some(&"latest"));
     }
 }
 
@@ -138,20 +154,32 @@ fn publication_requires_current_source_and_activity_before_reactivation() {
         activity: 1,
         ..previous
     };
-    let mut publication = CapturePublication::default();
+    let mut publication = CapturePublication::<FakeFence, _, _>::default();
 
-    assert!(publication.activate(previous));
-    assert!(publication.publish(&previous, "previous"));
-    publication.fence_source(1);
-    publication.fence_activity(1);
+    assert!(publication.activate(previous).is_ok());
+    assert!(publication.publish(&previous, "previous").is_ok());
+    let checkpoint = publication.checkpoint();
+    let displaced = publication.replace_fence(FakeFence {
+        source: 1,
+        activity: 1,
+    });
+    assert_eq!(displaced.latest, Some("previous"));
 
-    assert!(!publication.activate(previous));
-    assert!(!publication.publish(&previous, "late"));
-    assert!(publication.active.is_none());
-    assert!(publication.latest.is_none());
-    assert!(publication.activate(current));
-    assert!(publication.publish(&current, "current"));
-    assert_eq!(publication.latest, Some("current"));
+    assert!(publication.activate(previous).is_err());
+    assert!(publication.publish(&previous, "late").is_err());
+    assert!(publication.active().is_none());
+    assert!(publication.latest().is_none());
+    assert!(publication.activate(current).is_ok());
+    assert!(matches!(
+        publication.restore_checkpoint(Some(&current), checkpoint),
+        Ok(None)
+    ));
+    let snapshot = publication.snapshot().expect("restored value is visible");
+    assert_eq!(snapshot.epoch, current);
+    assert_eq!(snapshot.revision, 2);
+    assert_eq!(snapshot.value, "previous");
+    assert!(publication.publish(&current, "current").is_ok());
+    assert_eq!(publication.latest(), Some(&"current"));
 }
 
 #[test]

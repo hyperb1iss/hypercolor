@@ -115,19 +115,22 @@ pub(in crate::input::screen::macos) fn publish_frame(
             return Err(anyhow!("macOS analysis changed topology generation"));
         }
         let data = Arc::new(InputData::Screen(snapshot.data().clone()));
-        if lock(publication).worker_generation != worker_generation {
+        if !lock(publication).is_active(&worker_generation) {
             return Ok(());
         }
         if let Some(status) = status_session.load() {
             status.record_sample(captured_at, fresh_until, 1)?;
         }
-        {
+        let previous = {
             let mut publication = lock(publication);
-            if publication.worker_generation != worker_generation {
+            if !publication.is_active(&worker_generation) {
                 return Ok(());
             }
-            publication.latest = Some(data);
-        }
+            publication
+                .publish(&worker_generation, data)
+                .expect("the checked macOS worker remains publication authority")
+        };
+        drop(previous);
         telemetry.record_converted_publication(captured_at);
     }
     #[cfg(not(feature = "macos-capture-fixtures"))]

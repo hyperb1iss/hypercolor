@@ -430,18 +430,24 @@ impl MacosScreenCaptureInput {
         let generation = staged.generation;
         let start = Arc::clone(&staged.start);
         let worker = staged.commit();
-        #[cfg(feature = "macos-capture-fixtures")]
-        let previous_latest = lock(&self.publication).latest.clone();
+        let checkpoint = lock(&self.publication).checkpoint();
         self.stop_worker();
         self.worker_generation = generation;
-        {
+        let displaced = {
             let mut publication = lock(&self.publication);
-            publication.worker_generation = generation;
-            #[cfg(feature = "macos-capture-fixtures")]
-            {
-                publication.latest = previous_latest;
-            }
-        }
+            let _previous = publication
+                .replace_fence_preserving_latest(
+                    super::MacosPublicationFence(generation),
+                    generation,
+                )
+                .expect("the macOS worker generation matches its publication fence");
+            let Ok(displaced) = publication.restore_checkpoint(Some(&generation), checkpoint)
+            else {
+                unreachable!("the installed macOS worker remains publication authority");
+            };
+            displaced
+        };
+        drop(displaced);
         self.worker = Some(worker);
         start.store(true, Ordering::Release);
         self.worker
@@ -461,10 +467,8 @@ impl MacosScreenCaptureInput {
         if let Some(join) = worker.join.take() {
             let _ = join.join();
         }
-        #[cfg(feature = "macos-capture-fixtures")]
-        {
-            lock(&self.publication).latest = None;
-        }
+        let latest = { lock(&self.publication).clear_latest() };
+        drop(latest);
         self.exact.replace_source(None);
     }
 

@@ -73,8 +73,8 @@ use crate::input::{SourceIssue, SourceStatusHandle, SourceStatusReporter};
 use super::adapter::{
     CaptureExactCommand, CaptureExactCommandEndpoint, CaptureExactCommandRejected,
     CaptureExactPublicationShared, CaptureExactRuntimeOwner, CaptureOwnedSource,
-    CapturePublicationSource, begin_capture_exact_preparation, begin_capture_exact_retirement,
-    execute_capture_exact_command,
+    CapturePublication, CapturePublicationFence, CapturePublicationSource,
+    begin_capture_exact_preparation, begin_capture_exact_retirement, execute_capture_exact_command,
 };
 
 #[cfg(target_os = "macos")]
@@ -216,12 +216,16 @@ struct NativeCaptureControl {
     host_capabilities: NativeCaptureCapabilities,
 }
 
-#[derive(Default)]
-struct MacosPublication {
-    worker_generation: u64,
-    #[cfg(feature = "macos-capture-fixtures")]
-    latest: Option<Arc<InputData>>,
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct MacosPublicationFence(u64);
+
+impl CapturePublicationFence<u64> for MacosPublicationFence {
+    fn admits(&self, epoch: &u64) -> bool {
+        self.0 == *epoch
+    }
 }
+
+type MacosPublication = CapturePublication<MacosPublicationFence, u64, Arc<InputData>>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct MacosPublicationSource {

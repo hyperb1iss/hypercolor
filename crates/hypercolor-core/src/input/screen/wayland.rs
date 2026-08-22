@@ -60,7 +60,8 @@ use hypercolor_worker_retention::{retain_worker, spawn_worker};
 use super::adapter::{
     CaptureExactCommand, CaptureExactCommandEndpoint, CaptureExactCommandRejected,
     CaptureExactPublicationShared, CaptureExactRuntimeOwner, CaptureOwnedSource,
-    CapturePublicationSource, begin_capture_exact_preparation, begin_capture_exact_retirement,
+    CapturePublication, CapturePublicationFence, CapturePublicationSource,
+    begin_capture_exact_preparation, begin_capture_exact_retirement,
     bind_current_capture_exact_runtime, execute_capture_exact_command,
 };
 
@@ -542,11 +543,11 @@ struct SharedSettings {
     admission_coordinator: ScreenByteAdmissionCoordinator,
     compute_capacity_policy: ScreenComputeCapacityPolicy,
     generation: AtomicU64,
-    frame_generation: AtomicU64,
     topology_generation: AtomicU64,
     topology: Mutex<Option<WaylandTopologyState>>,
     session_generation: AtomicU64,
-    expected_epoch: Mutex<Option<CaptureEpoch>>,
+    session_guard: Mutex<()>,
+    publication: Arc<Mutex<WaylandCapturePublication>>,
     exact: WaylandExactPublicationShared,
 }
 
@@ -1170,8 +1171,19 @@ struct WaylandTopologyState {
 #[derive(Clone)]
 struct CapturedScreenSnapshot {
     analysis: AnalyzedScreenSnapshot,
-    generation: u64,
 }
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct WaylandPublicationFence(Option<CaptureEpoch>);
+
+impl CapturePublicationFence<CaptureEpoch> for WaylandPublicationFence {
+    fn admits(&self, epoch: &CaptureEpoch) -> bool {
+        self.0.as_ref() == Some(epoch)
+    }
+}
+
+type WaylandCapturePublication =
+    CapturePublication<WaylandPublicationFence, CaptureEpoch, CapturedScreenSnapshot>;
 
 impl SharedSettings {
     fn config_snapshot(&self) -> CaptureConfig {
@@ -1212,7 +1224,7 @@ impl SharedSettings {
         cancel: &AtomicBool,
     ) -> Option<CaptureRuntimeSettings> {
         let _session_guard = self
-            .expected_epoch
+            .session_guard
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if cancel.load(Ordering::Acquire)
@@ -1229,22 +1241,35 @@ impl SharedSettings {
     }
 
     fn expected_epoch(&self) -> Option<CaptureEpoch> {
-        self.expected_epoch
+        let _session_guard = self
+            .session_guard
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.publication
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .fence()
+            .0
             .clone()
     }
 
     fn begin_session(&self) -> u64 {
-        let mut expected = self
-            .expected_epoch
+        let session_guard = self
+            .session_guard
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut publication = self
+            .publication
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let session_generation = self
             .session_generation
             .fetch_add(1, Ordering::AcqRel)
             .wrapping_add(1);
-        *expected = None;
+        let displaced = publication.replace_fence(WaylandPublicationFence(None));
+        drop(publication);
+        drop(session_guard);
+        drop(displaced);
         session_generation
     }
 
@@ -1254,8 +1279,12 @@ impl SharedSettings {
         cancel: &AtomicBool,
         active_session_generation: &AtomicU64,
     ) -> Option<u64> {
-        let mut expected = self
-            .expected_epoch
+        let session_guard = self
+            .session_guard
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut publication = self
+            .publication
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if cancel.load(Ordering::Acquire) {
@@ -1270,20 +1299,22 @@ impl SharedSettings {
                 Ordering::Acquire,
             )
             .ok()?;
-        *expected = None;
+        let displaced = publication.replace_fence(WaylandPublicationFence(None));
         self.exact.replace_source(None);
         active_session_generation.store(successor_generation, Ordering::Release);
+        drop(publication);
+        drop(session_guard);
+        drop(displaced);
         Some(successor_generation)
     }
 
-    fn cancel_worker_session(
-        &self,
-        latest_snapshot: &Mutex<Option<CapturedScreenSnapshot>>,
-        cancel: &AtomicBool,
-        active_session_generation: &AtomicU64,
-    ) {
-        let mut expected = self
-            .expected_epoch
+    fn cancel_worker_session(&self, cancel: &AtomicBool, active_session_generation: &AtomicU64) {
+        let session_guard = self
+            .session_guard
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut publication = self
+            .publication
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         cancel.store(true, Ordering::SeqCst);
@@ -1291,26 +1322,20 @@ impl SharedSettings {
         if self.session_generation.load(Ordering::Acquire) != session_generation {
             return;
         }
-        if expected
+        let displaced = if publication
+            .fence()
+            .0
             .as_ref()
             .is_some_and(|epoch| epoch.session_generation == session_generation)
         {
-            *expected = None;
-        }
-        let mut latest = latest_snapshot
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if latest.as_ref().is_some_and(|snapshot| {
-            snapshot
-                .analysis
-                .geometry_frame()
-                .metadata()
-                .session_generation
-                == session_generation
-        }) {
-            *latest = None;
-        }
+            Some(publication.replace_fence(WaylandPublicationFence(None)))
+        } else {
+            None
+        };
         self.exact.replace_source(None);
+        drop(publication);
+        drop(session_guard);
+        drop(displaced);
     }
 
     fn persist_restore_token_for_session(
@@ -1321,7 +1346,7 @@ impl SharedSettings {
         token_sink: Option<&RestoreTokenSink>,
     ) -> bool {
         let _session_guard = self
-            .expected_epoch
+            .session_guard
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if cancel.load(Ordering::Acquire)
@@ -1353,7 +1378,7 @@ impl SharedSettings {
         publish: impl FnOnce(&SourceSessionWriter) -> bool,
     ) -> bool {
         let _session_guard = self
-            .expected_epoch
+            .session_guard
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if cancel.load(Ordering::Acquire)
@@ -1370,8 +1395,12 @@ impl SharedSettings {
         native_extent: PixelExtent,
         session_generation: u64,
     ) -> Option<ResolvedWaylandTopology> {
-        let mut expected = self
-            .expected_epoch
+        let session_guard = self
+            .session_guard
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut publication = self
+            .publication
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if self.session_generation.load(Ordering::Acquire) != session_generation {
@@ -1399,81 +1428,82 @@ impl SharedSettings {
                 resolved
             }
         };
-        *expected = Some(CaptureEpoch {
+        let epoch = CaptureEpoch {
             source_id: signature.source_id.clone(),
             topology_generation: resolved.generation,
             session_generation,
-        });
+        };
+        let displaced_fence =
+            publication.replace_fence_if_changed(WaylandPublicationFence(Some(epoch.clone())));
+        let displaced_activation = publication
+            .activate(epoch)
+            .expect("the active Wayland epoch matches its installed publication fence");
+        drop(topology);
+        drop(publication);
+        drop(session_guard);
+        drop((displaced_fence, displaced_activation));
         Some(resolved)
     }
 
-    fn publish_snapshot(
-        &self,
-        latest_snapshot: &Mutex<Option<CapturedScreenSnapshot>>,
-        analysis: AnalyzedScreenSnapshot,
-    ) -> bool {
-        let expected = self
-            .expected_epoch
+    fn publish_snapshot(&self, analysis: AnalyzedScreenSnapshot) -> bool {
+        let session_guard = self
+            .session_guard
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(expected) = expected.as_ref() else {
+        let mut publication = self
+            .publication
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(expected) = publication.fence().0.clone() else {
             return false;
         };
-        if analysis.geometry_frame().validate_epoch(expected).is_err() {
+        if analysis.geometry_frame().validate_epoch(&expected).is_err() {
             return false;
         }
-        let Ok(mut latest) = latest_snapshot.lock() else {
-            return false;
-        };
-        let generation = self
-            .frame_generation
-            .fetch_add(1, Ordering::Release)
-            .wrapping_add(1);
-        *latest = Some(CapturedScreenSnapshot {
-            analysis,
-            generation,
-        });
-        true
+        let result = publication.publish(&expected, CapturedScreenSnapshot { analysis });
+        drop(publication);
+        drop(session_guard);
+        result.is_ok()
     }
 
     fn clear_expected_epoch(&self) {
-        *self
-            .expected_epoch
+        let session_guard = self
+            .session_guard
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let displaced = {
+            self.publication
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .replace_fence(WaylandPublicationFence(None))
+        };
+        drop(session_guard);
+        drop(displaced);
         self.exact.replace_source(None);
     }
 
-    fn invalidate_session(
-        &self,
-        latest_snapshot: &Mutex<Option<CapturedScreenSnapshot>>,
-        session_generation: u64,
-    ) -> bool {
-        let mut expected = self
-            .expected_epoch
+    fn invalidate_session(&self, session_generation: u64) -> bool {
+        let session_guard = self
+            .session_guard
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if expected
+        let mut publication = self
+            .publication
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if publication
+            .fence()
+            .0
             .as_ref()
             .is_none_or(|epoch| epoch.session_generation != session_generation)
         {
             return false;
         }
-        *expected = None;
-        let mut latest = latest_snapshot
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if latest.as_ref().is_some_and(|snapshot| {
-            snapshot
-                .analysis
-                .geometry_frame()
-                .metadata()
-                .session_generation
-                == session_generation
-        }) {
-            *latest = None;
-        }
+        let displaced = publication.replace_fence(WaylandPublicationFence(None));
         self.exact.replace_source(None);
+        drop(publication);
+        drop(session_guard);
+        drop(displaced);
         true
     }
 }
@@ -1483,7 +1513,7 @@ pub struct WaylandScreenCaptureInput {
     settings: Arc<SharedSettings>,
     running: bool,
     capture_demand: ScreenCaptureDemand,
-    latest_snapshot: Arc<Mutex<Option<CapturedScreenSnapshot>>>,
+    publication: Arc<Mutex<WaylandCapturePublication>>,
     status_snapshot_generation: u64,
     worker: Option<WaylandCaptureWorker>,
     retiring_workers: Vec<WaylandCaptureWorker>,
@@ -1545,6 +1575,7 @@ impl WaylandScreenCaptureInput {
         admission_coordinator: ScreenByteAdmissionCoordinator,
         compute_capacity_policy: ScreenComputeCapacityPolicy,
     ) -> Self {
+        let publication = Arc::new(Mutex::new(WaylandCapturePublication::default()));
         Self {
             settings: Arc::new(SharedSettings {
                 config: Mutex::new(config),
@@ -1552,16 +1583,16 @@ impl WaylandScreenCaptureInput {
                 admission_coordinator,
                 compute_capacity_policy,
                 generation: AtomicU64::new(0),
-                frame_generation: AtomicU64::new(0),
                 topology_generation: AtomicU64::new(0),
                 topology: Mutex::new(None),
                 session_generation: AtomicU64::new(0),
-                expected_epoch: Mutex::new(None),
+                session_guard: Mutex::new(()),
+                publication: Arc::clone(&publication),
                 exact: WaylandExactPublicationShared::default(),
             }),
             running: false,
             capture_demand: ScreenCaptureDemand::Inactive,
-            latest_snapshot: Arc::new(Mutex::new(None)),
+            publication,
             status_snapshot_generation: 0,
             worker: None,
             retiring_workers: Vec::new(),
@@ -1883,9 +1914,12 @@ impl WaylandScreenCaptureInput {
             if !demand.is_active() {
                 self.settings.clear_expected_epoch();
             }
-            if let Ok(mut latest) = self.latest_snapshot.lock() {
-                *latest = None;
-            }
+            let latest = self
+                .publication
+                .lock()
+                .ok()
+                .and_then(|mut publication| publication.clear_latest());
+            drop(latest);
             self.capture_demand = demand;
             return Ok(());
         }
@@ -1921,11 +1955,15 @@ impl WaylandScreenCaptureInput {
             return Err(error);
         }
 
-        if previous.is_active() != demand.is_active()
-            && let Ok(mut latest) = self.latest_snapshot.lock()
-        {
-            *latest = None;
-        }
+        let latest = (previous.is_active() != demand.is_active())
+            .then(|| {
+                self.publication
+                    .lock()
+                    .ok()
+                    .and_then(|mut publication| publication.clear_latest())
+            })
+            .flatten();
+        drop(latest);
         self.capture_demand = demand;
         Ok(())
     }
@@ -1943,7 +1981,6 @@ impl WaylandScreenCaptureInput {
             return Ok(());
         }
 
-        let latest_snapshot = Arc::clone(&self.latest_snapshot);
         let settings = Arc::clone(&self.settings);
         let token_sink = self.token_sink.clone();
         let cancel = Arc::new(AtomicBool::new(false));
@@ -1966,14 +2003,12 @@ impl WaylandScreenCaptureInput {
         let session_generation = Arc::new(AtomicU64::new(settings.begin_session()));
         let capture_session_generation = Arc::clone(&session_generation);
         let worker_settings = Arc::clone(&settings);
-        let worker_latest_snapshot = Arc::clone(&latest_snapshot);
         let join_handle = spawn_worker(
             thread::Builder::new().name("hypercolor-screen-capture".to_owned()),
             move || {
                 let _ = ready_tx.send(());
                 run_capture_worker(
                     settings,
-                    latest_snapshot,
                     command_rx,
                     worker_command_tx,
                     token_sink,
@@ -1996,7 +2031,6 @@ impl WaylandScreenCaptureInput {
             status_writer: worker_status_writer,
             session_generation,
             settings: worker_settings,
-            latest_snapshot: worker_latest_snapshot,
         });
         if let Err(error) = ready_rx.recv_timeout(WORKER_READY_TIMEOUT) {
             self.shutdown_worker();
@@ -2088,10 +2122,8 @@ impl WaylandScreenCaptureInput {
                 reason,
             );
         }
-        self.settings.invalidate_session(
-            &self.latest_snapshot,
-            session_generation.load(Ordering::Acquire),
-        );
+        self.settings
+            .invalidate_session(session_generation.load(Ordering::Acquire));
         self.reap_workers(false);
         true
     }
@@ -2161,9 +2193,12 @@ impl InputSource for WaylandScreenCaptureInput {
         self.reap_workers(true);
         self.settings.exact.clear_owned_sources();
 
-        if let Ok(mut latest) = self.latest_snapshot.lock() {
-            *latest = None;
-        }
+        let latest = self
+            .publication
+            .lock()
+            .ok()
+            .and_then(|mut publication| publication.clear_latest());
+        drop(latest);
         self.settings.exact.replace_source(None);
     }
 
@@ -2179,29 +2214,26 @@ impl InputSource for WaylandScreenCaptureInput {
             return Ok(InputData::None);
         }
 
-        let latest = self
-            .latest_snapshot
+        let publication = self
+            .publication
             .lock()
             .map_err(|_| anyhow!("wayland screen capture snapshot mutex poisoned"))?;
-
-        let snapshot = latest.clone();
-        drop(latest);
+        let snapshot = publication.snapshot();
+        drop(publication);
         let Some(snapshot) = snapshot else {
             return Ok(InputData::None);
         };
-        let metadata = snapshot.analysis.geometry_frame().metadata();
-        let Some(expected) = self.settings.expected_epoch() else {
-            return Ok(InputData::None);
-        };
+        let metadata = snapshot.value.analysis.geometry_frame().metadata();
         if snapshot
+            .value
             .analysis
             .geometry_frame()
-            .validate_epoch(&expected)
+            .validate_epoch(&snapshot.epoch)
             .is_err()
         {
             return Ok(InputData::None);
         }
-        if snapshot.generation != self.status_snapshot_generation {
+        if snapshot.revision != self.status_snapshot_generation {
             if let Some(status) = self.status.session() {
                 let cadence = CaptureCadence::new(self.settings.config_snapshot().target_fps)?;
                 status.record_sample(
@@ -2210,9 +2242,9 @@ impl InputSource for WaylandScreenCaptureInput {
                     1,
                 )?;
             }
-            self.status_snapshot_generation = snapshot.generation;
+            self.status_snapshot_generation = snapshot.revision;
         }
-        Ok(InputData::Screen(snapshot.analysis.data().clone()))
+        Ok(InputData::Screen(snapshot.value.analysis.data().clone()))
     }
 
     fn is_running(&self) -> bool {
@@ -2369,7 +2401,7 @@ impl SourceRoleBinding for WaylandScreenCaptureInput {
 
 fn clear_restore_token(settings: &SharedSettings, token_sink: Option<&RestoreTokenSink>) {
     let _session_guard = settings
-        .expected_epoch
+        .session_guard
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     settings
@@ -2396,7 +2428,6 @@ struct WaylandCaptureWorker {
     status_writer: Option<SourceSessionWriter>,
     session_generation: Arc<AtomicU64>,
     settings: Arc<SharedSettings>,
-    latest_snapshot: Arc<Mutex<Option<CapturedScreenSnapshot>>>,
 }
 
 #[derive(Clone)]
@@ -2424,11 +2455,8 @@ impl WaylandCaptureWorker {
 
 impl WaylandCaptureWorker {
     fn cancel_session(&self) {
-        self.settings.cancel_worker_session(
-            &self.latest_snapshot,
-            &self.cancel,
-            &self.session_generation,
-        );
+        self.settings
+            .cancel_worker_session(&self.cancel, &self.session_generation);
     }
 
     fn is_finished(&self) -> bool {
@@ -3496,7 +3524,6 @@ struct WaylandAnalysisState {
     cadence: CaptureCadence,
     pacer: CapturePacer,
     next_analysis_at: Instant,
-    latest_snapshot: Arc<Mutex<Option<CapturedScreenSnapshot>>>,
     plane_pool: CapturePlanePool,
     settings: Arc<SharedSettings>,
     applied_generation: u64,
@@ -3509,7 +3536,6 @@ struct WaylandAnalysisState {
 impl WaylandAnalysisState {
     fn new(
         settings: Arc<SharedSettings>,
-        latest_snapshot: Arc<Mutex<Option<CapturedScreenSnapshot>>>,
         source: WaylandSourceMetadata,
         config: CaptureConfig,
         demand: ScreenCaptureDemand,
@@ -3538,7 +3564,6 @@ impl WaylandAnalysisState {
             cadence,
             pacer: cadence.pacer(),
             next_analysis_at: Instant::now(),
-            latest_snapshot,
             plane_pool: CapturePlanePool::with_admission_coordinator(
                 settings.admission_coordinator.clone(),
             ),
@@ -3618,10 +3643,12 @@ impl WaylandAnalysisState {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut latest_snapshot = self
-            .latest_snapshot
+            .settings
+            .publication
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let generation = Cell::new(0);
+        let mut displaced_snapshot = None;
         let committed = adoption.authority.claim_commit()
             && commit_claimed(&adoption.authority, adoption.finalize_authority, || {
                 let granted_token = current_config.restore_token.take();
@@ -3642,8 +3669,10 @@ impl WaylandAnalysisState {
                 self.next_analysis_at = Instant::now();
                 self.applied_demand = demand;
                 self.applied_generation = committed_generation;
-                fence_previous_publication(&mut latest_snapshot);
+                displaced_snapshot = fence_previous_publication(&mut latest_snapshot);
             });
+        drop(latest_snapshot);
+        drop(displaced_snapshot);
         let _ = adoption.done.send(committed);
         if !committed {
             return;
@@ -3816,7 +3845,6 @@ impl Drop for WaylandAnalysisState {
 fn run_analysis_worker(
     exchange: &AnalysisExchange,
     settings: Arc<SharedSettings>,
-    latest_snapshot: Arc<Mutex<Option<CapturedScreenSnapshot>>>,
     source: WaylandSourceMetadata,
     config: CaptureConfig,
     demand: ScreenCaptureDemand,
@@ -3824,14 +3852,13 @@ fn run_analysis_worker(
     status_writer: Option<SourceSessionWriter>,
     callback_metrics: &CaptureCallbackMetrics,
 ) {
-    let mut state =
-        match WaylandAnalysisState::new(settings, latest_snapshot, source, config, demand) {
-            Ok(state) => state,
-            Err(error) => {
-                warn!(%error, "Failed to admit Wayland screen analysis extent");
-                return;
-            }
-        };
+    let mut state = match WaylandAnalysisState::new(settings, source, config, demand) {
+        Ok(state) => state,
+        Err(error) => {
+            warn!(%error, "Failed to admit Wayland screen analysis extent");
+            return;
+        }
+    };
     let mut analysis_failure_latched = false;
     let mut exact_failure_latched = false;
     let mut diagnostics_deadline = Instant::now();
@@ -3937,10 +3964,7 @@ fn run_analysis_worker(
         let metadata = analysis.geometry_frame().metadata();
         let captured_at = metadata.captured_at;
         let fresh_until = metadata.fresh_until;
-        if state
-            .settings
-            .publish_snapshot(&state.latest_snapshot, analysis)
-        {
+        if state.settings.publish_snapshot(analysis) {
             analysis_failure_latched = false;
             if let Some(status) = status_writer.as_ref() {
                 if let Some(error) = exact_failure.as_ref() {
@@ -3984,7 +4008,6 @@ fn latch_wayland_analysis_failure(
 
 fn run_capture_worker(
     settings: Arc<SharedSettings>,
-    latest_snapshot: Arc<Mutex<Option<CapturedScreenSnapshot>>>,
     command_rx: LoopReceiver<WorkerCommand>,
     command_tx: LoopSender<WorkerCommand>,
     token_sink: Option<RestoreTokenSink>,
@@ -4107,7 +4130,6 @@ fn run_capture_worker(
             &startup.config,
             startup.demand,
             Arc::clone(&settings),
-            Arc::clone(&latest_snapshot),
             portal_remote,
             &mut command_rx,
             command_tx.clone(),
@@ -4116,7 +4138,7 @@ fn run_capture_worker(
             status_writer.clone(),
             native_extent_override,
         );
-        settings.invalidate_session(&latest_snapshot, session_generation);
+        settings.invalidate_session(session_generation);
         if let Err(error) = runtime.block_on(portal_guard.close()) {
             warn!(%error, "Wayland screencast session close reported an error");
         }
@@ -4393,8 +4415,10 @@ fn settle_pipewire_restoration(
     Ok(())
 }
 
-fn fence_previous_publication(latest_snapshot: &mut Option<CapturedScreenSnapshot>) {
-    *latest_snapshot = None;
+fn fence_previous_publication(
+    publication: &mut WaylandCapturePublication,
+) -> Option<CapturedScreenSnapshot> {
+    publication.clear_latest()
 }
 
 fn terminate_pipewire_loop(
@@ -4512,7 +4536,6 @@ fn run_pipewire_loop(
     config: &CaptureConfig,
     demand: ScreenCaptureDemand,
     settings: Arc<SharedSettings>,
-    latest_snapshot: Arc<Mutex<Option<CapturedScreenSnapshot>>>,
     portal_remote: PortalRemote,
     command_rx: &mut Option<LoopReceiver<WorkerCommand>>,
     command_tx: LoopSender<WorkerCommand>,
@@ -4865,7 +4888,6 @@ fn run_pipewire_loop(
                 run_analysis_worker(
                     &analysis_exchange,
                     settings,
-                    latest_snapshot,
                     source,
                     analysis_config,
                     analysis_demand,
