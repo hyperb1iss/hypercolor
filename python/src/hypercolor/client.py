@@ -1400,7 +1400,7 @@ def _patch_controls_request(values: Mapping[str, Any]) -> PatchControlsRequest:
 
 def _canonical_control_value(value: Any) -> dict[str, Any]:
     if isinstance(value, Mapping):
-        if "kind" in value:
+        if _is_canonical_control_envelope(value):
             return _canonical_tagged_control_value(value)
         if set(value) == {"x", "y", "width", "height"}:
             return {"kind": "rect", "value": _canonical_rect_payload(value)}
@@ -1409,6 +1409,37 @@ def _canonical_control_value(value: Any) -> dict[str, Any]:
             "value": {str(key): _canonical_control_value(item) for key, item in value.items()},
         }
     return _canonical_non_mapping_control_value(value)
+
+
+_CANONICAL_UNIT_KINDS = {"null", "unknown"}
+_CANONICAL_VALUE_KINDS = {
+    "bool",
+    "int",
+    "float",
+    "text",
+    "secret_ref",
+    "ip",
+    "mac",
+    "duration",
+    "color_rgb",
+    "color_rgba",
+    "color_linear",
+    "gradient",
+    "rect",
+    "enum",
+    "flags",
+    "list",
+    "map",
+}
+
+
+def _is_canonical_control_envelope(value: Mapping[Any, Any]) -> bool:
+    if "kind" not in value:
+        return False
+    kind = value["kind"]
+    return set(value) <= {"kind", "value"} or (
+        isinstance(kind, str) and kind in _CANONICAL_UNIT_KINDS | _CANONICAL_VALUE_KINDS
+    )
 
 
 def _canonical_non_mapping_control_value(value: Any) -> dict[str, Any]:
@@ -1452,32 +1483,12 @@ def _canonical_tagged_control_value(value: Mapping[Any, Any]) -> dict[str, Any]:
         message = "control value kind must be text"
         raise TypeError(message)
 
-    unit_kinds = {"null", "unknown"}
-    value_kinds = {
-        "bool",
-        "int",
-        "float",
-        "text",
-        "secret_ref",
-        "ip",
-        "mac",
-        "duration",
-        "color_rgb",
-        "color_rgba",
-        "color_linear",
-        "gradient",
-        "rect",
-        "enum",
-        "flags",
-        "list",
-        "map",
-    }
-    if kind not in unit_kinds | value_kinds:
+    if kind not in _CANONICAL_UNIT_KINDS | _CANONICAL_VALUE_KINDS:
         message = f"unknown control value kind: {kind}"
         raise ValueError(message)
-    expected_keys = {"kind"} if kind in unit_kinds else {"kind", "value"}
+    expected_keys = {"kind"} if kind in _CANONICAL_UNIT_KINDS else {"kind", "value"}
     _require_exact_keys(value, expected_keys, kind)
-    if kind in unit_kinds:
+    if kind in _CANONICAL_UNIT_KINDS:
         return {"kind": kind}
 
     return {"kind": kind, "value": _canonical_tagged_payload(kind, value["value"])}

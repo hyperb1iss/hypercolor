@@ -322,7 +322,7 @@ impl DriverControlStore for DaemonDriverHost {
                 let Some(value) = entry
                     .settings
                     .get(&key)
-                    .filter(|value| ControlValue::has_canonical_wire_shape(value))
+                    .filter(|value| ControlValue::is_canonical_wire_candidate(value))
                 else {
                     return Ok((key, projected));
                 };

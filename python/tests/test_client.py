@@ -987,6 +987,44 @@ async def test_set_control_values_rejects_malformed_canonical_envelopes(
 
 @respx.mock
 @pytest.mark.asyncio
+async def test_plain_maps_with_business_kind_fields_remain_maps(
+    client: HypercolorClient,
+) -> None:
+    route = respx.patch(
+        "http://hyperia.test:9420/api/v1/control-surfaces/device%3Akeyboard/values"
+    ).mock(
+        return_value=httpx.Response(
+            200,
+            content=_envelope(
+                {
+                    "surface_id": "device:keyboard",
+                    "previous_revision": 3,
+                    "revision": 4,
+                    "accepted": [],
+                    "rejected": [],
+                    "impacts": [],
+                    "values": {},
+                }
+            ),
+        )
+    )
+
+    await client.set_control_values(
+        "device:keyboard",
+        {"transport": {"kind": "network", "name": "fixture"}},
+    )
+
+    assert json.loads(route.calls[0].request.content)["values"]["transport"] == {
+        "kind": "map",
+        "value": {
+            "kind": {"kind": "text", "value": "network"},
+            "name": {"kind": "text", "value": "fixture"},
+        },
+    }
+
+
+@respx.mock
+@pytest.mark.asyncio
 async def test_bare_lists_remain_lists_in_action_input(client: HypercolorClient) -> None:
     route = respx.post(
         "http://hyperia.test:9420/api/v1/control-surfaces/device%3Akeyboard/actions/test"

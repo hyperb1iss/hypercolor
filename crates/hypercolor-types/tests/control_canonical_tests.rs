@@ -85,22 +85,38 @@ fn canonical_wire_roundtrips_every_variant() {
 }
 
 #[test]
-fn canonical_wire_shape_requires_an_exact_tagged_envelope() {
+fn canonical_wire_candidate_preserves_arbitrary_provider_maps() {
     for value in [
         serde_json::json!({"kind": "null"}),
         serde_json::json!({"kind": "float", "value": 0.5}),
         serde_json::json!({"kind": "future_value"}),
+        serde_json::json!({"kind": 7, "value": true}),
+        serde_json::json!({"kind": "text", "value": "ok", "extra": true}),
     ] {
-        assert!(ControlValue::has_canonical_wire_shape(&value));
+        assert!(ControlValue::is_canonical_wire_candidate(&value));
     }
 
     for value in [
         serde_json::json!({"kind": "network", "name": "fixture"}),
-        serde_json::json!({"kind": 7, "value": true}),
         serde_json::json!({"value": true}),
         serde_json::json!("text"),
     ] {
-        assert!(!ControlValue::has_canonical_wire_shape(&value));
+        assert!(!ControlValue::is_canonical_wire_candidate(&value));
+    }
+}
+
+#[test]
+fn canonical_wire_rejects_malformed_envelopes() {
+    for value in [
+        serde_json::json!({"kind": "null", "value": null}),
+        serde_json::json!({"kind": "unknown", "value": 1}),
+        serde_json::json!({"kind": "text", "value": "ok", "extra": true}),
+        serde_json::json!({"kind": "future_value", "value": 1}),
+    ] {
+        assert!(
+            serde_json::from_value::<ControlValue>(value.clone()).is_err(),
+            "malformed canonical envelope was accepted: {value}"
+        );
     }
 }
 

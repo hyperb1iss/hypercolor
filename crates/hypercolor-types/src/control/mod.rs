@@ -429,10 +429,34 @@ pub enum ControlValue {
     List(Vec<ControlValue>),
     /// Structured object (driver-only).
     Map(BTreeMap<String, ControlValue>),
-    /// Value whose `kind` a newer schema minted. Round-trips as the
-    /// unit `unknown` variant, matching the established driver value
-    /// semantics.
+    /// Explicit unknown-value sentinel.
     Unknown,
+}
+
+const CONTROL_VALUE_KINDS: &[&str] = &[
+    "null",
+    "bool",
+    "int",
+    "float",
+    "text",
+    "secret_ref",
+    "ip",
+    "mac",
+    "duration",
+    "color_rgb",
+    "color_rgba",
+    "color_linear",
+    "gradient",
+    "rect",
+    "enum",
+    "flags",
+    "list",
+    "map",
+    "unknown",
+];
+
+fn is_control_value_kind(kind: &str) -> bool {
+    CONTROL_VALUE_KINDS.contains(&kind)
 }
 
 #[derive(Serialize)]
@@ -566,11 +590,26 @@ impl<'de> Deserialize<'de> for ControlValue {
     where
         D: Deserializer<'de>,
     {
+        #[derive(Default)]
+        enum RawPayload {
+            #[default]
+            Missing,
+            Present(serde_json::Value),
+        }
+
+        fn deserialize_payload<'de, D>(deserializer: D) -> Result<RawPayload, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            serde_json::Value::deserialize(deserializer).map(RawPayload::Present)
+        }
+
         #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
         struct RawControlValue {
             kind: String,
-            #[serde(default)]
-            value: Option<serde_json::Value>,
+            #[serde(default, deserialize_with = "deserialize_payload")]
+            value: RawPayload,
         }
 
         fn parse_value<T, E>(kind: &str, value: Option<serde_json::Value>) -> Result<T, E>
@@ -583,38 +622,64 @@ impl<'de> Deserialize<'de> for ControlValue {
                 .map_err(|error| E::custom(format!("invalid {kind} value: {error}")))
         }
 
+        fn parse_unit<E>(kind: &str, value: Option<serde_json::Value>) -> Result<(), E>
+        where
+            E: serde::de::Error,
+        {
+            if value.is_some() {
+                return Err(E::custom(format!("{kind} must not contain a value")));
+            }
+            Ok(())
+        }
+
         let raw = RawControlValue::deserialize(deserializer)?;
+        let raw_value = match raw.value {
+            RawPayload::Missing => None,
+            RawPayload::Present(value) => Some(value),
+        };
         let value = match raw.kind.as_str() {
-            "null" => Self::Null,
-            "bool" => Self::Bool(parse_value("bool", raw.value)?),
-            "int" => Self::Int(parse_value("int", raw.value)?),
-            "float" => Self::Float(parse_value("float", raw.value)?),
-            "text" => Self::Text(parse_value("text", raw.value)?),
+            "null" => {
+                parse_unit::<D::Error>("null", raw_value)?;
+                Self::Null
+            }
+            "bool" => Self::Bool(parse_value("bool", raw_value)?),
+            "int" => Self::Int(parse_value("int", raw_value)?),
+            "float" => Self::Float(parse_value("float", raw_value)?),
+            "text" => Self::Text(parse_value("text", raw_value)?),
             "secret_ref" => Self::SecretRef(SecretRef::new(parse_value::<String, D::Error>(
                 "secret_ref",
-                raw.value,
+                raw_value,
             )?)),
             "ip" => Self::Ip(
-                IpText::new(parse_value::<String, D::Error>("ip", raw.value)?)
+                IpText::new(parse_value::<String, D::Error>("ip", raw_value)?)
                     .map_err(serde::de::Error::custom)?,
             ),
             "mac" => Self::Mac(
-                MacText::new(parse_value::<String, D::Error>("mac", raw.value)?)
+                MacText::new(parse_value::<String, D::Error>("mac", raw_value)?)
                     .map_err(serde::de::Error::custom)?,
             ),
             "duration" => {
-                Self::Duration(Duration::from_millis(parse_value("duration", raw.value)?))
+                Self::Duration(Duration::from_millis(parse_value("duration", raw_value)?))
             }
-            "color_rgb" => Self::ColorRgb(parse_value("color_rgb", raw.value)?),
-            "color_rgba" => Self::ColorRgba(parse_value("color_rgba", raw.value)?),
-            "color_linear" => Self::ColorLinear(parse_value("color_linear", raw.value)?),
-            "gradient" => Self::Gradient(parse_value("gradient", raw.value)?),
-            "rect" => Self::Rect(parse_value("rect", raw.value)?),
-            "enum" => Self::Enum(parse_value("enum", raw.value)?),
-            "flags" => Self::Flags(parse_value("flags", raw.value)?),
-            "list" => Self::List(parse_value("list", raw.value)?),
-            "map" => Self::Map(parse_value("map", raw.value)?),
-            _ => Self::Unknown,
+            "color_rgb" => Self::ColorRgb(parse_value("color_rgb", raw_value)?),
+            "color_rgba" => Self::ColorRgba(parse_value("color_rgba", raw_value)?),
+            "color_linear" => Self::ColorLinear(parse_value("color_linear", raw_value)?),
+            "gradient" => Self::Gradient(parse_value("gradient", raw_value)?),
+            "rect" => Self::Rect(parse_value("rect", raw_value)?),
+            "enum" => Self::Enum(parse_value("enum", raw_value)?),
+            "flags" => Self::Flags(parse_value("flags", raw_value)?),
+            "list" => Self::List(parse_value("list", raw_value)?),
+            "map" => Self::Map(parse_value("map", raw_value)?),
+            "unknown" => {
+                parse_unit::<D::Error>("unknown", raw_value)?;
+                Self::Unknown
+            }
+            other => {
+                return Err(serde::de::Error::unknown_variant(
+                    other,
+                    CONTROL_VALUE_KINDS,
+                ));
+            }
         };
         value.validate().map_err(serde::de::Error::custom)?;
         Ok(value)
@@ -829,20 +894,23 @@ fn parse_effect_gradient_stop(
 }
 
 impl ControlValue {
-    /// Return whether a JSON value has the exact canonical tagged-wire shape.
+    /// Return whether a JSON value claims the canonical tagged-wire namespace.
     ///
-    /// The tag must be a string and the object may contain only `kind` and
-    /// `value`. This distinguishes persisted control values from arbitrary
-    /// driver configuration objects that happen to carry a `kind` field.
+    /// Exact `kind`/`value` envelopes and reserved canonical tags are parsed
+    /// strictly so malformed values fail loudly. Arbitrary driver configuration
+    /// objects with an unrelated `kind` field remain raw provider data.
     #[must_use]
-    pub fn has_canonical_wire_shape(value: &serde_json::Value) -> bool {
+    pub fn is_canonical_wire_candidate(value: &serde_json::Value) -> bool {
         let Some(object) = value.as_object() else {
             return false;
         };
-        object.get("kind").is_some_and(serde_json::Value::is_string)
-            && object
-                .keys()
-                .all(|key| matches!(key.as_str(), "kind" | "value"))
+        let Some(kind) = object.get("kind") else {
+            return false;
+        };
+        object
+            .keys()
+            .all(|key| matches!(key.as_str(), "kind" | "value"))
+            || kind.as_str().is_some_and(is_control_value_kind)
     }
 
     /// Admit a raw effect-control JSON value into the canonical algebra.

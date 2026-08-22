@@ -32,7 +32,7 @@ impl DriverConfigView<'_> {
             .settings
             .iter()
             .map(|(key, value)| {
-                let value = if ControlValue::has_canonical_wire_shape(value) {
+                let value = if ControlValue::is_canonical_wire_candidate(value) {
                     let canonical = serde_json::from_value::<ControlValue>(value.clone()).map_err(
                         |error| DriverError::Configuration {
                             message: format!(
