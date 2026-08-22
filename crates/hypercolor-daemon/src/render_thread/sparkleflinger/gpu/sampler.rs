@@ -2,8 +2,11 @@ use anyhow::Result;
 use hypercolor_core::spatial::PreparedZonePlan;
 use hypercolor_types::event::ZoneColors;
 
+#[cfg(all(target_os = "macos", feature = "screen-capture"))]
+use crate::render_thread::producer_queue::GpuTextureFrame;
 use crate::render_thread::sparkleflinger::gpu_sampling::{
-    GpuSampleSource, GpuSamplingPlan, GpuSamplingPlanKey, PendingGpuSampleReadback,
+    GpuSampleSource, GpuSamplingPlan, GpuSamplingPlanKey, GpuSamplingPreparation,
+    PendingGpuSampleReadback,
 };
 
 use super::{FrameInFlight, GpuCompositorOutputSurface, GpuSparkleFlinger};
@@ -34,6 +37,88 @@ pub(crate) struct PendingGpuZoneSampling {
 }
 
 impl GpuSparkleFlinger {
+    pub(crate) fn can_sample_zone_plan(&mut self, prepared_zones: &[PreparedZonePlan]) -> bool {
+        let dimensions = self
+            .surfaces
+            .as_ref()
+            .map(|surfaces| (surfaces.width, surfaces.height))
+            .or_else(|| {
+                prepared_zones
+                    .first()
+                    .map(|zone| (zone.prepared_canvas_width, zone.prepared_canvas_height))
+            });
+        let Some((width, height)) = dimensions else {
+            return GpuSamplingPlan::supports_prepared_zones(prepared_zones);
+        };
+        self.spatial_sampler
+            .can_sample_plan(&self.device, width, height, prepared_zones)
+    }
+
+    pub(in crate::render_thread::sparkleflinger) fn prepare_zone_sampling_plan(
+        &mut self,
+        width: u32,
+        height: u32,
+        prepared_zones: &[PreparedZonePlan],
+    ) -> GpuSamplingPreparation {
+        self.spatial_sampler
+            .prepare_plan(&self.device, width, height, prepared_zones)
+    }
+
+    pub(in crate::render_thread::sparkleflinger) fn apply_zone_sampling_plan(
+        &mut self,
+        preparation: GpuSamplingPreparation,
+    ) {
+        self.spatial_sampler.apply_preparation(preparation);
+        self.cached_sample_result = None;
+    }
+
+    #[cfg(test)]
+    pub(in crate::render_thread::sparkleflinger) fn fail_next_sampling_preparation(&mut self) {
+        self.spatial_sampler.fail_next_plan_preparation();
+    }
+
+    #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+    pub(crate) fn sample_texture_zone_plan(
+        &mut self,
+        frame: &GpuTextureFrame,
+        prepared_zones: &[PreparedZonePlan],
+    ) -> Result<Option<Vec<ZoneColors>>> {
+        self.spatial_sampler.clear_bind_groups();
+        let result = (|| {
+            let mut zones = Vec::new();
+            let dispatch = self.spatial_sampler.sample_texture_into(
+                &self.device,
+                &self.queue,
+                GpuSampleSource::Diagnostic,
+                &frame.view,
+                frame.width,
+                frame.height,
+                prepared_zones,
+                &mut zones,
+                None,
+            )?;
+            if let Some(submission_index) = dispatch.submission_index.clone() {
+                self.retire_native_screen_leases(
+                    submission_index,
+                    frame.macos_screen_lease.clone().into_iter().collect(),
+                );
+            }
+            if dispatch.queue_saturated || !dispatch.sampled {
+                if let Some(pending) = dispatch.pending_readback {
+                    self.spatial_sampler.discard_pending_readback(pending);
+                }
+                return Ok(None);
+            }
+            if let Some(pending) = dispatch.pending_readback {
+                self.spatial_sampler
+                    .finish_pending_readback(&self.device, pending, &mut zones)?;
+            }
+            Ok(Some(zones))
+        })();
+        self.spatial_sampler.clear_bind_groups();
+        result
+    }
+
     pub(crate) fn sample_zone_plan_into(
         &mut self,
         prepared_zones: &[PreparedZonePlan],
