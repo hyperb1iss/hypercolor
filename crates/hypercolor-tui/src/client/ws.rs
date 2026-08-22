@@ -8,6 +8,7 @@
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
+use hypercolor_leptos_ext::ws::topic::ActiveSubscription;
 use hypercolor_leptos_ext::ws::{
     PREVIEW_CANCEL_FRAME_TAG, PREVIEW_CHUNK_FRAME_TAG, PreviewCancelFrame, PreviewChunkReassembler,
     PreviewFrame, PreviewFrameChannel, PreviewPixelFormat, PreviewReassemblyLimits,
@@ -24,7 +25,7 @@ const SUBSCRIPTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 
 #[derive(Debug, serde::Deserialize)]
 pub struct SubscribedAck {
-    pub topics: Vec<serde_json::Value>,
+    pub topics: Vec<ActiveSubscription>,
 }
 
 /// Messages decoded from the WebSocket stream.
