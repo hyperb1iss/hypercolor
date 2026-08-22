@@ -5340,6 +5340,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "hypercolor-gpu-frame"
+version = "0.3.2"
+dependencies = [
+ "wgpu",
+]
+
+[[package]]
 name = "hypercolor-hal"
 version = "0.3.2"
 dependencies = [
