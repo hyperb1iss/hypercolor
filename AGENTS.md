@@ -104,7 +104,7 @@ graph TD
     WC[hypercolor-windows-capture] --> CORE & WGI
     WI[hypercolor-windows-input] --> CORE
     WH[hypercolor-windows-helper]
-    T & CORE --> DAPI[hypercolor-driver-api]
+    T --> DAPI[hypercolor-driver-api]
     DAPI --> DS[hypercolor-driver-support]
     DAPI & DS --> HUE[hypercolor-driver-hue]
     DAPI & DS --> NL[hypercolor-driver-nanoleaf]
@@ -112,8 +112,8 @@ graph TD
     DAPI & DS --> GV[hypercolor-driver-govee]
     ORS[hypercolor-openrgb-sdk] & DAPI --> ORD[hypercolor-driver-openrgb]
     DAPI --> NET[hypercolor-network]
-    HAL & HUE & NL & WLED & GV & ORD & DS --> DB[hypercolor-driver-builtin]
-    CORE & HAL & DB & DS & NET & PFS[hypercolor-platform-fs] --> D[hypercolor-daemon]
+    CORE & DAPI & HAL & HUE & NL & WLED & GV & ORD & DS --> DB[hypercolor-driver-builtin]
+    CORE & HAL & DAPI & DB & DS & NET & PFS[hypercolor-platform-fs] --> D[hypercolor-daemon]
     CORE --> CLI[hypercolor-cli]
     T --> TUI[hypercolor-tui]
     TUI -.->|optional| CLI

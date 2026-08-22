@@ -130,7 +130,7 @@ graph TD
     T --> HAL
     T --> CORE
     HAL --> CORE
-    T & CORE --> DAPI
+    T --> DAPI
     DAPI --> DS
     DAPI & DS --> HUE
     DAPI & DS --> NL
