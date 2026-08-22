@@ -5063,7 +5063,6 @@ version = "0.3.2"
 dependencies = [
  "anyhow",
  "arc-swap",
- "ashpd",
  "async-trait",
  "base64 0.22.1",
  "chrono",
@@ -5089,6 +5088,7 @@ dependencies = [
  "hypercolor-macos-gpu-interop",
  "hypercolor-macos-input",
  "hypercolor-macos-media",
+ "hypercolor-pipewire-interop",
  "hypercolor-platform-fs",
  "hypercolor-types",
  "hypercolor-windows-capture",
@@ -5580,6 +5580,16 @@ version = "0.3.2"
 dependencies = [
  "thiserror 2.0.18",
  "tokio",
+]
+
+[[package]]
+name = "hypercolor-pipewire-interop"
+version = "0.3.2"
+dependencies = [
+ "ashpd",
+ "pipewire",
+ "thiserror 2.0.18",
+ "tracing",
 ]
 
 [[package]]

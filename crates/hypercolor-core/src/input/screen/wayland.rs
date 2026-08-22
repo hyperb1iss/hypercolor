@@ -17,12 +17,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, anyhow};
-use ashpd::desktop::{
-    CreateSessionOptions, PersistMode, Session,
-    screencast::{
-        CursorMode, OpenPipeWireRemoteOptions, Screencast, SelectSourcesOptions, SourceType,
-        StartCastOptions, Stream,
-    },
+use hypercolor_pipewire_interop::{
+    PortalRequest, PortalSession, PortalStreamDescriptor, open_portal_session,
 };
 use pipewire as pw;
 use pw::properties::properties;
@@ -2544,12 +2540,6 @@ fn publish_unexpected_exit_status(
     )
 }
 
-struct PortalCaptureSession {
-    session: Session<Screencast>,
-    stream: Stream,
-    fd: OwnedFd,
-}
-
 #[derive(Clone)]
 struct WaylandSourceMetadata {
     signature: WaylandTopologySignature,
@@ -2558,19 +2548,17 @@ struct WaylandSourceMetadata {
 }
 
 impl WaylandSourceMetadata {
-    fn from_stream(stream: &Stream, session_generation: u64) -> anyhow::Result<Self> {
-        let source_name = stream
-            .id()
-            .or_else(|| stream.mapping_id())
-            .unwrap_or("monitor");
+    fn from_stream(
+        stream: &PortalStreamDescriptor,
+        session_generation: u64,
+    ) -> anyhow::Result<Self> {
+        let source_name = stream.source_name();
         let source_id =
             CaptureSourceId::new(Arc::<str>::from(format!("wayland:portal:{source_name}")))?;
-        let (x, y) = stream.position().unwrap_or_default();
-        let logical_extent = stream.size().and_then(|(width, height)| {
-            let width = u32::try_from(width).ok()?;
-            let height = u32::try_from(height).ok()?;
-            PixelExtent::new(width, height).ok()
-        });
+        let (x, y) = stream.position();
+        let logical_extent = stream
+            .logical_size()
+            .and_then(|(width, height)| PixelExtent::new(width, height).ok());
         Ok(Self {
             signature: WaylandTopologySignature {
                 source_id,
@@ -3754,7 +3742,7 @@ fn run_capture_worker(
             }
             continue;
         };
-        let (portal, restore_token) = match portal_result {
+        let portal = match portal_result {
             Ok(portal) => portal,
             Err(error) => {
                 flags.portal_pending.store(false, Ordering::SeqCst);
@@ -3800,6 +3788,7 @@ fn run_capture_worker(
             return;
         }
 
+        let (portal_guard, portal_remote, restore_token) = portal.into_parts();
         if restore_token != startup.config.restore_token
             && !settings.persist_restore_token_for_session(
                 session_generation,
@@ -3815,18 +3804,14 @@ fn run_capture_worker(
         // worker immediately rewrites, silently reconnecting the old source.
         flags.portal_pending.store(false, Ordering::SeqCst);
 
-        let PortalCaptureSession {
-            session,
-            stream,
-            fd,
-        } = portal;
+        let (portal_stream, portal_file) = portal_remote.into_parts();
         let loop_outcome = run_pipewire_loop(
             &startup.config,
             startup.demand,
             Arc::clone(&settings),
             Arc::clone(&latest_snapshot),
-            stream,
-            fd,
+            portal_stream,
+            portal_file.into(),
             &mut command_rx,
             Arc::clone(&flags.cancel),
             session_generation,
@@ -3834,7 +3819,7 @@ fn run_capture_worker(
             native_extent_override,
         );
         settings.invalidate_session(&latest_snapshot, session_generation);
-        if let Err(error) = runtime.block_on(session.close()) {
+        if let Err(error) = runtime.block_on(portal_guard.close()) {
             warn!(%error, "Wayland screencast session close reported an error");
         }
         if !settings.session_is_current(session_generation, &flags.cancel) {
@@ -3986,9 +3971,11 @@ fn wait_for_retry(flags: &WorkerFlags) -> bool {
 async fn open_portal_session_while_demanded(
     config: &CaptureConfig,
     flags: &WorkerFlags,
-) -> Option<anyhow::Result<(PortalCaptureSession, Option<String>)>> {
+) -> Option<Result<PortalSession, hypercolor_pipewire_interop::PortalError>> {
     tokio::select! {
-        result = open_portal_session(config) => Some(result),
+        result = open_portal_session(&PortalRequest {
+            restore_token: config.restore_token.clone(),
+        }) => Some(result),
         () = wait_until_worker_inactive(flags) => None,
     }
 }
@@ -3997,66 +3984,6 @@ async fn wait_until_worker_inactive(flags: &WorkerFlags) {
     while !flags.cancel.load(Ordering::Acquire) && worker_demanded(&flags.demand_state) {
         tokio::time::sleep(WORKER_POLL_INTERVAL).await;
     }
-}
-
-async fn open_portal_session(
-    config: &CaptureConfig,
-) -> anyhow::Result<(PortalCaptureSession, Option<String>)> {
-    let proxy = Screencast::new()
-        .await
-        .context("failed to connect to xdg-desktop-portal screencast interface")?;
-    let session = proxy
-        .create_session(CreateSessionOptions::default())
-        .await
-        .context("failed to create screencast portal session")?;
-
-    // An invalid or revoked restore token is ignored by the portal, which
-    // falls back to showing the picker — no retry path needed.
-    proxy
-        .select_sources(
-            &session,
-            SelectSourcesOptions::default()
-                .set_cursor_mode(CursorMode::Hidden)
-                .set_sources(Some(SourceType::Monitor.into()))
-                .set_multiple(false)
-                .set_restore_token(config.restore_token.as_deref())
-                .set_persist_mode(PersistMode::ExplicitlyRevoked),
-        )
-        .await
-        .context("failed to open screencast source picker")?;
-
-    let response = proxy
-        .start(&session, None, StartCastOptions::default())
-        .await
-        .context("failed to start screencast portal session")?
-        .response()
-        .context("screen capture request was denied or cancelled")?;
-    let restore_token = response.restore_token().map(ToOwned::to_owned);
-    let stream = response
-        .streams()
-        .first()
-        .cloned()
-        .context("portal did not return a monitor stream")?;
-    let fd = proxy
-        .open_pipe_wire_remote(&session, OpenPipeWireRemoteOptions::default())
-        .await
-        .context("failed to open PipeWire remote for screencast session")?;
-
-    info!(
-        pipewire_node = stream.pipe_wire_node_id(),
-        stream = ?stream,
-        restored = config.restore_token.is_some(),
-        "Wayland screencast session established"
-    );
-
-    Ok((
-        PortalCaptureSession {
-            session,
-            stream,
-            fd,
-        },
-        restore_token,
-    ))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -4286,7 +4213,7 @@ fn run_pipewire_loop(
     demand: ScreenCaptureDemand,
     settings: Arc<SharedSettings>,
     latest_snapshot: Arc<Mutex<Option<CapturedScreenSnapshot>>>,
-    portal_stream: Stream,
+    portal_stream: PortalStreamDescriptor,
     portal_fd: OwnedFd,
     command_rx: &mut Option<pw::channel::Receiver<WorkerCommand>>,
     cancel: Arc<AtomicBool>,
@@ -4686,7 +4613,7 @@ fn run_pipewire_loop(
     stream
         .connect(
             spa::utils::Direction::Input,
-            Some(portal_stream.pipe_wire_node_id()),
+            Some(portal_stream.node_id()),
             pw::stream::StreamFlags::AUTOCONNECT | pw::stream::StreamFlags::MAP_BUFFERS,
             &mut params,
         )

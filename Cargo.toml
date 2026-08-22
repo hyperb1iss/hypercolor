@@ -149,6 +149,7 @@ hypercolor-platform-fs = { path = "crates/hypercolor-platform-fs" }
 hypercolor-worker-retention = { path = "crates/hypercolor-worker-retention" }
 hypercolor-gpu-frame = { path = "crates/hypercolor-gpu-frame" }
 hypercolor-linux-input = { path = "crates/hypercolor-linux-input" }
+hypercolor-pipewire-interop = { path = "crates/hypercolor-pipewire-interop" }
 hypercolor-linux-session = { path = "crates/hypercolor-linux-session" }
 hypercolor-linux-gpu-interop = { path = "crates/hypercolor-linux-gpu-interop" }
 hypercolor-macos-gpu-interop = { path = "crates/hypercolor-macos-gpu-interop" }
