@@ -278,7 +278,7 @@ pub struct AssignMembersRequest {
     pub segments: Vec<String>,
 }
 
-/// `POST /scene/zones/{zone}/layers` — append a layer to the stack.
+/// `POST /scene/zones/{zone}/layers`: append a layer to the stack.
 ///
 /// The server mints the layer id (Spec 78 §1.4); the response's zone
 /// resource carries it.
@@ -302,12 +302,45 @@ pub struct CreateLayerRequest {
     pub enabled: Option<bool>,
 }
 
-/// `PUT /scene/zones/{zone}/layers/{layer}` — whole-layer replace.
+/// `PUT /scene/zones/{zone}/layers/{layer}`: whole-layer replace.
 ///
 /// Replacement is creation: every successful `PUT` mints a fresh layer
 /// id, same effect or not (Spec 78 §1.4). The request shape is the
 /// creation shape; the path names the layer being replaced.
-pub type ReplaceLayerRequest = CreateLayerRequest;
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReplaceLayerRequest {
+    pub source: LayerSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blend: Option<LayerBlendMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opacity: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transform: Option<LayerTransform>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adjust: Option<LayerAdjust>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bindings: Option<Vec<LayerBinding>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+}
+
+impl From<ReplaceLayerRequest> for CreateLayerRequest {
+    fn from(request: ReplaceLayerRequest) -> Self {
+        Self {
+            source: request.source,
+            name: request.name,
+            blend: request.blend,
+            opacity: request.opacity,
+            transform: request.transform,
+            adjust: request.adjust,
+            bindings: request.bindings,
+            enabled: request.enabled,
+        }
+    }
+}
 
 /// `PATCH /scene/zones/{zone}/layers/order` — reorder the stack.
 ///

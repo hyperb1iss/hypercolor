@@ -7,7 +7,7 @@ import httpx
 from ... import errors
 from ...client import AuthenticatedClient, Client
 from ...models.api_error_body import ApiErrorBody
-from ...models.create_layer_request import CreateLayerRequest
+from ...models.replace_layer_request import ReplaceLayerRequest
 from ...models.replace_live_zone_layer_response_200 import (
     ReplaceLiveZoneLayerResponse200,
 )
@@ -18,7 +18,7 @@ def _get_kwargs(
     zone: str,
     layer: str,
     *,
-    body: CreateLayerRequest,
+    body: ReplaceLayerRequest,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
 
@@ -113,18 +113,18 @@ def sync_detailed(
     layer: str,
     *,
     client: AuthenticatedClient | Client,
-    body: CreateLayerRequest,
+    body: ReplaceLayerRequest,
 ) -> Response[ApiErrorBody | ReplaceLiveZoneLayerResponse200]:
     """Replace a live zone layer
 
     Args:
         zone (str):
         layer (str):
-        body (CreateLayerRequest): `POST /scene/zones/{zone}/layers` — append a layer to the
-            stack.
+        body (ReplaceLayerRequest): `PUT /scene/zones/{zone}/layers/{layer}`: whole-layer replace.
 
-            The server mints the layer id (Spec 78 §1.4); the response's zone
-            resource carries it.
+            Replacement is creation: every successful `PUT` mints a fresh layer
+            id, same effect or not (Spec 78 §1.4). The request shape is the
+            creation shape; the path names the layer being replaced.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -152,18 +152,18 @@ def sync(
     layer: str,
     *,
     client: AuthenticatedClient | Client,
-    body: CreateLayerRequest,
+    body: ReplaceLayerRequest,
 ) -> ApiErrorBody | ReplaceLiveZoneLayerResponse200 | None:
     """Replace a live zone layer
 
     Args:
         zone (str):
         layer (str):
-        body (CreateLayerRequest): `POST /scene/zones/{zone}/layers` — append a layer to the
-            stack.
+        body (ReplaceLayerRequest): `PUT /scene/zones/{zone}/layers/{layer}`: whole-layer replace.
 
-            The server mints the layer id (Spec 78 §1.4); the response's zone
-            resource carries it.
+            Replacement is creation: every successful `PUT` mints a fresh layer
+            id, same effect or not (Spec 78 §1.4). The request shape is the
+            creation shape; the path names the layer being replaced.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -186,18 +186,18 @@ async def asyncio_detailed(
     layer: str,
     *,
     client: AuthenticatedClient | Client,
-    body: CreateLayerRequest,
+    body: ReplaceLayerRequest,
 ) -> Response[ApiErrorBody | ReplaceLiveZoneLayerResponse200]:
     """Replace a live zone layer
 
     Args:
         zone (str):
         layer (str):
-        body (CreateLayerRequest): `POST /scene/zones/{zone}/layers` — append a layer to the
-            stack.
+        body (ReplaceLayerRequest): `PUT /scene/zones/{zone}/layers/{layer}`: whole-layer replace.
 
-            The server mints the layer id (Spec 78 §1.4); the response's zone
-            resource carries it.
+            Replacement is creation: every successful `PUT` mints a fresh layer
+            id, same effect or not (Spec 78 §1.4). The request shape is the
+            creation shape; the path names the layer being replaced.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -223,18 +223,18 @@ async def asyncio(
     layer: str,
     *,
     client: AuthenticatedClient | Client,
-    body: CreateLayerRequest,
+    body: ReplaceLayerRequest,
 ) -> ApiErrorBody | ReplaceLiveZoneLayerResponse200 | None:
     """Replace a live zone layer
 
     Args:
         zone (str):
         layer (str):
-        body (CreateLayerRequest): `POST /scene/zones/{zone}/layers` — append a layer to the
-            stack.
+        body (ReplaceLayerRequest): `PUT /scene/zones/{zone}/layers/{layer}`: whole-layer replace.
 
-            The server mints the layer id (Spec 78 §1.4); the response's zone
-            resource carries it.
+            Replacement is creation: every successful `PUT` mints a fresh layer
+            id, same effect or not (Spec 78 §1.4). The request shape is the
+            creation shape; the path names the layer being replaced.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.

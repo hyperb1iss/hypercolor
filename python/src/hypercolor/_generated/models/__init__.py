@@ -524,6 +524,7 @@ from .render_loop_status import RenderLoopStatus
 from .render_surface_status import RenderSurfaceStatus
 from .reorder_layers_request import ReorderLayersRequest
 from .reorder_live_zone_layers_response_200 import ReorderLiveZoneLayersResponse200
+from .replace_layer_request import ReplaceLayerRequest
 from .replace_live_zone_layer_response_200 import ReplaceLiveZoneLayerResponse200
 from .replace_scene_layer_request import ReplaceSceneLayerRequest
 from .replace_scene_request import ReplaceSceneRequest
@@ -1110,6 +1111,7 @@ __all__ = (
     "RenderSurfaceStatus",
     "ReorderLayersRequest",
     "ReorderLiveZoneLayersResponse200",
+    "ReplaceLayerRequest",
     "ReplaceLiveZoneLayerResponse200",
     "ReplaceSceneLayerRequest",
     "ReplaceSceneRequest",

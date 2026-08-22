@@ -114,8 +114,7 @@ def sync_detailed(
 
     Args:
         zone (str):
-        body (CreateLayerRequest): `POST /scene/zones/{zone}/layers` — append a layer to the
-            stack.
+        body (CreateLayerRequest): `POST /scene/zones/{zone}/layers`: append a layer to the stack.
 
             The server mints the layer id (Spec 78 §1.4); the response's zone
             resource carries it.
@@ -150,8 +149,7 @@ def sync(
 
     Args:
         zone (str):
-        body (CreateLayerRequest): `POST /scene/zones/{zone}/layers` — append a layer to the
-            stack.
+        body (CreateLayerRequest): `POST /scene/zones/{zone}/layers`: append a layer to the stack.
 
             The server mints the layer id (Spec 78 §1.4); the response's zone
             resource carries it.
@@ -181,8 +179,7 @@ async def asyncio_detailed(
 
     Args:
         zone (str):
-        body (CreateLayerRequest): `POST /scene/zones/{zone}/layers` — append a layer to the
-            stack.
+        body (CreateLayerRequest): `POST /scene/zones/{zone}/layers`: append a layer to the stack.
 
             The server mints the layer id (Spec 78 §1.4); the response's zone
             resource carries it.
@@ -215,8 +212,7 @@ async def asyncio(
 
     Args:
         zone (str):
-        body (CreateLayerRequest): `POST /scene/zones/{zone}/layers` — append a layer to the
-            stack.
+        body (CreateLayerRequest): `POST /scene/zones/{zone}/layers`: append a layer to the stack.
 
             The server mints the layer id (Spec 78 §1.4); the response's zone
             resource carries it.

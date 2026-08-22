@@ -201,7 +201,10 @@ fn replace_is_the_creation_shape() {
         "source": {"type": "effect", "effect_id": "0198c5b6-1111-7000-8000-000000000004", "controls": {}}
     }))
     .expect("creation shape decodes");
-    let same: CreateLayerRequest = request;
+    let replacement_wire = serde_json::to_value(&request).expect("replacement serializes");
+    let same: CreateLayerRequest = request.into();
+    let creation_wire = serde_json::to_value(&same).expect("creation serializes");
+    assert_eq!(replacement_wire, creation_wire, "request shapes stay equal");
     assert!(
         same.name.is_none(),
         "replacement is creation (Spec 78 §1.4)"

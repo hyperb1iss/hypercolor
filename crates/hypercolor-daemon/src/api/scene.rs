@@ -417,7 +417,7 @@ pub async fn replace_layer(
         Ok(expected) => expected,
         Err(error) => return error.into_response(),
     };
-    let replacement = match build_layer(state.as_ref(), body).await {
+    let replacement = match build_layer(state.as_ref(), body.into()).await {
         Ok(layer) => layer,
         Err(error) => return error.into_response(),
     };

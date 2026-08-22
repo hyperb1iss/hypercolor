@@ -15,15 +15,16 @@ if TYPE_CHECKING:
     from ..models.layer_transform import LayerTransform
 
 
-T = TypeVar("T", bound="CreateLayerRequest")
+T = TypeVar("T", bound="ReplaceLayerRequest")
 
 
 @_attrs_define
-class CreateLayerRequest:
-    """`POST /scene/zones/{zone}/layers`: append a layer to the stack.
+class ReplaceLayerRequest:
+    """`PUT /scene/zones/{zone}/layers/{layer}`: whole-layer replace.
 
-    The server mints the layer id (Spec 78 §1.4); the response's zone
-    resource carries it.
+    Replacement is creation: every successful `PUT` mints a fresh layer
+    id, same effect or not (Spec 78 §1.4). The request shape is the
+    creation shape; the path names the layer being replaced.
 
         Attributes:
             source (LayerSource): Source that feeds one authored layer.
@@ -241,7 +242,7 @@ class CreateLayerRequest:
 
         transform = _parse_transform(d.pop("transform", UNSET))
 
-        create_layer_request = cls(
+        replace_layer_request = cls(
             source=source,
             adjust=adjust,
             bindings=bindings,
@@ -252,4 +253,4 @@ class CreateLayerRequest:
             transform=transform,
         )
 
-        return create_layer_request
+        return replace_layer_request
