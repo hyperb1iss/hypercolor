@@ -1,7 +1,7 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::anyhow;
 #[cfg(target_os = "macos")]
@@ -20,11 +20,12 @@ use crate::input::{SourceKind, SourceStatusReporter};
 
 use super::status::protected_screen_action_issue;
 use super::{
-    CaptureConfig, CaptureSessionAuthority, CaptureSessionSet, CaptureWorker, MacosCaptureControl,
-    MacosExactPublicationShared, MacosPublication, MacosScreenCaptureInput,
-    MacosScreenRuntimeTelemetry, PixelExtent, PreparedWorker, ScreenByteAdmissionCoordinator,
-    ScreenCaptureDemand, ScreenComputeCapacityPolicy, StagedCaptureWorker, color_space_name,
-    dynamic_range_name, executable_architecture, frame_drop_counters, lock, map_tahoe_capabilities,
+    CaptureConfig, CaptureSessionAuthority, CaptureSessionDeadline, CaptureSessionSet,
+    CaptureSessionTransaction, CaptureWorker, MacosCaptureControl, MacosExactPublicationShared,
+    MacosPublication, MacosScreenCaptureInput, MacosScreenRuntimeTelemetry, PixelExtent,
+    PreparedWorker, ScreenByteAdmissionCoordinator, ScreenCaptureDemand,
+    ScreenComputeCapacityPolicy, StagedCaptureWorker, color_space_name, dynamic_range_name,
+    executable_architecture, frame_drop_counters, lock, map_tahoe_capabilities,
     map_tahoe_selection_capabilities, nonzero_telemetry, pixel_format_name,
     production_stream_request, run_worker, timing_status, transfer_function_name,
 };
@@ -117,6 +118,7 @@ impl MacosScreenCaptureInput {
             telemetry,
             sessions: CaptureSessionSet::default(),
             worker_generation: 0,
+            next_worker_generation: AtomicU64::new(0),
             demand: ScreenCaptureDemand::Inactive,
             running: false,
             status: SourceStatusReporter::new(
@@ -360,9 +362,12 @@ impl MacosScreenCaptureInput {
         prepared: PreparedWorker,
     ) -> anyhow::Result<StagedCaptureWorker> {
         let worker_generation = self
-            .worker_generation
-            .checked_add(1)
-            .ok_or_else(|| anyhow!("macOS capture worker generation exhausted"))?;
+            .next_worker_generation
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |generation| {
+                generation.checked_add(1)
+            })
+            .map_err(|_| anyhow!("macOS capture worker generation exhausted"))?
+            + 1;
         let mailbox = self.control.mailbox();
         let worker_mailbox = mailbox.clone();
         let control = Arc::clone(&self.control);
@@ -381,7 +386,8 @@ impl MacosScreenCaptureInput {
         let join = thread::Builder::new()
             .name("hypercolor-macos-screen-capture".to_owned())
             .spawn(move || {
-                while !worker_start.load(Ordering::Acquire) {
+                while !worker_start.load(Ordering::Acquire) && !worker_stop.load(Ordering::Acquire)
+                {
                     thread::park();
                 }
                 let result = if worker_stop.load(Ordering::Acquire) {
@@ -414,53 +420,76 @@ impl MacosScreenCaptureInput {
                 }
                 let _ = exit_tx.send(result);
             })?;
-        Ok(StagedCaptureWorker {
-            generation: worker_generation,
-            worker: Some(CaptureWorker {
+        let transaction = CaptureSessionTransaction::new(
+            CaptureWorker {
                 authority,
                 stop,
+                start,
                 mailbox: worker_mailbox,
                 command_tx,
                 exit_rx,
                 join: Some(join),
-            }),
-            start,
+            },
+            (),
+        );
+        Ok(StagedCaptureWorker {
+            generation: worker_generation,
+            prepared: transaction.prepare(CaptureSessionDeadline::after(Duration::ZERO))?,
         })
     }
 
     pub(super) fn install_worker(&mut self, staged: StagedCaptureWorker) {
-        let generation = staged.generation;
-        let start = Arc::clone(&staged.start);
-        let worker = staged.commit();
-        let checkpoint = lock(&self.publication).checkpoint();
-        self.stop_worker();
-        self.worker_generation = generation;
-        self.exact.activate_authority(worker.authority);
-        let displaced = {
-            let mut publication = lock(&self.publication);
-            let _previous = publication
-                .replace_fence_preserving_latest(
-                    super::MacosPublicationFence(generation),
-                    generation,
-                )
-                .expect("the macOS worker generation matches its publication fence");
-            let Ok(displaced) = publication.restore_checkpoint(Some(&generation), checkpoint)
-            else {
-                unreachable!("the installed macOS worker remains publication authority");
-            };
-            displaced
-        };
-        drop(displaced);
-        self.sessions
-            .install(worker)
+        let StagedCaptureWorker {
+            generation,
+            prepared,
+        } = staged;
+        assert_eq!(
+            prepared.authority(),
+            CaptureSessionAuthority::new(generation),
+            "staged macOS worker authority matches its reserved generation"
+        );
+        let checkpoint_publication = Arc::clone(&self.publication);
+        let commit_publication = Arc::clone(&self.publication);
+        let exact = Arc::clone(&self.exact);
+        let committed_generation = &mut self.worker_generation;
+        let commit = prepared
+            .commit_into(
+                &mut self.sessions,
+                || Some(lock(&checkpoint_publication).checkpoint()),
+                move |authority, checkpoint| {
+                    *committed_generation = generation;
+                    let displaced_exact = exact.activate_authority(authority);
+                    let displaced_publication = {
+                        let mut publication = lock(&commit_publication);
+                        let _previous = publication
+                            .replace_fence_preserving_latest(
+                                super::MacosPublicationFence(generation),
+                                generation,
+                            )
+                            .expect("the macOS worker generation matches its publication fence");
+                        let Ok(displaced) =
+                            publication.restore_checkpoint(Some(&generation), checkpoint)
+                        else {
+                            unreachable!(
+                                "the installed macOS worker remains publication authority"
+                            );
+                        };
+                        displaced
+                    };
+                    (displaced_exact, displaced_publication)
+                },
+            )
             .unwrap_or_else(|_| unreachable!("macOS capture sessions permit overlap"));
-        start.store(true, Ordering::Release);
-        self.sessions
-            .active()
-            .and_then(|worker| worker.join.as_ref())
-            .expect("installed worker retains its thread handle")
-            .thread()
-            .unpark();
+        assert_eq!(
+            commit.authority(),
+            CaptureSessionAuthority::new(generation),
+            "committed macOS worker retains its reserved authority"
+        );
+        self.sessions.reap_finished(|_, result| {
+            if let Err(error) = result {
+                tracing::warn!(error = format!("{error:#}"), "retired macOS worker failed");
+            }
+        });
     }
 
     pub(super) fn stop_worker(&mut self) {
@@ -495,9 +524,12 @@ impl MacosScreenCaptureInput {
     fn retire_worker_authority(&mut self, authority: CaptureSessionAuthority) {
         debug_assert!(self.exact.is_current_authority(authority));
         let retirement_generation = self
-            .worker_generation
-            .checked_add(1)
-            .expect("macOS capture worker generation exhausted during retirement");
+            .next_worker_generation
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |generation| {
+                generation.checked_add(1)
+            })
+            .expect("macOS capture worker generation exhausted during retirement")
+            + 1;
         self.worker_generation = retirement_generation;
         let displaced_exact = self
             .exact

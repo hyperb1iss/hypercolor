@@ -75,8 +75,9 @@ use super::adapter::{
     CaptureExactCommand, CaptureExactCommandEndpoint, CaptureExactCommandRejected,
     CaptureExactPublicationShared, CaptureExactRuntimeOwner, CaptureOwnedSource,
     CapturePublication, CapturePublicationFence, CapturePublicationSource, CaptureSession,
-    CaptureSessionAuthority, CaptureSessionSet, CaptureSuccessorPolicy,
-    begin_capture_exact_preparation, begin_capture_exact_retirement, execute_capture_exact_command,
+    CaptureSessionAuthority, CaptureSessionDeadline, CaptureSessionSet, CaptureSessionTransaction,
+    CaptureSuccessorPolicy, PreparedCaptureSession, begin_capture_exact_preparation,
+    begin_capture_exact_retirement, execute_capture_exact_command,
 };
 
 #[cfg(target_os = "macos")]
@@ -345,6 +346,7 @@ struct PreparedWorker {
 struct CaptureWorker {
     authority: CaptureSessionAuthority,
     stop: Arc<AtomicBool>,
+    start: Arc<AtomicBool>,
     mailbox: MacosFrameMailbox,
     command_tx: mpsc::Sender<WorkerCommand>,
     exit_rx: mpsc::Receiver<anyhow::Result<()>>,
@@ -406,6 +408,16 @@ impl CaptureSession for CaptureWorker {
 
     fn wake(&self) {
         self.mailbox.wake();
+        if let Some(join) = self.join.as_ref() {
+            join.thread().unpark();
+        }
+    }
+
+    fn start(&self) {
+        self.start.store(true, Ordering::Release);
+        if let Some(join) = self.join.as_ref() {
+            join.thread().unpark();
+        }
     }
 
     fn is_finished(&self) -> bool {
@@ -454,8 +466,7 @@ impl Drop for CaptureWorker {
 
 struct StagedCaptureWorker {
     generation: u64,
-    worker: Option<CaptureWorker>,
-    start: Arc<AtomicBool>,
+    prepared: PreparedCaptureSession<CaptureWorker>,
 }
 
 pub struct MacosScreenCaptureInput {
@@ -470,6 +481,7 @@ pub struct MacosScreenCaptureInput {
     telemetry: Arc<MacosScreenRuntimeTelemetry>,
     sessions: CaptureSessionSet<CaptureWorker>,
     worker_generation: u64,
+    next_worker_generation: AtomicU64,
     demand: ScreenCaptureDemand,
     running: bool,
     status: SourceStatusReporter,

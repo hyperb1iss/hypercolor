@@ -35,24 +35,30 @@ fn staged_worker_rollback_does_not_wait_for_native_exit() {
     let (exit_tx, exit_rx) = mpsc::channel();
     let (command_tx, _command_rx) = mpsc::channel();
     let join = thread::spawn(move || {
-        while !worker_start.load(Ordering::Acquire) {
+        while !worker_start.load(Ordering::Acquire) && !worker_stop.load(Ordering::Acquire) {
             thread::park();
         }
         started_tx.send(()).expect("test worker reports startup");
         release_rx.recv().expect("test releases native exit");
         let _ = exit_tx.send(Ok(()));
     });
-    let staged = StagedCaptureWorker {
-        generation: 1,
-        worker: Some(CaptureWorker {
+    let prepared = CaptureSessionTransaction::new(
+        CaptureWorker {
             authority: CaptureSessionAuthority::new(1),
             stop: Arc::clone(&stop),
+            start: Arc::clone(&start),
             mailbox: MacosFrameMailbox::default(),
             command_tx,
             exit_rx,
             join: Some(join),
-        }),
-        start: Arc::clone(&start),
+        },
+        (),
+    )
+    .prepare(CaptureSessionDeadline::after(Duration::ZERO))
+    .expect("test worker stages");
+    let staged = StagedCaptureWorker {
+        generation: 1,
+        prepared,
     };
     let (returned_tx, returned_rx) = mpsc::sync_channel(0);
 
@@ -67,9 +73,30 @@ fn staged_worker_rollback_does_not_wait_for_native_exit() {
     started_rx
         .recv_timeout(Duration::from_secs(1))
         .expect("rollback releases the staged worker start gate");
-    assert!(start.load(Ordering::Acquire));
-    assert!(worker_stop.load(Ordering::Acquire));
+    assert!(!start.load(Ordering::Acquire));
+    assert!(stop.load(Ordering::Acquire));
     release_tx.send(()).expect("native worker may exit");
+}
+
+#[test]
+fn rolled_back_worker_generation_is_not_reused() {
+    let admission =
+        ScreenByteAdmissionCoordinator::new(ScreenAdmissionCapacity::new(u64::MAX, u64::MAX));
+    let (input, _fixture) = MacosScreenCaptureFixture::source(CaptureConfig::default(), admission);
+    let extent = PixelExtent::new(64, 32).expect("test extent is nonzero");
+    let first = input
+        .prepare_worker(extent)
+        .and_then(|prepared| input.stage_worker(prepared))
+        .expect("first worker stages");
+    let first_generation = first.generation;
+    drop(first);
+
+    let second = input
+        .prepare_worker(extent)
+        .and_then(|prepared| input.stage_worker(prepared))
+        .expect("second worker stages");
+
+    assert_eq!(second.generation, first_generation + 1);
 }
 
 #[test]
@@ -80,6 +107,7 @@ fn retired_worker_cannot_republish_after_stop_returns() {
         MacosScreenCaptureFixture::source(CaptureConfig::default(), admission);
     let authority = CaptureSessionAuthority::new(1);
     input.worker_generation = 1;
+    input.next_worker_generation.store(1, Ordering::Release);
     drop(input.exact.activate_authority(authority));
     {
         let mut publication = lock(&input.publication);
@@ -102,6 +130,7 @@ fn retired_worker_cannot_republish_after_stop_returns() {
             .install(CaptureWorker {
                 authority,
                 stop,
+                start: Arc::new(AtomicBool::new(true)),
                 mailbox: MacosFrameMailbox::default(),
                 command_tx,
                 exit_rx,

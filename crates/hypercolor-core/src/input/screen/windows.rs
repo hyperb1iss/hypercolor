@@ -80,10 +80,10 @@ use super::adapter::{
     CaptureExactCommand, CaptureExactCommandEndpoint, CaptureExactCommandRejected,
     CaptureExactPublicationShared, CaptureExactRuntimeOwner, CaptureOwnedSource,
     CapturePublication as AdapterCapturePublication, CapturePublicationFence,
-    CapturePublicationSource, CaptureSession, CaptureSessionAuthority, CaptureSessionSet,
-    CaptureSuccessorPolicy, VersionedCaptureSettings, begin_capture_exact_preparation,
-    begin_capture_exact_retirement, bind_current_capture_exact_runtime,
-    execute_capture_exact_command,
+    CapturePublicationSource, CaptureSession, CaptureSessionAuthority, CaptureSessionDeadline,
+    CaptureSessionReadiness, CaptureSessionSet, CaptureSessionTransaction, CaptureSuccessorPolicy,
+    VersionedCaptureSettings, begin_capture_exact_preparation, begin_capture_exact_retirement,
+    bind_current_capture_exact_runtime, execute_capture_exact_command,
 };
 
 /// How long a worker waits on DXGI before checking its command channel.
@@ -679,6 +679,22 @@ impl CaptureWorker {
     }
 }
 
+struct WindowsSessionReadiness(mpsc::Receiver<Result<(), String>>);
+
+impl CaptureSessionReadiness for WindowsSessionReadiness {
+    fn wait(self, deadline: CaptureSessionDeadline) -> anyhow::Result<()> {
+        match self.0.recv_timeout(deadline.remaining()) {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(error)) => {
+                anyhow::bail!("Windows screen capture worker initialization failed: {error}")
+            }
+            Err(error) => {
+                anyhow::bail!("Windows screen capture worker readiness timed out: {error}")
+            }
+        }
+    }
+}
+
 impl CaptureSession for CaptureWorker {
     type Exit = thread::Result<()>;
     type ExactEndpoint = WindowsExactCommandEndpoint;
@@ -699,6 +715,8 @@ impl CaptureSession for CaptureWorker {
     }
 
     fn wake(&self) {}
+
+    fn start(&self) {}
 
     fn is_finished(&self) -> bool {
         self.join_handle
@@ -996,7 +1014,7 @@ impl WindowsScreenCaptureInput {
 
     fn spawn_worker(&mut self) -> anyhow::Result<()> {
         self.observe_worker_exit(false);
-        if !self.sessions.can_install_successor() {
+        if !self.sessions.can_prepare_successor() {
             anyhow::bail!("previous Windows screen capture worker is still stopping");
         }
 
@@ -1022,7 +1040,6 @@ impl WindowsScreenCaptureInput {
             .map_err(|_| anyhow!("Windows capture session generation exhausted"))?
             + 1;
         let authority = CaptureSessionAuthority::new(session_generation);
-        self.exact.activate_authority(authority);
 
         let join_handle = spawn_worker(
             thread::Builder::new().name("hypercolor-screen-capture".to_owned()),
@@ -1044,8 +1061,8 @@ impl WindowsScreenCaptureInput {
         )
         .map_err(|error| anyhow!("failed to spawn screen capture worker: {error}"))?;
 
-        self.sessions
-            .install(CaptureWorker {
+        let transaction = CaptureSessionTransaction::new(
+            CaptureWorker {
                 authority,
                 command_tx,
                 exit_rx,
@@ -1053,19 +1070,19 @@ impl WindowsScreenCaptureInput {
                 cancel,
                 #[cfg(test)]
                 processed_activity_generation,
-            })
-            .unwrap_or_else(|_| unreachable!("Windows successor admission was checked"));
-        match ready_rx.recv_timeout(WORKER_READY_TIMEOUT) {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) => {
-                self.shutdown_worker_for_replacement();
-                anyhow::bail!("Windows screen capture worker initialization failed: {error}");
-            }
-            Err(error) => {
-                self.shutdown_worker_for_replacement();
-                anyhow::bail!("Windows screen capture worker readiness timed out: {error}");
-            }
-        }
+            },
+            WindowsSessionReadiness(ready_rx),
+        );
+        let prepared = transaction.prepare(CaptureSessionDeadline::after(WORKER_READY_TIMEOUT))?;
+        let exact = Arc::clone(&self.exact);
+        let commit = prepared
+            .commit_into(
+                &mut self.sessions,
+                || Some(()),
+                move |authority, ()| exact.activate_authority(authority),
+            )
+            .map_err(|_| anyhow!("Windows capture successor admission changed before commit"))?;
+        assert_eq!(commit.authority(), authority);
         if self.observe_worker_exit(true) {
             anyhow::bail!("Windows screen capture worker exited during startup");
         }

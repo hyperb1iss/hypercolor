@@ -2,9 +2,10 @@ use super::{
     CaptureExactCommand, CaptureExactCommandEndpoint, CaptureExactCommandRejected,
     CaptureExactPublicationShared, CaptureExactRuntimeCollection, CaptureExactRuntimeOwner,
     CaptureExactRuntimeStore, CaptureOwnedSource, CapturePublication, CapturePublicationFence,
-    CapturePublicationSource, CaptureSession, CaptureSessionAuthority, CaptureSessionSet,
-    CaptureSuccessorPolicy, VersionedCaptureSettings, begin_capture_exact_retirement,
-    exact_preparation_abort, reap_capture_exact_runtimes,
+    CapturePublicationSource, CaptureSession, CaptureSessionAuthority, CaptureSessionDeadline,
+    CaptureSessionReadiness, CaptureSessionSet, CaptureSessionTransaction, CaptureSuccessorPolicy,
+    VersionedCaptureSettings, begin_capture_exact_retirement, exact_preparation_abort,
+    reap_capture_exact_runtimes,
 };
 use crate::input::screen::{
     CaptureSourceId, ExactBoxList, PixelExtent, ScreenCaptureDemand, ScreenCommittedState,
@@ -12,6 +13,7 @@ use crate::input::screen::{
 };
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
+use std::time::Duration;
 
 #[derive(Clone)]
 struct FakeExactEndpoint {
@@ -29,6 +31,8 @@ struct FakeSession {
     wakes: Arc<AtomicUsize>,
     finishes: Arc<AtomicUsize>,
     detaches: Arc<AtomicUsize>,
+    starts: Arc<AtomicUsize>,
+    start_prerequisite: Option<Arc<AtomicBool>>,
 }
 
 impl FakeSession {
@@ -41,6 +45,8 @@ impl FakeSession {
             wakes: Arc::default(),
             finishes: Arc::default(),
             detaches: Arc::default(),
+            starts: Arc::default(),
+            start_prerequisite: None,
         }
     }
 }
@@ -65,6 +71,13 @@ impl CaptureSession for FakeSession {
 
     fn wake(&self) {
         self.wakes.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn start(&self) {
+        if let Some(prerequisite) = self.start_prerequisite.as_ref() {
+            assert!(prerequisite.load(Ordering::Acquire));
+        }
+        self.starts.fetch_add(1, Ordering::Relaxed);
     }
 
     fn is_finished(&self) -> bool {
@@ -105,6 +118,10 @@ impl CaptureSession for ExclusiveFakeSession {
         self.0.wake();
     }
 
+    fn start(&self) {
+        self.0.start();
+    }
+
     fn is_finished(&self) -> bool {
         self.0.is_finished()
     }
@@ -116,6 +133,173 @@ impl CaptureSession for ExclusiveFakeSession {
     fn detach(self) {
         self.0.detach();
     }
+}
+
+struct FakeReadiness {
+    result: Result<(), &'static str>,
+    waits: Arc<AtomicUsize>,
+}
+
+struct DropProbe(Arc<AtomicBool>);
+
+impl Drop for DropProbe {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
+
+impl FakeReadiness {
+    fn ready() -> Self {
+        Self {
+            result: Ok(()),
+            waits: Arc::default(),
+        }
+    }
+
+    fn failed(message: &'static str) -> Self {
+        Self {
+            result: Err(message),
+            waits: Arc::default(),
+        }
+    }
+}
+
+impl CaptureSessionReadiness for FakeReadiness {
+    fn wait(self, deadline: CaptureSessionDeadline) -> anyhow::Result<()> {
+        self.waits.fetch_add(1, Ordering::Relaxed);
+        if deadline.remaining().is_zero() {
+            anyhow::bail!("capture readiness deadline elapsed");
+        }
+        self.result.map_err(anyhow::Error::msg)
+    }
+}
+
+fn readiness_deadline() -> CaptureSessionDeadline {
+    CaptureSessionDeadline::after(Duration::from_secs(1))
+}
+
+#[test]
+fn session_transaction_readiness_failure_preserves_prior_and_detaches_candidate() {
+    let mut sessions = CaptureSessionSet::default();
+    assert!(sessions.install(FakeSession::new(1)).is_ok());
+    let candidate = FakeSession::new(2);
+    let aborts = Arc::clone(&candidate.aborts);
+    let wakes = Arc::clone(&candidate.wakes);
+    let detaches = Arc::clone(&candidate.detaches);
+
+    let result = CaptureSessionTransaction::new(candidate, FakeReadiness::failed("not ready"))
+        .prepare(readiness_deadline());
+
+    assert!(result.is_err());
+    assert_eq!(aborts.load(Ordering::Relaxed), 1);
+    assert_eq!(wakes.load(Ordering::Relaxed), 1);
+    assert_eq!(detaches.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        sessions.active().map(CaptureSession::authority),
+        Some(CaptureSessionAuthority::new(1))
+    );
+}
+
+#[test]
+fn session_transaction_candidate_exit_before_commit_preserves_prior() {
+    let mut sessions = CaptureSessionSet::default();
+    assert!(sessions.install(FakeSession::new(1)).is_ok());
+    let candidate = FakeSession::new(2);
+    candidate.finished.store(true, Ordering::Release);
+    let detaches = Arc::clone(&candidate.detaches);
+
+    let result = CaptureSessionTransaction::new(candidate, FakeReadiness::ready())
+        .prepare(readiness_deadline());
+
+    assert!(result.is_err());
+    assert_eq!(detaches.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        sessions.active().map(CaptureSession::authority),
+        Some(CaptureSessionAuthority::new(1))
+    );
+}
+
+#[test]
+fn session_transaction_commits_checkpoint_retirement_authority_and_start_in_order() {
+    let prior = FakeSession::new(1);
+    let prior_aborts = Arc::clone(&prior.aborts);
+    let displaced_dropped = Arc::new(AtomicBool::new(false));
+    let mut candidate = FakeSession::new(2);
+    candidate.start_prerequisite = Some(Arc::clone(&displaced_dropped));
+    let candidate_starts = Arc::clone(&candidate.starts);
+    let mut sessions = CaptureSessionSet::default();
+    assert!(sessions.install(prior).is_ok());
+    let prepared = CaptureSessionTransaction::new(candidate, FakeReadiness::ready())
+        .prepare(readiness_deadline())
+        .expect("candidate becomes ready");
+
+    let commit = prepared
+        .commit_into(
+            &mut sessions,
+            || {
+                Some({
+                    assert_eq!(prior_aborts.load(Ordering::Relaxed), 0);
+                    "checkpoint"
+                })
+            },
+            |authority, checkpoint| {
+                assert_eq!(authority, CaptureSessionAuthority::new(2));
+                assert_eq!(checkpoint, "checkpoint");
+                assert_eq!(prior_aborts.load(Ordering::Relaxed), 1);
+                assert_eq!(candidate_starts.load(Ordering::Relaxed), 0);
+                DropProbe(Arc::clone(&displaced_dropped))
+            },
+        )
+        .unwrap_or_else(|_| panic!("ready overlapping candidate commits"));
+
+    assert_eq!(commit.authority(), CaptureSessionAuthority::new(2));
+    assert!(displaced_dropped.load(Ordering::Acquire));
+    assert_eq!(candidate_starts.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        sessions.active().map(CaptureSession::authority),
+        Some(CaptureSessionAuthority::new(2))
+    );
+}
+
+#[test]
+fn session_transaction_candidate_endpoint_is_hidden_until_commit() {
+    let mut sessions = CaptureSessionSet::default();
+    let transaction = CaptureSessionTransaction::new(FakeSession::new(1), FakeReadiness::ready());
+    assert!(sessions.exact_endpoint().is_none());
+    let prepared = transaction
+        .prepare(readiness_deadline())
+        .expect("candidate becomes ready");
+    assert!(sessions.exact_endpoint().is_none());
+
+    prepared
+        .commit_into(&mut sessions, || Some(()), |_, ()| ())
+        .unwrap_or_else(|_| panic!("ready candidate commits"));
+
+    assert!(sessions.exact_endpoint().is_some());
+}
+
+#[test]
+fn session_transaction_checkpoint_rejection_preserves_prior() {
+    let prior = FakeSession::new(1);
+    let prior_aborts = Arc::clone(&prior.aborts);
+    let candidate = FakeSession::new(2);
+    let candidate_detaches = Arc::clone(&candidate.detaches);
+    let mut sessions = CaptureSessionSet::default();
+    assert!(sessions.install(prior).is_ok());
+    let prepared = CaptureSessionTransaction::new(candidate, FakeReadiness::ready())
+        .prepare(readiness_deadline())
+        .expect("candidate becomes ready");
+
+    let result = prepared.commit_into(&mut sessions, || None::<()>, |_, ()| ());
+
+    assert!(result.is_err());
+    drop(result);
+    assert_eq!(prior_aborts.load(Ordering::Relaxed), 0);
+    assert_eq!(candidate_detaches.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        sessions.active().map(CaptureSession::authority),
+        Some(CaptureSessionAuthority::new(1))
+    );
 }
 
 #[test]

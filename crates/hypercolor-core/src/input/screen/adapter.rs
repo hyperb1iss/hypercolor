@@ -20,8 +20,11 @@ pub(in crate::input::screen) use exact::{
     CaptureExactPublicationShared, CaptureOwnedSource, CapturePublicationSource,
     CaptureSessionAuthority,
 };
+#[cfg(any(target_os = "linux", target_os = "windows", test))]
+pub(in crate::input::screen) use session::CaptureSessionReadiness;
 pub(in crate::input::screen) use session::{
-    CaptureSession, CaptureSessionSet, CaptureSuccessorPolicy,
+    CaptureSession, CaptureSessionDeadline, CaptureSessionSet, CaptureSessionTransaction,
+    CaptureSuccessorPolicy, PreparedCaptureSession,
 };
 #[cfg(any(target_os = "linux", target_os = "windows", test))]
 pub(in crate::input::screen) use settings::VersionedCaptureSettings;

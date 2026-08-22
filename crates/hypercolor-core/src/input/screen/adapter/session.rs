@@ -1,3 +1,5 @@
+use std::time::{Duration, Instant};
+
 use super::{CaptureExactCommandEndpoint, CaptureSessionAuthority};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -16,10 +18,166 @@ pub(in crate::input::screen) trait CaptureSession: Sized {
     fn authority(&self) -> CaptureSessionAuthority;
     fn exact_endpoint(&self) -> Self::ExactEndpoint;
     fn abort(&self);
+    fn retire_for_successor(&self) {
+        self.abort();
+    }
     fn wake(&self);
+    fn start(&self);
     fn is_finished(&self) -> bool;
     fn finish(self) -> Self::Exit;
     fn detach(self);
+}
+
+#[derive(Clone, Copy)]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "windows", test)),
+    allow(dead_code)
+)]
+pub(in crate::input::screen) struct CaptureSessionDeadline(Instant);
+
+impl CaptureSessionDeadline {
+    pub(in crate::input::screen) fn after(timeout: Duration) -> Self {
+        Self(Instant::now() + timeout)
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "windows", test))]
+    pub(in crate::input::screen) fn remaining(self) -> Duration {
+        self.0.saturating_duration_since(Instant::now())
+    }
+}
+
+pub(in crate::input::screen) trait CaptureSessionReadiness {
+    fn wait(self, deadline: CaptureSessionDeadline) -> anyhow::Result<()>;
+}
+
+impl CaptureSessionReadiness for () {
+    fn wait(self, _deadline: CaptureSessionDeadline) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
+pub(in crate::input::screen) struct CaptureSessionTransaction<S, R>
+where
+    S: CaptureSession,
+    R: CaptureSessionReadiness,
+{
+    session: Option<S>,
+    readiness: Option<R>,
+}
+
+pub(in crate::input::screen) struct PreparedCaptureSession<S: CaptureSession> {
+    session: Option<S>,
+}
+
+pub(in crate::input::screen) struct CaptureSessionCommit {
+    authority: CaptureSessionAuthority,
+}
+
+impl CaptureSessionCommit {
+    pub(in crate::input::screen) const fn authority(&self) -> CaptureSessionAuthority {
+        self.authority
+    }
+}
+
+impl<S, R> CaptureSessionTransaction<S, R>
+where
+    S: CaptureSession,
+    R: CaptureSessionReadiness,
+{
+    pub(in crate::input::screen) fn new(session: S, readiness: R) -> Self {
+        Self {
+            session: Some(session),
+            readiness: Some(readiness),
+        }
+    }
+
+    pub(in crate::input::screen) fn prepare(
+        mut self,
+        deadline: CaptureSessionDeadline,
+    ) -> anyhow::Result<PreparedCaptureSession<S>> {
+        self.readiness
+            .take()
+            .expect("capture session readiness is consumed exactly once")
+            .wait(deadline)?;
+        if self
+            .session
+            .as_ref()
+            .is_some_and(CaptureSession::is_finished)
+        {
+            anyhow::bail!("capture session exited before readiness committed");
+        }
+        Ok(PreparedCaptureSession {
+            session: self.session.take(),
+        })
+    }
+}
+
+impl<S: CaptureSession> PreparedCaptureSession<S> {
+    pub(in crate::input::screen) fn authority(&self) -> CaptureSessionAuthority {
+        self.session
+            .as_ref()
+            .expect("prepared capture session remains owned before commit")
+            .authority()
+    }
+
+    pub(in crate::input::screen) fn commit_into<P, D>(
+        mut self,
+        sessions: &mut CaptureSessionSet<S>,
+        checkpoint: impl FnOnce() -> Option<P>,
+        commit_authority: impl FnOnce(CaptureSessionAuthority, P) -> D,
+    ) -> Result<CaptureSessionCommit, Self> {
+        let candidate = self
+            .session
+            .as_ref()
+            .expect("prepared capture session remains owned before commit");
+        if candidate.is_finished() || !sessions.can_prepare_successor() {
+            return Err(self);
+        }
+        let authority = candidate.authority();
+        let Some(checkpoint) = checkpoint() else {
+            return Err(self);
+        };
+        if S::SUCCESSOR_POLICY == CaptureSuccessorPolicy::AllowOverlap {
+            sessions.retire_active_for_successor();
+        }
+        let session = self
+            .session
+            .take()
+            .expect("prepared capture session commits exactly once");
+        sessions
+            .install(session)
+            .unwrap_or_else(|_| unreachable!("capture successor admission was proven"));
+        let displaced = commit_authority(authority, checkpoint);
+        drop(displaced);
+        sessions.start_active(authority);
+        Ok(CaptureSessionCommit { authority })
+    }
+}
+
+fn detach_session<S: CaptureSession>(session: S) {
+    session.abort();
+    session.wake();
+    session.detach();
+}
+
+impl<S, R> Drop for CaptureSessionTransaction<S, R>
+where
+    S: CaptureSession,
+    R: CaptureSessionReadiness,
+{
+    fn drop(&mut self) {
+        if let Some(session) = self.session.take() {
+            detach_session(session);
+        }
+    }
+}
+
+impl<S: CaptureSession> Drop for PreparedCaptureSession<S> {
+    fn drop(&mut self) {
+        if let Some(session) = self.session.take() {
+            detach_session(session);
+        }
+    }
 }
 
 pub(in crate::input::screen) struct CaptureSessionSet<S: CaptureSession> {
@@ -51,6 +209,15 @@ impl<S: CaptureSession> CaptureSessionSet<S> {
                 || self.retiring.is_empty())
     }
 
+    pub(in crate::input::screen) fn can_prepare_successor(&self) -> bool {
+        match S::SUCCESSOR_POLICY {
+            CaptureSuccessorPolicy::WaitForRetirement => {
+                self.active.is_none() && self.retiring.is_empty()
+            }
+            CaptureSuccessorPolicy::AllowOverlap => true,
+        }
+    }
+
     pub(in crate::input::screen) fn install(&mut self, session: S) -> Result<(), S> {
         if !self.can_install_successor() {
             return Err(session);
@@ -59,10 +226,28 @@ impl<S: CaptureSession> CaptureSessionSet<S> {
         Ok(())
     }
 
+    fn start_active(&self, authority: CaptureSessionAuthority) {
+        let session = self
+            .active
+            .as_ref()
+            .filter(|session| session.authority() == authority)
+            .expect("committed capture session remains active before start");
+        session.start();
+    }
+
     pub(in crate::input::screen) fn retire_active(&mut self) -> Option<CaptureSessionAuthority> {
         let session = self.active.take()?;
         let authority = session.authority();
         session.abort();
+        session.wake();
+        self.retiring.push(session);
+        Some(authority)
+    }
+
+    fn retire_active_for_successor(&mut self) -> Option<CaptureSessionAuthority> {
+        let session = self.active.take()?;
+        let authority = session.authority();
+        session.retire_for_successor();
         session.wake();
         self.retiring.push(session);
         Some(authority)

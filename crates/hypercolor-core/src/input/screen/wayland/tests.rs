@@ -45,6 +45,7 @@ fn settings(session_generation: u64) -> Arc<SharedSettings> {
         compute_capacity_policy: ScreenComputeCapacityPolicy::UNBOUNDED,
         topology_generation: 0.into(),
         topology: Mutex::new(None),
+        next_session_generation: session_generation.into(),
         session_generation: session_generation.into(),
         session_guard: Mutex::new(()),
         publication,
@@ -56,6 +57,7 @@ fn settings(session_generation: u64) -> Arc<SharedSettings> {
 fn portal_pending_worker_retirement_does_not_wait_for_picker_exit() {
     let mut input = WaylandScreenCaptureInput::new(CaptureConfig::default());
     let (command_tx, _command_rx) = super::loop_channel();
+    let (start_tx, _start_rx) = mpsc::sync_channel(1);
     let cancel = Arc::new(AtomicBool::new(false));
     let portal_pending = Arc::new(AtomicBool::new(true));
     let demand_state = Arc::new(AtomicU64::new(initial_worker_demand(false)));
@@ -71,6 +73,7 @@ fn portal_pending_worker_retirement_does_not_wait_for_picker_exit() {
             .sessions
             .install(WaylandCaptureWorker {
                 command_tx,
+                start_tx,
                 join_handle: Some(join_handle),
                 cancel: Arc::clone(&cancel),
                 portal_pending,
@@ -1227,6 +1230,66 @@ fn retired_worker_cannot_reinstall_its_exact_source_after_stop() {
             .replace_source_if_current(CaptureSessionAuthority::new(61), Some(stale_source))
     );
     assert!(settings.exact.source().is_none());
+}
+
+#[test]
+fn rolled_back_session_generation_is_not_reused() {
+    let settings = settings(61);
+
+    let rolled_back = settings
+        .reserve_session_generation()
+        .expect("first candidate reserves a generation");
+    let successor = settings
+        .reserve_session_generation()
+        .expect("successor reserves a fresh generation");
+    settings
+        .prepare_reserved_session_commit(successor)
+        .expect("reserved successor remains newer than current authority")
+        .commit();
+
+    assert_eq!(rolled_back, 62);
+    assert_eq!(successor, 63);
+    assert_eq!(
+        settings.session_generation.load(Ordering::Acquire),
+        successor
+    );
+    assert!(
+        settings
+            .exact
+            .is_current_authority(CaptureSessionAuthority::new(successor))
+    );
+}
+
+#[test]
+fn successor_commit_serializes_retirement_without_a_tombstone() {
+    let settings = settings(61);
+    let prior_cancel = AtomicBool::new(false);
+    let prior_generation = AtomicU64::new(61);
+    let successor = settings
+        .reserve_session_generation()
+        .expect("successor reserves a fresh generation");
+    let commit = settings
+        .prepare_reserved_session_commit(successor)
+        .expect("successor reservation remains current before retirement");
+
+    prior_cancel.store(true, Ordering::SeqCst);
+    commit.commit();
+    settings.cancel_worker_session(&prior_cancel, &prior_generation);
+
+    assert_eq!(successor, 62);
+    assert_eq!(
+        settings.session_generation.load(Ordering::Acquire),
+        successor
+    );
+    assert_eq!(
+        settings.next_session_generation.load(Ordering::Acquire),
+        successor
+    );
+    assert!(
+        settings
+            .exact
+            .is_current_authority(CaptureSessionAuthority::new(successor))
+    );
 }
 
 #[test]

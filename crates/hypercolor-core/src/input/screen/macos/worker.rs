@@ -1,38 +1,15 @@
 use super::admission::prepare_macos_exact_runtime;
 use super::publication::{capture_source_id, publish_frame};
 use super::{
-    Arc, AtomicBool, CaptureSession, CaptureSessionAuthority, CaptureWorker, MacosCaptureControl,
-    MacosExactPublicationShared, MacosExactRuntime, MacosFrameEvent, MacosFrameMailbox,
-    MacosFrameStatus, MacosPublication, MacosScreenRuntimeTelemetry, Mutex, Ordering,
-    PreparedWorker, ResourceState, ScreenPublicationHealth, ScreenPublicationHub,
-    ScreenPublicationHubError, ScreenWorkerBinding, SourceSessionSlot, StagedCaptureWorker,
-    TopologyState, WORKER_WAIT, WorkerCommand, execute_capture_exact_command, mpsc,
+    Arc, AtomicBool, CaptureSessionAuthority, MacosCaptureControl, MacosExactPublicationShared,
+    MacosExactRuntime, MacosFrameEvent, MacosFrameMailbox, MacosFrameStatus, MacosPublication,
+    MacosScreenRuntimeTelemetry, Mutex, Ordering, PreparedWorker, ResourceState,
+    ScreenPublicationHealth, ScreenPublicationHub, ScreenPublicationHubError, ScreenWorkerBinding,
+    SourceSessionSlot, TopologyState, WORKER_WAIT, WorkerCommand, execute_capture_exact_command,
+    mpsc,
 };
 #[cfg(feature = "macos-capture-fixtures")]
 use super::{InputSource, lock};
-
-impl StagedCaptureWorker {
-    pub(super) fn commit(mut self) -> CaptureWorker {
-        self.worker
-            .take()
-            .expect("staged capture worker commits exactly once")
-    }
-}
-
-impl Drop for StagedCaptureWorker {
-    fn drop(&mut self) {
-        let Some(worker) = self.worker.take() else {
-            return;
-        };
-        worker.abort();
-        self.start.store(true, Ordering::Release);
-        if let Some(join) = worker.join.as_ref() {
-            join.thread().unpark();
-        }
-        worker.wake();
-        worker.detach();
-    }
-}
 
 pub(super) fn handle_worker_commands(
     command_rx: &mpsc::Receiver<WorkerCommand>,
