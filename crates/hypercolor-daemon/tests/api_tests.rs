@@ -10031,12 +10031,10 @@ async fn update_device_persists_name_enabled_and_brightness_state() {
         .expect("device settings file should exist");
     let persisted_json: serde_json::Value =
         serde_json::from_str(&persisted_raw).expect("device settings file should be valid json");
-    let settings_key = hypercolor_daemon::device_settings::device_settings_keys(
-        &state.device_registry,
-        device_id,
-    )
-    .await
-    .canonical;
+    let settings_key =
+        hypercolor_daemon::device_settings::device_settings_keys(&state.device_registry, device_id)
+            .await
+            .canonical;
     let persisted_device = &persisted_json["devices"][settings_key.as_str()];
     assert_eq!(persisted_device["name"], "Desk Strip Renamed");
     assert_eq!(persisted_device["disabled"], true);
@@ -10294,12 +10292,10 @@ async fn patch_device_control_surface_updates_user_settings() {
         .expect("device settings file should exist");
     let persisted_json: serde_json::Value =
         serde_json::from_str(&persisted_raw).expect("device settings file should be valid json");
-    let settings_key = hypercolor_daemon::device_settings::device_settings_keys(
-        &state.device_registry,
-        device_id,
-    )
-    .await
-    .canonical;
+    let settings_key =
+        hypercolor_daemon::device_settings::device_settings_keys(&state.device_registry, device_id)
+            .await
+            .canonical;
     let persisted_device = &persisted_json["devices"][settings_key.as_str()];
     assert_eq!(persisted_device["name"], "Desk Strip Controls");
     assert_eq!(persisted_device["disabled"], true);
