@@ -12,17 +12,12 @@ use hypercolor_types::control::ControlValue as CanonicalControlValue;
 use hypercolor_types::controls::{
     ApplyControlChangesResponse, ControlActionResult, ControlSurfaceDocument, ControlValueMap,
 };
-use serde::Deserialize;
 
 use super::client;
 
-/// Response from `GET /api/v1/control-surfaces`.
-#[derive(Debug, Clone, Deserialize, PartialEq)]
-pub struct ControlSurfaceListResponse {
-    pub surfaces: Vec<ControlSurfaceDocument>,
-}
-
-pub use hypercolor_types::api::controls::InvokeControlActionRequest;
+pub use hypercolor_types::api::controls::{
+    ControlSurfaceListResponse, InvokeControlActionRequest,
+};
 
 /// Fetch surfaces selected by device, driver, or both.
 pub async fn fetch_control_surfaces(

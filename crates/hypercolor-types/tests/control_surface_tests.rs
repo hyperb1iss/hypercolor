@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use hypercolor_types::api::controls::ControlSurfaceListResponse;
 use hypercolor_types::controls::{
     ActionConfirmation, ActionConfirmationLevel, AppliedControlChange, ApplyControlChangesResponse,
     ApplyImpact, CONTROL_SURFACE_SCHEMA_VERSION, ControlAccess, ControlActionDescriptor,
@@ -332,6 +333,25 @@ fn control_surface_document_roundtrips() {
     let legacy: ControlSurfaceDocument =
         serde_json::from_value(legacy_json).expect("deserialize legacy document");
     assert!(legacy.action_availability.is_empty());
+}
+
+#[test]
+fn control_surface_list_response_roundtrips() {
+    let document = ControlSurfaceDocument::empty(
+        "driver:fixture-driver",
+        ControlSurfaceScope::Driver {
+            driver_id: "fixture-driver".to_owned(),
+        },
+    );
+    let response = ControlSurfaceListResponse {
+        surfaces: vec![document],
+    };
+
+    let json = serde_json::to_value(&response).expect("response serializes");
+    let decoded: ControlSurfaceListResponse =
+        serde_json::from_value(json).expect("response deserializes");
+
+    assert_eq!(decoded, response);
 }
 
 #[test]

@@ -3,7 +3,13 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::controls::ControlValueMap;
+use crate::controls::{ControlSurfaceDocument, ControlValueMap};
+
+/// Response from `GET /api/v1/control-surfaces`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct ControlSurfaceListResponse {
+    pub surfaces: Vec<ControlSurfaceDocument>,
+}
 
 /// Query parameters for `GET /api/v1/control-surfaces`.
 ///

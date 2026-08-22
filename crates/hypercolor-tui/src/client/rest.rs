@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use hypercolor_types::api::ApiResponse;
-use hypercolor_types::api::controls::InvokeControlActionRequest;
+use hypercolor_types::api::controls::{ControlSurfaceListResponse, InvokeControlActionRequest};
 use hypercolor_types::api::devices::{
     DeviceListResponse as ApiDeviceListResponse, DeviceSummary as ApiDeviceSummary,
 };
@@ -32,7 +32,6 @@ use hypercolor_types::layer::{LayerSource, SceneLayer};
 use hypercolor_types::scene::ZoneRole;
 use hypercolor_types::viewport::ViewportRect;
 use reqwest::StatusCode;
-use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
 use crate::state::{
@@ -571,11 +570,6 @@ pub struct ControlSurfaceQuery<'a> {
     pub device_id: Option<&'a str>,
     pub driver_id: Option<&'a str>,
     pub include_driver: bool,
-}
-
-#[derive(Debug, Deserialize)]
-struct ControlSurfaceListResponse {
-    surfaces: Vec<ControlSurfaceDocument>,
 }
 
 fn map_effect_summary(summary: ApiEffectSummary) -> EffectSummary {
