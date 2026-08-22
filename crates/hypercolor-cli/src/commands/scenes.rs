@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use clap::{ArgAction, Args, Subcommand, ValueEnum};
-use hypercolor_types::api::scenes::CreateSceneRequest;
+use hypercolor_types::api::scenes::{ActivateSceneRequest, CreateSceneRequest};
 use hypercolor_types::scene::SceneMutationMode;
 
 use crate::client::DaemonClient;
@@ -258,9 +258,9 @@ async fn execute_activate(
     ctx: &OutputContext,
 ) -> Result<()> {
     let path = format!("/scenes/{}/activate", urlencoded(&args.name));
-    // POST /scenes/{id}/activate takes no request body, so this payload has no
-    // typed home and the daemon discards it.
-    let body = serde_json::json!({ "transition_ms": args.transition });
+    let body = ActivateSceneRequest {
+        transition_ms: args.transition.map(u64::from),
+    };
     let response = client.post(&path, &body).await?;
 
     match ctx.format {

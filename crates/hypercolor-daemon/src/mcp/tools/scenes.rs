@@ -13,7 +13,6 @@ use crate::mcp::results::{
 use crate::mcp::selector::SelectorCandidate;
 use hypercolor_types::api::scene::{PatchControlsRequest, SceneDocument};
 use hypercolor_types::api::scenes::ActivatedSceneRef;
-use hypercolor_types::scene::TransitionSpec;
 use hypercolor_types::scene::ZoneRole;
 use hypercolor_types::scene::{SceneKind, SceneMutationMode};
 
@@ -208,10 +207,7 @@ pub(super) async fn handle_activate_scene_with_state(
         &state.domains.scene_library,
         ActivateScene {
             scene_id: scene.id,
-            transition: Some(TransitionSpec {
-                duration_ms: transition_ms,
-                ..scene.transition.clone()
-            }),
+            transition_ms: Some(transition_ms),
         },
     )
     .await?;

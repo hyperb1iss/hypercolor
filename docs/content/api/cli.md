@@ -89,7 +89,6 @@ hypercolor
 │   ├── pair
 │   ├── info
 │   ├── identify
-│   ├── set-color
 │   ├── controls
 │   ├── set-control
 │   └── action
@@ -242,7 +241,7 @@ hypercolor scenes list
 hypercolor scenes active
 hypercolor scenes create "Movie Night" --description "Dim and warm"
 hypercolor scenes snapshot "Current Rig" --description "Captured live state"
-hypercolor scenes activate "Movie Night"
+hypercolor scenes activate "Movie Night" --transition 250
 hypercolor scenes deactivate          # Return to the Default scene
 hypercolor scenes info "Movie Night"
 hypercolor scenes delete "Movie Night" --yes
@@ -273,7 +272,6 @@ hypercolor devices list --status connected --driver razer
 hypercolor devices discover --target wled --target hue --timeout 15
 hypercolor devices info "Razer Huntsman"
 hypercolor devices identify "Razer Huntsman" --duration 8
-hypercolor devices set-color "Lian Li Strip" "#ff00aa"
 ```
 
 `devices list` filters by `--status`, `--backend-id`, and `--driver`.

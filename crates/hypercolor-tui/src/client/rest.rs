@@ -16,7 +16,9 @@ use hypercolor_types::api::library::{AddFavoriteRequest, FavoriteListResponse};
 use hypercolor_types::api::scene::{
     ApplyEffectRequest, PatchControlsRequest, PatchZoneRequest, ReplaceLayerRequest, SceneDocument,
 };
-use hypercolor_types::api::scenes::SceneListResponse as ApiSceneListResponse;
+use hypercolor_types::api::scenes::{
+    ActivateSceneRequest, SceneListResponse as ApiSceneListResponse,
+};
 use hypercolor_types::api::system::SystemResource;
 use hypercolor_types::control::ControlValue as CanonicalControlValue;
 use hypercolor_types::controls::{
@@ -284,6 +286,7 @@ impl DaemonClient {
         );
         let response = self
             .auth_request(self.http.post(&url))
+            .json(&ActivateSceneRequest::default())
             .send()
             .await
             .with_context(|| format!("Failed to activate scene {scene_id}"))?;

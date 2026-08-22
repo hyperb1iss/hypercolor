@@ -54,14 +54,6 @@ async fn send(app: &axum::Router, request: Request<Body>) -> axum::response::Res
         .expect("request should succeed")
 }
 
-fn empty_request(method: &str, uri: String) -> Request<Body> {
-    Request::builder()
-        .method(method)
-        .uri(uri)
-        .body(Body::empty())
-        .expect("request should build")
-}
-
 fn json_request(method: &str, uri: String, body: serde_json::Value) -> Request<Body> {
     Request::builder()
         .method(method)
@@ -200,7 +192,11 @@ async fn activate_scene_rejects_video_media_cap() {
 
     let response = send(
         &app,
-        empty_request("POST", format!("/api/v1/scenes/{scene_id}/activate")),
+        json_request(
+            "POST",
+            format!("/api/v1/scenes/{scene_id}/activate"),
+            json!({}),
+        ),
     )
     .await;
 
@@ -248,7 +244,11 @@ async fn activate_scene_rejects_livestream_media_cap() {
 
     let response = send(
         &app,
-        empty_request("POST", format!("/api/v1/scenes/{scene_id}/activate")),
+        json_request(
+            "POST",
+            format!("/api/v1/scenes/{scene_id}/activate"),
+            json!({}),
+        ),
     )
     .await;
 
@@ -287,7 +287,11 @@ async fn live_tree_create_rejects_a_second_livestream_without_mutation() {
     assert_eq!(
         send(
             &app,
-            empty_request("POST", format!("/api/v1/scenes/{scene_id}/activate")),
+            json_request(
+                "POST",
+                format!("/api/v1/scenes/{scene_id}/activate"),
+                json!({}),
+            ),
         )
         .await
         .status(),
@@ -339,7 +343,11 @@ async fn concurrent_livestream_creates_cannot_both_cross_the_cap() {
     assert_eq!(
         send(
             &app,
-            empty_request("POST", format!("/api/v1/scenes/{scene_id}/activate")),
+            json_request(
+                "POST",
+                format!("/api/v1/scenes/{scene_id}/activate"),
+                json!({}),
+            ),
         )
         .await
         .status(),
@@ -411,7 +419,11 @@ async fn live_tree_replace_subtracts_the_addressed_livestream_before_counting() 
     assert_eq!(
         send(
             &app,
-            empty_request("POST", format!("/api/v1/scenes/{scene_id}/activate")),
+            json_request(
+                "POST",
+                format!("/api/v1/scenes/{scene_id}/activate"),
+                json!({}),
+            ),
         )
         .await
         .status(),
@@ -477,7 +489,11 @@ async fn activate_scene_downshifts_when_media_cost_exceeds_soft_cap() {
 
     let response = send(
         &app,
-        empty_request("POST", format!("/api/v1/scenes/{scene_id}/activate")),
+        json_request(
+            "POST",
+            format!("/api/v1/scenes/{scene_id}/activate"),
+            json!({}),
+        ),
     )
     .await;
 

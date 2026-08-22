@@ -34,8 +34,6 @@ pub enum DeviceCommand {
     Info(DeviceInfoArgs),
     /// Flash a test pattern on a device for identification.
     Identify(DeviceIdentifyArgs),
-    /// Set a device to a specific color.
-    SetColor(DeviceSetColorArgs),
     /// Show one device-level control surface.
     Controls(DeviceControlsArgs),
     /// Apply one device-level control value.
@@ -101,16 +99,6 @@ pub struct DeviceIdentifyArgs {
     pub duration: u32,
 }
 
-/// Arguments for `devices set-color`.
-#[derive(Debug, Args)]
-pub struct DeviceSetColorArgs {
-    /// Device name or ID.
-    pub device: String,
-
-    /// Color to set (hex: #ff00ff or name: cyan).
-    pub color: String,
-}
-
 /// Arguments for `devices controls`.
 #[derive(Debug, Args)]
 pub struct DeviceControlsArgs {
@@ -166,7 +154,6 @@ pub async fn execute(args: &DevicesArgs, client: &DaemonClient, ctx: &OutputCont
         DeviceCommand::Identify(identify_args) => {
             execute_identify(identify_args, client, ctx).await
         }
-        DeviceCommand::SetColor(color_args) => execute_set_color(color_args, client, ctx).await,
         DeviceCommand::Controls(controls_args) => {
             execute_controls(controls_args, client, ctx).await
         }
@@ -443,28 +430,6 @@ async fn execute_identify(
                 "Identifying {} for {}s",
                 args.device, args.duration
             ));
-        }
-    }
-
-    Ok(())
-}
-
-async fn execute_set_color(
-    args: &DeviceSetColorArgs,
-    client: &DaemonClient,
-    ctx: &OutputContext,
-) -> Result<()> {
-    let path = format!("/devices/{}", urlencoded(&args.device));
-    // PUT /devices/{id} deserializes UpdateDeviceRequest, which carries name,
-    // enabled, and brightness but no color, so this body has no typed home and
-    // the route answers 422.
-    let body = serde_json::json!({ "color": args.color });
-    let response = client.put(&path, &body).await?;
-
-    match ctx.format {
-        OutputFormat::Json => ctx.print_json(&response)?,
-        OutputFormat::Plain | OutputFormat::Table => {
-            ctx.success(&format!("Set {} to {}", args.device, args.color));
         }
     }
 

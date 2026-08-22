@@ -20,8 +20,9 @@ use crate::domain::{DomainError, ResourceKind};
 // Wire contracts live in hypercolor-types::api::scenes — shared with the
 // web UI and the TUI.
 pub use hypercolor_types::api::scenes::{
-    ActivateSceneResponse, ActivatedSceneRef, CreateSceneRequest, DeleteSceneResponse,
-    ReplaceSceneRequest, SceneListResponse, SceneSummary, SnapshotSceneRequest,
+    ActivateSceneRequest, ActivateSceneResponse, ActivatedSceneRef, CreateSceneRequest,
+    DeleteSceneResponse, ReplaceSceneRequest, SceneListResponse, SceneSummary,
+    SnapshotSceneRequest,
 };
 
 // ── Handlers ─────────────────────────────────────────────────────────────
@@ -180,6 +181,7 @@ pub async fn delete_scene(State(state): State<Arc<AppState>>, Path(id): Path<Str
 pub async fn activate_scene(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
+    Json(request): Json<ActivateSceneRequest>,
 ) -> Response {
     // The media-cap violation body is a frozen v1 shape, so the adapter
     // renders it from the shared evaluation rather than from the service's
@@ -211,7 +213,7 @@ pub async fn activate_scene(
         &state.domains.scene_library,
         crate::domain::scene::ActivateScene {
             scene_id,
-            transition: None,
+            transition_ms: request.transition_ms,
         },
     )
     .await

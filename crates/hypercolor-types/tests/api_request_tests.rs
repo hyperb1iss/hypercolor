@@ -13,7 +13,7 @@ use hypercolor_types::api::displays::{DisplayFaceScope, DisplayFaceScopeQuery};
 use hypercolor_types::api::library::{
     PlaylistItemRequest, PlaylistTargetRequest, SavePlaylistRequest, SavePresetRequest,
 };
-use hypercolor_types::api::scenes::CreateSceneRequest;
+use hypercolor_types::api::scenes::{ActivateSceneRequest, CreateSceneRequest};
 use hypercolor_types::controls::{ControlValue, ControlValueMap};
 use hypercolor_types::pairing::PairDeviceRequest;
 use serde_json::json;
@@ -66,6 +66,7 @@ macro_rules! assert_null_and_absent_agree {
 #[test]
 fn absent_and_explicit_null_optional_fields_decode_alike() {
     assert_null_and_absent_agree!(AssetUpdateRequest, json!({}), name, tags);
+    assert_null_and_absent_agree!(ActivateSceneRequest, json!({}), transition_ms);
     assert_null_and_absent_agree!(
         CreateSceneRequest,
         json!({ "name": "movie-night" }),

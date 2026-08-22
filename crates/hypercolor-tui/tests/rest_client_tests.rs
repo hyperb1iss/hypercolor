@@ -915,10 +915,13 @@ async fn activate_and_deactivate_scene_hit_expected_routes() {
     let router = Router::new()
         .route(
             "/api/v1/scenes/{id}/activate",
-            post(|Path(id): Path<String>| async move {
-                assert_eq!(id, "scene-2");
-                canonical_json(json!({"data": {}}))
-            }),
+            post(
+                |Path(id): Path<String>, Json(body): Json<Value>| async move {
+                    assert_eq!(id, "scene-2");
+                    assert_eq!(body, json!({}));
+                    canonical_json(json!({"data": {}}))
+                },
+            ),
         )
         .route(
             "/api/v1/scene/deactivate",

@@ -102,12 +102,6 @@ fn build_cmd() -> clap::Command {
                         .arg(Arg::new("duration").long("duration").default_value("5")),
                 )
                 .subcommand(
-                    Command::new("set-color")
-                        .about("Set device color")
-                        .arg(Arg::new("device").required(true))
-                        .arg(Arg::new("color").required(true)),
-                )
-                .subcommand(
                     Command::new("controls")
                         .about("Show device controls")
                         .arg(Arg::new("device").required(true)),
@@ -578,21 +572,12 @@ fn parse_devices_identify() {
 }
 
 #[test]
-fn parse_devices_set_color() {
+fn reject_devices_set_color() {
     let cmd = build_cmd();
-    let matches = cmd
+    let error = cmd
         .try_get_matches_from(["hyper", "devices", "set-color", "Strip", "#ff6ac1"])
-        .expect("devices set-color should parse");
-    let (_, sub) = matches.subcommand().expect("should have subcommand");
-    let (_, sc) = sub.subcommand().expect("should have set-color");
-    assert_eq!(
-        sc.get_one::<String>("device").map(String::as_str),
-        Some("Strip")
-    );
-    assert_eq!(
-        sc.get_one::<String>("color").map(String::as_str),
-        Some("#ff6ac1")
-    );
+        .expect_err("devices set-color should not parse");
+    assert_eq!(error.kind(), clap::error::ErrorKind::InvalidSubcommand);
 }
 
 #[test]

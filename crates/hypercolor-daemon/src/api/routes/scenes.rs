@@ -65,8 +65,13 @@ pub(super) fn router() -> OpenApiRouter<Arc<AppState>> {
         .routes(openapi::documented_route(
             "/scenes/{id}/activate",
             axum::routing::post(scenes::activate_scene),
-            [OperationDoc::post::<
-                hypercolor_types::api::scenes::ActivateSceneResponse,
-            >("activate_scene", "scenes", "Activate scene")],
+            [
+                OperationDoc::post::<hypercolor_types::api::scenes::ActivateSceneResponse>(
+                    "activate_scene",
+                    "scenes",
+                    "Activate scene",
+                )
+                .body::<hypercolor_types::api::scenes::ActivateSceneRequest>(),
+            ],
         ))
 }

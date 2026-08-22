@@ -10,7 +10,7 @@ use super::client;
 use gloo_net::http::Method;
 
 pub use hypercolor_types::api::scenes::{
-    CreateSceneRequest, ReplaceSceneRequest, SceneListResponse, SceneSummary,
+    ActivateSceneRequest, CreateSceneRequest, ReplaceSceneRequest, SceneListResponse, SceneSummary,
 };
 
 /// The selected topmost effect layer inside one canonical zone resource.
@@ -141,7 +141,10 @@ pub async fn delete_scene(scene_id: &str) -> Result<(), String> {
 
 /// Activate a scene, making it the one the render loop composes.
 pub async fn activate_scene(scene_id: &str) -> Result<(), String> {
-    client::post_empty(&format!("/api/v1/scenes/{scene_id}/activate"))
-        .await
-        .map_err(Into::into)
+    client::post_json_discard(
+        &format!("/api/v1/scenes/{scene_id}/activate"),
+        &ActivateSceneRequest::default(),
+    )
+    .await
+    .map_err(Into::into)
 }

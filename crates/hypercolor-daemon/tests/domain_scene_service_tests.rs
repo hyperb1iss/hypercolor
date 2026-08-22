@@ -189,7 +189,7 @@ async fn control_patch_refuses_a_revision_resolved_before_a_scene_switch() {
         &state.domains.scene_library,
         ActivateScene {
             scene_id: next_scene_id,
-            transition: None,
+            transition_ms: None,
         },
     )
     .await
@@ -525,7 +525,7 @@ async fn activate_scene_switches_the_current_scene_and_publishes_once() {
         &state.domains.scene_library,
         ActivateScene {
             scene_id,
-            transition: None,
+            transition_ms: None,
         },
     )
     .await
@@ -579,7 +579,7 @@ async fn activation_hydrates_only_existing_connected_display_zones() {
         &state.domains.scene_library,
         ActivateScene {
             scene_id,
-            transition: None,
+            transition_ms: None,
         },
     )
     .await
@@ -609,7 +609,7 @@ async fn activation_commits_before_layout_failure_and_still_applies_brightness()
         &state.domains.scene_library,
         ActivateScene {
             scene_id,
-            transition: None,
+            transition_ms: None,
         },
     )
     .await
@@ -680,7 +680,7 @@ async fn activation_applies_a_named_layout_without_reentering_its_guard() {
         &state.domains.scene_library,
         ActivateScene {
             scene_id,
-            transition: None,
+            transition_ms: None,
         },
     );
     tokio::pin!(activation);
@@ -735,7 +735,7 @@ async fn activate_scene_honors_a_transition_override() {
         &state.domains.scene_library,
         ActivateScene {
             scene_id: first_id,
-            transition: None,
+            transition_ms: None,
         },
     )
     .await
@@ -748,11 +748,7 @@ async fn activate_scene_honors_a_transition_override() {
         &state.domains.scene_library,
         ActivateScene {
             scene_id: second_id,
-            transition: Some(TransitionSpec {
-                duration_ms: 2_500,
-                easing: EasingFunction::Linear,
-                color_interpolation: ColorInterpolation::Oklab,
-            }),
+            transition_ms: Some(2_500),
         },
     )
     .await
@@ -778,7 +774,7 @@ async fn activating_another_scene_retires_transient_layout_previews() {
         &state.domains.scene_library,
         ActivateScene {
             scene_id: first_id,
-            transition: None,
+            transition_ms: None,
         },
     )
     .await
@@ -799,7 +795,7 @@ async fn activating_another_scene_retires_transient_layout_previews() {
         &state.domains.scene_library,
         ActivateScene {
             scene_id: second_id,
-            transition: None,
+            transition_ms: None,
         },
     )
     .await
@@ -808,7 +804,7 @@ async fn activating_another_scene_retires_transient_layout_previews() {
         &state.domains.scene_library,
         ActivateScene {
             scene_id: first_id,
-            transition: None,
+            transition_ms: None,
         },
     )
     .await
@@ -831,7 +827,7 @@ async fn activate_scene_refuses_an_unknown_scene() {
         &state.domains.scene_library,
         ActivateScene {
             scene_id: SceneId::new(),
-            transition: None,
+            transition_ms: None,
         },
     )
     .await
@@ -1262,7 +1258,7 @@ async fn delete_scene_deactivates_it_and_announces_both_changes() {
         &state.domains.scene_library,
         ActivateScene {
             scene_id: created.scene.id,
-            transition: None,
+            transition_ms: None,
         },
     )
     .await
@@ -1342,7 +1338,7 @@ async fn deactivate_scene_returns_to_default_and_reports_both_ends() {
         &state.domains.scene_library,
         ActivateScene {
             scene_id: created.scene.id,
-            transition: None,
+            transition_ms: None,
         },
     )
     .await

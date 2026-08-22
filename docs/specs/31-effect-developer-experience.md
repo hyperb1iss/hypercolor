@@ -1522,7 +1522,7 @@ DEVICES
   hypercolor devices discover [--backend hid|wled|hue]
   hypercolor devices info <device>
   hypercolor devices identify <device> [--duration <secs>]
-  hypercolor devices set-color <device> <color>
+  hypercolor effects activate "Solid Color" --param color=<color>
 
 EFFECTS
   hypercolor effects list [--search <term>] [--audio] [--json]

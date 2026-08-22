@@ -632,7 +632,8 @@ Delete a scene.
 Activate a scene, applying its effects and controls with the configured
 transition. The response reports the post-commit layout and brightness
 outcomes separately, because either side effect may fail after the scene switch
-has committed.
+has committed. Send `{}` to use the scene's authored transition, or pass
+`{ "transition_ms": 250 }` to override its duration for this activation.
 {% end %}
 
 {% api_endpoint(method="PATCH", path="/api/v1/scene") %}

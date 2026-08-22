@@ -1845,7 +1845,7 @@ mod zone_layout_preview_race_tests {
                 &activation_state.domains.scene_library,
                 ActivateScene {
                     scene_id: next_scene_id,
-                    transition: None,
+                    transition_ms: None,
                 },
             )
             .await

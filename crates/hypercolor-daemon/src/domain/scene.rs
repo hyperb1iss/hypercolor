@@ -1651,8 +1651,8 @@ fn media_admission_layer_detail(
 pub struct ActivateScene {
     /// Which scene to activate. Adapters resolve names to ids.
     pub scene_id: SceneId,
-    /// Overrides the scene's own transition spec when present.
-    pub transition: Option<TransitionSpec>,
+    /// Overrides the scene's authored transition duration when present.
+    pub transition_ms: Option<u64>,
 }
 
 /// The outcome of a scene activation.
@@ -1707,6 +1707,11 @@ pub async fn activate_scene(
     let scene_name = scene.name.clone();
     let layout_id = scene.layout_id.clone();
     let activation_brightness = scene.activation_brightness;
+    let transition = command.transition_ms.map(|duration_ms| {
+        let mut transition = scene.transition.clone();
+        transition.duration_ms = duration_ms;
+        transition
+    });
     let admission = media_admission.evaluate(scene);
     if let Some(message) = admission.rejection_message() {
         return Err(DomainError::validation(message.to_owned()));
@@ -1715,7 +1720,7 @@ pub async fn activate_scene(
 
     mutation.activate(
         command.scene_id,
-        command.transition,
+        transition,
         SceneChangeReason::UserActivate,
     )?;
 

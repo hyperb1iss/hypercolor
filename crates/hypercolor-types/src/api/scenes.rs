@@ -59,6 +59,14 @@ pub struct ActivateSceneResponse {
     pub brightness: SideEffectOutcome,
 }
 
+/// Request for `POST /api/v1/scenes/{id}/activate`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ActivateSceneRequest {
+    /// Override the scene's authored transition duration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transition_ms: Option<u64>,
+}
+
 /// Post-commit outcome for a scene's optional named layout.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct SceneLayoutActivationOutcome {

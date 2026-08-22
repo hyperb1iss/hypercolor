@@ -145,16 +145,16 @@ The device will flash for 5 seconds by default. Use `--duration` to adjust:
 hypercolor devices identify "Corsair LL120" --duration 10
 ```
 
-## Set a device to a solid color
+## Test solid-color output
 
-Useful for testing that a device is receiving output:
+Lighting output belongs to the active scene, not to a device mutation. Activate
+the built-in solid-color effect to test the current scene's output path:
 
 ```bash
-hypercolor devices set-color <device-name-or-id> "#ff00ff"
-hypercolor devices set-color "Razer Huntsman" cyan
+hypercolor effects activate "Solid Color" --param color=#ff00ff
 ```
 
-Accepts hex (`#rrggbb`) or named colors.
+Use zones when only part of the rig should receive the effect.
 
 ## Still not finding your device?
 

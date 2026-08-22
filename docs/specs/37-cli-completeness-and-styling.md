@@ -410,7 +410,6 @@ hypercolor devices unpair <id>                                   # (new)     DEL
 hypercolor devices identify <id>                                 # (existing)
 hypercolor devices identify <id> zone <zone-id>                  # (new)     POST   /devices/{id}/zones/{zone_id}/identify
 hypercolor devices identify <id> slot <slot-id>                  # (new)     POST   /devices/{id}/attachments/{slot_id}/identify
-hypercolor devices set-color <id> <color>                        # (existing)
 hypercolor devices delete <id>                                   # (new)     DELETE /devices/{id}
 hypercolor devices update <id> [--name ...] [--enabled ...]      # (new)     PUT    /devices/{id}
 hypercolor devices attachments show <id>                         # (new)     GET    /devices/{id}/attachments
