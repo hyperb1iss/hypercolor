@@ -68,6 +68,7 @@ use crate::layout_auto_exclusions;
 use crate::network::{self, DaemonDriverHost};
 use crate::output_power::OutputPower;
 use crate::performance::PerformanceTracker;
+use crate::playlist_runtime::PlaylistRuntimeState;
 use crate::preview_runtime::PreviewRuntime;
 use crate::scene_store::SceneStore;
 use crate::scene_transactions::SceneTransactionQueue;
@@ -744,6 +745,7 @@ impl DaemonState {
             &library_path,
             &effect_id_migrations,
         )?;
+        let playlist_runtime = Arc::new(Mutex::new(PlaylistRuntimeState::new()));
         let start_time = Instant::now();
         let runtime_session = RuntimeSessionService::new(
             runtime_state_path.clone(),
@@ -821,6 +823,7 @@ impl DaemonState {
             _macos_owner_watch: macos_owner_watch,
             asset_library,
             library_store,
+            playlist_runtime,
             preview_runtime,
             zone_layout_previews,
             render_loop,

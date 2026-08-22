@@ -1,9 +1,11 @@
 //! Runtime state for actively playing playlists.
 
-use tokio::sync::watch;
+use std::sync::Arc;
+
+use tokio::sync::{RwLock, watch};
 use tokio::task::JoinHandle;
 
-use hypercolor_types::library::PlaylistId;
+use hypercolor_types::library::{EffectPlaylist, PlaylistId};
 
 /// In-memory runtime slot for the currently active playlist sequence.
 pub struct PlaylistRuntimeState {
@@ -44,5 +46,6 @@ pub struct ActivePlaylistRuntime {
     pub item_count: usize,
     pub started_at_ms: u64,
     pub stop_tx: watch::Sender<bool>,
+    pub playlist: Arc<RwLock<EffectPlaylist>>,
     pub task: JoinHandle<()>,
 }

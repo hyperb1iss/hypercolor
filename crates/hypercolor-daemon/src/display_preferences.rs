@@ -19,7 +19,10 @@ use crate::effect_id_migration::{EffectIdMigrations, remap_effect_id};
 use crate::path_migration::{
     MigratedStore, MigrationOutcome, PathMigrationEntry, VersionedDocument, migrate,
 };
-use crate::persistence::{AtomicFileWriter, AtomicWriteOutcome, serialize_json_pretty};
+use crate::persistence::{
+    AdmittedAtomicWrite, AtomicFileWriter, AtomicWriteCommitResult, AtomicWriteOutcome,
+    serialize_json_pretty,
+};
 
 const STORE_SUBJECT: &str = "display preferences";
 
@@ -45,6 +48,21 @@ pub struct DisplayPreferencesStore {
     preferences: HashMap<DeviceId, DisplayPreference>,
     path: PathBuf,
     writer: AtomicFileWriter,
+}
+
+#[derive(Debug)]
+pub(crate) struct DisplayPreferencesEffectIdMigration {
+    source: HashMap<DeviceId, DisplayPreference>,
+    candidate: HashMap<DeviceId, DisplayPreference>,
+    write: AdmittedAtomicWrite,
+    migrated: usize,
+}
+
+#[derive(Debug)]
+pub(crate) struct PersistedDisplayPreferencesEffectIdMigration {
+    source: HashMap<DeviceId, DisplayPreference>,
+    candidate: HashMap<DeviceId, DisplayPreference>,
+    migrated: usize,
 }
 
 impl DisplayPreferencesStore {
@@ -231,6 +249,39 @@ impl DisplayPreferencesStore {
         }
     }
 
+    pub(crate) fn prepare_effect_id_migration(
+        &self,
+        migrations: &EffectIdMigrations,
+    ) -> anyhow::Result<Option<DisplayPreferencesEffectIdMigration>> {
+        let mut candidate = self.preferences.clone();
+        let migrated = candidate
+            .values_mut()
+            .map(|preference| usize::from(remap_effect_id(&mut preference.effect_id, migrations)))
+            .sum();
+        if migrated == 0 {
+            return Ok(None);
+        }
+        let payload = serialize_json_pretty(&candidate)
+            .context("failed to serialize migrated display preferences")?;
+        Ok(Some(DisplayPreferencesEffectIdMigration {
+            source: self.preferences.clone(),
+            candidate,
+            write: self.writer.reserve().admit(payload),
+            migrated,
+        }))
+    }
+
+    pub(crate) fn install_effect_id_migration(
+        &mut self,
+        migration: PersistedDisplayPreferencesEffectIdMigration,
+    ) -> anyhow::Result<usize> {
+        if self.preferences != migration.source {
+            anyhow::bail!("effect ID migration was superseded by newer display preferences");
+        }
+        self.preferences = migration.candidate;
+        Ok(migration.migrated)
+    }
+
     fn install_candidate(
         &mut self,
         candidate: HashMap<DeviceId, DisplayPreference>,
@@ -247,6 +298,27 @@ impl DisplayPreferencesStore {
             );
         }
         Ok(())
+    }
+}
+
+impl DisplayPreferencesEffectIdMigration {
+    pub(crate) fn persist(self) -> anyhow::Result<PersistedDisplayPreferencesEffectIdMigration> {
+        match self.write.commit_stage_aware() {
+            AtomicWriteCommitResult::DurableWritten => {
+                Ok(PersistedDisplayPreferencesEffectIdMigration {
+                    source: self.source,
+                    candidate: self.candidate,
+                    migrated: self.migrated,
+                })
+            }
+            AtomicWriteCommitResult::Superseded => {
+                anyhow::bail!("effect ID migration was superseded by newer display preferences")
+            }
+            AtomicWriteCommitResult::FailedBeforeReplacement(error)
+            | AtomicWriteCommitResult::ReplacementVisibleButNotDurable(error) => {
+                Err(error).context("failed to persist migrated display preferences")
+            }
+        }
     }
 }
 

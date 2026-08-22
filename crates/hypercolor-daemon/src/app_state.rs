@@ -751,7 +751,7 @@ impl AppState {
             output_power: daemon.output_power.clone(),
             scene_transactions: daemon.scene_transactions.clone(),
             library_store,
-            playlist_runtime: Arc::new(Mutex::new(PlaylistRuntimeState::new())),
+            playlist_runtime: Arc::clone(&daemon.playlist_runtime),
             start_time: daemon.start_time,
             server_identity: daemon.server_identity.clone(),
             server_session_id: None,

@@ -125,9 +125,22 @@ pub trait LibraryStore: Send + Sync {
     async fn insert_playlist(&self, playlist: EffectPlaylist) -> Result<(), LibraryStoreError>;
     async fn update_playlist(&self, playlist: EffectPlaylist) -> Result<(), LibraryStoreError>;
     async fn remove_playlist(&self, id: PlaylistId) -> Result<bool, LibraryStoreError>;
+
+    #[doc(hidden)]
+    async fn prepare_effect_id_migration(
+        &self,
+        migrations: &HashMap<EffectId, EffectId>,
+    ) -> Result<Option<Box<dyn LibraryEffectIdMigration + '_>>, LibraryStoreError>;
 }
 
-#[derive(Debug, Clone, Default)]
+#[async_trait]
+#[doc(hidden)]
+pub trait LibraryEffectIdMigration: Send {
+    fn persist(&mut self) -> Result<(), LibraryStoreError>;
+    async fn install(self: Box<Self>) -> Result<usize, LibraryStoreError>;
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
 struct InMemoryLibraryData {
     favorites: HashMap<EffectId, FavoriteEffect>,
     favorite_revisions: HashMap<EffectId, u64>,
@@ -139,16 +152,21 @@ impl InMemoryLibraryData {
     fn migrate_effect_ids(&mut self, migrations: &EffectIdMigrations) -> usize {
         let mut migrated = 0;
         let mut favorites = HashMap::<EffectId, FavoriteEffect>::new();
-        for (_, mut favorite) in std::mem::take(&mut self.favorites) {
-            migrated += usize::from(remap_effect_id(&mut favorite.effect_id, migrations));
-            favorites
-                .entry(favorite.effect_id)
-                .and_modify(|current| {
-                    if favorite.added_at_ms > current.added_at_ms {
-                        *current = favorite.clone();
-                    }
+        let mut source_favorites = std::mem::take(&mut self.favorites)
+            .into_iter()
+            .collect::<Vec<_>>();
+        source_favorites.sort_by(|(left_id, left), (right_id, right)| {
+            left.added_at_ms
+                .cmp(&right.added_at_ms)
+                .then_with(|| {
+                    usize::from(!migrations.contains_key(left_id))
+                        .cmp(&usize::from(!migrations.contains_key(right_id)))
                 })
-                .or_insert(favorite);
+                .then_with(|| left_id.to_string().cmp(&right_id.to_string()))
+        });
+        for (_, mut favorite) in source_favorites {
+            migrated += usize::from(remap_effect_id(&mut favorite.effect_id, migrations));
+            favorites.insert(favorite.effect_id, favorite);
         }
         self.favorites = favorites;
 
@@ -367,6 +385,24 @@ struct PendingLibrarySnapshot {
     write: AdmittedAtomicWrite,
 }
 
+struct InMemoryLibraryEffectIdMigration<'a> {
+    store: &'a InMemoryLibraryStore,
+    source: InMemoryLibraryData,
+    candidate: InMemoryLibraryData,
+    migrated: usize,
+}
+
+struct JsonLibraryEffectIdMigration<'a> {
+    store: &'a JsonLibraryStore,
+    source: InMemoryLibraryData,
+    candidate: InMemoryLibraryData,
+    source_uncertain: HashMap<EffectId, UncertainFavoriteChange>,
+    candidate_uncertain: HashMap<EffectId, UncertainFavoriteChange>,
+    pending: Option<PendingLibrarySnapshot>,
+    migrated: usize,
+    persisted: bool,
+}
+
 /// JSON-backed persistence for library entities.
 ///
 /// This store keeps an in-memory index for fast reads and writes a full
@@ -385,13 +421,44 @@ enum FavoriteChange {
     Remove,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct UncertainFavoriteChange {
     change: FavoriteChange,
     revision: u64,
     predecessor_added_at_ms: Option<u64>,
     predecessor_revision: u64,
     durable: bool,
+}
+
+fn remap_uncertain_favorites(
+    source: &HashMap<EffectId, UncertainFavoriteChange>,
+    migrations: &EffectIdMigrations,
+) -> (HashMap<EffectId, UncertainFavoriteChange>, usize) {
+    let mut entries = source
+        .iter()
+        .map(|(effect_id, pending)| (*effect_id, pending.clone()))
+        .collect::<Vec<_>>();
+    entries.sort_by(|(left_id, left), (right_id, right)| {
+        left.revision
+            .cmp(&right.revision)
+            .then_with(|| left.durable.cmp(&right.durable))
+            .then_with(|| {
+                usize::from(!migrations.contains_key(left_id))
+                    .cmp(&usize::from(!migrations.contains_key(right_id)))
+            })
+            .then_with(|| left_id.to_string().cmp(&right_id.to_string()))
+    });
+
+    let mut migrated = 0;
+    let mut candidate = HashMap::new();
+    for (mut effect_id, mut pending) in entries {
+        migrated += usize::from(remap_effect_id(&mut effect_id, migrations));
+        if let FavoriteChange::Upsert(favorite) = &mut pending.change {
+            favorite.effect_id = effect_id;
+        }
+        candidate.insert(effect_id, pending);
+    }
+    (candidate, migrated)
 }
 
 impl JsonLibraryStore {
@@ -684,6 +751,70 @@ impl JsonLibraryStore {
 }
 
 #[async_trait]
+impl LibraryEffectIdMigration for InMemoryLibraryEffectIdMigration<'_> {
+    fn persist(&mut self) -> Result<(), LibraryStoreError> {
+        Ok(())
+    }
+
+    async fn install(self: Box<Self>) -> Result<usize, LibraryStoreError> {
+        let mut data = self.store.data.write().await;
+        if *data != self.source {
+            return Err(LibraryStoreError::Persistence(
+                "effect ID migration was superseded by newer library state".to_owned(),
+            ));
+        }
+        *data = self.candidate;
+        Ok(self.migrated)
+    }
+}
+
+#[async_trait]
+impl LibraryEffectIdMigration for JsonLibraryEffectIdMigration<'_> {
+    fn persist(&mut self) -> Result<(), LibraryStoreError> {
+        let pending = self.pending.take().ok_or_else(|| {
+            LibraryStoreError::Persistence(
+                "library effect ID migration was already persisted".to_owned(),
+            )
+        })?;
+        match pending.write.commit_stage_aware() {
+            AtomicWriteCommitResult::DurableWritten => {
+                self.persisted = true;
+                Ok(())
+            }
+            AtomicWriteCommitResult::Superseded => Err(LibraryStoreError::Persistence(
+                "effect ID migration was superseded by a newer library snapshot".to_owned(),
+            )),
+            AtomicWriteCommitResult::FailedBeforeReplacement(error)
+            | AtomicWriteCommitResult::ReplacementVisibleButNotDurable(error) => {
+                Err(LibraryStoreError::Persistence(error.to_string()))
+            }
+        }
+    }
+
+    async fn install(self: Box<Self>) -> Result<usize, LibraryStoreError> {
+        if !self.persisted {
+            return Err(LibraryStoreError::Persistence(
+                "library effect ID migration was not durably persisted".to_owned(),
+            ));
+        }
+        let mut data = self.store.data.write().await;
+        let mut uncertain = self
+            .store
+            .uncertain_favorites
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if *data != self.source || *uncertain != self.source_uncertain {
+            return Err(LibraryStoreError::Persistence(
+                "effect ID migration was superseded by newer library state".to_owned(),
+            ));
+        }
+        *data = self.candidate;
+        *uncertain = self.candidate_uncertain;
+        Ok(self.migrated)
+    }
+}
+
+#[async_trait]
 impl LibraryStore for InMemoryLibraryStore {
     async fn list_favorites(&self) -> Vec<FavoriteEffect> {
         let data = self.data.read().await;
@@ -829,6 +960,24 @@ impl LibraryStore for InMemoryLibraryStore {
     async fn remove_playlist(&self, id: PlaylistId) -> Result<bool, LibraryStoreError> {
         let mut data = self.data.write().await;
         Ok(data.playlists.remove(&id).is_some())
+    }
+
+    async fn prepare_effect_id_migration(
+        &self,
+        migrations: &EffectIdMigrations,
+    ) -> Result<Option<Box<dyn LibraryEffectIdMigration + '_>>, LibraryStoreError> {
+        let source = self.data.read().await.clone();
+        let mut candidate = source.clone();
+        let migrated = candidate.migrate_effect_ids(migrations);
+        if migrated == 0 {
+            return Ok(None);
+        }
+        Ok(Some(Box::new(InMemoryLibraryEffectIdMigration {
+            store: self,
+            source,
+            candidate,
+            migrated,
+        })))
     }
 }
 
@@ -1071,6 +1220,39 @@ impl LibraryStore for JsonLibraryStore {
         }
         Ok(removed)
     }
+
+    async fn prepare_effect_id_migration(
+        &self,
+        migrations: &EffectIdMigrations,
+    ) -> Result<Option<Box<dyn LibraryEffectIdMigration + '_>>, LibraryStoreError> {
+        let source = self.data.read().await.clone();
+        let source_uncertain = self
+            .uncertain_favorites
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let mut candidate = source.clone();
+        let mut migrated = candidate.migrate_effect_ids(migrations);
+        let (candidate_uncertain, uncertain_migrated) =
+            remap_uncertain_favorites(&source_uncertain, migrations);
+        migrated += uncertain_migrated;
+        if migrated == 0 {
+            return Ok(None);
+        }
+        let pending = self
+            .pending_snapshot(&candidate)
+            .map_err(|error| LibraryStoreError::Persistence(error.to_string()))?;
+        Ok(Some(Box::new(JsonLibraryEffectIdMigration {
+            store: self,
+            source,
+            candidate,
+            source_uncertain,
+            candidate_uncertain,
+            pending: Some(pending),
+            migrated,
+            persisted: false,
+        })))
+    }
 }
 
 #[cfg(test)]
@@ -1230,6 +1412,58 @@ mod tests {
         let durable = std::fs::read_to_string(path).expect("migrated snapshot should read");
         assert!(!durable.contains(&legacy_id.to_string()));
         assert!(durable.contains(&canonical_id.to_string()));
+    }
+
+    #[tokio::test]
+    async fn late_library_migration_rekeys_uncertain_favorites_deterministically() {
+        let temp = TempDir::new().expect("tempdir");
+        let store =
+            JsonLibraryStore::open(temp.path().join("library.json")).expect("library should open");
+        let legacy_id = EffectId::new(Uuid::now_v7());
+        let canonical_id = EffectId::new(Uuid::now_v7());
+        store.record_uncertain_favorite(
+            legacy_id,
+            super::FavoriteChange::Upsert(FavoriteEffect {
+                effect_id: legacy_id,
+                added_at_ms: 10,
+            }),
+            3,
+            None,
+            2,
+        );
+        store.record_uncertain_favorite(
+            canonical_id,
+            super::FavoriteChange::Upsert(FavoriteEffect {
+                effect_id: canonical_id,
+                added_at_ms: 20,
+            }),
+            5,
+            None,
+            4,
+        );
+
+        let mut migration = store
+            .prepare_effect_id_migration(&HashMap::from([(legacy_id, canonical_id)]))
+            .await
+            .expect("migration should prepare")
+            .expect("uncertain favorite should require migration");
+        migration.persist().expect("migration should persist");
+        migration.install().await.expect("migration should install");
+
+        let uncertain = store
+            .uncertain_favorites
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(uncertain.len(), 1);
+        let pending = uncertain
+            .get(&canonical_id)
+            .expect("canonical uncertain favorite should survive");
+        assert_eq!(pending.revision, 5);
+        assert!(matches!(
+            &pending.change,
+            super::FavoriteChange::Upsert(favorite)
+                if favorite.effect_id == canonical_id && favorite.added_at_ms == 20
+        ));
     }
 
     #[tokio::test]

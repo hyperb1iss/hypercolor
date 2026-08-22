@@ -30,7 +30,8 @@ use crate::domain::scene_tree::SceneTreeContext;
 use crate::domain::spatial::SpatialService;
 use crate::network::DaemonDriverHost;
 use crate::output_power::OutputPower;
-use crate::runtime_state::{self, RuntimeSessionSnapshot};
+use crate::persistence::AtomicWriteOutcome;
+use crate::runtime_state::{self, RuntimeSessionSnapshot, RuntimeSnapshotSave};
 use crate::{discovery, layout_auto_exclusions};
 
 /// Complete daemon domain graph assembled once by the composition root.
@@ -111,6 +112,11 @@ pub struct RuntimeSessionService {
     driver_registry: Arc<DriverModuleRegistry>,
 }
 
+pub(crate) struct RuntimeSessionEffectIdMigration {
+    pending: RuntimeSnapshotSave,
+    snapshot: RuntimeSessionSnapshot,
+}
+
 impl RuntimeSessionService {
     pub(crate) fn new(
         path: PathBuf,
@@ -145,6 +151,18 @@ impl RuntimeSessionService {
         snapshot
     }
 
+    pub(crate) fn prepare_effect_id_migration(
+        &self,
+        manager: &SceneManager,
+    ) -> Result<RuntimeSessionEffectIdMigration, DomainError> {
+        let mut snapshot = runtime_state::snapshot_from_scene_manager(manager);
+        snapshot.active_layout_id = Some(self.spatial.layout().id.clone());
+        snapshot.manual_paused = self.output_power.snapshot().manually_paused();
+        let pending = runtime_state::reserve_save(&self.path)
+            .map_err(|error| DomainError::Internal(error.into()))?;
+        Ok(RuntimeSessionEffectIdMigration { pending, snapshot })
+    }
+
     /// Persist the current scene store before the runtime-session pointer.
     pub async fn save(&self) {
         let pending_save = match runtime_state::reserve_save(&self.path) {
@@ -175,6 +193,17 @@ impl RuntimeSessionService {
 
     async fn save_scene_store_snapshot(&self) -> anyhow::Result<()> {
         self.scenes.save_snapshot().await
+    }
+}
+
+impl RuntimeSessionEffectIdMigration {
+    pub(crate) fn persist(self) -> anyhow::Result<()> {
+        match runtime_state::save_reserved(self.pending, &self.snapshot)? {
+            AtomicWriteOutcome::Written => Ok(()),
+            AtomicWriteOutcome::Superseded => {
+                anyhow::bail!("effect ID migration was superseded by newer runtime state")
+            }
+        }
     }
 }
 

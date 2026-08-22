@@ -687,8 +687,6 @@ impl DaemonState {
     }
 
     async fn spawn_effect_watcher(&mut self) {
-        let registry = Arc::clone(&self.effect_registry);
-        let event_bus = Arc::clone(&self.event_bus);
         // The reload invalidates the active scene's resolved zones, which
         // is a scene commit and therefore needs the shared sequencer, not
         // a bare handle on the manager.
@@ -721,19 +719,18 @@ impl DaemonState {
                 };
                 info!(path = %path.display(), action, "Effect file change detected");
 
-                let report = {
-                    let mut reg = registry.write().await;
-                    reg.reload_single(&path)
-                };
+                let report =
+                    match crate::effect_id_migration::reload_registry_file(&watcher_state, &path)
+                        .await
+                    {
+                        Ok(report) => report,
+                        Err(error) => {
+                            warn!(path = %path.display(), %error, "Effect hot reload rejected");
+                            continue;
+                        }
+                    };
 
-                if report.added > 0 || report.removed > 0 || report.updated > 0 {
-                    crate::api::effects::invalidate_active_render_groups_after_effect_registry_update(
-                        &watcher_state,
-                    )
-                    .await;
-                }
-
-                event_bus.publish(
+                watcher_state.event_bus.publish(
                     hypercolor_types::event::HypercolorEvent::EffectRegistryUpdated {
                         added: report.added,
                         removed: report.removed,

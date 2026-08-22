@@ -42,12 +42,6 @@ const MAX_EFFECT_UPLOAD_BYTES: usize = 1024 * 1024;
 const EFFECT_COVER_FILE_NAME: &str = "default.webp";
 const EFFECT_COVER_CONTENT_TYPE: &str = "image/webp";
 
-pub(crate) async fn invalidate_active_render_groups_after_effect_registry_update(state: &AppState) {
-    if let Err(error) = domain::effect::invalidate_active_zones(&state.domains.effects).await {
-        warn!(%error, "Failed to refresh active zones after an effect registry update");
-    }
-}
-
 // Wire contracts live in hypercolor-types::api::effects — shared with the
 // web UI and the TUI.
 pub use hypercolor_types::api::effects::{
@@ -419,11 +413,10 @@ pub async fn get_effect_cover(
 
 /// `POST /api/v1/effects/rescan` — Manually trigger an effect registry rescan.
 pub async fn rescan_effects(State(state): State<Arc<AppState>>) -> Response {
-    let report = state.domains.effects.rescan().await;
-
-    if report.added > 0 || report.removed > 0 || report.updated > 0 {
-        invalidate_active_render_groups_after_effect_registry_update(state.as_ref()).await;
-    }
+    let report = match crate::effect_id_migration::rescan_registry(state.as_ref()).await {
+        Ok(report) => report,
+        Err(error) => return error.into_response(),
+    };
 
     info!(
         added = report.added,
@@ -529,20 +522,20 @@ pub async fn install_effect(
         }
     };
 
-    let (added, updated) = if state.domains.effects.register(entry.clone()).await {
-        (0, 1)
-    } else {
-        (1, 0)
-    };
-
-    invalidate_active_render_groups_after_effect_registry_update(state.as_ref()).await;
+    let report =
+        match crate::effect_id_migration::reload_registry_file(state.as_ref(), &installed_path)
+            .await
+        {
+            Ok(report) => report,
+            Err(error) => return error.into_response(),
+        };
 
     state
         .event_bus
         .publish(HypercolorEvent::EffectRegistryUpdated {
-            added,
-            removed: 0,
-            updated,
+            added: report.added,
+            removed: report.removed,
+            updated: report.updated,
         });
 
     info!(

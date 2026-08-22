@@ -8,6 +8,7 @@
 //! mutation, and ordered events.
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -22,7 +23,7 @@ use hypercolor_types::event::{EffectRef, ZoneChangeKind};
 use hypercolor_types::library::PresetId;
 use hypercolor_types::scene::{SceneId, Zone, ZoneId};
 use hypercolor_types::spatial::SpatialLayout;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, OwnedMutexGuard, RwLock, RwLockWriteGuard};
 
 use crate::domain::commit::SceneCommit;
 use crate::domain::context::SceneContext;
@@ -37,6 +38,22 @@ pub struct EffectContext {
     scene: SceneContext,
     spatial: SpatialService,
     output: OutputContext,
+    update_gate: Arc<Mutex<()>>,
+}
+
+pub(crate) struct EffectRegistryUpdate<'a> {
+    update_guard: OwnedMutexGuard<()>,
+    registry: &'a RwLock<EffectRegistry>,
+    base_generation: u64,
+    candidate: EffectRegistry,
+    report: RescanReport,
+}
+
+pub(crate) struct EffectRegistryPublication<'a> {
+    update_guard: OwnedMutexGuard<()>,
+    registry: RwLockWriteGuard<'a, EffectRegistry>,
+    candidate: EffectRegistry,
+    report: RescanReport,
 }
 
 impl EffectContext {
@@ -51,6 +68,7 @@ impl EffectContext {
             scene,
             spatial,
             output,
+            update_gate: Arc::new(Mutex::new(())),
         }
     }
 
@@ -110,19 +128,78 @@ impl EffectContext {
         })
     }
 
-    /// Rescan the owned effect catalog.
-    pub async fn rescan(&self) -> RescanReport {
-        self.registry.write().await.rescan()
+    pub(crate) async fn prepare_rescan(&self) -> EffectRegistryUpdate<'_> {
+        let gate = Arc::clone(&self.update_gate).lock_owned().await;
+        let registry = self.registry.read().await;
+        let base_generation = registry.generation();
+        let mut candidate = registry.clone();
+        drop(registry);
+        let report = candidate.rescan();
+        EffectRegistryUpdate {
+            update_guard: gate,
+            registry: self.registry.as_ref(),
+            base_generation,
+            candidate,
+            report,
+        }
     }
 
-    /// Register one validated effect and report whether it replaced an entry.
+    pub(crate) async fn prepare_reload(&self, path: &Path) -> EffectRegistryUpdate<'_> {
+        let gate = Arc::clone(&self.update_gate).lock_owned().await;
+        let registry = self.registry.read().await;
+        let base_generation = registry.generation();
+        let mut candidate = registry.clone();
+        drop(registry);
+        let report = candidate.reload_single(path);
+        EffectRegistryUpdate {
+            update_guard: gate,
+            registry: self.registry.as_ref(),
+            base_generation,
+            candidate,
+            report,
+        }
+    }
+
+    /// Register one already canonical entry and report whether it replaced one.
     pub async fn register(&self, entry: EffectEntry) -> bool {
+        let _update_guard = self.update_gate.lock().await;
         self.registry.write().await.register(entry).is_some()
     }
 
     #[cfg(test)]
     pub(crate) fn registry_handle(&self) -> Arc<RwLock<EffectRegistry>> {
         Arc::clone(&self.registry)
+    }
+}
+
+impl<'a> EffectRegistryUpdate<'a> {
+    pub(crate) const fn report(&self) -> &RescanReport {
+        &self.report
+    }
+
+    pub(crate) async fn prepare_publication(
+        self,
+    ) -> Result<EffectRegistryPublication<'a>, DomainError> {
+        let registry = self.registry.write().await;
+        if registry.generation() != self.base_generation {
+            return Err(DomainError::conflict(
+                "effect registry changed while publishing an identity migration",
+            ));
+        }
+        Ok(EffectRegistryPublication {
+            update_guard: self.update_guard,
+            registry,
+            candidate: self.candidate,
+            report: self.report,
+        })
+    }
+}
+
+impl EffectRegistryPublication<'_> {
+    pub(crate) fn publish(mut self) -> RescanReport {
+        *self.registry = self.candidate;
+        drop(self.update_guard);
+        self.report
     }
 }
 

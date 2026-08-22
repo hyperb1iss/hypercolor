@@ -59,6 +59,7 @@ use crate::domain::spatial::SpatialService;
 use crate::domain::{DomainError, ResourceKind};
 use crate::persistence::AtomicWriteOutcome;
 use crate::scene_store::SceneStore;
+use crate::scene_store::{PersistedSceneStoreEffectIdMigration, SceneStoreEffectIdMigration};
 use crate::scene_transactions::{LayoutTransactionRejection, LayoutUpdateGuard};
 use crate::zone_layout_preview::ZoneLayoutPreviewStore;
 
@@ -67,6 +68,19 @@ use crate::zone_layout_preview::ZoneLayoutPreviewStore;
 /// Cloneable authority for scene state, commit order, and scene events.
 #[derive(Clone)]
 pub struct SceneService(Arc<SceneServiceInner>);
+
+pub(crate) struct SceneEffectIdMigration {
+    base_revision: SceneRevision,
+    candidate: SceneManager,
+    store: Option<SceneStoreEffectIdMigration>,
+    migrated: usize,
+}
+
+pub(crate) struct PersistedSceneEffectIdMigration {
+    base_revision: SceneRevision,
+    candidate: SceneManager,
+    store: Option<PersistedSceneStoreEffectIdMigration>,
+}
 
 struct SceneServiceInner {
     manager: tokio::sync::RwLock<SceneManager>,
@@ -189,6 +203,85 @@ impl SceneService {
             preview_scenes_to_clear: HashSet::new(),
             preview_zones_to_clear: HashSet::new(),
         }
+    }
+
+    pub(crate) async fn prepare_effect_id_migration(
+        &self,
+        migrations: &HashMap<
+            hypercolor_types::effect::EffectId,
+            hypercolor_types::effect::EffectId,
+        >,
+    ) -> Result<SceneEffectIdMigration, DomainError> {
+        let (base_revision, mut candidate) = {
+            let manager = self.0.manager.read().await;
+            (self.0.commits.revision(), manager.clone())
+        };
+        let mut migrated = candidate.remap_effect_ids(migrations);
+        let store = match self.0.store.as_ref() {
+            Some(store) => {
+                let prepared = store
+                    .read()
+                    .await
+                    .prepare_effect_id_migration(migrations)
+                    .map_err(DomainError::Internal)?;
+                migrated += prepared
+                    .as_ref()
+                    .map_or(0, SceneStoreEffectIdMigration::migrated);
+                prepared
+            }
+            None => None,
+        };
+        Ok(SceneEffectIdMigration {
+            base_revision,
+            candidate,
+            store,
+            migrated,
+        })
+    }
+
+    pub(crate) async fn install_effect_id_migration(
+        &self,
+        migration: PersistedSceneEffectIdMigration,
+    ) -> Result<SceneCommit, DomainError> {
+        let mut manager = self.0.manager.write().await;
+        let current_revision = self.0.commits.revision();
+        if current_revision != migration.base_revision {
+            return Err(DomainError::conflict_details(
+                "effect ID migration was superseded by newer scene state",
+                serde_json::json!({
+                    "kind": "effect_id_migration_superseded",
+                    "expected_revision": migration.base_revision,
+                    "current_revision": current_revision,
+                }),
+            ));
+        }
+
+        if let Some(store_migration) = migration.store {
+            let store = self
+                .0
+                .store
+                .as_ref()
+                .expect("persisted scene migration must retain its owning store");
+            store
+                .write()
+                .await
+                .install_effect_id_migration(store_migration)
+                .map_err(DomainError::Internal)?;
+        }
+
+        *manager = migration.candidate;
+        let ticket = self.0.commits.admit(Arc::clone(&self.0.event_bus));
+        self.0
+            .plan
+            .store(Arc::new(manager.plan_snapshot(ticket.generation())));
+        let generation = ticket.generation();
+        ticket.release(Vec::new());
+        Ok(SceneCommit::new(
+            generation,
+            generation,
+            CommitDurability::Written,
+            None,
+        ))
     }
 
     pub(crate) async fn stage_zone_layout_preview<E, F>(
@@ -383,6 +476,28 @@ impl SceneService {
         publish_renderer_state(candidate_spatial_engine);
         ticket.release(Vec::new());
         Ok(())
+    }
+}
+
+impl SceneEffectIdMigration {
+    pub(crate) fn candidate(&self) -> &SceneManager {
+        &self.candidate
+    }
+
+    pub(crate) fn migrated(&self) -> usize {
+        self.migrated
+    }
+
+    pub(crate) fn persist(self) -> anyhow::Result<PersistedSceneEffectIdMigration> {
+        let store = self
+            .store
+            .map(SceneStoreEffectIdMigration::persist)
+            .transpose()?;
+        Ok(PersistedSceneEffectIdMigration {
+            base_revision: self.base_revision,
+            candidate: self.candidate,
+            store,
+        })
     }
 }
 
