@@ -1,7 +1,6 @@
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, mpsc};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use anyhow::anyhow;
 #[cfg(target_os = "macos")]
@@ -20,14 +19,14 @@ use crate::input::{SourceKind, SourceStatusReporter};
 
 use super::status::protected_screen_action_issue;
 use super::{
-    CaptureConfig, CaptureSessionAuthority, CaptureSessionDeadline, CaptureSessionSet,
-    CaptureSessionTransaction, CaptureWorker, MacosCaptureControl, MacosExactPublicationShared,
-    MacosPublication, MacosScreenCaptureInput, MacosScreenRuntimeTelemetry, PixelExtent,
-    PreparedWorker, ScreenByteAdmissionCoordinator, ScreenCaptureDemand,
-    ScreenComputeCapacityPolicy, StagedCaptureWorker, color_space_name, dynamic_range_name,
-    executable_architecture, frame_drop_counters, lock, map_tahoe_capabilities,
-    map_tahoe_selection_capabilities, nonzero_telemetry, pixel_format_name,
-    production_stream_request, run_worker, timing_status, transfer_function_name,
+    CaptureConfig, CaptureSessionAuthority, CaptureSessionSet, MacosCaptureBackend,
+    MacosCaptureControl, MacosExactPublicationShared, MacosPublication, MacosScreenCaptureInput,
+    MacosScreenRuntimeTelemetry, MacosWorkerSpawn, PixelExtent, PreparedWorker,
+    ScreenByteAdmissionCoordinator, ScreenCaptureDemand, ScreenComputeCapacityPolicy,
+    StagedCaptureWorker, color_space_name, dynamic_range_name, executable_architecture,
+    frame_drop_counters, lock, map_tahoe_capabilities, map_tahoe_selection_capabilities,
+    nonzero_telemetry, pixel_format_name, prepare_backend_worker, production_stream_request,
+    timing_status, transfer_function_name,
 };
 #[cfg(feature = "macos-capture-fixtures")]
 use super::{CapturePlanePool, InputSource, ScreenCaptureInput};
@@ -367,72 +366,21 @@ impl MacosScreenCaptureInput {
         let authority = reservation.authority();
         let worker_generation = authority.generation();
         let mailbox = self.control.mailbox();
-        let worker_mailbox = mailbox.clone();
-        let control = Arc::clone(&self.control);
-        let publication = Arc::clone(&self.publication);
-        let exact = Arc::clone(&self.exact);
-        let telemetry = Arc::clone(&self.telemetry);
-        let status_session = self.status_session.clone();
-        let target_fps = prepared.target_fps;
-        let stop = Arc::new(AtomicBool::new(false));
-        let worker_stop = Arc::clone(&stop);
-        let start = Arc::new(AtomicBool::new(false));
-        let worker_start = Arc::clone(&start);
-        let (exit_tx, exit_rx) = mpsc::channel();
-        let (command_tx, command_rx) = mpsc::channel();
-        let join = thread::Builder::new()
-            .name("hypercolor-macos-screen-capture".to_owned())
-            .spawn(move || {
-                while !worker_start.load(Ordering::Acquire) && !worker_stop.load(Ordering::Acquire)
-                {
-                    thread::park();
-                }
-                let result = if worker_stop.load(Ordering::Acquire) {
-                    Ok(())
-                } else {
-                    run_worker(
-                        prepared,
-                        mailbox,
-                        publication,
-                        exact,
-                        telemetry,
-                        worker_generation,
-                        target_fps,
-                        status_session,
-                        worker_stop,
-                        control,
-                        command_rx,
-                    )
-                };
-                // The exit channel is only drained by the legacy sampling
-                // path; the exact-publication path never observes it, so an
-                // unlogged error here is a silently dead capture pump.
-                if let Err(error) = &result {
-                    tracing::warn!(
-                        error = format!("{error:#}"),
-                        "macOS screen capture worker exited with error"
-                    );
-                } else {
-                    tracing::debug!("macOS screen capture worker exited cleanly");
-                }
-                let _ = exit_tx.send(result);
-            })?;
-        let transaction = CaptureSessionTransaction::new(
-            CaptureWorker {
-                authority,
-                stop,
-                start,
-                mailbox: worker_mailbox,
-                command_tx,
-                exit_rx,
-                join: Some(join),
+        let prepared = prepare_backend_worker::<MacosCaptureBackend>(
+            MacosWorkerSpawn {
+                prepared,
+                mailbox,
+                control: Arc::clone(&self.control),
+                publication: Arc::clone(&self.publication),
+                exact: Arc::clone(&self.exact),
+                telemetry: Arc::clone(&self.telemetry),
+                status_session: self.status_session.clone(),
             },
-            (),
             reservation,
-        );
+        )?;
         Ok(StagedCaptureWorker {
             generation: worker_generation,
-            prepared: transaction.prepare(CaptureSessionDeadline::after(Duration::ZERO))?,
+            prepared,
         })
     }
 

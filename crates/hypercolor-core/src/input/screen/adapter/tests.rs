@@ -1,12 +1,12 @@
 use super::{
-    CaptureExactCommand, CaptureExactCommandEndpoint, CaptureExactCommandRejected,
+    CaptureBackend, CaptureExactCommand, CaptureExactCommandEndpoint, CaptureExactCommandRejected,
     CaptureExactPublicationShared, CaptureExactRuntimeCollection, CaptureExactRuntimeOwner,
     CaptureExactRuntimeStore, CaptureOwnedSource, CapturePublication, CapturePublicationFence,
     CapturePublicationSource, CaptureSession, CaptureSessionAuthority,
     CaptureSessionAuthoritySequencer, CaptureSessionDeadline, CaptureSessionReadiness,
     CaptureSessionSet, CaptureSessionTransaction, CaptureSuccessorPolicy,
     ReservedCaptureSessionAuthority, VersionedCaptureSettings, begin_capture_exact_retirement,
-    exact_preparation_abort, reap_capture_exact_runtimes,
+    exact_preparation_abort, prepare_backend_worker, reap_capture_exact_runtimes,
 };
 use crate::input::screen::{
     CaptureSourceId, ExactBoxList, PixelExtent, ScreenCaptureDemand, ScreenCommittedState,
@@ -175,8 +175,101 @@ impl CaptureSessionReadiness for FakeReadiness {
     }
 }
 
+struct FakeCaptureBackend;
+
+impl CaptureBackend for FakeCaptureBackend {
+    type Worker = FakeSession;
+    type Readiness = FakeReadiness;
+    type SpawnRequest = (FakeSession, FakeReadiness);
+
+    const READINESS_TIMEOUT: Duration = Duration::from_secs(1);
+
+    fn spawn_worker(
+        (session, readiness): Self::SpawnRequest,
+        reservation: ReservedCaptureSessionAuthority,
+    ) -> anyhow::Result<CaptureSessionTransaction<Self::Worker, Self::Readiness>> {
+        Ok(CaptureSessionTransaction::new(
+            session,
+            readiness,
+            reservation,
+        ))
+    }
+}
+
+struct FailingCaptureBackend;
+
+impl CaptureBackend for FailingCaptureBackend {
+    type Worker = FakeSession;
+    type Readiness = FakeReadiness;
+    type SpawnRequest = ();
+
+    const READINESS_TIMEOUT: Duration = Duration::from_secs(1);
+
+    fn spawn_worker(
+        (): Self::SpawnRequest,
+        _reservation: ReservedCaptureSessionAuthority,
+    ) -> anyhow::Result<CaptureSessionTransaction<Self::Worker, Self::Readiness>> {
+        anyhow::bail!("injected backend spawn failure")
+    }
+}
+
 fn readiness_deadline() -> CaptureSessionDeadline {
     CaptureSessionDeadline::after(Duration::from_secs(1))
+}
+
+#[test]
+fn backend_worker_factory_pairs_authority_and_waits_once() {
+    let sequencer = CaptureSessionAuthoritySequencer::default();
+    let reservation = sequencer.reserve().expect("backend authority reserves");
+    let waits = Arc::new(AtomicUsize::new(0));
+    let readiness = FakeReadiness {
+        result: Ok(()),
+        waits: Arc::clone(&waits),
+    };
+
+    let prepared =
+        prepare_backend_worker::<FakeCaptureBackend>((FakeSession::new(1), readiness), reservation)
+            .expect("backend worker prepares");
+
+    assert_eq!(prepared.authority().generation(), 1);
+    assert_eq!(waits.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn backend_worker_factory_burns_failed_spawn_and_cleans_failed_readiness() {
+    let sequencer = CaptureSessionAuthoritySequencer::default();
+    let failed_spawn = sequencer
+        .reserve()
+        .expect("failed spawn authority reserves");
+    assert!(prepare_backend_worker::<FailingCaptureBackend>((), failed_spawn).is_err());
+    let readiness_reservation = sequencer
+        .reserve()
+        .expect("readiness authority reserves after failed spawn");
+    assert_eq!(readiness_reservation.authority().generation(), 2);
+
+    let candidate = FakeSession::new(2);
+    let aborts = Arc::clone(&candidate.aborts);
+    let wakes = Arc::clone(&candidate.wakes);
+    let detaches = Arc::clone(&candidate.detaches);
+    let starts = Arc::clone(&candidate.starts);
+    let waits = Arc::new(AtomicUsize::new(0));
+    let readiness = FakeReadiness {
+        result: Err("injected readiness failure"),
+        waits: Arc::clone(&waits),
+    };
+
+    assert!(
+        prepare_backend_worker::<FakeCaptureBackend>(
+            (candidate, readiness),
+            readiness_reservation,
+        )
+        .is_err()
+    );
+    assert_eq!(waits.load(Ordering::Relaxed), 1);
+    assert_eq!(aborts.load(Ordering::Relaxed), 1);
+    assert_eq!(wakes.load(Ordering::Relaxed), 1);
+    assert_eq!(detaches.load(Ordering::Relaxed), 1);
+    assert_eq!(starts.load(Ordering::Relaxed), 0);
 }
 
 fn reservation(generation: u64) -> ReservedCaptureSessionAuthority {

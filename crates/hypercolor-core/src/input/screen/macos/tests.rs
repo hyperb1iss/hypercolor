@@ -7,7 +7,7 @@ use super::publication::{
 };
 use super::worker::{report_macos_worker_health, synchronize_macos_invalidation_generation};
 use super::*;
-use crate::input::screen::adapter::CaptureSessionAuthoritySequencer;
+use crate::input::screen::adapter::{CaptureSessionAuthoritySequencer, CaptureSessionDeadline};
 use crate::input::screen::{
     CpuReductionLayout, CpuReductionRequest, ExactBoxList, InputPublicationDemandRevision,
     PreparedLedToneMap, ResolvedScreenColorTransform, ScreenAdmissionCapacity, ScreenAspectPolicy,

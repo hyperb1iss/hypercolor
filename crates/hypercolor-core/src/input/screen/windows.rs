@@ -74,16 +74,17 @@ use crate::input::{
     SourceIssue, SourceKind, SourceSessionSlot, SourceSessionWriter, SourceStatusHandle,
     SourceStatusReporter,
 };
-use hypercolor_worker_retention::{retain_worker, spawn_worker};
+use hypercolor_worker_retention::{retain_worker, spawn_worker as spawn_retained_worker};
 
 use super::adapter::{
-    CaptureExactCommand, CaptureExactCommandEndpoint, CaptureExactCommandRejected,
+    CaptureBackend, CaptureExactCommand, CaptureExactCommandEndpoint, CaptureExactCommandRejected,
     CaptureExactPublicationShared, CaptureExactRuntimeOwner, CaptureOwnedSource,
     CapturePublication as AdapterCapturePublication, CapturePublicationFence,
     CapturePublicationSource, CaptureSession, CaptureSessionAuthority, CaptureSessionDeadline,
     CaptureSessionReadiness, CaptureSessionSet, CaptureSessionTransaction, CaptureSuccessorPolicy,
-    VersionedCaptureSettings, begin_capture_exact_preparation, begin_capture_exact_retirement,
-    bind_current_capture_exact_runtime, execute_capture_exact_command,
+    ReservedCaptureSessionAuthority, VersionedCaptureSettings, begin_capture_exact_preparation,
+    begin_capture_exact_retirement, bind_current_capture_exact_runtime,
+    execute_capture_exact_command, prepare_backend_worker,
 };
 
 /// How long a worker waits on DXGI before checking its command channel.
@@ -658,6 +659,80 @@ struct CaptureWorker {
     processed_activity_generation: Arc<AtomicU64>,
 }
 
+struct WindowsCaptureBackend;
+
+struct WindowsWorkerSpawn {
+    settings: Arc<SharedSettings>,
+    publication: Arc<Mutex<CapturePublication<AnalyzedScreenSnapshot>>>,
+    exact: Arc<ExactPublicationShared>,
+    status_session: SourceSessionSlot,
+    source_sink: Option<CaptureSourceSink>,
+}
+
+impl CaptureBackend for WindowsCaptureBackend {
+    type Worker = CaptureWorker;
+    type Readiness = WindowsSessionReadiness;
+    type SpawnRequest = WindowsWorkerSpawn;
+
+    const READINESS_TIMEOUT: Duration = WORKER_READY_TIMEOUT;
+
+    fn spawn_worker(
+        request: Self::SpawnRequest,
+        reservation: ReservedCaptureSessionAuthority,
+    ) -> anyhow::Result<CaptureSessionTransaction<Self::Worker, Self::Readiness>> {
+        let WindowsWorkerSpawn {
+            settings,
+            publication,
+            exact,
+            status_session,
+            source_sink,
+        } = request;
+        let authority = reservation.authority();
+        let session_generation = authority.generation();
+        let (command_tx, command_rx) = mpsc::channel();
+        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+        let (exit_tx, exit_rx) = mpsc::sync_channel(1);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let worker_cancel = Arc::clone(&cancel);
+        let worker_processed_activity_generation = Arc::new(AtomicU64::new(0));
+        #[cfg(test)]
+        let processed_activity_generation = Arc::clone(&worker_processed_activity_generation);
+        let join_handle = spawn_retained_worker(
+            thread::Builder::new().name("hypercolor-screen-capture".to_owned()),
+            move || {
+                run_worker(
+                    &settings,
+                    &publication,
+                    &exact,
+                    &command_rx,
+                    &worker_cancel,
+                    &worker_processed_activity_generation,
+                    status_session,
+                    session_generation,
+                    source_sink,
+                    ready_tx,
+                );
+                let _ = exit_tx.send(());
+            },
+        )
+        .map_err(|error| anyhow!("failed to spawn screen capture worker: {error}"))?;
+
+        Ok(CaptureSessionTransaction::new(
+            CaptureWorker {
+                authority,
+                command_tx,
+                exit_rx,
+                join_handle: Some(join_handle),
+                cancel,
+                #[cfg(test)]
+                processed_activity_generation,
+            },
+            WindowsSessionReadiness(ready_rx),
+            reservation,
+        ))
+    }
+}
+
 #[derive(Clone)]
 struct WindowsExactCommandEndpoint {
     authority: CaptureSessionAuthority,
@@ -1025,60 +1100,21 @@ impl WindowsScreenCaptureInput {
             anyhow::bail!("previous Windows screen capture worker is still stopping");
         }
 
-        let (command_tx, command_rx) = mpsc::channel();
-        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
-        let (exit_tx, exit_rx) = mpsc::sync_channel(1);
-        let settings = Arc::clone(&self.settings);
-        let publication = Arc::clone(&self.publication);
-        let exact = Arc::clone(&self.exact);
-        let cancel = Arc::new(AtomicBool::new(false));
-        let worker_cancel = Arc::clone(&cancel);
-        let worker_processed_activity_generation = Arc::new(AtomicU64::new(0));
-        #[cfg(test)]
-        let processed_activity_generation = Arc::clone(&worker_processed_activity_generation);
-        let status_session = self.status_session.clone();
-        let source_sink = self.source_sink.clone();
         let reservation = self
             .exact
             .reserve_authority()
             .map_err(|error| anyhow!("Windows capture session generation exhausted: {error}"))?;
         let authority = reservation.authority();
-        let session_generation = authority.generation();
-
-        let join_handle = spawn_worker(
-            thread::Builder::new().name("hypercolor-screen-capture".to_owned()),
-            move || {
-                run_worker(
-                    &settings,
-                    &publication,
-                    &exact,
-                    &command_rx,
-                    &worker_cancel,
-                    &worker_processed_activity_generation,
-                    status_session,
-                    session_generation,
-                    source_sink,
-                    ready_tx,
-                );
-                let _ = exit_tx.send(());
+        let prepared = prepare_backend_worker::<WindowsCaptureBackend>(
+            WindowsWorkerSpawn {
+                settings: Arc::clone(&self.settings),
+                publication: Arc::clone(&self.publication),
+                exact: Arc::clone(&self.exact),
+                status_session: self.status_session.clone(),
+                source_sink: self.source_sink.clone(),
             },
-        )
-        .map_err(|error| anyhow!("failed to spawn screen capture worker: {error}"))?;
-
-        let transaction = CaptureSessionTransaction::new(
-            CaptureWorker {
-                authority,
-                command_tx,
-                exit_rx,
-                join_handle: Some(join_handle),
-                cancel,
-                #[cfg(test)]
-                processed_activity_generation,
-            },
-            WindowsSessionReadiness(ready_rx),
             reservation,
-        );
-        let prepared = transaction.prepare(CaptureSessionDeadline::after(WORKER_READY_TIMEOUT))?;
+        )?;
         let exact = Arc::clone(&self.exact);
         let commit = prepared
             .commit_into(

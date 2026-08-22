@@ -58,13 +58,13 @@ use crate::input::{
 use hypercolor_worker_retention::{retain_worker, spawn_worker};
 
 use super::adapter::{
-    CaptureExactCommand, CaptureExactCommandEndpoint, CaptureExactCommandRejected,
+    CaptureBackend, CaptureExactCommand, CaptureExactCommandEndpoint, CaptureExactCommandRejected,
     CaptureExactPublicationShared, CaptureExactRuntimeOwner, CaptureOwnedSource,
     CapturePublication, CapturePublicationFence, CapturePublicationSource, CaptureSession,
     CaptureSessionAuthority, CaptureSessionDeadline, CaptureSessionReadiness, CaptureSessionSet,
     CaptureSessionTransaction, CaptureSuccessorPolicy, ReservedCaptureSessionAuthority,
     VersionedCaptureSettings, begin_capture_exact_preparation, begin_capture_exact_retirement,
-    bind_current_capture_exact_runtime, execute_capture_exact_command,
+    bind_current_capture_exact_runtime, execute_capture_exact_command, prepare_backend_worker,
 };
 
 const WORKER_READY_TIMEOUT: Duration = Duration::from_secs(1);
@@ -2032,69 +2032,19 @@ impl WaylandScreenCaptureInput {
             anyhow::bail!("previous Wayland capture worker is still stopping");
         }
 
-        let settings = Arc::clone(&self.settings);
-        let token_sink = self.token_sink.clone();
-        let cancel = Arc::new(AtomicBool::new(false));
-        let demand_state = Arc::new(AtomicU64::new(initial_worker_demand(false)));
-        // Born true: the worker is portal-bound from its first instruction,
-        // and a shutdown landing before the thread even stores the flag must
-        // detach rather than join into the picker freeze.
-        let portal_pending = Arc::new(AtomicBool::new(true));
-        let worker_flags = WorkerFlags {
-            cancel: Arc::clone(&cancel),
-            portal_pending: Arc::clone(&portal_pending),
-            demand_state: Arc::clone(&demand_state),
-        };
-        let (command_tx, command_rx) = loop_channel();
-        let worker_command_tx = command_tx.clone();
-        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
-        let (start_tx, start_rx) = mpsc::sync_channel(1);
-        let status_writer = self.status_session.load();
-        let worker_status_writer = status_writer.clone();
         let reservation =
             self.settings.exact.reserve_authority().map_err(|error| {
                 anyhow!("Wayland capture session generation exhausted: {error}")
             })?;
         let reserved_generation = reservation.authority().generation();
-        let session_generation = Arc::new(AtomicU64::new(reserved_generation));
-        let capture_session_generation = Arc::clone(&session_generation);
-        let worker_settings = Arc::clone(&settings);
-        let join_handle = spawn_worker(
-            thread::Builder::new().name("hypercolor-screen-capture".to_owned()),
-            move || {
-                let _ = ready_tx.send(());
-                if start_rx.recv().is_err() {
-                    return;
-                }
-                run_capture_worker(
-                    settings,
-                    command_rx,
-                    worker_command_tx,
-                    token_sink,
-                    worker_flags,
-                    status_writer,
-                    capture_session_generation,
-                );
+        let prepared = prepare_backend_worker::<WaylandCaptureBackend>(
+            WaylandWorkerSpawn {
+                settings: Arc::clone(&self.settings),
+                token_sink: self.token_sink.clone(),
+                status_writer: self.status_session.load(),
             },
-        )
-        .context("failed to spawn Wayland screen capture worker")?;
-
-        let transaction = CaptureSessionTransaction::new(
-            WaylandCaptureWorker {
-                command_tx,
-                start_tx,
-                join_handle: Some(join_handle),
-                cancel,
-                portal_pending,
-                demand_state,
-                status_writer: worker_status_writer,
-                session_generation,
-                settings: worker_settings,
-            },
-            WaylandSessionReadiness(ready_rx),
             reservation,
-        );
-        let prepared = transaction.prepare(CaptureSessionDeadline::after(WORKER_READY_TIMEOUT))?;
+        )?;
         let checkpoint_settings = Arc::clone(&self.settings);
         let commit = prepared
             .commit_into(
@@ -2499,6 +2449,14 @@ struct WaylandCaptureWorker {
     settings: Arc<SharedSettings>,
 }
 
+struct WaylandCaptureBackend;
+
+struct WaylandWorkerSpawn {
+    settings: Arc<SharedSettings>,
+    token_sink: Option<RestoreTokenSink>,
+    status_writer: Option<SourceSessionWriter>,
+}
+
 struct WaylandCaptureExit {
     status_writer: Option<SourceSessionWriter>,
     session_generation: Arc<AtomicU64>,
@@ -2519,6 +2477,80 @@ impl CaptureSessionReadiness for WaylandSessionReadiness {
         self.0
             .recv_timeout(deadline.remaining())
             .map_err(|error| anyhow!("Wayland screen capture worker readiness timed out: {error}"))
+    }
+}
+
+impl CaptureBackend for WaylandCaptureBackend {
+    type Worker = WaylandCaptureWorker;
+    type Readiness = WaylandSessionReadiness;
+    type SpawnRequest = WaylandWorkerSpawn;
+
+    const READINESS_TIMEOUT: Duration = WORKER_READY_TIMEOUT;
+
+    fn spawn_worker(
+        request: Self::SpawnRequest,
+        reservation: ReservedCaptureSessionAuthority,
+    ) -> anyhow::Result<CaptureSessionTransaction<Self::Worker, Self::Readiness>> {
+        let WaylandWorkerSpawn {
+            settings,
+            token_sink,
+            status_writer,
+        } = request;
+        let reserved_generation = reservation.authority().generation();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let demand_state = Arc::new(AtomicU64::new(initial_worker_demand(false)));
+        // Born true: the worker is portal-bound from its first instruction,
+        // and a shutdown landing before the thread even stores the flag must
+        // detach rather than join into the picker freeze.
+        let portal_pending = Arc::new(AtomicBool::new(true));
+        let worker_flags = WorkerFlags {
+            cancel: Arc::clone(&cancel),
+            portal_pending: Arc::clone(&portal_pending),
+            demand_state: Arc::clone(&demand_state),
+        };
+        let (command_tx, command_rx) = loop_channel();
+        let worker_command_tx = command_tx.clone();
+        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+        let (start_tx, start_rx) = mpsc::sync_channel(1);
+        let worker_status_writer = status_writer.clone();
+        let session_generation = Arc::new(AtomicU64::new(reserved_generation));
+        let capture_session_generation = Arc::clone(&session_generation);
+        let worker_settings = Arc::clone(&settings);
+        let join_handle = hypercolor_worker_retention::spawn_worker(
+            thread::Builder::new().name("hypercolor-screen-capture".to_owned()),
+            move || {
+                let _ = ready_tx.send(());
+                if start_rx.recv().is_err() {
+                    return;
+                }
+                run_capture_worker(
+                    settings,
+                    command_rx,
+                    worker_command_tx,
+                    token_sink,
+                    worker_flags,
+                    status_writer,
+                    capture_session_generation,
+                );
+            },
+        )
+        .context("failed to spawn Wayland screen capture worker")?;
+
+        Ok(CaptureSessionTransaction::new(
+            WaylandCaptureWorker {
+                command_tx,
+                start_tx,
+                join_handle: Some(join_handle),
+                cancel,
+                portal_pending,
+                demand_state,
+                status_writer: worker_status_writer,
+                session_generation,
+                settings: worker_settings,
+            },
+            WaylandSessionReadiness(ready_rx),
+            reservation,
+        ))
     }
 }
 

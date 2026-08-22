@@ -1,4 +1,5 @@
 mod authority;
+mod backend;
 pub(in crate::input::screen) mod exact;
 mod session;
 #[cfg(any(target_os = "linux", target_os = "windows", test))]
@@ -21,14 +22,13 @@ pub(in crate::input::screen) use authority::{
     CaptureSessionAuthority, CaptureSessionAuthorityExhausted, CaptureSessionAuthoritySequencer,
     ReservedCaptureSessionAuthority, StaleCaptureSessionReservation,
 };
+pub(in crate::input::screen) use backend::{CaptureBackend, prepare_backend_worker};
 pub(in crate::input::screen) use exact::{
     CaptureExactPublicationShared, CaptureOwnedSource, CapturePublicationSource,
 };
-#[cfg(any(target_os = "linux", target_os = "windows", test))]
-pub(in crate::input::screen) use session::CaptureSessionReadiness;
 pub(in crate::input::screen) use session::{
-    CaptureSession, CaptureSessionDeadline, CaptureSessionSet, CaptureSessionTransaction,
-    CaptureSuccessorPolicy, PreparedCaptureSession,
+    CaptureSession, CaptureSessionDeadline, CaptureSessionReadiness, CaptureSessionSet,
+    CaptureSessionTransaction, CaptureSuccessorPolicy, PreparedCaptureSession,
 };
 #[cfg(any(target_os = "linux", target_os = "windows", test))]
 pub(in crate::input::screen) use settings::VersionedCaptureSettings;
