@@ -315,19 +315,26 @@ impl DriverControlStore for DaemonDriverHost {
         let Some(document) = provider.driver_surface(self, config).await? else {
             return Ok(ControlValueMap::new());
         };
-        Ok(document
+        document
             .values
             .into_iter()
             .map(|(key, projected)| {
-                let persisted = entry
+                let Some(value) = entry
                     .settings
                     .get(&key)
                     .filter(|value| ControlValue::has_canonical_wire_shape(value))
-                    .and_then(|value| serde_json::from_value(value.clone()).ok())
-                    .unwrap_or(projected);
-                (key, persisted)
+                else {
+                    return Ok((key, projected));
+                };
+                serde_json::from_value(value.clone())
+                    .with_context(|| {
+                        format!(
+                            "invalid persisted control value for driver '{driver_id}' setting '{key}'"
+                        )
+                    })
+                    .map(|persisted| (key, persisted))
             })
-            .collect())
+            .collect()
     }
 
     async fn save_driver_values(&self, driver_id: &str, values: ControlValueMap) -> Result<()> {

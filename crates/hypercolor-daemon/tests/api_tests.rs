@@ -551,6 +551,12 @@ impl DriverControlProvider for ActionTestDriver {
                 .values
                 .insert("descriptor".to_owned(), ControlValue::Text(name.to_owned()));
         }
+        if config.entry.settings.contains_key("persisted") {
+            surface.values.insert(
+                "persisted".to_owned(),
+                ControlValue::Text("projected".to_owned()),
+            );
+        }
         Ok(Some(surface))
     }
 
@@ -5218,6 +5224,50 @@ async fn driver_control_reload_preserves_raw_objects_with_kind_fields() {
     assert_eq!(
         values.get("descriptor"),
         Some(&ControlValue::Text("fixture".to_owned()))
+    );
+}
+
+#[tokio::test]
+async fn driver_control_reload_rejects_malformed_canonical_envelopes() {
+    let (mut state, tempdir) = isolated_state_with_tempdir();
+    let manager = Arc::new(
+        ConfigManager::new(tempdir.path().join("config.toml"))
+            .expect("config manager should be created"),
+    );
+    manager.modify(|config| {
+        config.drivers.insert(
+            "action_test".to_owned(),
+            DriverConfigEntry::enabled(BTreeMap::from([(
+                "persisted".to_owned(),
+                serde_json::json!({"kind": "float"}),
+            )])),
+        );
+    });
+
+    let mut registry = DriverModuleRegistry::new();
+    registry
+        .register(ActionTestDriver)
+        .expect("test action driver should register");
+    let registry = Arc::new(registry);
+    state.driver_registry = Arc::clone(&registry);
+    state.config_manager = Some(Arc::clone(&manager));
+    state.driver_host = Arc::new(
+        state
+            .driver_host
+            .with_driver_registry(registry)
+            .with_config_manager(Some(manager)),
+    );
+
+    let error = state
+        .driver_host
+        .load_driver_values("action_test")
+        .await
+        .expect_err("malformed canonical values must not fall back to a projection");
+
+    assert!(
+        error.to_string().contains(
+            "invalid persisted control value for driver 'action_test' setting 'persisted'"
+        )
     );
 }
 
