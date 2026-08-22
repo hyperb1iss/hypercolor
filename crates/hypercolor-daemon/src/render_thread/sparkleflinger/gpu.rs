@@ -96,7 +96,7 @@ use screen_upload::{
     ScreenPublicationUploadPool, ScreenUploadContentKey, ScreenUploadResidencyPolicy,
 };
 use source::{CachedGpuSourceCopy, CachedSourceUpload, SourceCopyBindGroupCache};
-use submission::{FrameInFlight, StashedFrame};
+use submission::FrameInFlight;
 pub(crate) use telemetry::{GpuSparkleFlingerTelemetrySnapshot, record_gpu_display_finalize_latch};
 #[cfg(target_os = "windows")]
 use windows_screen::WindowsScreenBridge;
@@ -452,102 +452,6 @@ impl GpuSparkleFlinger {
     #[cfg(test)]
     pub(crate) fn active_surface_generation(&self) -> Option<u64> {
         self.surfaces.as_ref().map(|surfaces| surfaces.generation)
-    }
-
-    fn flush_pending_output_submission(&mut self) -> Result<()> {
-        if self.pending_preview_readback().is_some() {
-            return self.submit_pending_preview_work();
-        }
-        if let Some(mut frame) = self.frame_in_flight.take() {
-            debug_assert_eq!(frame.generation, self.output_generation);
-            let submission_index = frame.submit(&self.queue);
-            debug_assert!(submission_index.is_some());
-            if let Some(submission_index) = submission_index {
-                self.finish_pending_uploads(submission_index.clone());
-                #[cfg(all(target_os = "macos", feature = "screen-capture"))]
-                self.retire_native_screen_leases(
-                    submission_index,
-                    frame.take_native_screen_leases(),
-                );
-            }
-            self.release_retired_uniform_slots();
-        }
-        Ok(())
-    }
-
-    pub(super) fn supersede_frame_in_flight(
-        &mut self,
-        reason: &'static str,
-    ) -> Option<StashedFrame> {
-        let frame = self.frame_in_flight.take()?;
-        let encoder = frame.supersede(reason);
-        #[cfg(test)]
-        {
-            self.superseded_frame_count = self.superseded_frame_count.saturating_add(1);
-        }
-        encoder
-    }
-
-    fn stage_frame_in_flight(
-        &mut self,
-        encoder: wgpu::CommandEncoder,
-        preview_readback: Option<PendingPreviewReadback>,
-    ) {
-        #[cfg(all(target_os = "macos", feature = "screen-capture"))]
-        self.stage_frame_in_flight_with_native_screen_leases(encoder, preview_readback, Vec::new());
-        #[cfg(not(all(target_os = "macos", feature = "screen-capture")))]
-        {
-            debug_assert!(
-                self.frame_in_flight.is_none(),
-                "deferred GPU frame must be submitted or superseded before replacement"
-            );
-            self.frame_in_flight = Some(FrameInFlight::building(
-                self.output_generation,
-                encoder,
-                preview_readback,
-            ));
-        }
-    }
-
-    fn pending_preview_readback(&self) -> Option<&PendingPreviewReadback> {
-        self.frame_in_flight
-            .as_ref()
-            .and_then(FrameInFlight::preview_readback)
-    }
-
-    pub(super) fn pending_preview_submission(&self) -> Option<wgpu::SubmissionIndex> {
-        self.frame_in_flight
-            .as_ref()
-            .and_then(FrameInFlight::preview_submission_index)
-    }
-
-    pub(super) fn has_pending_output_submission(&self) -> bool {
-        self.frame_in_flight
-            .as_ref()
-            .is_some_and(FrameInFlight::is_building)
-    }
-
-    pub(super) fn finish_pending_uploads(&mut self, submission_index: wgpu::SubmissionIndex) {
-        if let Some(surfaces) = self.surfaces.as_mut() {
-            surfaces.finish_pending_uploads(submission_index);
-        }
-    }
-
-    pub(super) fn discard_pending_uploads(&mut self) {
-        if let Some(surfaces) = self.surfaces.as_mut() {
-            surfaces.discard_pending_uploads();
-        }
-    }
-
-    /// Advances the uniform ring watermarks so retired slots can be reused.
-    ///
-    /// Invariant: a ring slot must never be rewritten while a not-yet-
-    /// submitted encoder references it. Call sites guarantee no local encoder
-    /// is being built; the guard covers the stashed compositor encoder.
-    pub(super) fn release_retired_uniform_slots(&mut self) {
-        if !self.has_pending_output_submission() {
-            self.pipeline.release_retired_uniform_slots();
-        }
     }
 
     pub(crate) fn surface_snapshot(&self) -> Option<GpuCompositorSurfaceSnapshot> {
