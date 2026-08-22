@@ -8,7 +8,7 @@ use tokio::sync::oneshot;
 
 use super::{
     CaptureSourceId, ExactBoxList, ExactBoxNode, ScreenCommittedState, ScreenPreparedWorkerToken,
-    ScreenPublicationHub, ScreenWorkerBinding, ScreenWorkerPreparation,
+    ScreenPublicationHub, ScreenWorkerBinding, ScreenWorkerBindingState, ScreenWorkerPreparation,
     ScreenWorkerPreparationTicket, ScreenWorkerRetirement,
 };
 
@@ -26,12 +26,24 @@ pub enum CaptureExactCommand {
 pub struct CaptureExactCommandRejected;
 
 pub trait CaptureExactRuntimeOwner {
-    const BACKEND_NAME: &'static str;
+    type Source: CapturePublicationSource;
 
+    const BACKEND_NAME: &'static str;
+    const ABORTED_BINDING_ERROR: &'static str;
+
+    fn source(&self) -> &Self::Source;
     fn binding(&self) -> &ScreenWorkerBinding;
+    fn bind_routes(&mut self, authority: &ScreenCommittedState) -> anyhow::Result<bool>;
+    fn is_bound(&self) -> bool;
 }
 
-pub trait CaptureExactRuntimeStore<R> {
+pub trait CaptureExactRuntimeCollection<R> {
+    fn iter_mut<'a>(&'a mut self) -> impl Iterator<Item = &'a mut R>
+    where
+        R: 'a;
+}
+
+pub trait CaptureExactRuntimeStore<R>: CaptureExactRuntimeCollection<R> {
     type Prepared;
 
     fn prepare(runtime: R) -> Self::Prepared;
@@ -39,6 +51,15 @@ pub trait CaptureExactRuntimeStore<R> {
     fn install(&mut self, prepared: Self::Prepared);
 
     fn retain(&mut self, retain: impl FnMut(&R) -> bool);
+}
+
+impl<R> CaptureExactRuntimeCollection<R> for ExactBoxList<R> {
+    fn iter_mut<'a>(&'a mut self) -> impl Iterator<Item = &'a mut R>
+    where
+        R: 'a,
+    {
+        ExactBoxList::iter_mut(self)
+    }
 }
 
 impl<R> CaptureExactRuntimeStore<R> for ExactBoxList<R> {
@@ -57,6 +78,15 @@ impl<R> CaptureExactRuntimeStore<R> for ExactBoxList<R> {
     }
 }
 
+impl<R> CaptureExactRuntimeCollection<R> for Vec<R> {
+    fn iter_mut<'a>(&'a mut self) -> impl Iterator<Item = &'a mut R>
+    where
+        R: 'a,
+    {
+        self.as_mut_slice().iter_mut()
+    }
+}
+
 impl<R> CaptureExactRuntimeStore<R> for Vec<R> {
     type Prepared = R;
 
@@ -70,6 +100,15 @@ impl<R> CaptureExactRuntimeStore<R> for Vec<R> {
 
     fn retain(&mut self, retain: impl FnMut(&R) -> bool) {
         Vec::retain(self, retain);
+    }
+}
+
+impl<R> CaptureExactRuntimeCollection<R> for [R] {
+    fn iter_mut<'a>(&'a mut self) -> impl Iterator<Item = &'a mut R>
+    where
+        R: 'a,
+    {
+        <[R]>::iter_mut(self)
     }
 }
 
@@ -226,6 +265,51 @@ pub fn reap_capture_exact_runtimes<S, O, R, C>(
             .as_ref()
             .is_some_and(|authority| authority.owns_runtime_binding(runtime.binding()))
     });
+}
+
+pub fn bind_current_capture_exact_runtime<'a, R, C>(
+    runtimes: &'a mut C,
+    source: &R::Source,
+    hub: &ScreenPublicationHub,
+    after_bind: impl FnOnce(&mut C, &ScreenWorkerBinding) -> anyhow::Result<()>,
+) -> anyhow::Result<Option<&'a mut R>>
+where
+    R: CaptureExactRuntimeOwner,
+    C: CaptureExactRuntimeCollection<R> + ?Sized,
+{
+    let authority = hub.committed_state();
+    let Some(current_binding) = authority.runtime_binding(source.source_id()).cloned() else {
+        return Ok(None);
+    };
+    let newly_bound = {
+        let runtime = runtimes.iter_mut().find(|runtime| {
+            runtime.source() == source && runtime.binding().is_same(&current_binding)
+        });
+        let Some(runtime) = runtime else {
+            return Ok(None);
+        };
+        if !authority.owns_runtime_binding(runtime.binding()) {
+            return Ok(None);
+        }
+        match runtime.binding().state() {
+            ScreenWorkerBindingState::Active | ScreenWorkerBindingState::Retired => {}
+            ScreenWorkerBindingState::Prepared | ScreenWorkerBindingState::Armed => {
+                return Ok(None);
+            }
+            ScreenWorkerBindingState::Aborted => {
+                anyhow::bail!(R::ABORTED_BINDING_ERROR);
+            }
+        }
+        runtime.bind_routes(&authority)?
+    };
+    if newly_bound {
+        after_bind(runtimes, &current_binding)?;
+    }
+    Ok(runtimes.iter_mut().find(|runtime| {
+        runtime.source() == source
+            && runtime.binding().is_same(&current_binding)
+            && runtime.is_bound()
+    }))
 }
 
 pub trait CapturePublicationSource: Clone + PartialEq {

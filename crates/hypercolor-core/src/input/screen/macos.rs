@@ -51,8 +51,8 @@ use super::{
     ScreenPublicationHubError, ScreenPublicationMetadata, ScreenPublicationRequest,
     ScreenRendererExecutionState, ScreenRequiredResourceMinimum, ScreenResourceApi,
     ScreenResourceKind, ScreenResourceLifetime, ScreenSourceReflection, ScreenSourceSelector,
-    ScreenWorkerBinding, ScreenWorkerBindingState, ScreenWorkerExactLedgerBuilder,
-    ScreenWorkerPreparation, ScreenWorkerPreparationTicket, ScreenWorkerRetirement, SourceScale,
+    ScreenWorkerBinding, ScreenWorkerExactLedgerBuilder, ScreenWorkerPreparation,
+    ScreenWorkerPreparationTicket, ScreenWorkerRetirement, SourceScale,
 };
 #[cfg(feature = "macos-capture-fixtures")]
 use super::{
@@ -297,10 +297,25 @@ struct MacosExactRuntime {
 }
 
 impl CaptureExactRuntimeOwner for MacosExactRuntime {
+    type Source = MacosPublicationSource;
+
     const BACKEND_NAME: &'static str = "macOS";
+    const ABORTED_BINDING_ERROR: &'static str = "macOS exact runtime was aborted after commit";
+
+    fn source(&self) -> &Self::Source {
+        &self.source
+    }
 
     fn binding(&self) -> &ScreenWorkerBinding {
         &self.binding
+    }
+
+    fn bind_routes(&mut self, authority: &ScreenCommittedState) -> anyhow::Result<bool> {
+        MacosExactRuntime::bind_routes(self, authority)
+    }
+
+    fn is_bound(&self) -> bool {
+        MacosExactRuntime::is_bound(self)
     }
 }
 

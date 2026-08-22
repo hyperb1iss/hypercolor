@@ -4,12 +4,13 @@ use super::super::{
     CaptureEpoch, CaptureRotation, CaptureSourceId, Instant, MacosCaptureFrame,
     MacosExactPublicationShared, MacosExactRuntime, MacosPublicationSource, PixelExtent, PixelRect,
     PlatformGpuApi, ResolvedScreenSource, ResolvedScreenSourceConfig,
-    ScreenBackendResourceIdentity, ScreenCaptureBackend, ScreenComputeCapacityPolicy,
-    ScreenCursorCapabilities, ScreenPhysicalGpuDeviceIdentity, ScreenPublicationHub,
-    ScreenResourceApi, ScreenSourceReflection, ScreenSourceSelector, ScreenWorkerBindingState,
+    ScreenBackendResourceIdentity, ScreenCaptureBackend, ScreenCommittedState,
+    ScreenComputeCapacityPolicy, ScreenCursorCapabilities, ScreenPhysicalGpuDeviceIdentity,
+    ScreenPublicationHub, ScreenResourceApi, ScreenSourceReflection, ScreenSourceSelector,
     SourceScale, anyhow,
 };
 use super::metadata::{capture_colorimetry, capture_origin, capture_pixel_format};
+use crate::input::screen::adapter::bind_current_capture_exact_runtime;
 
 impl MacosPublicationSource {
     pub(in crate::input::screen::macos) fn from_frame(
@@ -183,21 +184,11 @@ impl MacosExactPublicationShared {
 }
 
 impl MacosExactRuntime {
-    pub(in crate::input::screen::macos) fn bind_if_current(
+    pub(in crate::input::screen::macos) fn bind_routes(
         &mut self,
-        hub: &ScreenPublicationHub,
-    ) -> anyhow::Result<()> {
-        let authority = hub.committed_state();
-        if !authority.owns_runtime_binding(&self.binding) {
-            return Ok(());
-        }
-        match self.binding.state() {
-            ScreenWorkerBindingState::Active | ScreenWorkerBindingState::Retired => {}
-            ScreenWorkerBindingState::Prepared | ScreenWorkerBindingState::Armed => return Ok(()),
-            ScreenWorkerBindingState::Aborted => {
-                return Err(anyhow!("macOS exact runtime was aborted after commit"));
-            }
-        }
+        authority: &ScreenCommittedState,
+    ) -> anyhow::Result<bool> {
+        let was_bound = self.is_bound();
         for route in &mut self.native_routes {
             if route.publisher.is_none() {
                 route.publisher =
@@ -208,9 +199,9 @@ impl MacosExactRuntime {
         if self.fanout.is_none()
             && let Some(candidate) = self.fanout_candidate.take()
         {
-            self.fanout = Some(candidate.bind(&authority, &self.binding)?);
+            self.fanout = Some(candidate.bind(authority, &self.binding)?);
         }
-        Ok(())
+        Ok(!was_bound && self.is_bound())
     }
 
     pub(in crate::input::screen::macos) fn is_bound(&self) -> bool {
@@ -237,23 +228,13 @@ pub(in crate::input::screen::macos) fn bind_current_macos_exact_runtime<'a>(
 ) -> anyhow::Result<Option<&'a mut MacosExactRuntime>> {
     #[cfg(not(feature = "macos-capture-fixtures"))]
     let _ = captured_at;
-    let authority = hub.committed_state();
-    let Some(current_binding) = authority.runtime_binding(&source.epoch.source_id) else {
-        return Ok(None);
-    };
-    let Some(current_index) = runtimes
-        .iter_mut()
-        .position(|runtime| runtime.source == *source && runtime.binding.is_same(current_binding))
-    else {
-        return Ok(None);
-    };
-    #[cfg(feature = "macos-capture-fixtures")]
-    let should_inherit = runtimes[current_index].fanout.is_none()
-        && runtimes[current_index].fanout_candidate.is_some();
-    runtimes[current_index].bind_if_current(hub)?;
-    #[cfg(feature = "macos-capture-fixtures")]
-    if should_inherit
-        && let Some(previous_index) =
+    bind_current_capture_exact_runtime(runtimes, source, hub, |runtimes, current_binding| {
+        #[cfg(not(feature = "macos-capture-fixtures"))]
+        let _ = (runtimes, current_binding);
+        #[cfg(feature = "macos-capture-fixtures")]
+        if let Some(current_index) = runtimes.iter().position(|runtime| {
+            runtime.source == *source && runtime.binding.is_same(current_binding)
+        }) && let Some(previous_index) =
             runtimes
                 .iter()
                 .enumerate()
@@ -264,26 +245,26 @@ pub(in crate::input::screen::macos) fn bind_current_macos_exact_runtime<'a>(
                         && runtime.fanout.is_some())
                     .then_some(index)
                 })
-    {
-        let (current, previous) = if current_index < previous_index {
-            let (before_previous, previous_and_after) = runtimes.split_at_mut(previous_index);
-            (
-                &mut before_previous[current_index],
-                &mut previous_and_after[0],
-            )
-        } else {
-            let (before_current, current_and_after) = runtimes.split_at_mut(current_index);
-            (
-                &mut current_and_after[0],
-                &mut before_current[previous_index],
-            )
-        };
-        if let (Some(current), Some(previous)) = (current.fanout.as_mut(), previous.fanout.as_mut())
         {
-            current.inherit_tone_map_transition_from(previous, captured_at);
+            let (current, previous) = if current_index < previous_index {
+                let (before_previous, previous_and_after) = runtimes.split_at_mut(previous_index);
+                (
+                    &mut before_previous[current_index],
+                    &mut previous_and_after[0],
+                )
+            } else {
+                let (before_current, current_and_after) = runtimes.split_at_mut(current_index);
+                (
+                    &mut current_and_after[0],
+                    &mut before_current[previous_index],
+                )
+            };
+            if let (Some(current), Some(previous)) =
+                (current.fanout.as_mut(), previous.fanout.as_mut())
+            {
+                current.inherit_tone_map_transition_from(previous, captured_at);
+            }
         }
-    }
-    Ok(runtimes[current_index]
-        .is_bound()
-        .then_some(&mut runtimes[current_index]))
+        Ok(())
+    })
 }

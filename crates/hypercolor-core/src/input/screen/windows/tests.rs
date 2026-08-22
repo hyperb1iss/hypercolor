@@ -14,14 +14,16 @@ use super::{
     ActiveCaptureEpoch, CapturePublication, CaptureWorker, ExactBoxList, ExactPublicationShared,
     WindowsCaptureResourceAdmission, WindowsExactRuntime, WindowsExactRuntimes,
     WindowsPhysicalReductionRoute, WindowsPublicationSource, WindowsScreenCaptureInput,
-    WorkerCaptureSchedule, WorkerCommand, bind_current_exact_runtime, capture_epoch,
-    capture_freshness, capture_geometry, capture_gpu_descriptor, capture_gpu_reduction_descriptor,
-    capture_issue, classify_windows_physical_reduction, display_rotation, native_capture_extent,
+    WorkerCaptureSchedule, WorkerCommand, capture_epoch, capture_freshness, capture_geometry,
+    capture_gpu_descriptor, capture_gpu_reduction_descriptor, capture_issue,
+    classify_windows_physical_reduction, display_rotation, native_capture_extent,
     record_capture_health, resolve_windows_publication_branch, settle_inactive_capture,
     windows_gpu_attempt_at, windows_gpu_candidate_admission, windows_gpu_preparation_gate,
     windows_gpu_retry_at,
 };
-use crate::input::screen::adapter::reap_capture_exact_runtimes;
+use crate::input::screen::adapter::{
+    bind_current_capture_exact_runtime, reap_capture_exact_runtimes,
+};
 
 #[test]
 fn capture_resource_adapter_reconciles_and_releases_source_bytes() {
@@ -647,7 +649,7 @@ fn exact_runtime_identity_survives_retention_mixed_publication_and_removal() {
         .try_reclaim()
         .expect("initial plan retires no exact runtime resources");
     reap_capture_exact_runtimes(&mut runtimes, &exact);
-    let selected = bind_current_exact_runtime(&mut runtimes, &source, &hub)
+    let selected = bind_current_capture_exact_runtime(&mut runtimes, &source, &hub, |_, _| Ok(()))
         .expect("initial runtime binds")
         .expect("initial committed runtime is selected");
     assert!(selected.binding.is_same(&initial_binding));
@@ -709,7 +711,7 @@ fn exact_runtime_identity_survives_retention_mixed_publication_and_removal() {
     let (_, retained_retirement) = committed.into_parts();
     reap_capture_exact_runtimes(&mut runtimes, &exact);
     assert_eq!(runtimes.iter().count(), 1);
-    let selected = bind_current_exact_runtime(&mut runtimes, &source, &hub)
+    let selected = bind_current_capture_exact_runtime(&mut runtimes, &source, &hub, |_, _| Ok(()))
         .expect("retained-only runtime binds")
         .expect("retained-only committed runtime is selected");
     assert!(selected.binding.is_same(&retained_binding));
@@ -788,7 +790,7 @@ fn exact_runtime_identity_survives_retention_mixed_publication_and_removal() {
     let (_, mixed_retirement) = committed.into_parts();
     reap_capture_exact_runtimes(&mut runtimes, &exact);
     assert_eq!(runtimes.iter().count(), 1);
-    let selected = bind_current_exact_runtime(&mut runtimes, &source, &hub)
+    let selected = bind_current_capture_exact_runtime(&mut runtimes, &source, &hub, |_, _| Ok(()))
         .expect("mixed runtime binds")
         .expect("mixed committed runtime is selected");
     assert!(selected.binding.is_same(&mixed_binding));

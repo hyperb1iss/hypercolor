@@ -43,7 +43,7 @@ use crate::input::screen::{
     ScreenColorTransformCapabilities, ScreenCommittedState, ScreenComputeCapacityPolicy,
     ScreenPreparedWorkerToken, ScreenPublicationHealth, ScreenPublicationHub,
     ScreenRequiredResourceMinimum, ScreenResourceApi, ScreenResourceKind, ScreenResourceLifetime,
-    ScreenSourceReflection, ScreenSourceSelector, ScreenWorkerBinding, ScreenWorkerBindingState,
+    ScreenSourceReflection, ScreenSourceSelector, ScreenWorkerBinding,
     ScreenWorkerExactLedgerBuilder, ScreenWorkerPreparation, ScreenWorkerPreparationTicket,
     ScreenWorkerRetirement, SourceScale, analyze_screen_frame,
 };
@@ -61,7 +61,7 @@ use super::adapter::{
     CaptureExactCommand, CaptureExactCommandEndpoint, CaptureExactCommandRejected,
     CaptureExactPublicationShared, CaptureExactRuntimeOwner, CaptureOwnedSource,
     CapturePublicationSource, begin_capture_exact_preparation, begin_capture_exact_retirement,
-    execute_capture_exact_command,
+    bind_current_capture_exact_runtime, execute_capture_exact_command,
 };
 
 const WORKER_READY_TIMEOUT: Duration = Duration::from_secs(1);
@@ -3223,35 +3223,35 @@ struct WaylandExactRuntime {
 type WaylandExactRuntimes = ExactBoxList<WaylandExactRuntime>;
 
 impl CaptureExactRuntimeOwner for WaylandExactRuntime {
+    type Source = WaylandPublicationSource;
+
     const BACKEND_NAME: &'static str = "Wayland";
+    const ABORTED_BINDING_ERROR: &'static str =
+        "Wayland exact runtime binding was aborted after commit";
+
+    fn source(&self) -> &Self::Source {
+        &self.source
+    }
 
     fn binding(&self) -> &ScreenWorkerBinding {
         &self.binding
     }
-}
 
-impl WaylandExactRuntime {
-    fn bind_if_current(&mut self, hub: &ScreenPublicationHub) -> anyhow::Result<()> {
-        if self.fanout.is_some() {
-            return Ok(());
-        }
-        let authority = hub.committed_state();
-        if !authority.owns_runtime_binding(&self.binding) {
-            return Ok(());
-        }
-        match self.binding.state() {
-            ScreenWorkerBindingState::Active | ScreenWorkerBindingState::Retired => {}
-            ScreenWorkerBindingState::Prepared | ScreenWorkerBindingState::Armed => return Ok(()),
-            ScreenWorkerBindingState::Aborted => {
-                anyhow::bail!("Wayland exact runtime binding was aborted after commit")
-            }
+    fn bind_routes(&mut self, authority: &ScreenCommittedState) -> anyhow::Result<bool> {
+        let was_bound = self.fanout.is_some();
+        if was_bound {
+            return Ok(false);
         }
         let candidate = self
             .fanout_candidate
             .take()
             .ok_or_else(|| anyhow!("Wayland CPU fanout candidate was already consumed"))?;
-        self.fanout = Some(candidate.bind(&authority, &self.binding)?);
-        Ok(())
+        self.fanout = Some(candidate.bind(authority, &self.binding)?);
+        Ok(true)
+    }
+
+    fn is_bound(&self) -> bool {
+        self.fanout.is_some()
     }
 }
 
@@ -3491,25 +3491,6 @@ fn prepare_wayland_exact_runtime(
     ))
 }
 
-fn bind_current_wayland_exact_runtime<'a>(
-    runtimes: &'a mut WaylandExactRuntimes,
-    source: &WaylandPublicationSource,
-    hub: &ScreenPublicationHub,
-) -> anyhow::Result<Option<&'a mut WaylandExactRuntime>> {
-    let authority = hub.committed_state();
-    let Some(current_binding) = authority.runtime_binding(&source.epoch.source_id) else {
-        return Ok(None);
-    };
-    let runtime = runtimes
-        .iter_mut()
-        .find(|runtime| runtime.source == *source && runtime.binding.is_same(current_binding));
-    let Some(runtime) = runtime else {
-        return Ok(None);
-    };
-    runtime.bind_if_current(hub)?;
-    Ok(runtime.fanout.is_some().then_some(runtime))
-}
-
 struct WaylandAnalysisState {
     analyzer: ScreenCaptureInput,
     cadence: CaptureCadence,
@@ -3697,7 +3678,9 @@ impl WaylandAnalysisState {
             return Ok(());
         };
         let Some(runtime) =
-            bind_current_wayland_exact_runtime(&mut self.exact_runtimes, &source, &hub)?
+            bind_current_capture_exact_runtime(&mut self.exact_runtimes, &source, &hub, |_, _| {
+                Ok(())
+            })?
         else {
             return Ok(());
         };

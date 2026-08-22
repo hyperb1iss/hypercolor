@@ -60,7 +60,7 @@ use crate::input::screen::{
     ScreenPublicationExecutor, ScreenPublicationExecutorRequest, ScreenPublicationHealth,
     ScreenPublicationHub, ScreenPublicationKind, ScreenPublicationMetadata, ScreenReductionFilter,
     ScreenRequiredResourceMinimum, ScreenResourceApi, ScreenResourceKind, ScreenResourceLifetime,
-    ScreenSourceReflection, ScreenSourceSelector, ScreenWorkerBinding, ScreenWorkerBindingState,
+    ScreenSourceReflection, ScreenSourceSelector, ScreenWorkerBinding,
     ScreenWorkerExactLedgerBuilder, ScreenWorkerPreparation, ScreenWorkerPreparationTicket,
     ScreenWorkerRetirement, SourceScale, analyze_screen_frame,
 };
@@ -81,7 +81,7 @@ use super::adapter::{
     CaptureExactPublicationShared, CaptureExactRuntimeOwner, CaptureOwnedSource,
     CapturePublication as AdapterCapturePublication, CapturePublicationEpoch,
     CapturePublicationSource, begin_capture_exact_preparation, begin_capture_exact_retirement,
-    execute_capture_exact_command,
+    bind_current_capture_exact_runtime, execute_capture_exact_command,
 };
 
 /// How long a worker waits on DXGI before checking its command channel.
@@ -721,26 +721,22 @@ struct WindowsExactRuntime {
 type WindowsExactRuntimes = ExactBoxList<WindowsExactRuntime>;
 
 impl CaptureExactRuntimeOwner for WindowsExactRuntime {
+    type Source = WindowsPublicationSource;
+
     const BACKEND_NAME: &'static str = "Windows";
+    const ABORTED_BINDING_ERROR: &'static str =
+        "Windows exact runtime binding was aborted after commit";
+
+    fn source(&self) -> &Self::Source {
+        &self.source
+    }
 
     fn binding(&self) -> &ScreenWorkerBinding {
         &self.binding
     }
-}
 
-impl WindowsExactRuntime {
-    fn bind_if_current(&mut self, hub: &ScreenPublicationHub) -> anyhow::Result<()> {
-        let authority = hub.committed_state();
-        if !authority.owns_runtime_binding(&self.binding) {
-            return Ok(());
-        }
-        match self.binding.state() {
-            ScreenWorkerBindingState::Active | ScreenWorkerBindingState::Retired => {}
-            ScreenWorkerBindingState::Prepared | ScreenWorkerBindingState::Armed => return Ok(()),
-            ScreenWorkerBindingState::Aborted => {
-                anyhow::bail!("Windows exact runtime binding was aborted after commit")
-            }
-        }
+    fn bind_routes(&mut self, authority: &ScreenCommittedState) -> anyhow::Result<bool> {
+        let was_bound = self.is_bound();
         if let Some(gpu) = &mut self.gpu {
             for route in &mut gpu.routes {
                 if route.publisher.is_none() {
@@ -756,9 +752,9 @@ impl WindowsExactRuntime {
                 .fanout_candidate
                 .take()
                 .ok_or_else(|| anyhow!("Windows CPU fanout candidate was already consumed"))?;
-            cpu.fanout = Some(candidate.bind(&authority, &self.binding)?);
+            cpu.fanout = Some(candidate.bind(authority, &self.binding)?);
         }
-        Ok(())
+        Ok(!was_bound && self.is_bound())
     }
 
     fn is_bound(&self) -> bool {
@@ -2729,25 +2725,6 @@ fn execute_windows_exact_command(
     });
 }
 
-fn bind_current_exact_runtime<'a>(
-    runtimes: &'a mut WindowsExactRuntimes,
-    source: &WindowsPublicationSource,
-    hub: &ScreenPublicationHub,
-) -> anyhow::Result<Option<&'a mut WindowsExactRuntime>> {
-    let authority = hub.committed_state();
-    let Some(current_binding) = authority.runtime_binding(&source.epoch.source_id) else {
-        return Ok(None);
-    };
-    let runtime = runtimes
-        .iter_mut()
-        .find(|runtime| runtime.source == *source && runtime.binding.is_same(current_binding));
-    let Some(runtime) = runtime else {
-        return Ok(None);
-    };
-    runtime.bind_if_current(hub)?;
-    Ok(runtime.is_bound().then_some(runtime))
-}
-
 fn publish_windows_gpu_outcome(
     routes: &mut [WindowsGpuRoute],
     source: &WindowsPublicationSource,
@@ -3226,7 +3203,8 @@ fn pump_current_windows_exact_runtime(
     let Some(hub) = exact.hub() else {
         return Ok(None);
     };
-    let Some(runtime) = bind_current_exact_runtime(runtimes, source, &hub)? else {
+    let Some(runtime) = bind_current_capture_exact_runtime(runtimes, source, &hub, |_, _| Ok(()))?
+    else {
         return Ok(None);
     };
     pump_windows_exact_runtime(session, runtime, &hub).map(Some)
