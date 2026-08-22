@@ -5,8 +5,10 @@
 
 use std::fs::File;
 
+mod channel;
 mod model;
 
+pub use channel::{LoopReceiver, LoopSendError, LoopSender, loop_channel};
 pub use model::{
     BufferFault, CaptureFormatRequest, D4Transform, DequeueOutcome, FrameView, MetaFault,
     NegotiatedVideoFormat, PackedVideoFormat, PixelCrop, VideoFraction,
