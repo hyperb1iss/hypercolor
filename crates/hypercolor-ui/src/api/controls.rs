@@ -19,10 +19,10 @@ pub use hypercolor_types::api::controls::InvokeControlActionRequest;
 
 /// Fetch surfaces selected by device, driver, or both.
 pub async fn fetch_control_surfaces(
-    query: ControlSurfaceListQuery<'_>,
+    query: ControlSurfaceListQuery,
 ) -> Result<Vec<ControlSurfaceDocument>, String> {
     let response: Option<ControlSurfaceListResponse> =
-        client::fetch_json_optional(&control_surface_list_url(query)).await?;
+        client::fetch_json_optional(&control_surface_list_url(&query)).await?;
     Ok(response
         .map(|response| response.surfaces)
         .unwrap_or_default())
@@ -34,9 +34,9 @@ pub async fn fetch_device_control_surfaces(
     include_driver: bool,
 ) -> Result<Vec<ControlSurfaceDocument>, String> {
     fetch_control_surfaces(ControlSurfaceListQuery {
-        device_id: Some(device_id),
+        device_id: Some(device_id.to_owned()),
         driver_id: None,
-        include_driver,
+        include_driver: include_driver.then_some(true),
     })
     .await
 }
