@@ -35,7 +35,11 @@ const LAYER_CONTROLS_DEBOUNCE_MS: f64 = 120.0;
 /// effect's control schema and renders the shared [`ControlPanel`]; edits
 /// are coalesced and patched onto the layer's stored controls.
 #[component]
-pub fn EffectControlsSection(group_id: String, layer: SceneLayer) -> impl IntoView {
+pub fn EffectControlsSection(
+    group_id: String,
+    layer: SceneLayer,
+    on_layers_mutated: Callback<()>,
+) -> impl IntoView {
     let LayerSource::Effect {
         effect_id,
         controls,
@@ -96,6 +100,7 @@ pub fn EffectControlsSection(group_id: String, layer: SceneLayer) -> impl IntoVi
         on_error: Callback::new(|error: String| {
             toasts::toast_error(&format!("Effect controls failed: {error}"));
         }),
+        recover: on_layers_mutated,
         flush_guard: None,
     });
     let on_change = session.on_change;

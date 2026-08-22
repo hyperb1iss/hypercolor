@@ -181,55 +181,63 @@ pub fn EffectsPage() -> impl IntoView {
         MAX_CONTROLS_WIDTH,
     ));
     let control_session = OptimisticControlSession::new();
-    let control_request_epoch = StoredValue::new(0_u64);
     let preferences_store = use_context::<crate::preferences::PreferencesStore>();
     let flush_control_updates = use_debounce_fn(
         move || {
-            let updates = control_session.take_pending();
-            if updates.is_empty() {
+            let Some(mut updates) = control_session.start_flush() else {
                 return;
-            }
-
-            let request_epoch = control_request_epoch
-                .try_update_value(|epoch| {
-                    *epoch = epoch.wrapping_add(1);
-                    *epoch
-                })
-                .unwrap_or_default();
-            let active_effect_id = fx.active_effect_id.get_untracked();
+            };
+            let Some(active_effect_id) = fx.active_effect_id.get_untracked() else {
+                control_session.fail_flush();
+                fx.refresh_active_effect();
+                return;
+            };
             leptos::task::spawn_local(async move {
-                match api::update_controls(&updates).await {
-                    Ok(()) => {
-                        let is_latest_request = control_request_epoch.get_value() == request_epoch;
-                        let has_pending_updates = control_session.has_pending();
-                        let same_effect = fx.active_effect_id.get_untracked() == active_effect_id;
-                        if is_latest_request
-                            && !has_pending_updates
-                            && same_effect
-                            && let Some(store) = preferences_store
-                            && let Some(effect_id) = active_effect_id
-                            && let Err(error) = store.save(
-                                effect_id,
-                                crate::preferences::EffectPreferences {
-                                    preset_id: fx.active_preset_id.get_untracked(),
-                                    control_values: fx.active_control_values.get_untracked(),
-                                },
-                            )
-                        {
-                            toasts::toast_error(&format!(
-                                "Controls applied, but preferences were not saved: {error}"
-                            ));
-                        }
+                loop {
+                    if fx.active_effect_id.get_untracked().as_deref()
+                        != Some(active_effect_id.as_str())
+                    {
+                        control_session.fail_flush();
+                        fx.refresh_active_effect();
+                        return;
                     }
-                    Err(error) => {
-                        let is_latest_request = control_request_epoch.get_value() == request_epoch;
-                        let has_pending_updates = control_session.has_pending();
-                        let same_effect = fx.active_effect_id.get_untracked() == active_effect_id;
-                        if is_latest_request && !has_pending_updates && same_effect {
+
+                    match api::update_effect_controls(&active_effect_id, &updates).await {
+                        Ok(()) => {
+                            if fx.active_effect_id.get_untracked().as_deref()
+                                != Some(active_effect_id.as_str())
+                            {
+                                control_session.fail_flush();
+                                fx.refresh_active_effect();
+                                return;
+                            }
+                            let Some(next) = control_session.complete_flush() else {
+                                if let Some(store) = preferences_store
+                                    && let Err(error) = store.save(
+                                        active_effect_id,
+                                        crate::preferences::EffectPreferences {
+                                            preset_id: fx.active_preset_id.get_untracked(),
+                                            control_values: fx
+                                                .active_control_values
+                                                .get_untracked(),
+                                        },
+                                    )
+                                {
+                                    toasts::toast_error(&format!(
+                                        "Controls applied, but preferences were not saved: {error}"
+                                    ));
+                                }
+                                return;
+                            };
+                            updates = next;
+                        }
+                        Err(error) => {
+                            control_session.fail_flush();
                             fx.refresh_active_effect();
                             toasts::toast_error(&format!(
                                 "Failed to update effect controls: {error}"
                             ));
+                            return;
                         }
                     }
                 }

@@ -9,11 +9,10 @@
 //! an `If-Match` token and rebase on a `412 Stale` reply.
 //!
 //! [`use_control_patch_session`] owns those mechanics once — debounce,
-//! pending-batch coalescing, optimistic application, and epoch/version
-//! reconciliation — while each surface supplies only its patch request,
-//! its error toast, and (optionally) a flush guard. Cadences are passed
-//! per surface and are product contracts: do not slow them down for
-//! convenience.
+//! pending-batch coalescing, optimistic application, and version
+//! reconciliation — while each surface supplies its patch request,
+//! authoritative recovery, error toast, and (optionally) a flush guard.
+//! Cadences are product contracts: do not slow them down for convenience.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -60,6 +59,9 @@ pub struct ControlPatchConfig {
     pub patch: ControlPatchFn,
     /// Error arm for a failed flush — typically a prefixed toast.
     pub on_error: Callback<String>,
+    /// Restore authoritative values after any terminal patch failure.
+    /// Every queued optimistic batch is cleared before this callback runs.
+    pub recover: Callback<()>,
     /// Optional pre-flush gate. Returning `false` cancels the flush and
     /// drops the pending batch; the guard performs its own user feedback
     /// (toast, value revert) before returning.
@@ -90,13 +92,13 @@ pub enum ReconcileAction {
     /// The precondition failed; adopt `current` and retry the batch once.
     RetryOnce { current: u64 },
     /// The precondition failed again after the single retry; adopt
-    /// `current` and stop so two racing writers cannot ping-pong forever.
+    /// `current` and recover so two racing writers cannot ping-pong forever.
     GiveUp { current: u64 },
 }
 
 /// Decide how to reconcile one patch outcome. A `Stale` reply earns
 /// exactly one rebase-and-retry; a second `Stale` (a genuine concurrent
-/// writer) adopts the fresh token and stops.
+/// writer) adopts the fresh token and recovers from authoritative state.
 #[must_use]
 pub fn reconcile_outcome(
     outcome: &MutationOutcome<Option<u64>>,
@@ -129,9 +131,9 @@ pub fn merge_retry_batch(failed: ControlValueMap, newer: ControlValueMap) -> Con
 /// `patch` with the current version token, and reconciles the outcome:
 /// `Applied` adopts the returned version, `Stale` rebases onto the
 /// daemon's token and retries the batch once (merged under any newer
-/// pending edits). A response only reconciles when no newer flush started
-/// while it was in flight, so out-of-order replies cannot regress the
-/// version token.
+/// pending edits). Exactly one request is in flight per session; edits queued
+/// during a request drain in the next ordered batch, so responses cannot
+/// overtake one another or discard distinct-key updates.
 pub fn use_control_patch_session(config: ControlPatchConfig) -> ControlPatchSession {
     let ControlPatchConfig {
         defs,
@@ -140,14 +142,12 @@ pub fn use_control_patch_session(config: ControlPatchConfig) -> ControlPatchSess
         debounce_ms,
         patch,
         on_error,
+        recover,
         flush_guard,
     } = config;
 
     let optimistic = OptimisticControlSession::new();
     let version = RwSignal::new(initial_version);
-    // Monotonic flush counter. Each flush claims the next epoch; its
-    // response reconciles only while it is still the newest flush.
-    let flush_epoch = StoredValue::new(0_u64);
 
     let flush_core = move || {
         if let Some(guard) = flush_guard
@@ -156,52 +156,57 @@ pub fn use_control_patch_session(config: ControlPatchConfig) -> ControlPatchSess
             optimistic.clear_pending();
             return;
         }
-        let batch = optimistic.take_pending();
-        if batch.is_empty() {
+        let Some(batch) = optimistic.start_flush() else {
             return;
-        }
-        let epoch = flush_epoch
-            .try_update_value(|value| {
-                *value = value.wrapping_add(1);
-                *value
-            })
-            .unwrap_or_default();
+        };
         let patch = Arc::clone(&patch);
         spawn_mutation(
             async move {
                 let mut batch = batch;
-                let mut retried = false;
                 loop {
-                    let outcome = patch(batch.clone(), version.get_untracked()).await?;
-                    let is_latest = flush_epoch.get_value() == epoch;
-                    match reconcile_outcome(&outcome, retried) {
-                        ReconcileAction::Adopt { new_version } => {
-                            if is_latest && let Some(next) = new_version {
-                                version.set(Some(next));
+                    let mut retried = false;
+                    loop {
+                        let outcome = patch(batch.clone(), version.get_untracked()).await?;
+                        match reconcile_outcome(&outcome, retried) {
+                            ReconcileAction::Adopt { new_version } => {
+                                if let Some(next) = new_version {
+                                    version.set(Some(next));
+                                }
+                                break;
                             }
-                            return Ok(());
-                        }
-                        ReconcileAction::RetryOnce { current } => {
-                            if !is_latest {
-                                // A newer flush owns reconciliation now;
-                                // its batch carries the newest values.
-                                return Ok(());
-                            }
-                            version.set(Some(current));
-                            batch = merge_retry_batch(batch, optimistic.take_pending());
-                            retried = true;
-                        }
-                        ReconcileAction::GiveUp { current } => {
-                            if is_latest {
+                            ReconcileAction::RetryOnce { current } => {
                                 version.set(Some(current));
+                                batch =
+                                    merge_retry_batch(batch, optimistic.take_pending_for_retry());
+                                retried = true;
                             }
-                            return Ok(());
+                            ReconcileAction::GiveUp { current } => {
+                                version.set(Some(current));
+                                return Err(format!(
+                                    "control state changed again at version {current}"
+                                ));
+                            }
                         }
                     }
+
+                    if let Some(guard) = flush_guard
+                        && !guard.run(())
+                    {
+                        optimistic.fail_flush();
+                        return Ok(());
+                    }
+                    let Some(next) = optimistic.complete_flush() else {
+                        return Ok(());
+                    };
+                    batch = next;
                 }
             },
             |()| {},
-            move |error| on_error.run(error),
+            move |error| {
+                optimistic.fail_flush();
+                recover.run(());
+                on_error.run(error);
+            },
         );
     };
 

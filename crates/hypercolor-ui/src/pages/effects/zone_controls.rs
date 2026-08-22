@@ -279,6 +279,7 @@ fn ZoneControlsPanel(
         on_error: Callback::new(|error: String| {
             toasts::toast_error(&format!("Zone controls failed: {error}"));
         }),
+        recover: zones_ctx.refresh,
         flush_guard: None,
     });
 

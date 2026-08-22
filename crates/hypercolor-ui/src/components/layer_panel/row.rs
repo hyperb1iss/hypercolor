@@ -261,6 +261,7 @@ pub fn LayerRow(
                                 <EffectControlsSection
                                     group_id=group_id.clone()
                                     layer=effect_layer.clone()
+                                    on_layers_mutated=on_layers_mutated
                                 />
                             </div>
                         }
