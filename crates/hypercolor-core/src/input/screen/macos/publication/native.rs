@@ -1,11 +1,11 @@
 use super::super::{
-    Arc, CaptureSourceId, Duration, Instant, MacosCaptureControl, MacosCaptureFrame,
-    MacosExactDelivery, MacosExactPublicationShared, MacosExactRuntime, MacosPublication,
-    MacosPublicationSource, MacosScreenRuntimeTelemetry, Mutex, NonZeroU64, Ordering,
-    PlatformGpuApi, PlatformGpuSurface, PreparedWorker, ResourceState, ScreenBranchPayload,
-    ScreenGpuSurfacePayload, ScreenNativeWorkPayload, ScreenPublicationColorimetry,
-    ScreenPublicationHealth, ScreenPublicationHubError, ScreenPublicationMetadata,
-    SourceSessionSlot, TopologyState, anyhow,
+    Arc, CaptureSessionAuthority, CaptureSourceId, Duration, Instant, MacosCaptureControl,
+    MacosCaptureFrame, MacosExactDelivery, MacosExactPublicationShared, MacosExactRuntime,
+    MacosPublication, MacosPublicationSource, MacosScreenRuntimeTelemetry, Mutex, NonZeroU64,
+    Ordering, PlatformGpuApi, PlatformGpuSurface, PreparedWorker, ResourceState,
+    ScreenBranchPayload, ScreenGpuSurfacePayload, ScreenNativeWorkPayload,
+    ScreenPublicationColorimetry, ScreenPublicationHealth, ScreenPublicationHubError,
+    ScreenPublicationMetadata, SourceSessionSlot, TopologyState, anyhow,
 };
 #[cfg(feature = "macos-capture-fixtures")]
 use super::super::{InputData, MacosCapturePixelFormat, analyze_screen_frame, lock};
@@ -57,7 +57,10 @@ pub(in crate::input::screen::macos) fn publish_frame(
         resource_generation,
         &frame,
     )?;
-    exact.replace_source(Some(source.clone()));
+    exact.replace_current_source(
+        CaptureSessionAuthority::new(worker_generation),
+        Some(source.clone()),
+    );
     let exact_delivery = publish_macos_native_exact_with_telemetry(
         &frame,
         captured_at,

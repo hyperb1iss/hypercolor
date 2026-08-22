@@ -80,9 +80,9 @@ use super::adapter::{
     CaptureExactCommand, CaptureExactCommandEndpoint, CaptureExactCommandRejected,
     CaptureExactPublicationShared, CaptureExactRuntimeOwner, CaptureOwnedSource,
     CapturePublication as AdapterCapturePublication, CapturePublicationFence,
-    CapturePublicationSource, VersionedCaptureSettings, begin_capture_exact_preparation,
-    begin_capture_exact_retirement, bind_current_capture_exact_runtime,
-    execute_capture_exact_command,
+    CapturePublicationSource, CaptureSessionAuthority, VersionedCaptureSettings,
+    begin_capture_exact_preparation, begin_capture_exact_retirement,
+    bind_current_capture_exact_runtime, execute_capture_exact_command,
 };
 
 /// How long a worker waits on DXGI before checking its command channel.
@@ -462,6 +462,13 @@ impl Deref for ExactPublicationShared {
 }
 
 impl ExactPublicationShared {
+    #[cfg(test)]
+    fn install_test_source(&self, next: Option<WindowsPublicationSource>) -> bool {
+        let authority = CaptureSessionAuthority::new(1);
+        drop(self.activate_authority(authority));
+        self.replace_source_if_current(authority, next)
+    }
+
     fn cpu_executor(&self) -> anyhow::Result<Arc<CpuReductionExecutor>> {
         let mut executor = self
             .cpu_executor
@@ -633,6 +640,7 @@ impl WindowsScreenCaptureFixture {
 }
 
 struct CaptureWorker {
+    authority: CaptureSessionAuthority,
     command_tx: mpsc::Sender<WorkerCommand>,
     exit_rx: mpsc::Receiver<()>,
     join_handle: Option<thread::JoinHandle<()>>,
@@ -643,11 +651,16 @@ struct CaptureWorker {
 
 #[derive(Clone)]
 struct WindowsExactCommandEndpoint {
+    authority: CaptureSessionAuthority,
     command_tx: mpsc::Sender<WorkerCommand>,
 }
 
 impl CaptureExactCommandEndpoint for WindowsExactCommandEndpoint {
     const SOURCE_NAME: &'static str = "Windows capture";
+
+    fn authority(&self) -> CaptureSessionAuthority {
+        self.authority
+    }
 
     fn send_exact(&self, command: CaptureExactCommand) -> Result<(), CaptureExactCommandRejected> {
         self.command_tx
@@ -659,6 +672,7 @@ impl CaptureExactCommandEndpoint for WindowsExactCommandEndpoint {
 impl CaptureWorker {
     fn exact_command_endpoint(&self) -> WindowsExactCommandEndpoint {
         WindowsExactCommandEndpoint {
+            authority: self.authority,
             command_tx: self.command_tx.clone(),
         }
     }
@@ -965,8 +979,13 @@ impl WindowsScreenCaptureInput {
         let session_generation = self
             .settings
             .session_generation
-            .fetch_add(1, Ordering::AcqRel)
-            .wrapping_add(1);
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |generation| {
+                generation.checked_add(1)
+            })
+            .map_err(|_| anyhow!("Windows capture session generation exhausted"))?
+            + 1;
+        let authority = CaptureSessionAuthority::new(session_generation);
+        self.exact.activate_authority(authority);
 
         let join_handle = spawn_worker(
             thread::Builder::new().name("hypercolor-screen-capture".to_owned()),
@@ -989,6 +1008,7 @@ impl WindowsScreenCaptureInput {
         .map_err(|error| anyhow!("failed to spawn screen capture worker: {error}"))?;
 
         self.worker = Some(CaptureWorker {
+            authority,
             command_tx,
             exit_rx,
             join_handle: Some(join_handle),
@@ -1073,7 +1093,7 @@ impl WindowsScreenCaptureInput {
             ));
         }
         clear_capture_publication(&self.publication);
-        self.exact.replace_source(None);
+        self.exact.replace_source_if_current(worker.authority, None);
         true
     }
 
@@ -1135,7 +1155,9 @@ impl WindowsScreenCaptureInput {
     }
 
     fn deactivate_backend(&mut self, activity_generation: u64) {
-        self.exact.replace_source(None);
+        if let Some(worker) = self.worker.as_ref() {
+            self.exact.replace_source_if_current(worker.authority, None);
+        }
         #[cfg(feature = "windows-capture-fixtures")]
         if let Some(fixture) = self.fixture.as_ref() {
             *fixture
@@ -1413,7 +1435,9 @@ impl WindowsScreenCaptureInput {
                 self.settings.commit(&prepared);
             }
             if snapshot.source_generation != source_generation {
-                self.exact.replace_source(None);
+                if let Some(worker) = self.worker.as_ref() {
+                    self.exact.replace_source_if_current(worker.authority, None);
+                }
             }
             return Ok(());
         }
@@ -1471,7 +1495,9 @@ impl InputSource for WindowsScreenCaptureInput {
         }
 
         clear_capture_publication(&self.publication);
-        self.exact.replace_source(None);
+        if let Some(worker) = self.worker.as_ref() {
+            self.exact.replace_source_if_current(worker.authority, None);
+        }
     }
 
     fn sample(&mut self) -> anyhow::Result<InputData> {
@@ -3252,6 +3278,7 @@ fn run_worker(
     source_sink: Option<CaptureSourceSink>,
     ready: mpsc::SyncSender<std::result::Result<(), String>>,
 ) {
+    let authority = CaptureSessionAuthority::new(session_generation);
     let initial_settings = settings.snapshot();
     let mut config = initial_settings.config;
     let mut schedule = match CaptureCadence::new(config.target_fps) {
@@ -3334,7 +3361,7 @@ fn run_worker(
                 activity_generation,
             );
             clear_capture_publication(publication);
-            exact.replace_source(None);
+            exact.replace_source_if_current(authority, None);
             open_failure_logged = false;
             match command_rx.recv_timeout(FRAME_WAIT) {
                 Ok(WorkerCommand::SetActive {
@@ -3421,7 +3448,7 @@ fn run_worker(
                     if previous_source != config.source {
                         duplicator = None;
                         clear_capture_publication(publication);
-                        exact.replace_source(None);
+                        exact.replace_source_if_current(authority, None);
                     } else if let Some(duplicator) = duplicator.as_mut() {
                         let requested_extent = demand
                             .requested_extent()
@@ -3478,7 +3505,7 @@ fn run_worker(
                 }
                 Err(error) => {
                     clear_capture_publication(publication);
-                    exact.replace_source(None);
+                    exact.replace_source_if_current(authority, None);
                     if !open_failure_logged {
                         log_open_failure(&error);
                         open_failure_logged = true;
@@ -3537,12 +3564,12 @@ fn run_worker(
             Err(error) => {
                 warn!(%error, "Windows screen capture source metadata is invalid; reopening session");
                 clear_capture_publication(publication);
-                exact.replace_source(None);
+                exact.replace_source_if_current(authority, None);
                 duplicator = None;
                 continue;
             }
         };
-        exact.replace_source(Some(exact_source.clone()));
+        exact.replace_source_if_current(authority, Some(exact_source.clone()));
 
         match pump_current_windows_exact_runtime(session, &mut exact_runtimes, &exact_source, exact)
         {
@@ -3575,7 +3602,7 @@ fn run_worker(
                 }
                 if capture_error.is_some_and(capture_frame_failure_invalidates_session) {
                     clear_capture_publication(publication);
-                    exact.replace_source(None);
+                    exact.replace_source_if_current(authority, None);
                     duplicator = None;
                 } else {
                     thread::sleep(FRAME_WAIT);
@@ -3622,7 +3649,7 @@ fn run_worker(
             Err(error) => {
                 warn!(%error, "Windows screen capture identity is invalid; reopening session");
                 clear_capture_publication(publication);
-                exact.replace_source(None);
+                exact.replace_source_if_current(authority, None);
                 duplicator = None;
                 continue;
             }
@@ -3654,7 +3681,7 @@ fn run_worker(
                 Err(error) => {
                     warn!(%error, "Windows screen capture identity became invalid");
                     clear_capture_publication(publication);
-                    exact.replace_source(None);
+                    exact.replace_source_if_current(authority, None);
                     duplicator = None;
                     continue;
                 }
@@ -3742,7 +3769,7 @@ fn run_worker(
                     status.degraded(capture_issue(&error));
                 }
                 clear_capture_publication(publication);
-                exact.replace_source(None);
+                exact.replace_source_if_current(authority, None);
                 warn!(%error, "Windows screen capture frame failed; reopening session");
                 duplicator = None;
                 match command_rx.recv_timeout(REOPEN_BACKOFF) {
@@ -3788,8 +3815,8 @@ fn run_worker(
     }
 
     clear_capture_publication(publication);
-    exact.replace_source(None);
-    exact.clear_owned_sources();
+    exact.replace_source_if_current(authority, None);
+    exact.clear_owned_sources_if_current(authority);
     exact_runtimes.clear();
     debug!("Windows screen capture worker stopped");
 }

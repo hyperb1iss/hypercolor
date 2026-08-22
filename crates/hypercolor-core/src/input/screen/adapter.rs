@@ -1,29 +1,36 @@
+pub(in crate::input::screen) mod exact;
 #[cfg(any(target_os = "linux", target_os = "windows", test))]
 mod settings;
 #[cfg(test)]
 mod tests;
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use tokio::sync::oneshot;
 
 use super::{
-    CaptureSourceId, ExactBoxList, ExactBoxNode, ScreenCommittedState, ScreenPreparedWorkerToken,
+    ExactBoxList, ExactBoxNode, ScreenCommittedState, ScreenPreparedWorkerToken,
     ScreenPublicationHub, ScreenWorkerBinding, ScreenWorkerBindingState, ScreenWorkerPreparation,
     ScreenWorkerPreparationTicket, ScreenWorkerRetirement,
 };
 
+pub(in crate::input::screen) use exact::{
+    CaptureExactPublicationShared, CaptureOwnedSource, CapturePublicationSource,
+    CaptureSessionAuthority,
+};
 #[cfg(any(target_os = "linux", target_os = "windows", test))]
 pub(in crate::input::screen) use settings::VersionedCaptureSettings;
 
 pub enum CaptureExactCommand {
     Prepare {
+        authority: CaptureSessionAuthority,
         ticket: ScreenWorkerPreparationTicket,
         cancelled: Arc<AtomicBool>,
         completion: oneshot::Sender<anyhow::Result<ScreenPreparedWorkerToken>>,
     },
     Reap {
+        authority: CaptureSessionAuthority,
         completion: Option<oneshot::Sender<anyhow::Result<()>>>,
     },
 }
@@ -120,9 +127,29 @@ impl<R> CaptureExactRuntimeCollection<R> for [R] {
 pub trait CaptureExactCommandEndpoint: Clone + Send + 'static {
     const SOURCE_NAME: &'static str;
 
+    fn authority(&self) -> CaptureSessionAuthority;
+
     fn send_exact(&self, command: CaptureExactCommand) -> Result<(), CaptureExactCommandRejected>;
 
     fn wake(&self) {}
+}
+
+fn exact_preparation_abort<E>(
+    endpoint: E,
+    authority: CaptureSessionAuthority,
+    cancelled: Arc<AtomicBool>,
+) -> impl FnOnce()
+where
+    E: CaptureExactCommandEndpoint,
+{
+    move || {
+        cancelled.store(true, Ordering::Release);
+        let _ = endpoint.send_exact(CaptureExactCommand::Reap {
+            authority,
+            completion: None,
+        });
+        endpoint.wake();
+    }
 }
 
 pub fn begin_capture_exact_preparation<E>(
@@ -134,8 +161,10 @@ where
 {
     let cancelled = Arc::new(AtomicBool::new(false));
     let (completion, completed) = oneshot::channel();
+    let authority = endpoint.authority();
     endpoint
         .send_exact(CaptureExactCommand::Prepare {
+            authority,
             ticket,
             cancelled: Arc::clone(&cancelled),
             completion,
@@ -147,7 +176,7 @@ where
             )
         })?;
     endpoint.wake();
-    let abort = endpoint.clone();
+    let abort = exact_preparation_abort(endpoint.clone(), authority, cancelled);
     Ok(ScreenWorkerPreparation::with_abort(
         async move {
             completed.await.map_err(|_| {
@@ -157,11 +186,7 @@ where
                 )
             })?
         },
-        move || {
-            cancelled.store(true, Ordering::Release);
-            let _ = abort.send_exact(CaptureExactCommand::Reap { completion: None });
-            abort.wake();
-        },
+        abort,
     ))
 }
 
@@ -172,6 +197,7 @@ where
     let (completion, completed) = oneshot::channel();
     if endpoint
         .send_exact(CaptureExactCommand::Reap {
+            authority: endpoint.authority(),
             completion: Some(completion),
         })
         .is_err()
@@ -210,6 +236,7 @@ pub fn execute_capture_exact_command<S, O, R, C>(
 {
     match command {
         CaptureExactCommand::Prepare {
+            authority,
             ticket,
             cancelled,
             completion,
@@ -221,17 +248,43 @@ pub fn execute_capture_exact_command<S, O, R, C>(
                 )));
                 return;
             }
-            let source = shared.source();
+            let Some(source) = shared.with_current_source(authority, |source| source) else {
+                let _ = completion.send(Err(anyhow::anyhow!(
+                    "{} exact publication authority is stale",
+                    R::BACKEND_NAME
+                )));
+                return;
+            };
             match prepare(ticket, source.as_ref()) {
                 Ok((token, runtime)) if !cancelled.load(Ordering::Acquire) => {
-                    if let Some((runtime, owned_source)) = runtime {
-                        let runtime = C::prepare(runtime);
-                        let owned_source = ExactBoxList::boxed_node(owned_source);
-                        shared.register_owned_source(owned_source);
-                        runtimes.install(runtime);
-                    }
-                    if completion.send(Ok(token)).is_err() {
-                        reap_capture_exact_runtimes(runtimes, shared);
+                    let runtime = runtime.map(|(runtime, owned_source)| {
+                        (C::prepare(runtime), ExactBoxList::boxed_node(owned_source))
+                    });
+                    let mut completion = Some(completion);
+                    let committed = shared.with_current_owned_sources(authority, |owned_sources| {
+                        if let Some((runtime, owned_source)) = runtime {
+                            owned_sources.push_boxed(owned_source);
+                            runtimes.install(runtime);
+                        }
+                        completion
+                            .take()
+                            .expect("exact preparation completion is sent once")
+                            .send(Ok(token))
+                    });
+                    match committed {
+                        Some(Ok(())) => {}
+                        Some(Err(_)) => {
+                            reap_capture_exact_runtimes(authority, runtimes, shared);
+                        }
+                        None => {
+                            let _ = completion
+                                .take()
+                                .expect("stale exact preparation retains its completion")
+                                .send(Err(anyhow::anyhow!(
+                                    "{} exact publication authority changed during preparation",
+                                    R::BACKEND_NAME
+                                )));
+                        }
                     }
                 }
                 Ok((_token, _runtime)) => {
@@ -245,8 +298,11 @@ pub fn execute_capture_exact_command<S, O, R, C>(
                 }
             }
         }
-        CaptureExactCommand::Reap { completion } => {
-            reap_capture_exact_runtimes(runtimes, shared);
+        CaptureExactCommand::Reap {
+            authority,
+            completion,
+        } => {
+            reap_capture_exact_runtimes(authority, runtimes, shared);
             if let Some(completion) = completion {
                 let _ = completion.send(Ok(()));
             }
@@ -255,6 +311,7 @@ pub fn execute_capture_exact_command<S, O, R, C>(
 }
 
 pub fn reap_capture_exact_runtimes<S, O, R, C>(
+    session_authority: CaptureSessionAuthority,
     runtimes: &mut C,
     shared: &CaptureExactPublicationShared<S, O>,
 ) where
@@ -263,7 +320,9 @@ pub fn reap_capture_exact_runtimes<S, O, R, C>(
     R: CaptureExactRuntimeOwner,
     C: CaptureExactRuntimeStore<R>,
 {
-    shared.reap_owned_sources();
+    if !shared.reap_owned_sources_if_current(session_authority) {
+        return;
+    }
     let authority = shared.hub().map(|hub| hub.committed_state());
     runtimes.retain(|runtime| {
         authority
@@ -315,144 +374,6 @@ where
             && runtime.binding().is_same(&current_binding)
             && runtime.is_bound()
     }))
-}
-
-pub trait CapturePublicationSource: Clone + PartialEq {
-    fn source_id(&self) -> &CaptureSourceId;
-}
-
-pub trait CaptureOwnedSource {
-    fn source_id(&self) -> &CaptureSourceId;
-
-    fn belongs_to_authority(&self, authority: &ScreenCommittedState) -> bool;
-}
-
-pub struct CaptureExactPublicationShared<S, O> {
-    source: Mutex<Option<S>>,
-    owned_sources: Mutex<ExactBoxList<O>>,
-    hub: Mutex<Option<Arc<ScreenPublicationHub>>>,
-    resolution_revision: AtomicU64,
-}
-
-impl<S, O> Default for CaptureExactPublicationShared<S, O> {
-    fn default() -> Self {
-        Self {
-            source: Mutex::new(None),
-            owned_sources: Mutex::new(ExactBoxList::default()),
-            hub: Mutex::new(None),
-            resolution_revision: AtomicU64::new(0),
-        }
-    }
-}
-
-impl<S, O> CaptureExactPublicationShared<S, O>
-where
-    S: CapturePublicationSource,
-    O: CaptureOwnedSource,
-{
-    pub fn replace_source(&self, next: Option<S>) -> bool {
-        let mut source = self
-            .source
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if *source == next {
-            return false;
-        }
-        *source = next;
-        self.resolution_revision
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |revision| {
-                revision.checked_add(1)
-            })
-            .expect("screen publication resolution revision exhausted");
-        true
-    }
-
-    pub fn source(&self) -> Option<S> {
-        self.source
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-    }
-
-    pub fn install_hub(&self, hub: Arc<ScreenPublicationHub>) {
-        *self
-            .hub
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(hub);
-    }
-
-    pub fn hub(&self) -> Option<Arc<ScreenPublicationHub>> {
-        self.hub
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-    }
-
-    pub fn resolution_revision(&self) -> u64 {
-        self.resolution_revision.load(Ordering::Acquire)
-    }
-
-    pub fn advance_resolution_revision(&self) {
-        self.resolution_revision
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |revision| {
-                revision.checked_add(1)
-            })
-            .expect("screen publication resolution revision exhausted");
-    }
-
-    pub fn owns_source(&self, source_id: &CaptureSourceId) -> bool {
-        self.source()
-            .is_some_and(|source| source.source_id() == source_id)
-            || self
-                .owned_sources
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .iter()
-                .any(|owned| owned.source_id() == source_id)
-    }
-
-    pub fn register_owned_source(&self, source: Box<ExactBoxNode<O>>) {
-        self.owned_sources
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push_boxed(source);
-    }
-
-    pub fn reap_owned_sources(&self) {
-        let authority = self.hub().map(|hub| hub.committed_state());
-        self.owned_sources
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .retain(|source| {
-                authority
-                    .as_ref()
-                    .is_some_and(|authority| source.belongs_to_authority(authority))
-            });
-    }
-
-    #[cfg(any(target_os = "linux", test))]
-    pub fn retain_owned_sources(&self, retain: impl FnMut(&mut O) -> bool) {
-        self.owned_sources
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .retain(retain);
-    }
-
-    pub fn clear_owned_sources(&self) {
-        self.owned_sources
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clear();
-    }
-
-    #[cfg(test)]
-    pub fn owned_source_count(&self) -> usize {
-        self.owned_sources
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .iter()
-            .count()
-    }
 }
 
 pub trait CapturePublicationFence<E> {

@@ -1,12 +1,12 @@
 use super::admission::prepare_macos_exact_runtime;
 use super::publication::{capture_source_id, publish_frame};
 use super::{
-    Arc, AtomicBool, CaptureWorker, MacosCaptureControl, MacosExactPublicationShared,
-    MacosExactRuntime, MacosFrameEvent, MacosFrameMailbox, MacosFrameStatus, MacosPublication,
-    MacosScreenRuntimeTelemetry, Mutex, Ordering, PreparedWorker, ResourceState,
-    ScreenPublicationHealth, ScreenPublicationHub, ScreenPublicationHubError, ScreenWorkerBinding,
-    SourceSessionSlot, StagedCaptureWorker, TopologyState, WORKER_WAIT, WorkerCommand,
-    execute_capture_exact_command, mpsc,
+    Arc, AtomicBool, CaptureSessionAuthority, CaptureWorker, MacosCaptureControl,
+    MacosExactPublicationShared, MacosExactRuntime, MacosFrameEvent, MacosFrameMailbox,
+    MacosFrameStatus, MacosPublication, MacosScreenRuntimeTelemetry, Mutex, Ordering,
+    PreparedWorker, ResourceState, ScreenPublicationHealth, ScreenPublicationHub,
+    ScreenPublicationHubError, ScreenWorkerBinding, SourceSessionSlot, StagedCaptureWorker,
+    TopologyState, WORKER_WAIT, WorkerCommand, execute_capture_exact_command, mpsc,
 };
 #[cfg(feature = "macos-capture-fixtures")]
 use super::{InputSource, lock};
@@ -219,8 +219,9 @@ pub(super) fn run_worker(
         Ok(())
     })();
     let invalidation = invalidate_macos_worker(&exact, &exact_runtimes);
-    exact.replace_source(None);
-    exact.clear_owned_sources();
+    let authority = CaptureSessionAuthority::new(worker_generation);
+    exact.replace_current_source(authority, None);
+    exact.clear_owned_sources_if_current(authority);
     exact_runtimes.clear();
     telemetry.pinned_generations.store(0, Ordering::Release);
     #[cfg(feature = "macos-capture-fixtures")]

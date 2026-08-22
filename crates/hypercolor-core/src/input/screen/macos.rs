@@ -73,7 +73,7 @@ use crate::input::{SourceIssue, SourceStatusHandle, SourceStatusReporter};
 use super::adapter::{
     CaptureExactCommand, CaptureExactCommandEndpoint, CaptureExactCommandRejected,
     CaptureExactPublicationShared, CaptureExactRuntimeOwner, CaptureOwnedSource,
-    CapturePublication, CapturePublicationFence, CapturePublicationSource,
+    CapturePublication, CapturePublicationFence, CapturePublicationSource, CaptureSessionAuthority,
     begin_capture_exact_preparation, begin_capture_exact_retirement, execute_capture_exact_command,
 };
 
@@ -341,6 +341,7 @@ struct PreparedWorker {
 }
 
 struct CaptureWorker {
+    authority: CaptureSessionAuthority,
     stop: Arc<AtomicBool>,
     mailbox: MacosFrameMailbox,
     command_tx: mpsc::Sender<WorkerCommand>,
@@ -350,12 +351,17 @@ struct CaptureWorker {
 
 #[derive(Clone)]
 struct MacosExactCommandEndpoint {
+    authority: CaptureSessionAuthority,
     command_tx: mpsc::Sender<WorkerCommand>,
     mailbox: MacosFrameMailbox,
 }
 
 impl CaptureExactCommandEndpoint for MacosExactCommandEndpoint {
     const SOURCE_NAME: &'static str = "macOS capture";
+
+    fn authority(&self) -> CaptureSessionAuthority {
+        self.authority
+    }
 
     fn send_exact(&self, command: CaptureExactCommand) -> Result<(), CaptureExactCommandRejected> {
         self.command_tx
@@ -371,6 +377,7 @@ impl CaptureExactCommandEndpoint for MacosExactCommandEndpoint {
 impl CaptureWorker {
     fn exact_command_endpoint(&self) -> MacosExactCommandEndpoint {
         MacosExactCommandEndpoint {
+            authority: self.authority,
             command_tx: self.command_tx.clone(),
             mailbox: self.mailbox.clone(),
         }

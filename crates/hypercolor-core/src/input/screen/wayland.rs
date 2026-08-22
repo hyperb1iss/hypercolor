@@ -60,7 +60,7 @@ use hypercolor_worker_retention::{retain_worker, spawn_worker};
 use super::adapter::{
     CaptureExactCommand, CaptureExactCommandEndpoint, CaptureExactCommandRejected,
     CaptureExactPublicationShared, CaptureExactRuntimeOwner, CaptureOwnedSource,
-    CapturePublication, CapturePublicationFence, CapturePublicationSource,
+    CapturePublication, CapturePublicationFence, CapturePublicationSource, CaptureSessionAuthority,
     VersionedCaptureSettings, begin_capture_exact_preparation, begin_capture_exact_retirement,
     bind_current_capture_exact_runtime, execute_capture_exact_command,
 };
@@ -606,6 +606,13 @@ impl Deref for WaylandExactPublicationShared {
 }
 
 impl WaylandExactPublicationShared {
+    #[cfg(test)]
+    fn register_test_owned_source(&self, source: Box<ExactBoxNode<WaylandOwnedSource>>) -> bool {
+        let authority = CaptureSessionAuthority::new(source.value().session_generation);
+        drop(self.activate_authority(authority));
+        self.register_owned_source_if_current(authority, source)
+    }
+
     fn cpu_executor(&self) -> anyhow::Result<Arc<CpuReductionExecutor>> {
         let mut executor = self
             .cpu_executor
@@ -1248,12 +1255,18 @@ impl SharedSettings {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let session_generation = self
             .session_generation
-            .fetch_add(1, Ordering::AcqRel)
-            .wrapping_add(1);
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |generation| {
+                generation.checked_add(1)
+            })
+            .expect("Wayland capture session generation exhausted")
+            + 1;
         let displaced = publication.replace_fence(WaylandPublicationFence(None));
+        let displaced_exact = self
+            .exact
+            .activate_authority(CaptureSessionAuthority::new(session_generation));
         drop(publication);
         drop(session_guard);
-        drop(displaced);
+        drop((displaced, displaced_exact));
         session_generation
     }
 
@@ -1274,7 +1287,7 @@ impl SharedSettings {
         if cancel.load(Ordering::Acquire) {
             return None;
         }
-        let successor_generation = session_generation.wrapping_add(1);
+        let successor_generation = session_generation.checked_add(1)?;
         self.session_generation
             .compare_exchange(
                 session_generation,
@@ -1284,11 +1297,12 @@ impl SharedSettings {
             )
             .ok()?;
         let displaced = publication.replace_fence(WaylandPublicationFence(None));
-        self.exact.replace_source(None);
+        let successor_authority = CaptureSessionAuthority::new(successor_generation);
+        let displaced_exact = self.exact.activate_authority(successor_authority);
         active_session_generation.store(successor_generation, Ordering::Release);
         drop(publication);
         drop(session_guard);
-        drop(displaced);
+        drop((displaced, displaced_exact));
         Some(successor_generation)
     }
 
@@ -1316,7 +1330,8 @@ impl SharedSettings {
         } else {
             None
         };
-        self.exact.replace_source(None);
+        self.exact
+            .replace_source_if_current(CaptureSessionAuthority::new(session_generation), None);
         drop(publication);
         drop(session_guard);
         drop(displaced);
@@ -1460,9 +1475,13 @@ impl SharedSettings {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .replace_fence(WaylandPublicationFence(None))
         };
+        let session_generation = self.session_generation.load(Ordering::Acquire);
+        let displaced_source = (session_generation != 0).then(|| {
+            self.exact
+                .replace_source_if_current(CaptureSessionAuthority::new(session_generation), None)
+        });
         drop(session_guard);
-        drop(displaced);
-        self.exact.replace_source(None);
+        drop((displaced, displaced_source));
     }
 
     fn invalidate_session(&self, session_generation: u64) -> bool {
@@ -1483,7 +1502,8 @@ impl SharedSettings {
             return false;
         }
         let displaced = publication.replace_fence(WaylandPublicationFence(None));
-        self.exact.replace_source(None);
+        self.exact
+            .replace_source_if_current(CaptureSessionAuthority::new(session_generation), None);
         drop(publication);
         drop(session_guard);
         drop(displaced);
@@ -2172,7 +2192,16 @@ impl InputSource for WaylandScreenCaptureInput {
             self.settings.clear_expected_epoch();
         }
         self.reap_workers(true);
-        self.settings.exact.clear_owned_sources();
+        let session_generation = self.settings.session_generation.load(Ordering::Acquire);
+        if session_generation != 0 {
+            let authority = CaptureSessionAuthority::new(session_generation);
+            self.settings
+                .exact
+                .clear_owned_sources_if_current(authority);
+            self.settings
+                .exact
+                .replace_source_if_current(authority, None);
+        }
 
         let latest = self
             .publication
@@ -2180,7 +2209,6 @@ impl InputSource for WaylandScreenCaptureInput {
             .ok()
             .and_then(|mut publication| publication.clear_latest());
         drop(latest);
-        self.settings.exact.replace_source(None);
     }
 
     fn sample(&mut self) -> anyhow::Result<InputData> {
@@ -2410,10 +2438,15 @@ struct WaylandCaptureWorker {
 #[derive(Clone)]
 struct WaylandExactCommandEndpoint {
     command_tx: LoopSender<WorkerCommand>,
+    session_generation: Arc<AtomicU64>,
 }
 
 impl CaptureExactCommandEndpoint for WaylandExactCommandEndpoint {
     const SOURCE_NAME: &'static str = "Wayland capture";
+
+    fn authority(&self) -> CaptureSessionAuthority {
+        CaptureSessionAuthority::new(self.session_generation.load(Ordering::Acquire))
+    }
 
     fn send_exact(&self, command: CaptureExactCommand) -> Result<(), CaptureExactCommandRejected> {
         self.command_tx
@@ -2426,6 +2459,7 @@ impl WaylandCaptureWorker {
     fn exact_command_endpoint(&self) -> WaylandExactCommandEndpoint {
         WaylandExactCommandEndpoint {
             command_tx: self.command_tx.clone(),
+            session_generation: Arc::clone(&self.session_generation),
         }
     }
 }
@@ -3788,7 +3822,10 @@ impl WaylandAnalysisState {
             .expected_epoch()
             .ok_or_else(|| anyhow!("Wayland capture epoch is not active"))?;
         frame.validate_epoch(&expected)?;
-        self.settings.exact.replace_source(Some(publication_source));
+        self.settings.exact.replace_source_if_current(
+            CaptureSessionAuthority::new(self.source.session_generation),
+            Some(publication_source),
+        );
         Ok(frame)
     }
 
@@ -3800,9 +3837,10 @@ impl WaylandAnalysisState {
 
 impl Drop for WaylandAnalysisState {
     fn drop(&mut self) {
-        self.settings.exact.retain_owned_sources(|source| {
-            source.session_generation != self.source.session_generation
-        });
+        self.settings.exact.retain_owned_sources_if_current(
+            CaptureSessionAuthority::new(self.source.session_generation),
+            |source| source.session_generation != self.source.session_generation,
+        );
     }
 }
 
@@ -4617,7 +4655,7 @@ fn run_pipewire_loop(
                                     "Wayland analysis worker rejected exact publication preparation"
                                 )));
                             }
-                            CaptureExactCommand::Reap { completion } => {
+                            CaptureExactCommand::Reap { completion, .. } => {
                                 let Some(completion) = completion else {
                                     return CallbackAction::Continue;
                                 };

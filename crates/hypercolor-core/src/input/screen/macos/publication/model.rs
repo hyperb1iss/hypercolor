@@ -1,9 +1,9 @@
 #[cfg(feature = "macos-capture-fixtures")]
 use super::super::{Arc, CpuReductionExecutor, NonZeroU32, NonZeroUsize, lock, thread};
 use super::super::{
-    CaptureEpoch, CaptureRotation, CaptureSourceId, Instant, MacosCaptureFrame,
-    MacosExactPublicationShared, MacosExactRuntime, MacosPublicationSource, PixelExtent, PixelRect,
-    PlatformGpuApi, ResolvedScreenSource, ResolvedScreenSourceConfig,
+    CaptureEpoch, CaptureRotation, CaptureSessionAuthority, CaptureSourceId, Instant,
+    MacosCaptureFrame, MacosExactPublicationShared, MacosExactRuntime, MacosPublicationSource,
+    PixelExtent, PixelRect, PlatformGpuApi, ResolvedScreenSource, ResolvedScreenSourceConfig,
     ScreenBackendResourceIdentity, ScreenCaptureBackend, ScreenCommittedState,
     ScreenComputeCapacityPolicy, ScreenCursorCapabilities, ScreenPhysicalGpuDeviceIdentity,
     ScreenPublicationHub, ScreenResourceApi, ScreenSourceReflection, ScreenSourceSelector,
@@ -152,18 +152,39 @@ impl MacosExactPublicationShared {
         self.common.advance_resolution_revision();
     }
 
-    pub(in crate::input::screen::macos) fn replace_source(
+    pub(in crate::input::screen::macos) fn replace_current_source(
         &self,
+        authority: CaptureSessionAuthority,
         next: Option<MacosPublicationSource>,
     ) {
         let installed = next.is_some();
-        if self.common.replace_source(next) {
+        if self.common.replace_source_if_current(authority, next) {
             tracing::debug!(
                 shared = ?std::ptr::from_ref(self),
                 installed,
                 "macOS exact publication source changed"
             );
         }
+    }
+
+    #[cfg(test)]
+    pub(in crate::input::screen::macos) fn install_test_source(
+        &self,
+        next: Option<MacosPublicationSource>,
+    ) {
+        let authority = CaptureSessionAuthority::new(1);
+        drop(self.activate_authority(authority));
+        self.replace_current_source(authority, next);
+    }
+
+    #[cfg(test)]
+    pub(in crate::input::screen::macos) fn register_test_owned_source(
+        &self,
+        source: Box<crate::input::screen::ExactBoxNode<super::super::MacosOwnedSource>>,
+    ) -> bool {
+        let authority = CaptureSessionAuthority::new(1);
+        drop(self.activate_authority(authority));
+        self.register_owned_source_if_current(authority, source)
     }
 
     #[cfg(feature = "macos-capture-fixtures")]

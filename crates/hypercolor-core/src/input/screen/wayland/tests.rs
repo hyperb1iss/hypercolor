@@ -19,7 +19,7 @@ use super::{
     settle_pipewire_restoration, unavailable_format_outcome, wait_for_adoption_result,
     worker_demand_epoch, worker_demanded,
 };
-use crate::input::screen::adapter::reap_capture_exact_runtimes;
+use crate::input::screen::adapter::{CaptureSessionAuthority, reap_capture_exact_runtimes};
 use crate::input::screen::{
     AnalyzedScreenSnapshot, CaptureColorimetry, CaptureConfig, CaptureFrame, CaptureFrameError,
     CaptureRotation, CaptureSourceId, InputPublicationDemandRevision,
@@ -37,6 +37,8 @@ use crate::input::{SourceIssue, SourceKind, SourceState, SourceStatusReporter};
 
 fn settings(session_generation: u64) -> Arc<SharedSettings> {
     let publication = Arc::new(Mutex::new(WaylandCapturePublication::default()));
+    let exact = WaylandExactPublicationShared::default();
+    drop(exact.activate_authority(CaptureSessionAuthority::new(session_generation)));
     Arc::new(SharedSettings {
         values: VersionedCaptureSettings::new(CaptureConfig::default(), active_demand()),
         admission_coordinator: ScreenByteAdmissionCoordinator::default(),
@@ -46,7 +48,7 @@ fn settings(session_generation: u64) -> Arc<SharedSettings> {
         session_generation: session_generation.into(),
         session_guard: Mutex::new(()),
         publication,
-        exact: WaylandExactPublicationShared::default(),
+        exact,
     })
 }
 
@@ -466,7 +468,7 @@ fn exact_runtime_publishes_surface_and_zones_from_one_captured_frame() {
         .push_boxed(super::WaylandExactRuntimes::boxed_node(runtime));
     settings
         .exact
-        .register_owned_source(crate::input::screen::ExactBoxList::boxed_node(owned_source));
+        .register_test_owned_source(crate::input::screen::ExactBoxList::boxed_node(owned_source));
     preparing
         .acknowledge(token)
         .expect("exact worker token belongs to the candidate plan");
@@ -557,7 +559,7 @@ fn exact_runtime_publishes_surface_and_zones_from_one_captured_frame() {
         .push_boxed(super::WaylandExactRuntimes::boxed_node(retained_runtime));
     settings
         .exact
-        .register_owned_source(crate::input::screen::ExactBoxList::boxed_node(
+        .register_test_owned_source(crate::input::screen::ExactBoxList::boxed_node(
             retained_owned_source,
         ));
     retained_preparing
@@ -584,7 +586,11 @@ fn exact_runtime_publishes_surface_and_zones_from_one_captured_frame() {
         retained_runtime_binding.state(),
         ScreenWorkerBindingState::Retired
     );
-    reap_capture_exact_runtimes(&mut worker.exact_runtimes, &settings.exact);
+    reap_capture_exact_runtimes(
+        CaptureSessionAuthority::new(source.epoch.session_generation),
+        &mut worker.exact_runtimes,
+        &settings.exact,
+    );
     assert_eq!(worker.exact_runtimes.iter().count(), 1);
 
     let retained_frame = capture_raw(&mut worker, 4, 2, 29);
@@ -638,7 +644,7 @@ fn exact_runtime_publishes_surface_and_zones_from_one_captured_frame() {
         .push_boxed(super::WaylandExactRuntimes::boxed_node(mixed_runtime));
     settings
         .exact
-        .register_owned_source(crate::input::screen::ExactBoxList::boxed_node(
+        .register_test_owned_source(crate::input::screen::ExactBoxList::boxed_node(
             mixed_owned_source,
         ));
     mixed_preparing
@@ -661,7 +667,11 @@ fn exact_runtime_publishes_surface_and_zones_from_one_captured_frame() {
             .committed_state()
             .owns_runtime_binding(&mixed_runtime_binding)
     );
-    reap_capture_exact_runtimes(&mut worker.exact_runtimes, &settings.exact);
+    reap_capture_exact_runtimes(
+        CaptureSessionAuthority::new(source.epoch.session_generation),
+        &mut worker.exact_runtimes,
+        &settings.exact,
+    );
     assert_eq!(worker.exact_runtimes.iter().count(), 1);
 
     let mixed_frame = capture_raw(&mut worker, 4, 2, 31);
@@ -696,7 +706,10 @@ fn exact_runtime_publishes_surface_and_zones_from_one_captured_frame() {
     drop(mixed_plan);
 
     let owned_source_id = source.epoch.source_id.clone();
-    settings.exact.replace_source(None);
+    settings.exact.replace_source_if_current(
+        CaptureSessionAuthority::new(source.epoch.session_generation),
+        None,
+    );
     assert!(settings.exact.owns_source(&owned_source_id));
     let retirement_revision = mixed_revision.next().expect("test revision advances");
     let mut preparing = builder
@@ -735,7 +748,11 @@ fn exact_runtime_publishes_surface_and_zones_from_one_captured_frame() {
         .commit(armed, retirement_revision, graph_generation)
         .unwrap_or_else(|failure| panic!("empty successor plan commits: {}", failure.error()));
     let (_, retirement) = committed.into_parts();
-    reap_capture_exact_runtimes(&mut worker.exact_runtimes, &settings.exact);
+    reap_capture_exact_runtimes(
+        CaptureSessionAuthority::new(source.epoch.session_generation),
+        &mut worker.exact_runtimes,
+        &settings.exact,
+    );
     assert!(!settings.exact.owns_source(&owned_source_id));
     assert_eq!(worker.exact_runtimes.iter().count(), 0);
     for retirement in [retained_retirement, mixed_retirement, retirement] {
@@ -782,6 +799,7 @@ fn already_cancelled_exact_preparation_never_creates_runtime_state() {
     let (completion, completed) = tokio::sync::oneshot::channel();
 
     worker.handle_exact_command(CaptureExactCommand::Prepare {
+        authority: CaptureSessionAuthority::new(source.epoch.session_generation),
         ticket,
         cancelled: Arc::new(AtomicBool::new(true)),
         completion,
@@ -855,6 +873,17 @@ fn stale_worker_cannot_overwrite_the_successor_snapshot() {
     let current = capture_legacy(&mut active, 2, 1, 2);
     assert!(settings.publish_snapshot(current));
     assert!(!settings.publish_snapshot(stale));
+    drop(retiring);
+
+    assert_eq!(
+        settings
+            .exact
+            .source()
+            .expect("successor exact source remains installed")
+            .epoch
+            .session_generation,
+        active_session
+    );
 
     let published = latest
         .lock()
@@ -2117,7 +2146,10 @@ fn analysis_exchange_prioritizes_exact_control_over_ready_pixels() {
     );
     assert!(
         exchange
-            .send_exact(CaptureExactCommand::Reap { completion: None })
+            .send_exact(CaptureExactCommand::Reap {
+                authority: CaptureSessionAuthority::new(1),
+                completion: None,
+            })
             .is_ok()
     );
 

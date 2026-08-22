@@ -22,7 +22,7 @@ use super::{
     windows_gpu_retry_at,
 };
 use crate::input::screen::adapter::{
-    bind_current_capture_exact_runtime, reap_capture_exact_runtimes,
+    CaptureSessionAuthority, bind_current_capture_exact_runtime, reap_capture_exact_runtimes,
 };
 
 #[test]
@@ -571,7 +571,7 @@ fn exact_runtime_identity_survives_retention_mixed_publication_and_removal() {
     let hub = builder.publication_hub();
     let exact = ExactPublicationShared::default();
     exact.install_hub(Arc::clone(&hub));
-    exact.replace_source(Some(source.clone()));
+    exact.install_test_source(Some(source.clone()));
     let mut runtimes = WindowsExactRuntimes::default();
 
     let initial_revision = builder
@@ -648,7 +648,7 @@ fn exact_runtime_identity_survives_retention_mixed_publication_and_removal() {
         .1
         .try_reclaim()
         .expect("initial plan retires no exact runtime resources");
-    reap_capture_exact_runtimes(&mut runtimes, &exact);
+    reap_capture_exact_runtimes(CaptureSessionAuthority::new(1), &mut runtimes, &exact);
     let selected = bind_current_capture_exact_runtime(&mut runtimes, &source, &hub, |_, _| Ok(()))
         .expect("initial runtime binds")
         .expect("initial committed runtime is selected");
@@ -709,7 +709,7 @@ fn exact_runtime_identity_survives_retention_mixed_publication_and_removal() {
         .commit(armed, retained_revision, graph_generation)
         .unwrap_or_else(|failure| panic!("retained-only plan commits: {}", failure.error()));
     let (_, retained_retirement) = committed.into_parts();
-    reap_capture_exact_runtimes(&mut runtimes, &exact);
+    reap_capture_exact_runtimes(CaptureSessionAuthority::new(1), &mut runtimes, &exact);
     assert_eq!(runtimes.iter().count(), 1);
     let selected = bind_current_capture_exact_runtime(&mut runtimes, &source, &hub, |_, _| Ok(()))
         .expect("retained-only runtime binds")
@@ -788,7 +788,7 @@ fn exact_runtime_identity_survives_retention_mixed_publication_and_removal() {
         .commit(armed, mixed_revision, graph_generation)
         .unwrap_or_else(|failure| panic!("mixed plan commits: {}", failure.error()));
     let (_, mixed_retirement) = committed.into_parts();
-    reap_capture_exact_runtimes(&mut runtimes, &exact);
+    reap_capture_exact_runtimes(CaptureSessionAuthority::new(1), &mut runtimes, &exact);
     assert_eq!(runtimes.iter().count(), 1);
     let selected = bind_current_capture_exact_runtime(&mut runtimes, &source, &hub, |_, _| Ok(()))
         .expect("mixed runtime binds")
@@ -886,7 +886,7 @@ fn exact_runtime_identity_survives_retention_mixed_publication_and_removal() {
         .commit(armed, removal_revision, graph_generation)
         .unwrap_or_else(|failure| panic!("removal plan commits: {}", failure.error()));
     let (_, retirement) = committed.into_parts();
-    reap_capture_exact_runtimes(&mut runtimes, &exact);
+    reap_capture_exact_runtimes(CaptureSessionAuthority::new(1), &mut runtimes, &exact);
     assert_eq!(runtimes.iter().count(), 0);
     assert!(
         builder
@@ -993,7 +993,7 @@ fn large_native_source_admits_the_gpu_reduced_analysis_plane() {
     source.logical_extent = source.native_extent;
     source.rotation = CaptureRotation::Identity;
     let input = WindowsScreenCaptureInput::new(CaptureConfig::default());
-    input.exact.replace_source(Some(source));
+    input.exact.install_test_source(Some(source));
 
     let prepared = input
         .prepare_active_settings(CaptureConfig::default(), 0, active_demand())
@@ -1019,7 +1019,7 @@ fn calibrated_analysis_capacity_rejects_known_work_before_preparation() {
     source.logical_extent = source.native_extent;
     let input =
         WindowsScreenCaptureInput::with_compute_capacity_policy(CaptureConfig::default(), policy);
-    input.exact.replace_source(Some(source));
+    input.exact.install_test_source(Some(source));
 
     let Err(error) = input.prepare_active_settings(CaptureConfig::default(), 0, active_demand())
     else {
@@ -1338,6 +1338,7 @@ fn disconnected_worker_is_reaped_before_activation_retries_once() {
     ready_rx.recv().expect("fake worker is running");
     let disconnected_thread = join_handle.thread().id();
     input.worker = Some(CaptureWorker {
+        authority: CaptureSessionAuthority::new(1),
         command_tx,
         exit_rx,
         join_handle: Some(join_handle),

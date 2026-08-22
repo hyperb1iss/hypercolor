@@ -1,24 +1,42 @@
 use super::{
     CaptureExactCommand, CaptureExactCommandEndpoint, CaptureExactCommandRejected,
-    CaptureExactPublicationShared, CaptureOwnedSource, CapturePublication, CapturePublicationFence,
-    CapturePublicationSource, VersionedCaptureSettings, begin_capture_exact_retirement,
+    CaptureExactPublicationShared, CaptureExactRuntimeCollection, CaptureExactRuntimeOwner,
+    CaptureExactRuntimeStore, CaptureOwnedSource, CapturePublication, CapturePublicationFence,
+    CapturePublicationSource, CaptureSessionAuthority, VersionedCaptureSettings,
+    begin_capture_exact_retirement, exact_preparation_abort, reap_capture_exact_runtimes,
 };
 use crate::input::screen::{
     CaptureSourceId, ExactBoxList, PixelExtent, ScreenCaptureDemand, ScreenCommittedState,
-    ScreenPublicationHub, ScreenPublicationSlotPolicy,
+    ScreenPublicationHub, ScreenPublicationSlotPolicy, ScreenWorkerBinding,
 };
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, Weak};
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct FakeExactEndpoint {
     commands: Arc<Mutex<Vec<CaptureExactCommand>>>,
     wakes: Arc<AtomicUsize>,
+    authority: Arc<AtomicU64>,
     reject: bool,
+}
+
+impl Default for FakeExactEndpoint {
+    fn default() -> Self {
+        Self {
+            commands: Arc::default(),
+            wakes: Arc::default(),
+            authority: Arc::new(AtomicU64::new(1)),
+            reject: false,
+        }
+    }
 }
 
 impl CaptureExactCommandEndpoint for FakeExactEndpoint {
     const SOURCE_NAME: &'static str = "fake capture";
+
+    fn authority(&self) -> CaptureSessionAuthority {
+        CaptureSessionAuthority::new(self.authority.load(Ordering::Acquire))
+    }
 
     fn send_exact(&self, command: CaptureExactCommand) -> Result<(), CaptureExactCommandRejected> {
         if self.reject {
@@ -34,6 +52,35 @@ impl CaptureExactCommandEndpoint for FakeExactEndpoint {
     fn wake(&self) {
         self.wakes.fetch_add(1, Ordering::Relaxed);
     }
+}
+
+#[test]
+fn preparation_abort_reaps_the_authority_that_started_the_transaction() {
+    let endpoint = FakeExactEndpoint::default();
+    let original_authority = endpoint.authority();
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let abort =
+        exact_preparation_abort(endpoint.clone(), original_authority, Arc::clone(&cancelled));
+
+    endpoint.authority.store(2, Ordering::Release);
+    abort();
+
+    assert!(cancelled.load(Ordering::Acquire));
+    let command = endpoint
+        .commands
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .pop()
+        .expect("preparation abort enqueues one exact command");
+    let CaptureExactCommand::Reap {
+        authority,
+        completion: None,
+    } = command
+    else {
+        panic!("preparation abort enqueues a noncompleting reap command");
+    };
+    assert_eq!(authority, original_authority);
+    assert_eq!(endpoint.wakes.load(Ordering::Relaxed), 1);
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -59,6 +106,104 @@ impl CaptureOwnedSource for FakeOwnedSource {
 
     fn belongs_to_authority(&self, _authority: &ScreenCommittedState) -> bool {
         false
+    }
+}
+
+struct ProbeRuntime {
+    source: FakeSource,
+    binding: ScreenWorkerBinding,
+}
+
+impl CaptureExactRuntimeOwner for ProbeRuntime {
+    type Source = FakeSource;
+
+    const BACKEND_NAME: &'static str = "probe capture";
+    const ABORTED_BINDING_ERROR: &'static str = "probe binding aborted";
+
+    fn source(&self) -> &Self::Source {
+        &self.source
+    }
+
+    fn binding(&self) -> &ScreenWorkerBinding {
+        &self.binding
+    }
+
+    fn bind_routes(&mut self, _authority: &ScreenCommittedState) -> anyhow::Result<bool> {
+        Ok(false)
+    }
+
+    fn is_bound(&self) -> bool {
+        false
+    }
+}
+
+struct RetainProbeStore {
+    runtime_count: usize,
+    retain_calls: usize,
+}
+
+impl CaptureExactRuntimeCollection<ProbeRuntime> for RetainProbeStore {
+    fn iter_mut<'a>(&'a mut self) -> impl Iterator<Item = &'a mut ProbeRuntime>
+    where
+        ProbeRuntime: 'a,
+    {
+        std::iter::empty()
+    }
+}
+
+impl CaptureExactRuntimeStore<ProbeRuntime> for RetainProbeStore {
+    type Prepared = ProbeRuntime;
+
+    fn prepare(runtime: ProbeRuntime) -> Self::Prepared {
+        runtime
+    }
+
+    fn install(&mut self, _prepared: Self::Prepared) {
+        self.runtime_count += 1;
+    }
+
+    fn retain(&mut self, _retain: impl FnMut(&ProbeRuntime) -> bool) {
+        self.retain_calls += 1;
+        self.runtime_count = 0;
+    }
+}
+
+struct ReentrantOwnedSource {
+    id: CaptureSourceId,
+    state: Weak<CaptureExactPublicationShared<FakeSource, Self>>,
+    dropped: Arc<AtomicBool>,
+}
+
+struct OrderedDrop {
+    id: u64,
+    drops: Arc<Mutex<Vec<u64>>>,
+}
+
+impl Drop for OrderedDrop {
+    fn drop(&mut self) {
+        self.drops
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(self.id);
+    }
+}
+
+impl CaptureOwnedSource for ReentrantOwnedSource {
+    fn source_id(&self) -> &CaptureSourceId {
+        &self.id
+    }
+
+    fn belongs_to_authority(&self, _authority: &ScreenCommittedState) -> bool {
+        false
+    }
+}
+
+impl Drop for ReentrantOwnedSource {
+    fn drop(&mut self) {
+        if let Some(state) = self.state.upgrade() {
+            let _ = state.source();
+        }
+        self.dropped.store(true, Ordering::Release);
     }
 }
 
@@ -222,6 +367,8 @@ fn publication_requires_current_source_and_activity_before_reactivation() {
 #[test]
 fn exact_publication_state_versions_sources_and_reaps_unowned_incarnations() {
     let state = CaptureExactPublicationShared::<FakeSource, FakeOwnedSource>::default();
+    let first_authority = CaptureSessionAuthority::new(1);
+    let successor_authority = CaptureSessionAuthority::new(2);
     let first = FakeSource {
         id: CaptureSourceId::new("fake:first").expect("test source id is valid"),
         incarnation: 1,
@@ -232,18 +379,23 @@ fn exact_publication_state_versions_sources_and_reaps_unowned_incarnations() {
     };
 
     assert_eq!(state.resolution_revision(), 0);
-    state.replace_source(Some(first.clone()));
+    drop(state.activate_authority(first_authority));
+    assert!(state.is_current_authority(first_authority));
+    state.replace_source_if_current(first_authority, Some(first.clone()));
     assert_eq!(state.resolution_revision(), 1);
-    state.replace_source(Some(first.clone()));
+    state.replace_source_if_current(first_authority, Some(first.clone()));
     assert_eq!(state.resolution_revision(), 1);
     assert!(state.owns_source(&first.id));
 
-    state.register_owned_source(ExactBoxList::boxed_node(FakeOwnedSource {
-        id: first.id.clone(),
-    }));
+    assert!(state.register_owned_source_if_current(
+        first_authority,
+        ExactBoxList::boxed_node(FakeOwnedSource {
+            id: first.id.clone(),
+        }),
+    ));
     assert_eq!(state.owned_source_count(), 1);
-    state.retain_owned_sources(|source| source.id == first.id);
-    state.replace_source(Some(replacement.clone()));
+    assert!(state.retain_owned_sources_if_current(first_authority, |source| source.id == first.id));
+    state.replace_source_if_current(first_authority, Some(replacement.clone()));
     assert_eq!(state.resolution_revision(), 2);
     assert!(state.owns_source(&first.id));
     assert!(state.owns_source(&replacement.id));
@@ -256,19 +408,116 @@ fn exact_publication_state_versions_sources_and_reaps_unowned_incarnations() {
         &state.hub().expect("installed hub remains visible"),
         &hub
     ));
-    state.reap_owned_sources();
+    assert!(state.reap_owned_sources_if_current(first_authority));
     assert!(!state.owns_source(&first.id));
     assert!(state.owns_source(&replacement.id));
-    state.replace_source(None);
+    state.replace_source_if_current(first_authority, None);
     assert_eq!(state.resolution_revision(), 3);
     assert!(!state.owns_source(&replacement.id));
-    state.register_owned_source(ExactBoxList::boxed_node(FakeOwnedSource {
-        id: replacement.id.clone(),
-    }));
+    assert!(state.register_owned_source_if_current(
+        first_authority,
+        ExactBoxList::boxed_node(FakeOwnedSource {
+            id: replacement.id.clone(),
+        }),
+    ));
     assert_eq!(state.owned_source_count(), 1);
-    state.clear_owned_sources();
+    assert!(state.clear_owned_sources_if_current(first_authority));
     assert_eq!(state.owned_source_count(), 0);
     assert!(!state.owns_source(&replacement.id));
+
+    state.replace_source_if_current(first_authority, Some(first.clone()));
+    assert_eq!(state.resolution_revision(), 4);
+    drop(state.activate_authority(successor_authority));
+    assert!(state.is_current_authority(successor_authority));
+    assert_eq!(state.resolution_revision(), 5);
+    assert!(!state.replace_source_if_current(first_authority, Some(replacement.clone())));
+    assert!(!state.register_owned_source_if_current(
+        first_authority,
+        ExactBoxList::boxed_node(FakeOwnedSource {
+            id: replacement.id.clone(),
+        }),
+    ));
+    assert!(!state.clear_owned_sources_if_current(first_authority));
+    assert_eq!(state.resolution_revision(), 5);
+    assert!(state.source().is_none());
+    assert_eq!(state.owned_source_count(), 0);
+}
+
+#[test]
+fn authority_displacement_drops_owned_sources_after_releasing_ledger_locks() {
+    let state = Arc::new(CaptureExactPublicationShared::<
+        FakeSource,
+        ReentrantOwnedSource,
+    >::default());
+    let first_authority = CaptureSessionAuthority::new(1);
+    let successor_authority = CaptureSessionAuthority::new(2);
+    drop(state.activate_authority(first_authority));
+    let dropped = Arc::new(AtomicBool::new(false));
+    assert!(state.register_owned_source_if_current(
+        first_authority,
+        ExactBoxList::boxed_node(ReentrantOwnedSource {
+            id: CaptureSourceId::new("fake:reentrant").expect("test source id is valid"),
+            state: Arc::downgrade(&state),
+            dropped: Arc::clone(&dropped),
+        }),
+    ));
+
+    let displaced = state.activate_authority(successor_authority);
+    assert!(!dropped.load(Ordering::Acquire));
+    drop(displaced);
+    assert!(dropped.load(Ordering::Acquire));
+    assert!(state.is_current_authority(successor_authority));
+}
+
+#[test]
+fn extracted_nodes_keep_their_original_destruction_order() {
+    let drops = Arc::new(Mutex::new(Vec::new()));
+    let mut nodes = ExactBoxList::default();
+    for id in [1, 2, 3] {
+        nodes.push_boxed(ExactBoxList::boxed_node(OrderedDrop {
+            id,
+            drops: Arc::clone(&drops),
+        }));
+    }
+
+    let extracted = nodes.extract_if(|_| true);
+    drop(extracted);
+
+    assert_eq!(
+        *drops
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+        [3, 2, 1]
+    );
+}
+
+#[test]
+fn stale_reap_leaves_successor_owned_sources_and_runtimes_intact() {
+    let state = CaptureExactPublicationShared::<FakeSource, FakeOwnedSource>::default();
+    let stale_authority = CaptureSessionAuthority::new(1);
+    let successor_authority = CaptureSessionAuthority::new(2);
+    drop(state.activate_authority(successor_authority));
+    assert!(state.register_owned_source_if_current(
+        successor_authority,
+        ExactBoxList::boxed_node(FakeOwnedSource {
+            id: CaptureSourceId::new("fake:successor").expect("test source id is valid"),
+        }),
+    ));
+    let mut runtimes = RetainProbeStore {
+        runtime_count: 1,
+        retain_calls: 0,
+    };
+
+    reap_capture_exact_runtimes(stale_authority, &mut runtimes, &state);
+
+    assert_eq!(state.owned_source_count(), 1);
+    assert_eq!(runtimes.runtime_count, 1);
+    assert_eq!(runtimes.retain_calls, 0);
+
+    reap_capture_exact_runtimes(successor_authority, &mut runtimes, &state);
+    assert_eq!(state.owned_source_count(), 0);
+    assert_eq!(runtimes.runtime_count, 0);
+    assert_eq!(runtimes.retain_calls, 1);
 }
 
 #[tokio::test]
@@ -284,6 +533,7 @@ async fn exact_retirement_wakes_the_endpoint_and_reports_completion() {
         .expect("retirement enqueues one exact command");
     let CaptureExactCommand::Reap {
         completion: Some(completion),
+        ..
     } = command
     else {
         panic!("retirement enqueues a completing reap command");

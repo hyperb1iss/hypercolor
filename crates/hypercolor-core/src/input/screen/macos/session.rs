@@ -20,11 +20,11 @@ use crate::input::{SourceKind, SourceStatusReporter};
 
 use super::status::protected_screen_action_issue;
 use super::{
-    CaptureConfig, CaptureWorker, MacosCaptureControl, MacosExactPublicationShared,
-    MacosPublication, MacosScreenCaptureInput, MacosScreenRuntimeTelemetry, PixelExtent,
-    PreparedWorker, ScreenByteAdmissionCoordinator, ScreenCaptureDemand,
-    ScreenComputeCapacityPolicy, StagedCaptureWorker, color_space_name, dynamic_range_name,
-    executable_architecture, frame_drop_counters, lock, map_tahoe_capabilities,
+    CaptureConfig, CaptureSessionAuthority, CaptureWorker, MacosCaptureControl,
+    MacosExactPublicationShared, MacosPublication, MacosScreenCaptureInput,
+    MacosScreenRuntimeTelemetry, PixelExtent, PreparedWorker, ScreenByteAdmissionCoordinator,
+    ScreenCaptureDemand, ScreenComputeCapacityPolicy, StagedCaptureWorker, color_space_name,
+    dynamic_range_name, executable_architecture, frame_drop_counters, lock, map_tahoe_capabilities,
     map_tahoe_selection_capabilities, nonzero_telemetry, pixel_format_name,
     production_stream_request, run_worker, timing_status, transfer_function_name,
 };
@@ -371,6 +371,7 @@ impl MacosScreenCaptureInput {
         let telemetry = Arc::clone(&self.telemetry);
         let status_session = self.status_session.clone();
         let target_fps = prepared.target_fps;
+        let authority = CaptureSessionAuthority::new(worker_generation);
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = Arc::clone(&stop);
         let start = Arc::new(AtomicBool::new(false));
@@ -416,6 +417,7 @@ impl MacosScreenCaptureInput {
         Ok(StagedCaptureWorker {
             generation: worker_generation,
             worker: Some(CaptureWorker {
+                authority,
                 stop,
                 mailbox: worker_mailbox,
                 command_tx,
@@ -433,6 +435,7 @@ impl MacosScreenCaptureInput {
         let checkpoint = lock(&self.publication).checkpoint();
         self.stop_worker();
         self.worker_generation = generation;
+        self.exact.activate_authority(worker.authority);
         let displaced = {
             let mut publication = lock(&self.publication);
             let _previous = publication
@@ -469,7 +472,7 @@ impl MacosScreenCaptureInput {
         }
         let latest = { lock(&self.publication).clear_latest() };
         drop(latest);
-        self.exact.replace_source(None);
+        self.exact.replace_current_source(worker.authority, None);
     }
 
     pub(super) fn observe_worker_exit(&mut self) -> anyhow::Result<()> {
