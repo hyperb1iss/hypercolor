@@ -7,8 +7,9 @@ use hypercolor_driver_api::{
 };
 use hypercolor_driver_govee::backend::GoveeBackend;
 use hypercolor_driver_govee::cloud::{CloudClient, V1Device};
-use hypercolor_driver_govee::{GoveeLanDevice, build_cloud_discovered_device, build_device_info};
-use hypercolor_types::config::GoveeConfig;
+use hypercolor_driver_govee::{
+    GoveeConfig, GoveeLanDevice, build_cloud_discovered_device, build_device_info,
+};
 use hypercolor_types::device::{DeviceFingerprint, FingerprintNamespace};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;

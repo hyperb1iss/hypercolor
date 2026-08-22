@@ -7,8 +7,7 @@ use hypercolor_driver_api::{
     DeviceAuthState, DriverCredentialStore, DriverDiscoveryState, DriverHost, DriverModule,
     DriverRuntimeActions, PairDeviceRequest, PairDeviceStatus, PairingFlowKind, TrackedDeviceCtx,
 };
-use hypercolor_driver_govee::{GoveeDriverModule, GoveeLanDevice, build_device_info};
-use hypercolor_types::config::GoveeConfig;
+use hypercolor_driver_govee::{GoveeConfig, GoveeDriverModule, GoveeLanDevice, build_device_info};
 use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceState};
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};

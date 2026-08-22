@@ -2,10 +2,6 @@ use std::net::IpAddr;
 
 use serde::{Deserialize, Serialize};
 
-use super::defaults;
-
-// ─── Govee ──────────────────────────────────────────────────────────────────
-
 /// Global Govee backend settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GoveeConfig {
@@ -18,11 +14,11 @@ pub struct GoveeConfig {
     pub power_off_on_disconnect: bool,
 
     /// Maximum whole-device LAN state command rate.
-    #[serde(default = "defaults::govee_lan_state_fps")]
+    #[serde(default = "default_lan_state_fps")]
     pub lan_state_fps: u32,
 
     /// Maximum validated Razer/Desktop streaming frame rate.
-    #[serde(default = "defaults::govee_razer_fps")]
+    #[serde(default = "default_razer_fps")]
     pub razer_fps: u32,
 }
 
@@ -31,8 +27,16 @@ impl Default for GoveeConfig {
         Self {
             known_ips: Vec::new(),
             power_off_on_disconnect: false,
-            lan_state_fps: defaults::govee_lan_state_fps(),
-            razer_fps: defaults::govee_razer_fps(),
+            lan_state_fps: default_lan_state_fps(),
+            razer_fps: default_razer_fps(),
         }
     }
+}
+
+const fn default_lan_state_fps() -> u32 {
+    10
+}
+
+const fn default_razer_fps() -> u32 {
+    25
 }

@@ -12,11 +12,12 @@ use hypercolor_driver_api::{
 };
 use hypercolor_driver_govee::cloud::V1Device;
 use hypercolor_driver_govee::{
-    GoveeDriverModule, GoveeKnownDevice, build_cloud_discovered_device, build_device_info,
-    govee_device_control_surface, govee_driver_control_surface, merge_cloud_inventory,
-    parse_scan_response, resolve_govee_probe_devices, resolve_govee_probe_devices_from_sources,
+    GoveeConfig, GoveeDriverModule, GoveeKnownDevice, build_cloud_discovered_device,
+    build_device_info, govee_device_control_surface, govee_driver_control_surface,
+    merge_cloud_inventory, parse_scan_response, resolve_govee_probe_devices,
+    resolve_govee_probe_devices_from_sources,
 };
-use hypercolor_types::config::{DriverConfigEntry, GoveeConfig};
+use hypercolor_types::config::DriverConfigEntry;
 use hypercolor_types::controls::{
     ApplyImpact, ControlAccess, ControlChange, ControlPersistence, ControlSurfaceEvent,
     ControlSurfaceScope, ControlValue, ControlValueMap,

@@ -15,8 +15,6 @@ use anyhow::Result;
 use hypercolor_core::device::UsbProtocolConfigStore;
 use hypercolor_driver_support::CredentialStore;
 use hypercolor_network::DriverModuleRegistry;
-#[cfg(feature = "govee")]
-use hypercolor_types::config::GoveeConfig;
 use hypercolor_types::config::HypercolorConfig;
 
 #[cfg(feature = "govee")]
@@ -81,10 +79,9 @@ pub fn register_driver_modules(
     let _ = &credential_store;
 
     #[cfg(feature = "govee")]
-    registry.register(GoveeDriverModule::with_credential_store(
-        GoveeConfig::default(),
-        Arc::clone(&credential_store),
-    ))?;
+    registry.register(GoveeDriverModule::with_credential_store(Arc::clone(
+        &credential_store,
+    )))?;
 
     #[cfg(feature = "hue")]
     registry.register(HueDriverModule::new(Arc::clone(&credential_store)))?;

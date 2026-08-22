@@ -10,9 +10,10 @@ use hypercolor_driver_api::{
     DeviceFrameSink, DeviceWriteOutcome, DiscoveredDevice, OutputCadence,
 };
 use hypercolor_driver_support::CredentialStore;
-use hypercolor_types::config::GoveeConfig;
 use hypercolor_types::device::{DeviceError, DeviceId, DeviceInfo};
 use tokio::net::UdpSocket;
+
+use crate::GoveeConfig;
 use tokio::sync::Mutex;
 
 use crate::capabilities::{GoveeCapabilities, SkuProfile, fallback_profile, profile_for_sku};

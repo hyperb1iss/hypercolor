@@ -26,7 +26,7 @@ use hypercolor_driver_api::{
     PairingFieldDescriptor, PairingFlowKind, TrackedDeviceCtx, ValidatedControlChanges,
 };
 use hypercolor_driver_support::CredentialStore;
-use hypercolor_types::config::{DriverConfigEntry, GoveeConfig};
+use hypercolor_types::config::DriverConfigEntry;
 use hypercolor_types::controls::{
     ApplyControlChangesResponse, ApplyImpact, ControlChange, ControlFieldDescriptor,
     ControlGroupKind, ControlSurfaceDocument, ControlValue, ControlValueMap, ControlValueType,
@@ -44,6 +44,7 @@ use tracing::warn;
 pub mod backend;
 pub mod capabilities;
 pub mod cloud;
+mod config;
 pub mod lan;
 
 use backend::GoveeBackend;
@@ -54,6 +55,7 @@ pub use capabilities::{
     GoveeCapabilities, SkuFamily, SkuProfile, fallback_profile, known_cloud_sku_count,
     known_sku_count, profile_for_sku,
 };
+pub use config::GoveeConfig;
 pub use lan::discovery::{
     GoveeKnownDevice, GoveeLanDevice, build_device_info, parse_scan_response,
 };
@@ -101,12 +103,9 @@ impl GoveeDriverModule {
     }
 
     #[must_use]
-    pub fn with_credential_store(
-        config: GoveeConfig,
-        credential_store: Arc<CredentialStore>,
-    ) -> Self {
+    pub fn with_credential_store(credential_store: Arc<CredentialStore>) -> Self {
         Self {
-            config,
+            config: GoveeConfig::default(),
             credential_store: Some(credential_store),
             cloud_base_url: None,
         }

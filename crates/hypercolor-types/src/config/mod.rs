@@ -13,7 +13,6 @@ mod display;
 mod drivers;
 mod effect_engine;
 mod features;
-mod govee;
 mod input;
 mod mcp;
 mod media;
@@ -32,7 +31,6 @@ pub use display::*;
 pub use drivers::*;
 pub use effect_engine::*;
 pub use features::*;
-pub use govee::*;
 pub use input::*;
 pub use mcp::*;
 pub use media::*;
@@ -180,12 +178,6 @@ mod defaults {
     // Discovery
     pub fn scan_interval() -> u64 {
         300
-    }
-    pub fn govee_lan_state_fps() -> u32 {
-        10
-    }
-    pub fn govee_razer_fps() -> u32 {
-        25
     }
     // Network
     pub fn remote_access() -> bool {
