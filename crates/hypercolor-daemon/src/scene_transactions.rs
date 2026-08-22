@@ -194,7 +194,7 @@ impl PrepareLayoutTransaction {
             &expected_layout,
             expected_active_scene_id,
             expected_active_render_groups_revision,
-            |_| {},
+            |_| Ok(()),
         )
         .await;
         activation.complete(result.clone());
@@ -514,7 +514,7 @@ pub(crate) async fn publish_prepared_layout_activation<F>(
     publish_renderer_state: F,
 ) -> Result<(), LayoutTransactionRejection>
 where
-    F: FnOnce(SpatialEngine),
+    F: FnOnce(SpatialEngine) -> Result<(), LayoutTransactionRejection>,
 {
     // The render thread owns the frame-boundary swap, but the scene
     // sequencer still owns admission. Holding the scene lock across the

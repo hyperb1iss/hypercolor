@@ -282,7 +282,7 @@ impl SceneService {
         publish_renderer_state: F,
     ) -> Result<(), LayoutTransactionRejection>
     where
-        F: FnOnce(SpatialEngine),
+        F: FnOnce(SpatialEngine) -> Result<(), LayoutTransactionRejection>,
     {
         let mut manager = self.0.manager.write().await;
         let mut authoritative_spatial_engine = spatial_engine.write().await;
@@ -293,13 +293,13 @@ impl SceneService {
             return Err(LayoutTransactionRejection::Superseded);
         }
 
+        publish_renderer_state(candidate_spatial_engine.clone())?;
         manager.sync_primary_group_layout(candidate_spatial_engine.layout().as_ref());
         let ticket = self.0.commits.admit(Arc::clone(&self.0.event_bus));
         self.0
             .plan
             .store(Arc::new(manager.plan_snapshot(ticket.generation())));
-        *authoritative_spatial_engine = candidate_spatial_engine.clone();
-        publish_renderer_state(candidate_spatial_engine);
+        *authoritative_spatial_engine = candidate_spatial_engine;
         ticket.release(Vec::new());
         Ok(())
     }

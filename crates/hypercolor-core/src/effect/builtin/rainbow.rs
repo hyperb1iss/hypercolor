@@ -143,7 +143,7 @@ impl EffectRenderer for RainbowRenderer {
         Ok(())
     }
 
-    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) {
+    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> anyhow::Result<()> {
         for (control_id, value) in batch.changes {
             match control_id.as_str() {
                 "speed" => {
@@ -174,6 +174,7 @@ impl EffectRenderer for RainbowRenderer {
                 _ => {}
             }
         }
+        Ok(())
     }
     fn destroy(&mut self) {}
 }

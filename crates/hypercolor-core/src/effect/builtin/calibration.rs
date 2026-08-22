@@ -444,7 +444,7 @@ impl EffectRenderer for CalibrationRenderer {
         Ok(())
     }
 
-    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) {
+    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> anyhow::Result<()> {
         for (control_id, value) in batch.changes {
             match control_id.as_str() {
                 "pattern" => {
@@ -510,6 +510,7 @@ impl EffectRenderer for CalibrationRenderer {
                 _ => {}
             }
         }
+        Ok(())
     }
     fn destroy(&mut self) {}
 }

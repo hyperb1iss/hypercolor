@@ -32,11 +32,13 @@ static SOFT_STALL_TELEMETRY_TEST_LOCK: LazyLock<std::sync::Mutex<()>> =
 
 fn apply_control(renderer: &mut ServoRenderer, name: &str, value: ControlValue) {
     let changes = [(hypercolor_types::control::ControlId::from(name), value)];
-    renderer.apply_controls(&ControlDeltaBatch::new(
-        hypercolor_types::control::SetRevision::default(),
-        0,
-        &changes,
-    ));
+    renderer
+        .apply_controls(&ControlDeltaBatch::new(
+            hypercolor_types::control::SetRevision::default(),
+            0,
+            &changes,
+        ))
+        .expect("Servo renderer should accept admitted controls");
 }
 
 fn frame_input(delta_secs: f32) -> FrameInput<'static> {

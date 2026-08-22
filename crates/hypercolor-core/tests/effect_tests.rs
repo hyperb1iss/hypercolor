@@ -72,7 +72,9 @@ impl EffectRenderer for MockRenderer {
         Ok(())
     }
 
-    fn apply_controls(&mut self, _batch: &ControlDeltaBatch<'_>) {}
+    fn apply_controls(&mut self, _batch: &ControlDeltaBatch<'_>) -> anyhow::Result<()> {
+        Ok(())
+    }
 
     fn destroy(&mut self) {
         self.destroyed = true;

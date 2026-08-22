@@ -136,7 +136,7 @@ impl EffectRenderer for MediaPlayerRenderer {
         Ok(())
     }
 
-    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) {
+    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> anyhow::Result<()> {
         for (control_id, value) in batch.changes {
             match control_id.as_str() {
                 "asset" => match value {
@@ -183,6 +183,7 @@ impl EffectRenderer for MediaPlayerRenderer {
                 _ => {}
             }
         }
+        Ok(())
     }
 
     fn bind_asset_library(&mut self, library: Arc<RwLock<AssetLibrary>>) {

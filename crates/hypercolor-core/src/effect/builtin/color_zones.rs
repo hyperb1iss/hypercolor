@@ -206,7 +206,7 @@ impl EffectRenderer for ColorZonesRenderer {
         Ok(())
     }
 
-    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) {
+    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> anyhow::Result<()> {
         for (control_id, value) in batch.changes {
             let name = control_id.as_str();
             if name == "zone_count" {
@@ -249,6 +249,7 @@ impl EffectRenderer for ColorZonesRenderer {
                 _ => {}
             }
         }
+        Ok(())
     }
     fn destroy(&mut self) {}
 }

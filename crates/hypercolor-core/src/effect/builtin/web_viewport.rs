@@ -286,7 +286,7 @@ impl EffectRenderer for WebViewportRenderer {
         Ok(())
     }
 
-    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) {
+    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> anyhow::Result<()> {
         for (control_id, value) in batch.changes {
             match control_id.as_str() {
                 "url" => {
@@ -351,6 +351,7 @@ impl EffectRenderer for WebViewportRenderer {
                 _ => {}
             }
         }
+        Ok(())
     }
 
     fn preview_canvas(&self) -> Option<Canvas> {
@@ -635,7 +636,9 @@ mod tests {
 
     fn apply_control(renderer: &mut WebViewportRenderer, name: &str, value: ControlValue) {
         let changes = [(ControlId::from(name), value)];
-        renderer.apply_controls(&ControlDeltaBatch::new(SetRevision::default(), 0, &changes));
+        renderer
+            .apply_controls(&ControlDeltaBatch::new(SetRevision::default(), 0, &changes))
+            .expect("web viewport renderer should accept admitted controls");
     }
 
     #[test]

@@ -171,7 +171,7 @@ impl EffectRenderer for SolidColorRenderer {
         Ok(())
     }
 
-    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) {
+    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> anyhow::Result<()> {
         for (control_id, value) in batch.changes {
             match control_id.as_str() {
                 "color" => {
@@ -212,6 +212,7 @@ impl EffectRenderer for SolidColorRenderer {
                 _ => {}
             }
         }
+        Ok(())
     }
     fn destroy(&mut self) {}
 }

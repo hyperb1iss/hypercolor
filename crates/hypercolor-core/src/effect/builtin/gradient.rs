@@ -448,7 +448,7 @@ impl EffectRenderer for GradientRenderer {
         clippy::too_many_lines,
         reason = "control dispatch mirrors the public schema and keeps cache invalidation local"
     )]
-    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) {
+    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> anyhow::Result<()> {
         for (control_id, value) in batch.changes {
             match control_id.as_str() {
                 "color_start" => {
@@ -556,6 +556,7 @@ impl EffectRenderer for GradientRenderer {
                 _ => {}
             }
         }
+        Ok(())
     }
     fn destroy(&mut self) {
         self.invalidate_cache();

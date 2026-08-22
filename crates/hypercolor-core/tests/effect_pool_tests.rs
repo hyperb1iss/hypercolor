@@ -371,7 +371,8 @@ fn changed_controls_update_slot_only_when_prepared_pool_commits() {
     .expect("live slot should remain unchanged during preparation");
     assert_eq!(top_left(&canvas), Rgba::new(255, 0, 0, 255));
 
-    pool.commit_reconcile(prepared);
+    pool.commit_reconcile(prepared)
+        .expect("prepared reconcile should commit");
     pool.render_group_into(
         &candidate_group,
         0.016,
@@ -430,7 +431,8 @@ fn stale_prepared_pool_is_rejected_before_any_live_control_update() {
     pool.remove_group(live_b.id);
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        pool.commit_reconcile(prepared);
+        pool.commit_reconcile(prepared)
+            .expect("prepared reconcile should commit");
     }));
 
     assert!(result.is_err());
@@ -493,7 +495,7 @@ fn stale_preparation_rejects_same_key_renderer_replacement() {
     .expect("same-key rainbow renderer should replace the solid renderer");
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        pool.commit_reconcile(stale);
+        let _ = pool.commit_reconcile(stale);
     }));
 
     assert!(result.is_err());

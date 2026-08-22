@@ -247,7 +247,12 @@ pub trait EffectRenderer: Send {
     /// The default delivers the complete snapshot as resolution sequence
     /// zero. Implementations may override this when replacing derived state
     /// needs behavior distinct from applying an ordinary delta.
-    fn initialize_controls(&mut self, controls: &ControlSet) {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the renderer cannot replace its derived control
+    /// state from the authoritative snapshot.
+    fn initialize_controls(&mut self, controls: &ControlSet) -> anyhow::Result<()> {
         let changes = controls
             .iter()
             .map(|(control_id, value)| (control_id.clone(), value.clone()))
@@ -256,7 +261,7 @@ pub trait EffectRenderer: Send {
             controls.set_revision(),
             0,
             &changes,
-        ));
+        ))
     }
 
     /// Apply one ordered batch of resolved control changes atomically.
@@ -264,7 +269,12 @@ pub trait EffectRenderer: Send {
     /// Implementations update only derived renderer caches. The owning effect
     /// slot retains the authoritative [`ControlSet`], and values have already
     /// passed canonical and effect-definition validation.
-    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>);
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the batch cannot be applied atomically to the
+    /// renderer's derived state.
+    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> anyhow::Result<()>;
 
     /// Bind the content-addressed asset library.
     ///

@@ -172,8 +172,8 @@ impl ZoneRuntime {
             None,
         );
         prepared.resolve_scene_backing(self, projected.gpu_projection_admitted(), false)?;
+        self.commit_reconcile(prepared)?;
         sparkleflinger.apply_projected_scene_resources(projected);
-        self.commit_reconcile(prepared);
         Ok(())
     }
 
@@ -251,8 +251,7 @@ impl ZoneRuntime {
             authoritative_spatial_engine,
         )?;
         prepared.resolve_scene_backing(self, false, false)?;
-        self.commit_reconcile(prepared);
-        Ok(())
+        self.commit_reconcile(prepared)
     }
 
     pub(crate) fn prepare_reconcile(
@@ -419,7 +418,7 @@ impl ZoneRuntime {
         })
     }
 
-    pub(crate) fn commit_reconcile(&mut self, prepared: PreparedZoneReconcile) {
+    pub(crate) fn commit_reconcile(&mut self, prepared: PreparedZoneReconcile) -> Result<()> {
         let PreparedZoneReconcile {
             effect_pool,
             layer_runtime,
@@ -441,7 +440,7 @@ impl ZoneRuntime {
             scene_backing,
             dependency_key,
         } = prepared;
-        self.effect_pool.commit_reconcile(effect_pool);
+        self.effect_pool.commit_reconcile(effect_pool)?;
         self.layer_runtime.commit_reconcile(layer_runtime);
         for (asset_id, producer) in std::mem::take(&mut self.media_producers) {
             if desired_media_ids.contains(&asset_id) {
@@ -514,6 +513,7 @@ impl ZoneRuntime {
         self.combined_led_layout = spatial.combined_layout;
         self.combined_led_spatial_engine = spatial.combined_engine;
         self.reconciled_dependency_key = Some(dependency_key);
+        Ok(())
     }
 
     fn prepare_spatial_state(

@@ -246,11 +246,12 @@ impl EffectRenderer for ServoRenderer {
         Ok(())
     }
 
-    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) {
+    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> anyhow::Result<()> {
         for (control_id, value) in batch.changes {
             self.controls
                 .insert(control_id.as_str().to_owned(), value.clone());
         }
+        Ok(())
     }
 
     fn set_display_descriptor(&mut self, descriptor: Option<DisplayDescriptor>) {

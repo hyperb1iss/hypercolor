@@ -75,7 +75,7 @@ impl EffectRenderer for BreathingRenderer {
         Ok(())
     }
 
-    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) {
+    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> anyhow::Result<()> {
         for (control_id, value) in batch.changes {
             match control_id.as_str() {
                 "color" => {
@@ -101,6 +101,7 @@ impl EffectRenderer for BreathingRenderer {
                 _ => {}
             }
         }
+        Ok(())
     }
     fn destroy(&mut self) {}
 }

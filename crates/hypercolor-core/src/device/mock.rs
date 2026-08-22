@@ -459,13 +459,14 @@ impl EffectRenderer for MockEffectRenderer {
         Ok(())
     }
 
-    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) {
+    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> anyhow::Result<()> {
         self.controls.extend(
             batch
                 .changes
                 .iter()
                 .map(|(control_id, value)| (control_id.to_string(), value.clone())),
         );
+        Ok(())
     }
 
     fn destroy(&mut self) {

@@ -86,6 +86,12 @@ pub(crate) async fn service_scene_transactions(
                     active_scene_id,
                     source_active_render_groups_revision,
                     |spatial_engine| {
+                        render
+                            .render_group_runtime
+                            .commit_reconcile(prepared_groups)
+                            .map_err(|error| LayoutTransactionRejection::PreparationFailed {
+                                message: error.to_string(),
+                            })?;
                         if let Some(prepared_resize) = prepared_resize {
                             render.commit_canvas_resize(prepared_resize);
                             state.canvas_dims.set(width, height);
@@ -97,10 +103,8 @@ pub(crate) async fn service_scene_transactions(
                         render
                             .sparkleflinger
                             .apply_projected_scene_resources(prepared_projected_scene);
-                        render
-                            .render_group_runtime
-                            .commit_reconcile(prepared_groups);
                         scene.render_state.replace_spatial_engine(spatial_engine);
+                        Ok(())
                     },
                 )
                 .await;
