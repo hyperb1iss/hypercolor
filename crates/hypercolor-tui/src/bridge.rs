@@ -223,10 +223,7 @@ async fn refresh_for_event(
             refresh_effects(client, action_tx).await;
         }
         // High-frequency zone mutations: coalesce into one scene refetch.
-        "effect_control_changed"
-        | "effect_layer_added"
-        | "effect_layer_removed"
-        | "zone_changed" => {
+        "effect_control_changed" | "zone_changed" | "layer_stack_changed" => {
             *scene_refetch_deadline = Some(tokio::time::Instant::now() + SCENE_REFETCH_COALESCE);
         }
         "active_scene_changed" => {

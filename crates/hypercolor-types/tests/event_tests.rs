@@ -113,21 +113,6 @@ fn effect_events_have_effect_category() {
             layer_id: SceneLayerId::new(),
             trigger: ChangeTrigger::Api,
         },
-        HypercolorEvent::EffectLayerAdded {
-            layer_id: "l1".into(),
-            effect: EffectRef {
-                id: "fire".into(),
-                name: "Fire".into(),
-                engine: "wgpu".into(),
-            },
-            index: 0,
-            blend_mode: "add".into(),
-            opacity: 1.0,
-        },
-        HypercolorEvent::EffectLayerRemoved {
-            layer_id: "l1".into(),
-            effect_id: "fire".into(),
-        },
         HypercolorEvent::EffectError {
             effect_id: "broken".into(),
             error: "shader compile failed".into(),

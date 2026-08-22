@@ -193,23 +193,6 @@ pub enum HypercolorEvent {
         trigger: ChangeTrigger,
     },
 
-    /// A compositing layer was added to the effect stack.
-    /// (Phase 2+ -- multi-layer effect composition.)
-    EffectLayerAdded {
-        layer_id: String,
-        effect: EffectRef,
-        /// Stack index (0 = bottom).
-        index: u32,
-        blend_mode: String,
-        opacity: f32,
-    },
-
-    /// A compositing layer was removed from the effect stack.
-    EffectLayerRemoved {
-        layer_id: String,
-        effect_id: String,
-    },
-
     /// An effect failed to load, render, or initialize.
     EffectError {
         effect_id: String,
@@ -247,6 +230,22 @@ pub enum HypercolorEvent {
     SceneEnabled {
         scene_id: String,
         enabled: bool,
+    },
+
+    /// A zone in a scene changed.
+    ZoneChanged {
+        scene_id: SceneId,
+        zone_id: ZoneId,
+        role: ZoneRole,
+        kind: ZoneChangeKind,
+    },
+
+    /// An authored layer stack in a zone changed.
+    LayerStackChanged {
+        scene_id: SceneId,
+        zone_id: ZoneId,
+        revision: u64,
+        kind: LayerStackChangeKind,
     },
 
     // ── Audio Events ──────────────────────────────────────────────
@@ -618,8 +617,8 @@ Events are grouped into categories for filtering. Every event belongs to exactly
 | Category      | Events                                                                                                                                                                                                       | Use Cases                              |
 | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------- |
 | `device`      | `DeviceDiscovered`, `DeviceConnected`, `DeviceDisconnected`, `DeviceError`, `DeviceFirmwareInfo`, `DeviceStateChanged`, `DeviceDiscoveryStarted`, `DeviceDiscoveryCompleted`                                 | Device manager, health monitoring      |
-| `effect`      | `EffectStarted`, `EffectStopped`, `EffectControlChanged`, `EffectLayerAdded`, `EffectLayerRemoved`, `EffectError`                                                                                            | UI state sync, effect browser          |
-| `scene`       | `SceneActivated`, `SceneTransitionStarted`, `SceneTransitionComplete`, `SceneEnabled`                                                                                                                        | Automation UI, transition coordination |
+| `effect`      | `EffectStarted`, `EffectStopped`, `EffectControlChanged`, `EffectError`                                                                                                                                        | UI state sync, effect browser          |
+| `scene`       | `SceneActivated`, `SceneTransitionStarted`, `SceneTransitionComplete`, `SceneEnabled`, `ZoneChanged`, `LayerStackChanged`                                                                                     | Automation UI, transition coordination |
 | `audio`       | `AudioSourceChanged`, `BeatDetected`, `AudioLevelUpdate`, `AudioStarted`, `AudioStopped`                                                                                                                     | Audio UI, reactive effect tuning       |
 | `system`      | `FrameRendered`, `FpsChanged`, `ProfileLoaded`, `ProfileSaved`, `ProfileDeleted`, `ConfigChanged`, `ShutdownRequested`, `DaemonStarted`, `DaemonShutdown`, `BrightnessChanged`, `Paused`, `Resumed`, `Error` | System health, monitoring, debug view  |
 | `automation`  | `TriggerFired`, `ScheduleActivated`, `ContextChanged`                                                                                                                                                        | Scene scheduler, context engine        |
@@ -646,14 +645,14 @@ impl HypercolorEvent {
             Self::EffectStarted { .. }
             | Self::EffectStopped { .. }
             | Self::EffectControlChanged { .. }
-            | Self::EffectLayerAdded { .. }
-            | Self::EffectLayerRemoved { .. }
             | Self::EffectError { .. } => EventCategory::Effect,
 
             Self::SceneActivated { .. }
             | Self::SceneTransitionStarted { .. }
             | Self::SceneTransitionComplete { .. }
-            | Self::SceneEnabled { .. } => EventCategory::Scene,
+            | Self::SceneEnabled { .. }
+            | Self::ZoneChanged { .. }
+            | Self::LayerStackChanged { .. } => EventCategory::Scene,
 
             Self::AudioSourceChanged { .. }
             | Self::BeatDetected { .. }
