@@ -23,10 +23,10 @@ pub mod windows;
 mod worker_retention;
 
 pub use browser::{
-    BROWSER_RETIRED_LEGACY_CAPACITY, BrowserConnectionIncarnation, BrowserInputAttachment,
-    BrowserInputChildKey, BrowserInputChildSlot, BrowserInputEdge, BrowserInputHandle,
-    BrowserInputPublicationId, BrowserInputRegistryError, BrowserInputRegistryHandle,
-    BrowserInputRegistrySnapshot, BrowserInputSource, BrowserPreviewId,
+    BrowserConnectionIncarnation, BrowserInputAttachment, BrowserInputChildKey,
+    BrowserInputChildSlot, BrowserInputEdge, BrowserInputHandle, BrowserInputPublicationId,
+    BrowserInputRegistryError, BrowserInputRegistryHandle, BrowserInputRegistrySnapshot,
+    BrowserInputSource, BrowserPreviewId,
 };
 #[cfg(target_os = "linux")]
 pub use evdev::{DeviceOpenState, DeviceOpenStatus, EvdevHostInput};

@@ -4,10 +4,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use hypercolor_core::input::{
-    BROWSER_RETIRED_LEGACY_CAPACITY, BrowserConnectionIncarnation, BrowserInputChildKey,
-    BrowserInputChildSlot, BrowserInputEdge, BrowserInputHandle, BrowserInputRegistryError,
-    BrowserInputSource, BrowserPreviewId, INPUT_EVENT_RING_CAPACITY, InputData, InputSource,
-    MotionAggregate,
+    BrowserConnectionIncarnation, BrowserInputChildKey, BrowserInputChildSlot, BrowserInputEdge,
+    BrowserInputHandle, BrowserInputRegistryError, BrowserInputSource, BrowserPreviewId,
+    INPUT_EVENT_RING_CAPACITY, InputData, InputSource, MotionAggregate,
 };
 use hypercolor_types::event::{InputButtonState, InputEvent};
 
@@ -38,6 +37,32 @@ fn press(key: &str) -> BrowserInputEdge {
         key: key.to_owned(),
         state: InputButtonState::Pressed,
     }
+}
+
+#[test]
+fn connection_wide_compatibility_lane_stays_deleted() {
+    let source = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/input/browser.rs"),
+    )
+    .expect("browser input source should read");
+    let retired_symbols = [
+        "attach_legacy",
+        "release_legacy",
+        "pub fn inject(&self, source_id",
+        "release_source",
+        "retired_legacy",
+        "BROWSER_RETIRED_LEGACY_CAPACITY",
+        "BrowserConnectionNamespace",
+    ];
+    let offenders = retired_symbols
+        .into_iter()
+        .filter(|symbol| source.contains(symbol))
+        .collect::<Vec<_>>();
+
+    assert!(
+        offenders.is_empty(),
+        "browser input must use addressed preview attachments: {offenders:#?}"
+    );
 }
 
 #[test]
@@ -340,34 +365,6 @@ fn compatibility_aggregate_accumulates_superseded_motion_publications() {
 }
 
 #[test]
-fn split_legacy_drain_preserves_retired_motion_for_the_next_sample() {
-    let (mut source, handle) = started_source();
-    handle.inject(
-        "legacy-motion",
-        [BrowserInputEdge::Move {
-            norm_x: 0.2,
-            norm_y: 0.2,
-        }],
-    );
-    handle.inject(
-        "legacy-motion",
-        [BrowserInputEdge::Move {
-            norm_x: 0.7,
-            norm_y: 0.6,
-        }],
-    );
-    handle.release_source("legacy-motion");
-
-    assert!(source.drain_events().is_empty());
-    let InputData::Interaction(sample) = source.sample().expect("aggregate sample") else {
-        panic!("expected interaction sample");
-    };
-    assert!((sample.batch.motion.dx - 0.5).abs() < 1e-6);
-    assert!((sample.batch.motion.dy - 0.4).abs() < 1e-6);
-    assert!((sample.batch.motion.distance - 0.5_f32.hypot(0.4)).abs() < 1e-6);
-}
-
-#[test]
 fn fast_aggregate_consumer_is_not_charged_for_replaced_history() {
     let (mut source, handle) = started_source();
     let attachment = handle.attach(child_key(14, "fast")).expect("attach");
@@ -433,22 +430,6 @@ fn final_attachment_owner_retires_the_child() {
     assert!(handle.registry().snapshot().child(&key).is_none());
     assert!(!slot.is_active());
     assert!(pressed_keys(&slot).is_empty());
-}
-
-#[test]
-fn legacy_retirement_backlog_is_bounded_without_manager_sampling() {
-    let (mut source, handle) = started_source();
-    let churn = BROWSER_RETIRED_LEGACY_CAPACITY + 32;
-    for index in 0..churn {
-        let source_id = format!("legacy-{index}");
-        handle.inject(&source_id, [press("KeyL")]);
-        handle.release_source(&source_id);
-    }
-
-    assert!(handle.registry().snapshot().children().is_empty());
-    let events = source.drain_events();
-    assert_eq!(events.len(), BROWSER_RETIRED_LEGACY_CAPACITY * 2);
-    assert!(source.drain_events().is_empty());
 }
 
 #[test]

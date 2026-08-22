@@ -35,8 +35,9 @@ use hypercolor_core::effect::EffectEntry;
 use hypercolor_core::engine::RenderLoopState;
 use hypercolor_core::input::screen::ScreenAdmissionCapacity;
 use hypercolor_core::input::{
-    BrowserInputEdge, InputData, InputSource, SourceIssue, SourceKind, SourceSessionWriter,
-    SourceStatusHandle, SourceStatusReporter,
+    BrowserConnectionIncarnation, BrowserInputChildKey, BrowserInputEdge, BrowserPreviewId,
+    InputData, InputSource, SourceIssue, SourceKind, SourceSessionWriter, SourceStatusHandle,
+    SourceStatusReporter,
 };
 use hypercolor_daemon::api;
 #[cfg(feature = "persistence-test-hooks")]
@@ -1571,13 +1572,6 @@ async fn status_reports_stale_source_health_without_captured_contents() {
     const PRIVACY_SENTINEL: &str = "capture_secret_73_do_not_expose";
 
     let state = Arc::new(isolated_state());
-    state.browser_input.inject(
-        PRIVACY_SENTINEL,
-        [BrowserInputEdge::Key {
-            key: PRIVACY_SENTINEL.to_owned(),
-            state: InputButtonState::Pressed,
-        }],
-    );
     let (source, _) =
         ObservableInputSource::new("stale_test_audio", true, Duration::from_millis(1));
     {
@@ -1585,6 +1579,19 @@ async fn status_reports_stale_source_health_without_captured_contents() {
         manager.add_source(Box::new(source));
         manager.start_all().expect("test input graph should start");
     }
+    let browser_attachment = state
+        .browser_input
+        .attach(BrowserInputChildKey::new(
+            BrowserConnectionIncarnation::new(1),
+            BrowserPreviewId::new(PRIVACY_SENTINEL),
+        ))
+        .expect("browser preview should attach");
+    browser_attachment
+        .inject([BrowserInputEdge::Key {
+            key: PRIVACY_SENTINEL.to_owned(),
+            state: InputButtonState::Pressed,
+        }])
+        .expect("browser key should inject");
     tokio::time::sleep(Duration::from_millis(25)).await;
 
     let response = test_app_with_state(state)
