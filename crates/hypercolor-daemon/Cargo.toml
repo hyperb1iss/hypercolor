@@ -56,7 +56,6 @@ servo = ["hypercolor-core/servo"]
 hypercolor-color = { workspace = true }
 hypercolor-types = { workspace = true }
 hypercolor-core = { path = "../hypercolor-core", default-features = false }
-hypercolor-platform-fs = { workspace = true }
 hypercolor-macos-owner = { workspace = true }
 hypercolor-driver-api = { workspace = true }
 hypercolor-driver-builtin = { workspace = true, default-features = false, optional = true }
@@ -85,7 +84,6 @@ tower = { workspace = true }
 tower-http = { workspace = true }
 rmcp = { workspace = true }
 uuid = { workspace = true }
-ulid = { workspace = true }
 clap = { workspace = true }
 toml = { workspace = true }
 cpal = { workspace = true }

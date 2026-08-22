@@ -5036,7 +5036,6 @@ dependencies = [
  "hypercolor-tui",
  "hypercolor-types",
  "opaline",
- "open",
  "owo-colors",
  "reqwest 0.12.28",
  "serde",
@@ -5165,7 +5164,6 @@ dependencies = [
  "hypercolor-macos-input",
  "hypercolor-macos-owner",
  "hypercolor-network",
- "hypercolor-platform-fs",
  "hypercolor-types",
  "hypercolor-windows-capture",
  "hypercolor-windows-gpu-interop",
@@ -5205,7 +5203,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "turbojpeg",
- "ulid",
  "utoipa",
  "utoipa-axum",
  "utoipa-swagger-ui",
@@ -5542,7 +5539,6 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "bytes",
- "clap",
  "crossterm",
  "flate2",
  "futures-util",
@@ -5558,7 +5554,6 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
- "strum 0.28.0",
  "tachyonfx",
  "tempfile",
  "tokio",
@@ -5629,7 +5624,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "windows-service",
- "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -15258,17 +15252,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ulid"
-version = "1.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "470dbf6591da1b39d43c14523b2b469c86879a53e8b758c8e090a470fe7b1fbe"
-dependencies = [
- "rand 0.9.2",
- "serde",
- "web-time",
-]
-
-[[package]]
 name = "uluru"
 version = "3.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -15984,16 +15967,6 @@ name = "web-sys"
 version = "0.3.91"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "854ba17bb104abfb26ba36da9729addc7ce7f06f5c0f90f3c391f8461cca21f9"
-dependencies = [
- "js-sys",
- "wasm-bindgen",
-]
-
-[[package]]
-name = "web-time"
-version = "1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a6580f308b1fad9207618087a65c04e7a10bc77e02c8e84e9b00dd4b12fa0bb"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
