@@ -11,7 +11,6 @@ use std::collections::{HashMap, HashSet};
 #[cfg(feature = "persistence-test-hooks")]
 use std::path::Path;
 use std::path::PathBuf;
-#[cfg(feature = "persistence-test-hooks")]
 use std::sync::Arc;
 #[cfg(feature = "persistence-test-hooks")]
 use std::sync::Mutex as StdMutex;
@@ -31,6 +30,7 @@ use crate::domain::scene::SceneService;
 use crate::domain::spatial::SpatialService;
 use crate::domain::{DomainError, ResourceKind};
 use crate::layout_auto_exclusions;
+use crate::network::DaemonDriverHost;
 use crate::scene_transactions::{
     LayoutTransactionRejection, LayoutUpdateError, LayoutUpdateGuard, SceneActivationGuard,
     SceneTransactionQueue,
@@ -38,9 +38,31 @@ use crate::scene_transactions::{
 
 use self::catalog::LayoutCatalog;
 use self::convergence::LayoutConvergence;
-pub(crate) use self::convergence::LayoutRuntime;
 use self::exclusions::LayoutExclusions;
 use self::publication::LayoutPublication;
+
+#[derive(Clone)]
+pub(crate) struct LayoutRuntime {
+    discovery: DiscoveryRuntime,
+    driver_host: Arc<DaemonDriverHost>,
+}
+
+impl LayoutRuntime {
+    pub(crate) fn new(discovery: DiscoveryRuntime, driver_host: Arc<DaemonDriverHost>) -> Self {
+        Self {
+            discovery,
+            driver_host,
+        }
+    }
+
+    const fn discovery(&self) -> &DiscoveryRuntime {
+        &self.discovery
+    }
+
+    fn driver_host(&self) -> Arc<DaemonDriverHost> {
+        Arc::clone(&self.driver_host)
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LayoutPersistenceStatus {

@@ -1,5 +1,4 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
 
 use hypercolor_core::device::DeviceLifecycleManager;
 use hypercolor_types::device::{DeviceId, DeviceInfo};
@@ -7,7 +6,6 @@ use hypercolor_types::spatial::{EdgeBehavior, Output, SamplingMode, SpatialLayou
 
 use crate::discovery::DiscoveryRuntime;
 use crate::logical_devices::LogicalDevice;
-use crate::network::DaemonDriverHost;
 use crate::scene_transactions::PreparedLayoutUpdate;
 
 use super::auto_layout::{
@@ -16,29 +14,6 @@ use super::auto_layout::{
 use super::catalog::LayoutCatalog;
 use super::exclusions::LayoutExclusions;
 use super::publication::LayoutPublication;
-
-#[derive(Clone)]
-pub(crate) struct LayoutRuntime {
-    discovery: DiscoveryRuntime,
-    driver_host: Arc<DaemonDriverHost>,
-}
-
-impl LayoutRuntime {
-    pub(crate) fn new(discovery: DiscoveryRuntime, driver_host: Arc<DaemonDriverHost>) -> Self {
-        Self {
-            discovery,
-            driver_host,
-        }
-    }
-
-    pub(super) const fn discovery(&self) -> &DiscoveryRuntime {
-        &self.discovery
-    }
-
-    pub(super) fn driver_host(&self) -> Arc<DaemonDriverHost> {
-        Arc::clone(&self.driver_host)
-    }
-}
 
 #[derive(Clone)]
 pub(super) struct LayoutConvergence {
