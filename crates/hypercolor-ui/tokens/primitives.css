@@ -89,16 +89,6 @@
     --color-status-error:    var(--status-error);
     --color-status-warning:  var(--status-warning);
     --color-status-info:     var(--status-info);
-
-    /* ── Legacy surface aliases (backward compat) ── */
-    --color-layer-0: var(--surface-base);
-    --color-layer-1: var(--surface-raised);
-    --color-layer-2: var(--surface-overlay);
-    --color-layer-3: var(--surface-sunken);
-    --color-layer-4: var(--surface-hover);
-    --color-fg:      var(--text-primary);
-    --color-fg-muted: var(--text-secondary);
-    --color-fg-dim:  var(--text-tertiary);
 }
 
 /* ── Spacing ramp ─────────────────────────────────────────────────────────
