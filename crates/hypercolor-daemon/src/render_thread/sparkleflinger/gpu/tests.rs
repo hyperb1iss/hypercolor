@@ -1,8 +1,7 @@
 #[cfg(all(feature = "screen-capture", target_os = "macos"))]
 use std::num::{NonZeroU32, NonZeroU64};
 #[cfg(any(
-    all(feature = "servo-gpu-import", target_os = "linux"),
-    all(feature = "servo-gpu-import", target_os = "macos"),
+    feature = "servo-gpu-import",
     all(feature = "screen-capture", target_os = "macos")
 ))]
 use std::sync::Arc;
@@ -66,6 +65,8 @@ use super::screen_upload::{
     ScreenPublicationUploadPool, ScreenUploadContentKey, ScreenUploadPoolSaturated,
     ScreenUploadResidencyPolicy, resident_frame_bytes,
 };
+#[cfg(feature = "servo-gpu-import")]
+use super::source::GpuSourceFrame;
 use super::{
     DISPLAY_FINALIZE_READBACK_SLOT_COUNT, DisplayYuv420Frame, FrameInFlight, GpuCanvasAdmission,
     GpuCanvasFallbackReason, GpuDisplayFinalizeDispatch, GpuDisplayFinalizeFrame,
@@ -85,6 +86,8 @@ use crate::performance::CompositorBackendKind;
 #[cfg(all(feature = "screen-capture", target_os = "macos"))]
 use crate::render_thread::producer_queue::MacosScreenTextureLease;
 use crate::render_thread::producer_queue::{GpuTextureFrame, GpuTextureFrameOrigin, ProducerFrame};
+#[cfg(feature = "servo-gpu-import")]
+use crate::render_thread::producer_queue::{ProducerFrameState, ProducerQueue};
 use crate::render_thread::sparkleflinger::gpu_sampling::GpuSamplingPlan;
 use crate::render_thread::sparkleflinger::{
     CompositionLayer, CompositionPlan, CompositionTransform, DisplayFinalizeCacheKey,
@@ -141,6 +144,83 @@ fn gpu_test_compositor() -> Option<GpuSparkleFlinger> {
 
 fn gpu_test_sparkleflinger() -> Option<SparkleFlinger> {
     required_gpu(SparkleFlinger::new(RenderAccelerationMode::Gpu))
+}
+
+#[cfg(feature = "servo-gpu-import")]
+#[test]
+fn imported_frame_identity_separates_allocation_content_and_origin() {
+    let Some(compositor) = gpu_test_compositor() else {
+        return;
+    };
+    let texture = Arc::new(compositor.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("SparkleFlinger imported frame identity test"),
+        size: wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    }));
+    let view = Arc::new(texture.create_view(&wgpu::TextureViewDescriptor::default()));
+    let lease = hypercolor_gpu_frame::ImportedFrameLease::new(Arc::clone(&texture));
+    let frame = |content_generation, origin| hypercolor_gpu_frame::ImportedEffectFrame {
+        width: 1,
+        height: 1,
+        format: hypercolor_gpu_frame::ImportedFrameFormat::Rgba8Unorm,
+        allocation_id: hypercolor_gpu_frame::ImportedFrameAllocationId::new(41),
+        content_generation,
+        origin,
+        texture: Arc::clone(&texture),
+        view: Arc::clone(&view),
+        lease: lease.clone(),
+        timings: hypercolor_gpu_frame::ImportedFrameTimings::default(),
+    };
+    let top_left = frame(7, hypercolor_gpu_frame::FrameOrigin::TopLeft);
+    let bottom_left = frame(8, hypercolor_gpu_frame::FrameOrigin::BottomLeft);
+
+    assert!(!GpuSourceFrame::Imported(&top_left).needs_shader_copy());
+    assert!(GpuSourceFrame::Imported(&bottom_left).needs_shader_copy());
+
+    let mut queue = ProducerQueue::new();
+    assert!(queue.submit_latest(ProducerFrame::Gpu(top_left)).is_none());
+    assert_eq!(
+        queue
+            .latch_latest()
+            .expect("first imported contents should latch")
+            .state,
+        ProducerFrameState::Fresh
+    );
+
+    assert!(
+        queue
+            .submit_latest(ProducerFrame::Gpu(bottom_left.clone()))
+            .is_some()
+    );
+    assert_eq!(
+        queue
+            .latch_latest()
+            .expect("new contents in the same allocation should latch")
+            .state,
+        ProducerFrameState::Fresh
+    );
+
+    assert!(
+        queue
+            .submit_latest(ProducerFrame::Gpu(bottom_left))
+            .is_some()
+    );
+    assert_eq!(
+        queue
+            .latch_latest()
+            .expect("duplicate imported contents should stay retained")
+            .state,
+        ProducerFrameState::Retained
+    );
 }
 
 fn bypass_surface_plan(width: u32, height: u32) -> CompositionPlan {
@@ -2957,14 +3037,18 @@ fn gpu_macos_imported_frame_composes_without_cpu_readback() {
         },
     );
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    let frame = hypercolor_core::effect::ImportedEffectFrame {
+    let texture = Arc::new(texture);
+    let frame = hypercolor_gpu_frame::ImportedEffectFrame {
         width,
         height,
-        format: hypercolor_core::effect::ImportedFrameFormat::Bgra8Unorm,
-        storage_id: 1,
-        texture: Arc::new(texture),
+        format: hypercolor_gpu_frame::ImportedFrameFormat::Bgra8Unorm,
+        allocation_id: hypercolor_gpu_frame::ImportedFrameAllocationId::new(1),
+        content_generation: 1,
+        origin: hypercolor_gpu_frame::FrameOrigin::BottomLeft,
+        lease: hypercolor_gpu_frame::ImportedFrameLease::new(Arc::clone(&texture)),
+        texture,
         view: Arc::new(view),
-        timings: hypercolor_core::effect::ImportedFrameTimings::default(),
+        timings: hypercolor_gpu_frame::ImportedFrameTimings::default(),
     };
 
     let composed = compositor
@@ -4131,7 +4215,7 @@ fn gpu_blend_modes_flip_imported_frames_like_replace_path() {
     };
     let width = 4;
     let height = 4;
-    let imported_frame = |storage_id: u64| {
+    let imported_frame = |allocation_id: u64| {
         let texture = compositor.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("SparkleFlinger test flipped imported source"),
             size: wgpu::Extent3d {
@@ -4177,14 +4261,18 @@ fn gpu_blend_modes_flip_imported_frames_like_replace_path() {
             },
         );
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        hypercolor_core::effect::ImportedEffectFrame {
+        let texture = Arc::new(texture);
+        hypercolor_gpu_frame::ImportedEffectFrame {
             width,
             height,
-            format: hypercolor_core::effect::ImportedFrameFormat::Bgra8Unorm,
-            storage_id,
-            texture: Arc::new(texture),
+            format: hypercolor_gpu_frame::ImportedFrameFormat::Bgra8Unorm,
+            allocation_id: hypercolor_gpu_frame::ImportedFrameAllocationId::new(allocation_id),
+            content_generation: allocation_id,
+            origin: hypercolor_gpu_frame::FrameOrigin::BottomLeft,
+            lease: hypercolor_gpu_frame::ImportedFrameLease::new(Arc::clone(&texture)),
+            texture,
             view: Arc::new(view),
-            timings: hypercolor_core::effect::ImportedFrameTimings::default(),
+            timings: hypercolor_gpu_frame::ImportedFrameTimings::default(),
         }
     };
 

@@ -7,6 +7,8 @@ use crate::render_thread::producer_queue::MacosScreenTextureLease;
 use crate::render_thread::producer_queue::NativeScreenCacheLease;
 use crate::render_thread::producer_queue::{GpuTextureFrame, ProducerFrame};
 use hypercolor_core::types::canvas::PublishedSurfaceStorageIdentity;
+#[cfg(feature = "servo-gpu-import")]
+use hypercolor_gpu_frame::{FrameOrigin, ImportedEffectFrame};
 use hypercolor_types::viewport::FitMode;
 
 use super::super::CompositionMode;
@@ -134,7 +136,7 @@ const SOURCE_COPY_BIND_GROUP_CACHE_CAP: usize = 8;
 
 pub(super) enum GpuSourceFrame<'a> {
     #[cfg(feature = "servo-gpu-import")]
-    Imported(&'a hypercolor_core::effect::ImportedEffectFrame),
+    Imported(&'a ImportedEffectFrame),
     Texture(&'a GpuTextureFrame),
 }
 
@@ -177,12 +179,8 @@ impl GpuSourceFrame<'_> {
     /// view directly and flips in the compose shader via params.
     pub(super) const fn needs_shader_copy(&self) -> bool {
         match self {
-            #[cfg(all(feature = "servo-gpu-import", target_os = "macos"))]
-            Self::Imported(_) => true,
-            #[cfg(all(feature = "servo-gpu-import", target_os = "windows"))]
-            Self::Imported(_) => true,
-            #[cfg(all(feature = "servo-gpu-import", target_os = "linux"))]
-            Self::Imported(_) => false,
+            #[cfg(feature = "servo-gpu-import")]
+            Self::Imported(frame) => matches!(frame.origin, FrameOrigin::BottomLeft),
             Self::Texture(_) => false,
         }
     }
@@ -204,8 +202,8 @@ impl GpuSourceFrame<'_> {
         match self {
             #[cfg(feature = "servo-gpu-import")]
             Self::Imported(frame) => CachedGpuSourceCopy {
-                storage_id: frame.storage_id,
-                content_generation: frame.storage_id,
+                storage_id: frame.allocation_id.get(),
+                content_generation: frame.content_generation,
                 width: frame.width,
                 height: frame.height,
             },
@@ -219,15 +217,7 @@ impl GpuSourceFrame<'_> {
     }
 
     pub(super) const fn flip_y_on_shader_copy(&self) -> bool {
-        match self {
-            #[cfg(all(feature = "servo-gpu-import", target_os = "macos"))]
-            Self::Imported(_) => true,
-            #[cfg(all(feature = "servo-gpu-import", target_os = "windows"))]
-            Self::Imported(_) => true,
-            #[cfg(all(feature = "servo-gpu-import", target_os = "linux"))]
-            Self::Imported(_) => false,
-            Self::Texture(_) => false,
-        }
+        self.needs_shader_copy()
     }
 
     #[cfg(any(

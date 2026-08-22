@@ -5160,6 +5160,7 @@ dependencies = [
  "hypercolor-core",
  "hypercolor-driver-api",
  "hypercolor-driver-builtin",
+ "hypercolor-gpu-frame",
  "hypercolor-leptos-ext",
  "hypercolor-linux-session",
  "hypercolor-macos-capture",

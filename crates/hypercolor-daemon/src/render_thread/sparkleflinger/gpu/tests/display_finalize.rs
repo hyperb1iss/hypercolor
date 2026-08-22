@@ -127,14 +127,18 @@ fn gpu_display_finalize_copies_imported_face_into_owned_source_texture() {
         },
     );
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    let face = ProducerFrame::Gpu(hypercolor_core::effect::ImportedEffectFrame {
+    let texture = Arc::new(texture);
+    let face = ProducerFrame::Gpu(hypercolor_gpu_frame::ImportedEffectFrame {
         width,
         height,
-        format: hypercolor_core::effect::ImportedFrameFormat::Rgba8Unorm,
-        storage_id: 42,
-        texture: Arc::new(texture),
+        format: hypercolor_gpu_frame::ImportedFrameFormat::Rgba8Unorm,
+        allocation_id: hypercolor_gpu_frame::ImportedFrameAllocationId::new(42),
+        content_generation: 7,
+        origin: hypercolor_gpu_frame::FrameOrigin::TopLeft,
+        lease: hypercolor_gpu_frame::ImportedFrameLease::new(Arc::clone(&texture)),
+        texture,
         view: Arc::new(view),
-        timings: hypercolor_core::effect::ImportedFrameTimings::default(),
+        timings: hypercolor_gpu_frame::ImportedFrameTimings::default(),
     });
     let scene = ProducerFrame::Canvas(solid_canvas_with_size(
         width,

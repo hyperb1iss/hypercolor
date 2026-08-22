@@ -1,5 +1,3 @@
-#[cfg(feature = "servo-gpu-import")]
-use hypercolor_core::effect::ImportedEffectFrame;
 #[cfg(all(feature = "wgpu", target_os = "macos", feature = "screen-capture"))]
 use hypercolor_core::input::screen::PlatformGpuSurfaceOwner;
 #[cfg(all(
@@ -14,6 +12,8 @@ use hypercolor_core::input::screen::{
     CapturePixelFormat, ScreenBranchPayload, ScreenBranchPublication, ScreenSurfacePayload,
 };
 use hypercolor_core::types::canvas::{Canvas, PublishedSurface};
+#[cfg(feature = "servo-gpu-import")]
+use hypercolor_gpu_frame::ImportedEffectFrame;
 #[cfg(all(feature = "wgpu", target_os = "macos", feature = "screen-capture"))]
 use hypercolor_macos_capture::MacosCaptureFrame;
 #[cfg(all(feature = "wgpu", target_os = "macos", feature = "screen-capture"))]
@@ -431,7 +431,8 @@ impl ProducerFrame {
             (Self::Gpu(left), Self::Gpu(right)) => {
                 left.width == right.width
                     && left.height == right.height
-                    && left.storage_id == right.storage_id
+                    && left.allocation_id == right.allocation_id
+                    && left.content_generation == right.content_generation
             }
             #[cfg(feature = "wgpu")]
             (Self::GpuTexture(left), Self::GpuTexture(right)) => {
