@@ -3,7 +3,8 @@ use std::sync::Weak;
 
 use super::super::super::CompositionLayer;
 use super::super::{COMPOSE_PARAM_BYTES, GpuCompositorPipeline, GpuCompositorSurfaceSet};
-use super::screen_upload_content_keys;
+#[cfg(feature = "allocation-contract-tests")]
+use super::has_screen_upload_layers;
 use crate::render_thread::producer_queue::GpuTextureFrameLease;
 #[cfg(any(
     target_os = "windows",
@@ -312,10 +313,6 @@ fn exact_projected_entry<'a, T>(
     key: &ComposeSourceBindGroupKey,
 ) -> Option<&'a T> {
     entries.get(key).or_else(|| retired_entries.get(key))
-}
-
-pub(super) fn has_screen_upload_layers(layers: &[CompositionLayer]) -> bool {
-    screen_upload_content_keys(layers).next().is_some()
 }
 
 #[cfg(feature = "allocation-contract-tests")]

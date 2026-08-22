@@ -22,34 +22,52 @@ use super::readback::{
 };
 use super::screen_upload::ScreenUploadPoolSaturated;
 use super::source::{
-    CachedSourceUpload, cached_readback_key, cached_source_upload, copy_frame_into_output_texture,
-    copy_gpu_source_frame_into_texture, gpu_source_frame, upload_frame_into_cached_texture,
-    upload_frame_into_source_texture,
+    cached_readback_key, copy_frame_into_output_texture, upload_frame_into_cached_texture,
 };
-use super::telemetry::record_gpu_source_upload_skipped;
 use super::{
-    COMPOSE_WORKGROUP_HEIGHT, COMPOSE_WORKGROUP_WIDTH, GpuCompositorOutputSurface,
-    GpuCompositorPipeline, GpuCompositorSurfaceSet, GpuSparkleFlinger, ScreenUploadContentKey,
-    padded_bytes_per_row, texture_extent,
+    GpuCompositorOutputSurface, GpuCompositorSurfaceSet, GpuSparkleFlinger, padded_bytes_per_row,
+    texture_extent,
 };
 use crate::performance::CompositorBackendKind;
 #[cfg(all(target_os = "macos", feature = "screen-capture"))]
 use crate::render_thread::producer_queue::MacosScreenTextureLease;
-use crate::render_thread::producer_queue::{GpuTextureFrame, GpuTextureFrameOrigin, ProducerFrame};
+use crate::render_thread::producer_queue::{GpuTextureFrameOrigin, ProducerFrame};
 
 mod bind_groups;
+mod layers;
 
 pub(crate) use bind_groups::PreparedProjectedComposeBindGroups;
 #[cfg(feature = "allocation-contract-tests")]
 pub(crate) use bind_groups::ProjectedLookupAllocationFixture;
-pub(super) use bind_groups::{
-    ComposeShaderMode, ComposeSourceBindGroupCache, create_compose_bind_group,
-    encode_compose_params,
-};
-use bind_groups::{encode_compose_params_upload, has_screen_upload_layers};
+#[cfg(test)]
+pub(super) use bind_groups::{ComposeShaderMode, encode_compose_params};
+pub(super) use bind_groups::{ComposeSourceBindGroupCache, create_compose_bind_group};
+use layers::{compose_layer_into_gpu, return_screen_frame_scratch, upload_screen_layers};
 
 const SAMPLING_READBACK_SLOT_COUNT: usize = 2;
 const SAMPLING_READBACK_SURFACE_SLOTS: usize = 3;
+
+fn screen_upload_content_keys(
+    layers: &[CompositionLayer],
+) -> impl Iterator<Item = super::ScreenUploadContentKey> + '_ {
+    layers.iter().filter_map(|layer| {
+        let ProducerFrame::ScreenPublication(publication) = &layer.frame else {
+            return None;
+        };
+        let extent = publication.surface().extent();
+        Some(super::ScreenUploadContentKey::new(
+            publication.plan_generation(),
+            publication.descriptor_identity(),
+            publication.branch_sequence(),
+            extent.width(),
+            extent.height(),
+        ))
+    })
+}
+
+fn has_screen_upload_layers(layers: &[CompositionLayer]) -> bool {
+    screen_upload_content_keys(layers).next().is_some()
+}
 
 /// One-frame readback latch that lets CPU spatial sampling follow GPU-only
 /// composition plans (Servo imports and media producer textures) one frame
@@ -1234,325 +1252,5 @@ impl GpuSparkleFlinger {
         if let Some(buffers) = self.sampling_latch.buffers.as_ref() {
             buffers.readbacks[slot].unmap();
         }
-    }
-}
-
-fn compose_layer_into_gpu(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    pipeline: &mut GpuCompositorPipeline,
-    surfaces: &mut GpuCompositorSurfaceSet,
-    encoder: &mut wgpu::CommandEncoder,
-    layer: &CompositionLayer,
-    uploaded_screen_frame: Option<&GpuTextureFrame>,
-    use_front_as_current: bool,
-    #[cfg(all(target_os = "macos", feature = "screen-capture"))] native_screen_leases: &mut Vec<
-        MacosScreenTextureLease,
-    >,
-) -> Result<()> {
-    let shader_mode = if layer.mode == CompositionMode::Replace && layer.opacity >= 1.0 {
-        ComposeShaderMode::Replace
-    } else {
-        match layer.mode {
-            CompositionMode::Replace | CompositionMode::Alpha => ComposeShaderMode::Alpha,
-            CompositionMode::Add => ComposeShaderMode::Add,
-            CompositionMode::Screen => ComposeShaderMode::Screen,
-            CompositionMode::Multiply => ComposeShaderMode::Multiply,
-            CompositionMode::Overlay => ComposeShaderMode::Overlay,
-            CompositionMode::SoftLight => ComposeShaderMode::SoftLight,
-            CompositionMode::ColorDodge => ComposeShaderMode::ColorDodge,
-            CompositionMode::Difference => ComposeShaderMode::Difference,
-            CompositionMode::Tint => ComposeShaderMode::Tint,
-            CompositionMode::LumaReveal => ComposeShaderMode::LumaReveal,
-        }
-    };
-    let output_surface = if use_front_as_current {
-        GpuCompositorOutputSurface::Back
-    } else {
-        GpuCompositorOutputSurface::Front
-    };
-
-    let gpu_frame = uploaded_screen_frame
-        .map(super::source::GpuSourceFrame::Texture)
-        .or_else(|| gpu_source_frame(&layer.frame));
-
-    if let Some(frame) = gpu_frame.as_ref()
-        && shader_mode == ComposeShaderMode::Replace
-        && !layer.needs_processing_for_size(surfaces.width, surfaces.height)
-    {
-        if uploaded_screen_frame.is_none() {
-            record_gpu_source_upload_skipped();
-        }
-        let output = if use_front_as_current {
-            &surfaces.back
-        } else {
-            &surfaces.front
-        };
-        copy_gpu_source_frame_into_texture(
-            device,
-            queue,
-            pipeline,
-            encoder,
-            &mut surfaces.pending_upload_buffers,
-            &mut surfaces.source_copy_bind_groups,
-            frame,
-            output,
-            #[cfg(all(target_os = "macos", feature = "screen-capture"))]
-            native_screen_leases,
-        );
-        set_texture_contents(
-            surfaces,
-            output_surface,
-            uploaded_screen_frame
-                .as_ref()
-                .and_then(|_| cached_source_upload(&layer.frame)),
-        );
-        return Ok(());
-    }
-
-    if gpu_frame.is_none() {
-        upload_frame_into_source_texture(device, encoder, surfaces, &layer.frame);
-        if shader_mode == ComposeShaderMode::Replace
-            && !layer.needs_processing_for_size(surfaces.width, surfaces.height)
-        {
-            let output_texture = if use_front_as_current {
-                &surfaces.back.texture
-            } else {
-                &surfaces.front.texture
-            };
-            encoder.copy_texture_to_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture: &surfaces.source.texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                wgpu::TexelCopyTextureInfo {
-                    texture: output_texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                texture_extent(surfaces.width, surfaces.height),
-            );
-            set_texture_contents(surfaces, output_surface, cached_source_upload(&layer.frame));
-            return Ok(());
-        }
-    }
-
-    let source_flip_y = gpu_frame
-        .as_ref()
-        .is_some_and(super::source::GpuSourceFrame::flip_y_on_shader_copy);
-    let params = encode_compose_params(
-        surfaces.width,
-        surfaces.height,
-        shader_mode,
-        layer,
-        source_flip_y,
-    );
-    let params_offset =
-        encode_compose_params_upload(device, queue, pipeline, surfaces, encoder, &params);
-    #[cfg(test)]
-    {
-        surfaces.compose_dispatch_count = surfaces.compose_dispatch_count.saturating_add(1);
-    }
-    if let Some(frame) = gpu_frame.as_ref() {
-        #[cfg(all(target_os = "macos", feature = "screen-capture"))]
-        if let Some(lease) = frame.macos_screen_lease() {
-            native_screen_leases.push(lease);
-        }
-        if uploaded_screen_frame.is_none() {
-            record_gpu_source_upload_skipped();
-        }
-        let (width, height) = (surfaces.width, surfaces.height);
-        let projected_source = uploaded_screen_frame.is_none()
-            && matches!(
-                &layer.frame,
-                ProducerFrame::GpuTexture(frame)
-                    if frame.origin == GpuTextureFrameOrigin::ProjectionSnapshot
-            );
-        let bind_group = {
-            let GpuCompositorSurfaceSet {
-                generation,
-                front,
-                back,
-                source,
-                compose_source_bind_groups,
-                ..
-            } = surfaces;
-            let (current_view, output_view) = if use_front_as_current {
-                (&front.view, &back.view)
-            } else {
-                (&back.view, &front.view)
-            };
-            let _ = source;
-            let source_view = frame.view();
-            let source_storage_id = frame.cached_display_source_copy().storage_id;
-            if projected_source {
-                compose_source_bind_groups
-                    .get_projected(
-                        *generation,
-                        source_storage_id,
-                        source_view,
-                        use_front_as_current,
-                    )
-                    .context("projected source bind group was not admitted")?
-            } else {
-                compose_source_bind_groups.get_or_create_transient(
-                    device,
-                    pipeline,
-                    *generation,
-                    source_storage_id,
-                    source_view,
-                    use_front_as_current,
-                    current_view,
-                    output_view,
-                    #[cfg(any(
-                        target_os = "windows",
-                        all(target_os = "macos", feature = "screen-capture")
-                    ))]
-                    frame.native_screen_cache_lease(),
-                )
-            }
-        };
-        dispatch_compose_pass(encoder, pipeline, &bind_group, params_offset, width, height);
-        set_texture_contents(surfaces, output_surface, None);
-        return Ok(());
-    }
-
-    let bind_group = if use_front_as_current {
-        &surfaces.bind_groups.front_to_back
-    } else {
-        &surfaces.bind_groups.back_to_front
-    };
-    dispatch_compose_pass(
-        encoder,
-        pipeline,
-        bind_group,
-        params_offset,
-        surfaces.width,
-        surfaces.height,
-    );
-    set_texture_contents(surfaces, output_surface, None);
-    Ok(())
-}
-
-fn return_screen_frame_scratch(
-    surfaces: &mut GpuCompositorSurfaceSet,
-    scratch: &mut Option<Vec<Option<GpuTextureFrame>>>,
-) {
-    if let Some(mut frames) = scratch.take() {
-        frames.clear();
-        surfaces.uploaded_screen_frame_scratch = frames;
-    }
-}
-
-fn upload_screen_layers(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    surfaces: &mut GpuCompositorSurfaceSet,
-    layers: &[CompositionLayer],
-) -> Result<()> {
-    let mut uploaded = std::mem::take(&mut surfaces.uploaded_screen_frame_scratch);
-    uploaded.clear();
-    let prior_capacity = uploaded.capacity();
-    let result = (|| -> Result<()> {
-        if prior_capacity < layers.len() {
-            uploaded.try_reserve_exact(layers.len() - prior_capacity)?;
-        }
-        for layer in layers {
-            let ProducerFrame::ScreenPublication(publication) = &layer.frame else {
-                uploaded.push(None);
-                continue;
-            };
-            let surface = publication.surface();
-            let GpuCompositorSurfaceSet {
-                screen_upload_pool,
-                compose_source_bind_groups,
-                ..
-            } = surfaces;
-            let content_key = ScreenUploadContentKey::new(
-                publication.plan_generation(),
-                publication.descriptor_identity(),
-                publication.branch_sequence(),
-                surface.extent().width(),
-                surface.extent().height(),
-            );
-            let (frame, wrote_texture) = screen_upload_pool.upload_rgba(
-                device,
-                queue,
-                surface.extent().width(),
-                surface.extent().height(),
-                surface.pixels(),
-                content_key,
-                |storage_id| compose_source_bind_groups.release_source(storage_id),
-            )?;
-            #[cfg(test)]
-            if wrote_texture {
-                surfaces.source_upload_count = surfaces.source_upload_count.saturating_add(1);
-            }
-            #[cfg(not(test))]
-            let _ = wrote_texture;
-            uploaded.push(Some(frame));
-        }
-        Ok(())
-    })();
-    #[cfg(test)]
-    if uploaded.capacity() > prior_capacity {
-        surfaces.screen_layer_host_allocation_count = surfaces
-            .screen_layer_host_allocation_count
-            .saturating_add(1);
-    }
-    surfaces.uploaded_screen_frame_scratch = uploaded;
-    result
-}
-
-fn screen_upload_content_keys(
-    layers: &[CompositionLayer],
-) -> impl Iterator<Item = ScreenUploadContentKey> + '_ {
-    layers.iter().filter_map(|layer| {
-        let ProducerFrame::ScreenPublication(publication) = &layer.frame else {
-            return None;
-        };
-        let extent = publication.surface().extent();
-        Some(ScreenUploadContentKey::new(
-            publication.plan_generation(),
-            publication.descriptor_identity(),
-            publication.branch_sequence(),
-            extent.width(),
-            extent.height(),
-        ))
-    })
-}
-
-fn dispatch_compose_pass(
-    encoder: &mut wgpu::CommandEncoder,
-    pipeline: &GpuCompositorPipeline,
-    bind_group: &wgpu::BindGroup,
-    params_offset: u32,
-    width: u32,
-    height: u32,
-) {
-    let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-        label: Some("SparkleFlinger GPU compose pass"),
-        timestamp_writes: None,
-    });
-    pass.set_pipeline(&pipeline.compose_pipeline);
-    pass.set_bind_group(0, bind_group, &[params_offset]);
-    pass.dispatch_workgroups(
-        width.div_ceil(COMPOSE_WORKGROUP_WIDTH),
-        height.div_ceil(COMPOSE_WORKGROUP_HEIGHT),
-        1,
-    );
-}
-
-fn set_texture_contents(
-    surfaces: &mut GpuCompositorSurfaceSet,
-    output: GpuCompositorOutputSurface,
-    contents: Option<CachedSourceUpload>,
-) {
-    match output {
-        GpuCompositorOutputSurface::Front => surfaces.front_contents = contents,
-        GpuCompositorOutputSurface::Back => surfaces.back_contents = contents,
     }
 }
