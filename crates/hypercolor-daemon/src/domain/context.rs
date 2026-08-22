@@ -30,8 +30,7 @@ use crate::domain::scene_tree::SceneTreeContext;
 use crate::domain::spatial::SpatialService;
 use crate::network::DaemonDriverHost;
 use crate::output_power::OutputPower;
-use crate::persistence::AtomicWriteOutcome;
-use crate::runtime_state::{self, RuntimeSessionSnapshot, RuntimeSnapshotSave};
+use crate::runtime_state::{self, RuntimeSessionSnapshot};
 use crate::{discovery, layout_auto_exclusions};
 
 /// Complete daemon domain graph assembled once by the composition root.
@@ -114,8 +113,11 @@ pub struct RuntimeSessionService {
 }
 
 pub(crate) struct RuntimeSessionEffectIdMigration {
-    pending: RuntimeSnapshotSave,
-    snapshot: RuntimeSessionSnapshot,
+    pending: runtime_state::PreparedRuntimeSnapshotSave,
+}
+
+pub(crate) struct AdmittedRuntimeSessionEffectIdMigration {
+    pending: runtime_state::AdmittedRuntimeSnapshotSave,
 }
 
 impl RuntimeSessionService {
@@ -161,7 +163,9 @@ impl RuntimeSessionService {
         snapshot.manual_paused = self.output_power.snapshot().manually_paused();
         let pending = runtime_state::reserve_save(&self.path)
             .map_err(|error| DomainError::Internal(error.into()))?;
-        Ok(RuntimeSessionEffectIdMigration { pending, snapshot })
+        let pending = runtime_state::prepare_reserved(pending, &snapshot)
+            .map_err(|error| DomainError::Internal(error.into()))?;
+        Ok(RuntimeSessionEffectIdMigration { pending })
     }
 
     /// Persist the current scene store before the runtime-session pointer.
@@ -198,11 +202,25 @@ impl RuntimeSessionService {
 }
 
 impl RuntimeSessionEffectIdMigration {
-    pub(crate) fn persist(self) -> anyhow::Result<()> {
-        match runtime_state::save_reserved(self.pending, &self.snapshot)? {
-            AtomicWriteOutcome::Written => Ok(()),
-            AtomicWriteOutcome::Superseded => {
-                anyhow::bail!("effect ID migration was superseded by newer runtime state")
+    pub(crate) fn admit(self) -> AdmittedRuntimeSessionEffectIdMigration {
+        AdmittedRuntimeSessionEffectIdMigration {
+            pending: self.pending.admit(),
+        }
+    }
+}
+
+impl AdmittedRuntimeSessionEffectIdMigration {
+    pub(crate) fn persist(self) -> crate::domain::effect::IdentityMigrationPersistence {
+        match self.pending.commit_stage_aware() {
+            crate::persistence::AtomicWriteCommitResult::DurableWritten => {
+                crate::domain::effect::IdentityMigrationPersistence::Written
+            }
+            crate::persistence::AtomicWriteCommitResult::Superseded => {
+                crate::domain::effect::IdentityMigrationPersistence::Superseded
+            }
+            crate::persistence::AtomicWriteCommitResult::FailedBeforeReplacement(error)
+            | crate::persistence::AtomicWriteCommitResult::ReplacementVisibleButNotDurable(error) => {
+                crate::domain::effect::IdentityMigrationPersistence::Retrying(error.to_string())
             }
         }
     }

@@ -83,22 +83,29 @@ use crate::render_thread::ConfiguredFpsTier;
 #[cfg(test)]
 fn open_persisted_library_store(
     path: &std::path::Path,
-) -> Result<Arc<dyn crate::library::LibraryStore>> {
-    Ok(Arc::new(
+) -> Result<(
+    Arc<dyn crate::library::LibraryStore>,
+    Arc<dyn crate::library::LibraryIdentityMigration>,
+)> {
+    let store = Arc::new(
         crate::library::JsonLibraryStore::open(path.to_owned()).with_context(|| {
             format!(
                 "failed to open persisted library store at {}",
                 path.display()
             )
         })?,
-    ))
+    );
+    Ok((store.clone(), store))
 }
 
 fn open_persisted_library_store_with_effect_id_migrations(
     path: &std::path::Path,
     migrations: &crate::domain::effect::EffectIdMigrations,
-) -> Result<Arc<dyn crate::library::LibraryStore>> {
-    Ok(Arc::new(
+) -> Result<(
+    Arc<dyn crate::library::LibraryStore>,
+    Arc<dyn crate::library::LibraryIdentityMigration>,
+)> {
+    let store = Arc::new(
         crate::library::JsonLibraryStore::open_with_effect_id_migrations(
             path.to_owned(),
             migrations,
@@ -109,7 +116,8 @@ fn open_persisted_library_store_with_effect_id_migrations(
                 path.display()
             )
         })?,
-    ))
+    );
+    Ok((store.clone(), store))
 }
 
 impl DaemonState {
@@ -741,10 +749,11 @@ impl DaemonState {
         info!("Device backends registered");
 
         let library_path = ConfigManager::data_dir().join("library.json");
-        let library_store = open_persisted_library_store_with_effect_id_migrations(
-            &library_path,
-            &effect_id_migrations,
-        )?;
+        let (library_store, library_identity) =
+            open_persisted_library_store_with_effect_id_migrations(
+                &library_path,
+                &effect_id_migrations,
+            )?;
         let playlist_runtime = Arc::new(Mutex::new(PlaylistRuntimeState::new()));
         let start_time = Instant::now();
         let runtime_session = RuntimeSessionService::new(
@@ -823,6 +832,7 @@ impl DaemonState {
             _macos_owner_watch: macos_owner_watch,
             asset_library,
             library_store,
+            library_identity,
             playlist_runtime,
             preview_runtime,
             zone_layout_previews,

@@ -54,13 +54,13 @@ use tokio::sync::{OwnedRwLockWriteGuard, RwLock};
 use crate::domain::commit::SceneCommitSequencer;
 use crate::domain::commit::{CommitDurability, SceneCommit, SceneRevision};
 use crate::domain::context::SceneContext;
+use crate::domain::effect::IdentityMigrationPersistence;
 use crate::domain::layout::LayoutContext;
 use crate::domain::output::OutputContext;
 use crate::domain::spatial::SpatialService;
 use crate::domain::{DomainError, ResourceKind};
 use crate::persistence::AtomicWriteOutcome;
-use crate::scene_store::SceneStore;
-use crate::scene_store::{PersistedSceneStoreEffectIdMigration, SceneStoreEffectIdMigration};
+use crate::scene_store::{AdmittedSceneStoreSave, SceneStore, SceneStoreSave};
 use crate::scene_transactions::{LayoutTransactionRejection, LayoutUpdateGuard};
 use crate::zone_layout_preview::ZoneLayoutPreviewStore;
 
@@ -73,14 +73,20 @@ pub struct SceneService(Arc<SceneServiceInner>);
 pub(crate) struct SceneEffectIdMigration {
     base_revision: SceneRevision,
     candidate: SceneManager,
-    store: Option<SceneStoreEffectIdMigration>,
+    store: Option<SceneStoreSave>,
     migrated: usize,
+}
+
+pub(crate) struct AdmittedSceneEffectIdMigration {
+    base_revision: SceneRevision,
+    candidate: SceneManager,
+    store: Option<AdmittedSceneStoreSave>,
 }
 
 pub(crate) struct PersistedSceneEffectIdMigration {
     base_revision: SceneRevision,
     candidate: SceneManager,
-    store: Option<PersistedSceneStoreEffectIdMigration>,
+    stored_scenes: Option<HashMap<SceneId, Scene>>,
 }
 
 pub(crate) struct SceneEffectIdMigrationPublication {
@@ -96,6 +102,14 @@ struct SceneServiceInner {
     commits: Arc<SceneCommitSequencer>,
     event_bus: Arc<HypercolorBus>,
     plan: ArcSwap<ScenePlanSnapshot>,
+    #[cfg(all(test, feature = "persistence-test-hooks"))]
+    persistence_test_barrier: std::sync::Mutex<Option<Arc<ScenePersistenceTestBarrier>>>,
+}
+
+#[cfg(all(test, feature = "persistence-test-hooks"))]
+pub(crate) struct ScenePersistenceTestBarrier {
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
 }
 
 /// Lock-free render-side access to the latest admitted scene plan.
@@ -176,6 +190,8 @@ impl SceneService {
             commits,
             event_bus,
             plan,
+            #[cfg(all(test, feature = "persistence-test-hooks"))]
+            persistence_test_barrier: std::sync::Mutex::new(None),
         }))
     }
 
@@ -222,27 +238,21 @@ impl SceneService {
             hypercolor_types::effect::EffectId,
         >,
     ) -> Result<SceneEffectIdMigration, DomainError> {
-        let (base_revision, mut candidate) = {
-            let manager = self.0.manager.read().await;
-            (self.0.commits.revision(), manager.clone())
-        };
-        let mut migrated = candidate.remap_effect_ids(migrations);
+        let manager = self.0.manager.read().await;
+        let mut candidate = manager.clone();
+        let migrated = candidate.remap_effect_ids(migrations);
         let store = match self.0.store.as_ref() {
-            Some(store) => {
-                let prepared = store
+            Some(store) => Some(
+                store
                     .read()
                     .await
-                    .prepare_effect_id_migration(migrations)
-                    .map_err(DomainError::Internal)?;
-                migrated += prepared
-                    .as_ref()
-                    .map_or(0, SceneStoreEffectIdMigration::migrated);
-                prepared
-            }
+                    .reserve_save(candidate.list().into_iter().cloned())
+                    .map_err(|error| DomainError::Internal(error.into()))?,
+            ),
             None => None,
         };
         Ok(SceneEffectIdMigration {
-            base_revision,
+            base_revision: self.0.commits.revision(),
             candidate,
             store,
             migrated,
@@ -266,19 +276,13 @@ impl SceneService {
             ));
         }
 
-        let store = if let Some(store_migration) = migration.store.as_ref() {
+        let store = if migration.stored_scenes.is_some() {
             let store = self
                 .0
                 .store
                 .as_ref()
                 .expect("persisted scene migration must retain its owning store");
-            let store = Arc::clone(store).write_owned().await;
-            if !store.effect_id_migration_is_current(store_migration) {
-                return Err(DomainError::conflict(
-                    "effect ID migration was superseded by newer scene storage",
-                ));
-            }
-            Some(store)
+            Some(Arc::clone(store).write_owned().await)
         } else {
             None
         };
@@ -300,8 +304,8 @@ impl SceneService {
             migration,
         } = publication;
 
-        if let (Some(store), Some(store_migration)) = (store.as_mut(), migration.store) {
-            store.install_effect_id_migration(store_migration);
+        if let (Some(store), Some(stored_scenes)) = (store.as_mut(), migration.stored_scenes) {
+            store.replace_named_scenes(stored_scenes.into_values());
         }
 
         *manager = migration.candidate;
@@ -339,6 +343,20 @@ impl SceneService {
     #[cfg(test)]
     pub(crate) fn scene_write_is_blocked_for_test(&self) -> bool {
         self.0.manager.try_write().is_err()
+    }
+
+    #[cfg(all(test, feature = "persistence-test-hooks"))]
+    pub(crate) fn pause_next_persistence_for_test(&self) -> Arc<ScenePersistenceTestBarrier> {
+        let barrier = Arc::new(ScenePersistenceTestBarrier {
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+        });
+        *self
+            .0
+            .persistence_test_barrier
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&barrier));
+        barrier
     }
 
     /// Admit an owned candidate through persistence and ordered publication.
@@ -430,6 +448,8 @@ impl SceneService {
             .store
             .as_ref()
             .expect("persistent scene commit must retain its owning store");
+        #[cfg(all(test, feature = "persistence-test-hooks"))]
+        self.pause_before_persistence_for_test().await;
         let outcome = store.write().await.save_reserved(pending);
         match outcome {
             Ok(AtomicWriteOutcome::Written) => {
@@ -459,6 +479,20 @@ impl SceneService {
                     Some(error.to_string()),
                 ))
             }
+        }
+    }
+
+    #[cfg(all(test, feature = "persistence-test-hooks"))]
+    async fn pause_before_persistence_for_test(&self) {
+        let barrier = self
+            .0
+            .persistence_test_barrier
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(barrier) = barrier {
+            barrier.entered.notify_one();
+            barrier.release.notified().await;
         }
     }
 
@@ -509,6 +543,17 @@ impl SceneService {
     }
 }
 
+#[cfg(all(test, feature = "persistence-test-hooks"))]
+impl ScenePersistenceTestBarrier {
+    pub(crate) async fn wait_until_entered(&self) {
+        self.entered.notified().await;
+    }
+
+    pub(crate) fn release(&self) {
+        self.release.notify_one();
+    }
+}
+
 impl SceneEffectIdMigration {
     pub(crate) fn candidate(&self) -> &SceneManager {
         &self.candidate
@@ -518,16 +563,49 @@ impl SceneEffectIdMigration {
         self.migrated
     }
 
-    pub(crate) fn persist(self) -> anyhow::Result<PersistedSceneEffectIdMigration> {
-        let store = self
-            .store
-            .map(SceneStoreEffectIdMigration::persist)
-            .transpose()?;
-        Ok(PersistedSceneEffectIdMigration {
+    pub(crate) fn admit(self) -> AdmittedSceneEffectIdMigration {
+        AdmittedSceneEffectIdMigration {
             base_revision: self.base_revision,
             candidate: self.candidate,
-            store,
-        })
+            store: self.store.map(SceneStoreSave::admit),
+        }
+    }
+}
+
+impl AdmittedSceneEffectIdMigration {
+    pub(crate) fn persist(
+        self,
+    ) -> (
+        PersistedSceneEffectIdMigration,
+        IdentityMigrationPersistence,
+    ) {
+        let (stored_scenes, persistence) = self.store.map_or_else(
+            || (None, IdentityMigrationPersistence::Written),
+            |store| {
+                let (scenes, outcome) = store.commit_stage_aware();
+                let persistence = match outcome {
+                    crate::persistence::AtomicWriteCommitResult::DurableWritten => {
+                        IdentityMigrationPersistence::Written
+                    }
+                    crate::persistence::AtomicWriteCommitResult::Superseded => {
+                        IdentityMigrationPersistence::Superseded
+                    }
+                    crate::persistence::AtomicWriteCommitResult::FailedBeforeReplacement(error)
+                    | crate::persistence::AtomicWriteCommitResult::ReplacementVisibleButNotDurable(error) => {
+                        IdentityMigrationPersistence::Retrying(error.to_string())
+                    }
+                };
+                (Some(scenes), persistence)
+            },
+        );
+        (
+            PersistedSceneEffectIdMigration {
+                base_revision: self.base_revision,
+                candidate: self.candidate,
+                stored_scenes,
+            },
+            persistence,
+        )
     }
 }
 

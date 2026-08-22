@@ -390,8 +390,13 @@ async fn effect_id_migration_supersedes_queued_layout_publication() {
         )]))
         .await
         .expect("scene migration should prepare")
-        .persist()
-        .expect("in-memory scene migration should persist");
+        .admit()
+        .persist();
+    let (migration, persistence) = migration;
+    assert_eq!(
+        persistence,
+        crate::domain::effect::IdentityMigrationPersistence::Written
+    );
     let publication = scene_manager
         .prepare_effect_id_migration_publication(migration)
         .await

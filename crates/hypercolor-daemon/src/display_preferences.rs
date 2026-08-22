@@ -22,7 +22,7 @@ use crate::path_migration::{
 };
 use crate::persistence::{
     AdmittedAtomicWrite, AtomicFileWriter, AtomicWriteCommitResult, AtomicWriteOutcome,
-    serialize_json_pretty,
+    AtomicWriteReservation, serialize_json_pretty,
 };
 
 const STORE_SUBJECT: &str = "display preferences";
@@ -53,6 +53,15 @@ pub struct DisplayPreferencesStore {
 
 #[derive(Debug)]
 pub(crate) struct DisplayPreferencesEffectIdMigration {
+    source: HashMap<DeviceId, DisplayPreference>,
+    candidate: HashMap<DeviceId, DisplayPreference>,
+    write: AtomicWriteReservation,
+    payload: Vec<u8>,
+    migrated: usize,
+}
+
+#[derive(Debug)]
+pub(crate) struct AdmittedDisplayPreferencesEffectIdMigration {
     source: HashMap<DeviceId, DisplayPreference>,
     candidate: HashMap<DeviceId, DisplayPreference>,
     write: AdmittedAtomicWrite,
@@ -272,7 +281,8 @@ impl DisplayPreferencesStore {
         Ok(Some(DisplayPreferencesEffectIdMigration {
             source: self.preferences.clone(),
             candidate,
-            write: self.writer.reserve().admit(payload),
+            write: self.writer.reserve(),
+            payload,
             migrated,
         }))
     }
@@ -304,23 +314,43 @@ impl DisplayPreferencesStore {
 }
 
 impl DisplayPreferencesEffectIdMigration {
-    pub(crate) fn persist(self) -> anyhow::Result<PersistedDisplayPreferencesEffectIdMigration> {
-        match self.write.commit_stage_aware() {
+    pub(crate) fn admit(self) -> AdmittedDisplayPreferencesEffectIdMigration {
+        AdmittedDisplayPreferencesEffectIdMigration {
+            source: self.source,
+            candidate: self.candidate,
+            write: self.write.admit(self.payload),
+            migrated: self.migrated,
+        }
+    }
+}
+
+impl AdmittedDisplayPreferencesEffectIdMigration {
+    pub(crate) fn persist(
+        self,
+    ) -> (
+        PersistedDisplayPreferencesEffectIdMigration,
+        crate::domain::effect::IdentityMigrationPersistence,
+    ) {
+        let persistence = match self.write.commit_stage_aware() {
             AtomicWriteCommitResult::DurableWritten => {
-                Ok(PersistedDisplayPreferencesEffectIdMigration {
-                    source: self.source,
-                    candidate: self.candidate,
-                    migrated: self.migrated,
-                })
+                crate::domain::effect::IdentityMigrationPersistence::Written
             }
             AtomicWriteCommitResult::Superseded => {
-                anyhow::bail!("effect ID migration was superseded by newer display preferences")
+                crate::domain::effect::IdentityMigrationPersistence::Superseded
             }
             AtomicWriteCommitResult::FailedBeforeReplacement(error)
             | AtomicWriteCommitResult::ReplacementVisibleButNotDurable(error) => {
-                Err(error).context("failed to persist migrated display preferences")
+                crate::domain::effect::IdentityMigrationPersistence::Retrying(error.to_string())
             }
-        }
+        };
+        (
+            PersistedDisplayPreferencesEffectIdMigration {
+                source: self.source,
+                candidate: self.candidate,
+                migrated: self.migrated,
+            },
+            persistence,
+        )
     }
 }
 

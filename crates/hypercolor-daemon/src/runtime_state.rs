@@ -14,8 +14,8 @@ use crate::path_migration::{
     migrate,
 };
 use crate::persistence::{
-    AtomicFileWriter, AtomicWriteOutcome, AtomicWriteReservation, PersistenceError,
-    serialize_json_pretty,
+    AdmittedAtomicWrite, AtomicFileWriter, AtomicWriteCommitResult, AtomicWriteOutcome,
+    AtomicWriteReservation, PersistenceError, serialize_json_pretty,
 };
 
 const STORE_SUBJECT: &str = "runtime session state";
@@ -50,6 +50,17 @@ impl RuntimeSessionSnapshot {
 pub struct RuntimeSnapshotSave {
     path: PathBuf,
     write: AtomicWriteReservation,
+}
+
+#[derive(Debug)]
+pub(crate) struct PreparedRuntimeSnapshotSave {
+    write: AtomicWriteReservation,
+    payload: Vec<u8>,
+}
+
+#[derive(Debug)]
+pub(crate) struct AdmittedRuntimeSnapshotSave {
+    write: AdmittedAtomicWrite,
 }
 
 /// Errors produced while loading/saving runtime snapshots.
@@ -224,17 +235,39 @@ pub fn save_reserved(
     pending: RuntimeSnapshotSave,
     snapshot: &RuntimeSessionSnapshot,
 ) -> Result<AtomicWriteOutcome, RuntimeSessionError> {
-    let bytes = serialize_json_pretty(snapshot).map_err(RuntimeSessionError::Serialize)?;
-    let outcome =
-        pending
-            .write
-            .admit(bytes)
-            .commit()
-            .map_err(|source| RuntimeSessionError::Persist {
-                path: pending.path,
-                source,
-            })?;
+    let path = pending.path.clone();
+    let prepared = prepare_reserved(pending, snapshot)?;
+    let outcome = prepared
+        .admit()
+        .write
+        .commit()
+        .map_err(|source| RuntimeSessionError::Persist { path, source })?;
     Ok(outcome)
+}
+
+pub(crate) fn prepare_reserved(
+    pending: RuntimeSnapshotSave,
+    snapshot: &RuntimeSessionSnapshot,
+) -> Result<PreparedRuntimeSnapshotSave, RuntimeSessionError> {
+    let payload = serialize_json_pretty(snapshot).map_err(RuntimeSessionError::Serialize)?;
+    Ok(PreparedRuntimeSnapshotSave {
+        write: pending.write,
+        payload,
+    })
+}
+
+impl PreparedRuntimeSnapshotSave {
+    pub(crate) fn admit(self) -> AdmittedRuntimeSnapshotSave {
+        AdmittedRuntimeSnapshotSave {
+            write: self.write.admit(self.payload),
+        }
+    }
+}
+
+impl AdmittedRuntimeSnapshotSave {
+    pub(crate) fn commit_stage_aware(self) -> AtomicWriteCommitResult {
+        self.write.commit_stage_aware()
+    }
 }
 
 #[cfg(test)]

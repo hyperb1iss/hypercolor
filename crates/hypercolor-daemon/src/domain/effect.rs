@@ -38,6 +38,13 @@ use crate::domain::output::OutputContext;
 use crate::domain::spatial::SpatialService;
 use crate::domain::{DomainError, MutationContext};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum IdentityMigrationPersistence {
+    Written,
+    Superseded,
+    Retrying(String),
+}
+
 /// Effect catalog and activation authority shared by every transport.
 #[derive(Clone)]
 pub struct EffectContext {
@@ -48,6 +55,9 @@ pub struct EffectContext {
     update_gate: Arc<RwLock<()>>,
     #[cfg(test)]
     resolution_test_barrier: Arc<std::sync::Mutex<Option<Arc<EffectResolutionTestBarrier>>>>,
+    #[cfg(test)]
+    identity_publication_test_barrier:
+        Arc<std::sync::Mutex<Option<Arc<EffectResolutionTestBarrier>>>>,
 }
 
 #[cfg(test)]
@@ -113,6 +123,8 @@ impl EffectContext {
             update_gate: Arc::new(RwLock::new(())),
             #[cfg(test)]
             resolution_test_barrier: Arc::new(std::sync::Mutex::new(None)),
+            #[cfg(test)]
+            identity_publication_test_barrier: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -361,9 +373,37 @@ impl EffectContext {
     }
 
     #[cfg(test)]
+    pub(crate) fn pause_next_identity_publication_for_test(
+        &self,
+    ) -> Arc<EffectResolutionTestBarrier> {
+        let barrier = Arc::new(EffectResolutionTestBarrier {
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+        });
+        *self
+            .identity_publication_test_barrier
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&barrier));
+        barrier
+    }
+
+    #[cfg(test)]
     async fn pause_after_resolution_for_test(&self) {
         let barrier = self
             .resolution_test_barrier
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(barrier) = barrier {
+            barrier.entered.notify_one();
+            barrier.release.notified().await;
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn pause_before_identity_publication_for_test(&self) {
+        let barrier = self
+            .identity_publication_test_barrier
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();

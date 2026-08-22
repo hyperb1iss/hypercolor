@@ -52,7 +52,7 @@ use crate::driver_inventory::{DRIVER_INVENTORY_FILENAME, DriverInventoryStore};
 use crate::extensions::{ApiExtension, ExtensionRegistry};
 use crate::interaction_routing::InteractionRoutingControl;
 use crate::layout_auto_exclusions;
-use crate::library::{InMemoryLibraryStore, LibraryStore};
+use crate::library::{InMemoryLibraryStore, LibraryIdentityMigration, LibraryStore};
 use crate::logical_devices::LogicalDevice;
 use crate::network::{self, DaemonDriverHost};
 use crate::output_power::OutputPower;
@@ -268,6 +268,8 @@ pub struct AppState {
 
     /// Saved effect library storage (favorites, presets, playlists).
     pub library_store: Arc<dyn LibraryStore>,
+
+    pub(crate) library_identity: Arc<dyn LibraryIdentityMigration>,
 
     /// Active playlist runner state (single background worker at a time).
     pub playlist_runtime: Arc<Mutex<PlaylistRuntimeState>>,
@@ -602,6 +604,10 @@ impl AppState {
             },
         );
 
+        let library = Arc::new(InMemoryLibraryStore::new());
+        let library_store: Arc<dyn LibraryStore> = library.clone();
+        let library_identity: Arc<dyn LibraryIdentityMigration> = library;
+
         Self {
             domains,
             device_registry,
@@ -660,7 +666,8 @@ impl AppState {
             runtime_state_path,
             output_power,
             scene_transactions,
-            library_store: Arc::new(InMemoryLibraryStore::new()),
+            library_store,
+            library_identity,
             playlist_runtime: Arc::new(Mutex::new(PlaylistRuntimeState::new())),
             start_time,
             server_identity: ServerIdentity {
@@ -686,6 +693,7 @@ impl AppState {
         // through another.
         let data_dir = ConfigManager::data_dir();
         let library_store = Arc::clone(&daemon.library_store);
+        let library_identity = Arc::clone(&daemon.library_identity);
         let driver_host = Arc::clone(&daemon.driver_host);
         let driver_registry = Arc::clone(&daemon.driver_registry);
         let domains = daemon.domains.clone();
@@ -751,6 +759,7 @@ impl AppState {
             output_power: daemon.output_power.clone(),
             scene_transactions: daemon.scene_transactions.clone(),
             library_store,
+            library_identity,
             playlist_runtime: Arc::clone(&daemon.playlist_runtime),
             start_time: daemon.start_time,
             server_identity: daemon.server_identity.clone(),

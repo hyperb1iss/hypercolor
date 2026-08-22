@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::domain::effect::{EffectIdMigrations, remap_zones};
 use crate::persistence::{
     AdmittedAtomicWrite, AtomicFileWriter, AtomicWriteCommitResult, AtomicWriteOutcome,
-    PersistenceError, serialize_json_pretty,
+    AtomicWriteReservation, PersistenceError, serialize_json_pretty,
 };
 
 const SCENE_STORE_SCHEMA_VERSION: u32 = 2;
@@ -38,22 +38,14 @@ impl SceneStoreDocument {
 #[derive(Debug)]
 pub struct SceneStoreSave {
     scenes: HashMap<SceneId, Scene>,
-    write: AdmittedAtomicWrite,
+    write: AtomicWriteReservation,
+    payload: Vec<u8>,
 }
 
 #[derive(Debug)]
-pub(crate) struct SceneStoreEffectIdMigration {
-    source: HashMap<SceneId, Scene>,
-    candidate: HashMap<SceneId, Scene>,
+pub(crate) struct AdmittedSceneStoreSave {
+    scenes: HashMap<SceneId, Scene>,
     write: AdmittedAtomicWrite,
-    migrated: usize,
-}
-
-#[derive(Debug)]
-pub(crate) struct PersistedSceneStoreEffectIdMigration {
-    source: HashMap<SceneId, Scene>,
-    candidate: HashMap<SceneId, Scene>,
-    migrated: usize,
 }
 
 /// JSON-backed named-scene store.
@@ -146,7 +138,8 @@ impl SceneStore {
         )?;
         Ok(SceneStoreSave {
             scenes,
-            write: self.writer.reserve().admit(payload),
+            write: self.writer.reserve(),
+            payload,
         })
     }
 
@@ -167,7 +160,7 @@ impl SceneStore {
         &mut self,
         pending: SceneStoreSave,
     ) -> AtomicWriteCommitResult {
-        let SceneStoreSave { scenes, write } = pending;
+        let AdmittedSceneStoreSave { scenes, write } = pending.admit();
         let previous = std::mem::replace(&mut self.scenes, scenes);
         let outcome = write.commit_stage_aware();
         if matches!(outcome, AtomicWriteCommitResult::Superseded) {
@@ -203,7 +196,7 @@ impl SceneStore {
         self.scenes = named_scenes(scenes);
     }
 
-    /// Rewrite path-derived effect IDs before installing persisted scenes.
+    /// Rewrite path-derived effect IDs during the startup import.
     pub fn migrate_effect_ids(&mut self, migrations: &EffectIdMigrations) -> anyhow::Result<usize> {
         let mut scenes = self.scenes.clone();
         let migrated = scenes
@@ -221,44 +214,6 @@ impl SceneStore {
                 bail!("effect ID migration was superseded by a newer scene snapshot")
             }
         }
-    }
-
-    pub(crate) fn prepare_effect_id_migration(
-        &self,
-        migrations: &EffectIdMigrations,
-    ) -> anyhow::Result<Option<SceneStoreEffectIdMigration>> {
-        let mut candidate = self.scenes.clone();
-        let migrated = candidate
-            .values_mut()
-            .map(|scene| remap_zones(&mut scene.zones, migrations))
-            .sum();
-        if migrated == 0 {
-            return Ok(None);
-        }
-        let payload = serialize_json_pretty(&SceneStoreDocument::current(candidate.clone()))
-            .context("failed to serialize migrated scene store")?;
-        Ok(Some(SceneStoreEffectIdMigration {
-            source: self.scenes.clone(),
-            candidate,
-            write: self.writer.reserve().admit(payload),
-            migrated,
-        }))
-    }
-
-    pub(crate) fn install_effect_id_migration(
-        &mut self,
-        migration: PersistedSceneStoreEffectIdMigration,
-    ) -> usize {
-        debug_assert_eq!(self.scenes, migration.source);
-        self.scenes = migration.candidate;
-        migration.migrated
-    }
-
-    pub(crate) fn effect_id_migration_is_current(
-        &self,
-        migration: &PersistedSceneStoreEffectIdMigration,
-    ) -> bool {
-        self.scenes == migration.source
     }
 
     pub fn sync_from_manager(&mut self, manager: &SceneManager) {
@@ -294,26 +249,18 @@ impl SceneStore {
     }
 }
 
-impl SceneStoreEffectIdMigration {
-    pub(crate) const fn migrated(&self) -> usize {
-        self.migrated
-    }
-
-    pub(crate) fn persist(self) -> anyhow::Result<PersistedSceneStoreEffectIdMigration> {
-        match self.write.commit_stage_aware() {
-            AtomicWriteCommitResult::DurableWritten => Ok(PersistedSceneStoreEffectIdMigration {
-                source: self.source,
-                candidate: self.candidate,
-                migrated: self.migrated,
-            }),
-            AtomicWriteCommitResult::Superseded => {
-                bail!("effect ID migration was superseded by a newer scene snapshot")
-            }
-            AtomicWriteCommitResult::FailedBeforeReplacement(error)
-            | AtomicWriteCommitResult::ReplacementVisibleButNotDurable(error) => {
-                Err(error).context("failed to persist migrated scene store")
-            }
+impl SceneStoreSave {
+    pub(crate) fn admit(self) -> AdmittedSceneStoreSave {
+        AdmittedSceneStoreSave {
+            scenes: self.scenes,
+            write: self.write.admit(self.payload),
         }
+    }
+}
+
+impl AdmittedSceneStoreSave {
+    pub(crate) fn commit_stage_aware(self) -> (HashMap<SceneId, Scene>, AtomicWriteCommitResult) {
+        (self.scenes, self.write.commit_stage_aware())
     }
 }
 
@@ -329,10 +276,17 @@ where
 }
 
 fn persist_reserved(
-    pending: SceneStoreSave,
+    pending: impl Into<AdmittedSceneStoreSave>,
 ) -> anyhow::Result<(AtomicWriteOutcome, HashMap<SceneId, Scene>)> {
+    let pending = pending.into();
     let outcome = pending.write.commit().context("failed to persist scenes")?;
     Ok((outcome, pending.scenes))
+}
+
+impl From<SceneStoreSave> for AdmittedSceneStoreSave {
+    fn from(pending: SceneStoreSave) -> Self {
+        pending.admit()
+    }
 }
 
 #[cfg(test)]
@@ -391,51 +345,6 @@ mod tests {
             !std::fs::read_to_string(path)
                 .expect("scene file should read")
                 .contains(&legacy_id.to_string())
-        );
-    }
-
-    #[test]
-    fn prepared_effect_id_migration_rejects_a_newer_scene_generation() {
-        let temp = TempDir::new().expect("tempdir");
-        let path = temp.path().join("scenes.json");
-        let legacy_id = EffectId::new(uuid::Uuid::now_v7());
-        let canonical_id = EffectId::new(uuid::Uuid::now_v7());
-        let mut scene = SceneManager::with_default()
-            .get(&SceneId::DEFAULT)
-            .cloned()
-            .expect("default scene should exist");
-        scene.id = SceneId::new();
-        scene.name = "Superseded scene".to_owned();
-        scene.kind = SceneKind::Named;
-        scene.mutation_mode = SceneMutationMode::Live;
-        scene.zones[0].layers = vec![SceneLayer::from_effect(
-            SceneLayerId::new(),
-            legacy_id,
-            HashMap::new(),
-            HashMap::new(),
-            None,
-        )];
-        let mut store = SceneStore::new(path).expect("scene store should open");
-        let seed = store.reserve_save([scene]).expect("seed should reserve");
-        store.save_reserved(seed).expect("seed should persist");
-        let migration = store
-            .prepare_effect_id_migration(&HashMap::from([(legacy_id, canonical_id)]))
-            .expect("migration should prepare")
-            .expect("legacy scene should migrate");
-        let newer = store
-            .reserve_save(store.list().cloned())
-            .expect("newer snapshot should reserve");
-        store
-            .save_reserved(newer)
-            .expect("newer snapshot should persist");
-
-        assert!(migration.persist().is_err());
-        assert!(
-            store
-                .list()
-                .flat_map(|scene| &scene.zones)
-                .flat_map(hypercolor_types::scene::Zone::effect_ids)
-                .any(|effect_id| effect_id == legacy_id)
         );
     }
 }

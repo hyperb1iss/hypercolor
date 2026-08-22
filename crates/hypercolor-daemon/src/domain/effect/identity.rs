@@ -12,11 +12,13 @@ use tokio::sync::{OwnedMutexGuard, OwnedRwLockWriteGuard};
 use super::{EffectRegistryPublication, EffectRegistryUpdate};
 use crate::app_state::AppState;
 use crate::display_preferences::{
-    DisplayPreferencesEffectIdMigrationPublication, PersistedDisplayPreferencesEffectIdMigration,
+    AdmittedDisplayPreferencesEffectIdMigration, DisplayPreferencesEffectIdMigrationPublication,
+    PersistedDisplayPreferencesEffectIdMigration,
 };
 use crate::domain::DomainError;
+use crate::domain::effect::IdentityMigrationPersistence;
 use crate::domain::scene::SceneEffectIdMigrationPublication;
-use crate::library::{LibraryEffectIdMigration, LibraryEffectIdMigrationPublication};
+use crate::library::{AdmittedLibraryEffectIdMigration, LibraryEffectIdMigrationPublication};
 use crate::playlist_runtime::PlaylistRuntimeState;
 
 pub(crate) type EffectIdMigrations = HashMap<EffectId, EffectId>;
@@ -38,6 +40,13 @@ struct ActivePlaylistEffectIdMigrationPublication {
 
 struct EffectIdMigrationPublication<'a> {
     registry: EffectRegistryPublication<'a>,
+    scene: SceneEffectIdMigrationPublication,
+    display: Option<DisplayPreferencesEffectIdMigrationPublication>,
+    library: Option<Box<dyn LibraryEffectIdMigrationPublication>>,
+    active_playlist: ActivePlaylistEffectIdMigrationPublication,
+}
+
+struct EffectIdMigrationPublicationParts {
     scene: SceneEffectIdMigrationPublication,
     display: Option<DisplayPreferencesEffectIdMigrationPublication>,
     library: Option<Box<dyn LibraryEffectIdMigrationPublication>>,
@@ -110,49 +119,80 @@ async fn apply_registry_update(
         return Ok(report);
     }
 
-    let scene = state
-        .scene_manager
-        .prepare_effect_id_migration(&migrations)
-        .await?;
-    let runtime = state
-        .domains
-        .runtime_session
-        .prepare_effect_id_migration(scene.candidate())?;
-    let display = state
-        .display_preferences
-        .read()
-        .await
-        .prepare_effect_id_migration(&migrations)
-        .map_err(DomainError::Internal)?;
-    let mut library = state
-        .library_store
-        .prepare_effect_id_migration(&migrations)
-        .await
-        .map_err(|error| DomainError::Internal(error.into()))?;
-    let active_playlist = ActivePlaylistEffectIdMigration::prepare(state, &migrations).await;
-
-    let scene_migrated = scene.migrated();
-    let persisted_scene = scene.persist().map_err(DomainError::Internal)?;
-    runtime.persist().map_err(DomainError::Internal)?;
-    let persisted_display = display
-        .map(crate::display_preferences::DisplayPreferencesEffectIdMigration::persist)
-        .transpose()
-        .map_err(DomainError::Internal)?;
-    if let Some(migration) = library.as_mut() {
-        migration
-            .persist()
+    let (parts, scene_migrated) = loop {
+        let scene = state
+            .scene_manager
+            .prepare_effect_id_migration(&migrations)
+            .await?;
+        let runtime = state
+            .domains
+            .runtime_session
+            .prepare_effect_id_migration(scene.candidate())?;
+        let display = state
+            .display_preferences
+            .read()
+            .await
+            .prepare_effect_id_migration(&migrations)
+            .map_err(DomainError::Internal)?;
+        let library = state
+            .library_identity
+            .prepare_effect_id_migration(&migrations)
+            .await
             .map_err(|error| DomainError::Internal(error.into()))?;
-    }
+        let active_playlist = ActivePlaylistEffectIdMigration::prepare(state, &migrations).await;
+        let scene_migrated = scene.migrated();
 
-    let publication = EffectIdMigrationPublication::prepare(
-        state,
-        update,
-        persisted_scene,
-        persisted_display,
-        library,
-        active_playlist,
-    )
-    .await?;
+        let scene = scene.admit();
+        let runtime = runtime.admit();
+        let display =
+            display.map(crate::display_preferences::DisplayPreferencesEffectIdMigration::admit);
+        let mut library = library.map(crate::library::LibraryEffectIdMigration::admit);
+
+        let (persisted_scene, scene_persistence) = scene.persist();
+        let runtime_persistence = runtime.persist();
+        let (persisted_display, display_persistence) = persist_display_migration(display);
+        let library_persistence = library
+            .as_mut()
+            .map_or(IdentityMigrationPersistence::Written, |migration| {
+                migration.persist()
+            });
+
+        if [
+            &scene_persistence,
+            &runtime_persistence,
+            &display_persistence,
+            &library_persistence,
+        ]
+        .into_iter()
+        .any(|outcome| matches!(outcome, IdentityMigrationPersistence::Superseded))
+        {
+            tokio::task::yield_now().await;
+            continue;
+        }
+
+        #[cfg(test)]
+        state
+            .domains
+            .effects
+            .pause_before_identity_publication_for_test()
+            .await;
+        let Ok(parts) = EffectIdMigrationPublicationParts::prepare(
+            state,
+            persisted_scene,
+            persisted_display,
+            library,
+            active_playlist,
+        )
+        .await
+        else {
+            tokio::task::yield_now().await;
+            continue;
+        };
+        break (parts, scene_migrated);
+    };
+
+    let registry = update.prepare_publication().await?;
+    let publication = parts.with_registry(registry);
     let (report, scene_commit, library_migrated, active_playlist_migrated) =
         publication.publish(state).await;
     tracing::info!(
@@ -164,6 +204,18 @@ async fn apply_registry_update(
         "Migrated late path-derived effect identities"
     );
     Ok(report)
+}
+
+fn persist_display_migration(
+    migration: Option<AdmittedDisplayPreferencesEffectIdMigration>,
+) -> (
+    Option<PersistedDisplayPreferencesEffectIdMigration>,
+    IdentityMigrationPersistence,
+) {
+    migration.map_or((None, IdentityMigrationPersistence::Written), |migration| {
+        let (persisted, outcome) = migration.persist();
+        (Some(persisted), outcome)
+    })
 }
 
 impl ActivePlaylistEffectIdMigration {
@@ -245,16 +297,14 @@ impl ActivePlaylistEffectIdMigrationPublication {
     }
 }
 
-impl<'a> EffectIdMigrationPublication<'a> {
+impl EffectIdMigrationPublicationParts {
     async fn prepare(
         state: &AppState,
-        update: EffectRegistryUpdate<'a>,
         scene: crate::domain::scene::PersistedSceneEffectIdMigration,
         display: Option<PersistedDisplayPreferencesEffectIdMigration>,
-        library: Option<Box<dyn LibraryEffectIdMigration>>,
+        library: Option<Box<dyn AdmittedLibraryEffectIdMigration>>,
         active_playlist: ActivePlaylistEffectIdMigration,
     ) -> Result<Self, DomainError> {
-        let registry = update.prepare_publication().await?;
         let scene = state
             .scene_manager
             .prepare_effect_id_migration_publication(scene)
@@ -281,7 +331,6 @@ impl<'a> EffectIdMigrationPublication<'a> {
         };
         let active_playlist = active_playlist.prepare_publication(state).await?;
         Ok(Self {
-            registry,
             scene,
             display,
             library,
@@ -289,6 +338,21 @@ impl<'a> EffectIdMigrationPublication<'a> {
         })
     }
 
+    fn with_registry(
+        self,
+        registry: EffectRegistryPublication<'_>,
+    ) -> EffectIdMigrationPublication<'_> {
+        EffectIdMigrationPublication {
+            registry,
+            scene: self.scene,
+            display: self.display,
+            library: self.library,
+            active_playlist: self.active_playlist,
+        }
+    }
+}
+
+impl EffectIdMigrationPublication<'_> {
     async fn publish(
         self,
         state: &AppState,
@@ -344,10 +408,7 @@ mod tests {
     };
     use tempfile::TempDir;
 
-    use super::{
-        ActivePlaylistEffectIdMigration, EffectIdMigrationPublication, reload_registry_file,
-        remap_zones, rescan_registry,
-    };
+    use super::{reload_registry_file, remap_zones, rescan_registry};
     use crate::app_state::AppState;
     use crate::display_preferences::DisplayPreference;
     use crate::domain::DomainError;
@@ -392,9 +453,11 @@ mod tests {
     async fn late_migration_fixture(temp: &TempDir) -> LateMigrationFixture {
         let data_dir = temp.path().join("state");
         let mut state = AppState::new_with_data_dir(data_dir.clone());
-        state.library_store = Arc::new(
+        let library = Arc::new(
             JsonLibraryStore::open(data_dir.join("library.json")).expect("library should open"),
         );
+        state.library_store = library.clone();
+        state.library_identity = library;
         let effect_path = data_dir.join("effects/bundled/late-arrival.html");
         write_effect(&effect_path, "Late Arrival");
         let source_path = std::fs::canonicalize(&effect_path).expect("effect should canonicalize");
@@ -820,48 +883,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn later_authority_conflict_rejects_publication_before_scene_changes() {
+    async fn publication_conflict_reprepares_inside_the_same_rescan() {
         let temp = TempDir::new().expect("tempdir");
         let fixture = late_migration_fixture(&temp).await;
-        let revision_before = fixture.state.scene_manager.revision();
-        let update = fixture.state.domains.effects.prepare_rescan().await;
-        let migrations = update.report().legacy_effect_ids.clone();
-        let scene = fixture
-            .state
-            .scene_manager
-            .prepare_effect_id_migration(&migrations)
-            .await
-            .expect("scene migration should prepare");
-        let runtime = fixture
-            .state
+        let state = Arc::new(fixture.state);
+        let barrier = state
             .domains
-            .runtime_session
-            .prepare_effect_id_migration(scene.candidate())
-            .expect("runtime migration should prepare");
-        let display = fixture
-            .state
-            .display_preferences
-            .read()
-            .await
-            .prepare_effect_id_migration(&migrations)
-            .expect("display migration should prepare")
-            .expect("legacy preference should migrate");
-        let mut library = fixture
-            .state
-            .library_store
-            .prepare_effect_id_migration(&migrations)
-            .await
-            .expect("library migration should prepare")
-            .expect("legacy library should migrate");
-        let active = ActivePlaylistEffectIdMigration::prepare(&fixture.state, &migrations).await;
+            .effects
+            .pause_next_identity_publication_for_test();
+        let rescan_state = Arc::clone(&state);
+        let rescan = tokio::spawn(async move { rescan_registry(rescan_state.as_ref()).await });
 
-        let persisted_scene = scene.persist().expect("scene migration should persist");
-        runtime.persist().expect("runtime migration should persist");
-        let persisted_display = display.persist().expect("display migration should persist");
-        library.persist().expect("library migration should persist");
-
-        fixture
-            .state
+        barrier.wait_until_entered().await;
+        state
             .display_preferences
             .write()
             .await
@@ -875,32 +909,23 @@ mod tests {
                 },
             )
             .expect("concurrent preference should publish");
+        barrier.release();
 
-        let result = EffectIdMigrationPublication::prepare(
-            &fixture.state,
-            update,
-            persisted_scene,
-            Some(persisted_display),
-            Some(library),
-            active,
-        )
-        .await;
-        assert!(result.is_err());
-        assert_eq!(fixture.state.scene_manager.revision(), revision_before);
-        assert!(
-            fixture
-                .state
-                .scene_manager
-                .snapshot()
+        rescan
+            .await
+            .expect("rescan should not panic")
+            .expect("the original rescan should reprepare and converge");
+        assert_eq!(
+            state
+                .display_preferences
+                .read()
                 .await
-                .list()
-                .into_iter()
-                .flat_map(|scene| &scene.zones)
-                .flat_map(hypercolor_types::scene::Zone::effect_ids)
-                .any(|effect_id| effect_id == fixture.legacy_id)
+                .get(fixture.device_id)
+                .map(|preference| preference.effect_id),
+            Some(fixture.canonical_id)
         );
-        let registry = fixture.state.domains.effects.registry_handle();
-        assert!(registry.read().await.get(&fixture.canonical_id).is_none());
+        let registry = state.domains.effects.registry_handle();
+        assert!(registry.read().await.get(&fixture.canonical_id).is_some());
     }
 
     #[tokio::test]
@@ -1264,45 +1289,100 @@ mod tests {
 
     #[cfg(feature = "persistence-test-hooks")]
     #[tokio::test]
-    async fn failed_late_migration_does_not_publish_the_canonical_registry() {
+    async fn migration_generation_preserves_an_admitted_newer_named_scene() {
         let temp = TempDir::new().expect("tempdir");
         let fixture = late_migration_fixture(&temp).await;
-        hypercolor_core::persistence::AtomicFileWriter::new(
-            &fixture.state.data_dir.join("scenes.json"),
-        )
-        .expect("scene writer should resolve")
-        .set_injected_replace_failures(1);
+        let state = Arc::new(fixture.state);
+        let barrier = state.scene_manager.pause_next_persistence_for_test();
+        let mut mutation = state.scene_manager.begin_mutation().await;
+        let mut named_scene = mutation
+            .scenes()
+            .get(&SceneId::DEFAULT)
+            .cloned()
+            .expect("default scene should exist");
+        let admitted_scene_id = SceneId::new();
+        named_scene.id = admitted_scene_id;
+        named_scene.name = "Admitted during identity migration".to_owned();
+        named_scene.kind = SceneKind::Named;
+        named_scene.mutation_mode = SceneMutationMode::Live;
+        mutation
+            .create_scene(named_scene)
+            .expect("named scene should enter the candidate");
+        let commit_state = Arc::clone(&state);
+        let commit =
+            tokio::spawn(async move { commit_state.scene_manager.commit_mutation(mutation).await });
 
-        assert!(rescan_registry(&fixture.state).await.is_err());
+        barrier.wait_until_entered().await;
+        let before = crate::scene_store::SceneStore::load(&state.data_dir.join("scenes.json"))
+            .expect("pre-migration scene store should load");
+        assert!(before.list().all(|scene| scene.id != admitted_scene_id));
 
-        let registry = fixture.state.domains.effects.registry_handle();
-        assert!(registry.read().await.get(&fixture.canonical_id).is_none());
+        rescan_registry(state.as_ref())
+            .await
+            .expect("the same rescan should migrate the admitted manager candidate");
+        barrier.release();
+        let commit = commit
+            .await
+            .expect("scene commit should not panic")
+            .expect("admitted scene commit should return a durability receipt");
+        assert_eq!(
+            commit.durability(),
+            crate::domain::commit::CommitDurability::Superseded
+        );
+
+        let registry = state.domains.effects.registry_handle();
+        assert!(registry.read().await.get(&fixture.canonical_id).is_some());
         assert!(
-            fixture
-                .state
+            state
                 .scene_manager
                 .snapshot()
                 .await
-                .list()
-                .into_iter()
-                .flat_map(|scene| &scene.zones)
-                .flat_map(hypercolor_types::scene::Zone::effect_ids)
-                .any(|effect_id| effect_id == fixture.legacy_id)
+                .get(&admitted_scene_id)
+                .is_some_and(|scene| scene
+                    .zones
+                    .iter()
+                    .flat_map(hypercolor_types::scene::Zone::effect_ids)
+                    .all(|effect_id| effect_id == fixture.canonical_id))
         );
+        let durable = crate::scene_store::SceneStore::load(&state.data_dir.join("scenes.json"))
+            .expect("migrated scene store should load");
+        let scene = durable
+            .list()
+            .find(|scene| scene.id == admitted_scene_id)
+            .expect("the N+1 snapshot must retain the admitted N scene");
+        assert!(
+            scene
+                .zones
+                .iter()
+                .flat_map(hypercolor_types::scene::Zone::effect_ids)
+                .all(|effect_id| effect_id == fixture.canonical_id)
+        );
+    }
+
+    #[cfg(feature = "persistence-test-hooks")]
+    #[tokio::test]
+    async fn transient_store_failure_converges_without_another_rescan() {
+        let temp = TempDir::new().expect("tempdir");
+        let fixture = late_migration_fixture(&temp).await;
+        let scenes_path = fixture.state.data_dir.join("scenes.json");
+        let writer = hypercolor_core::persistence::AtomicFileWriter::new(&scenes_path)
+            .expect("scene writer should resolve");
+        writer.set_injected_replace_failures(1);
 
         rescan_registry(&fixture.state)
             .await
-            .expect("retry should migrate after persistence recovers");
+            .expect("an admitted migration remains authoritative while persistence retries");
+
         let registry = fixture.state.domains.effects.registry_handle();
         assert!(registry.read().await.get(&fixture.canonical_id).is_some());
+        writer
+            .flush(std::time::Duration::from_secs(2))
+            .expect("the admitted migration should converge after the transient failure");
+        let durable = crate::scene_store::SceneStore::load(&scenes_path)
+            .expect("converged scene store should load");
         assert!(
-            fixture
-                .state
-                .scene_manager
-                .snapshot()
-                .await
+            durable
                 .list()
-                .into_iter()
                 .flat_map(|scene| &scene.zones)
                 .flat_map(hypercolor_types::scene::Zone::effect_ids)
                 .all(|effect_id| effect_id == fixture.canonical_id)

@@ -21,7 +21,7 @@ use hypercolor_types::library::{
 use crate::domain::effect::{EffectIdMigrations, remap_effect_id};
 use crate::persistence::{
     AdmittedAtomicWrite, AtomicFileWriter, AtomicWriteCommitResult, AtomicWriteOutcome,
-    PersistenceError, serialize_json_pretty,
+    AtomicWriteReservation, PersistenceError, serialize_json_pretty,
 };
 
 /// Storage-layer errors for library entities.
@@ -126,8 +126,10 @@ pub trait LibraryStore: Send + Sync {
     async fn insert_playlist(&self, playlist: EffectPlaylist) -> Result<(), LibraryStoreError>;
     async fn update_playlist(&self, playlist: EffectPlaylist) -> Result<(), LibraryStoreError>;
     async fn remove_playlist(&self, id: PlaylistId) -> Result<bool, LibraryStoreError>;
+}
 
-    #[doc(hidden)]
+#[async_trait]
+pub(crate) trait LibraryIdentityMigration: Send + Sync {
     async fn prepare_effect_id_migration(
         &self,
         migrations: &HashMap<EffectId, EffectId>,
@@ -136,8 +138,14 @@ pub trait LibraryStore: Send + Sync {
 
 #[async_trait]
 #[doc(hidden)]
-pub trait LibraryEffectIdMigration: Send {
-    fn persist(&mut self) -> Result<(), LibraryStoreError>;
+pub(crate) trait LibraryEffectIdMigration: Send {
+    fn admit(self: Box<Self>) -> Box<dyn AdmittedLibraryEffectIdMigration>;
+}
+
+#[async_trait]
+#[doc(hidden)]
+pub(crate) trait AdmittedLibraryEffectIdMigration: Send {
+    fn persist(&mut self) -> crate::domain::effect::IdentityMigrationPersistence;
     async fn prepare_publication(
         self: Box<Self>,
     ) -> Result<Box<dyn LibraryEffectIdMigrationPublication>, LibraryStoreError>;
@@ -145,7 +153,7 @@ pub trait LibraryEffectIdMigration: Send {
 
 #[async_trait]
 #[doc(hidden)]
-pub trait LibraryEffectIdMigrationPublication: Send {
+pub(crate) trait LibraryEffectIdMigrationPublication: Send {
     async fn publish(self: Box<Self>) -> usize;
 }
 
@@ -395,6 +403,12 @@ struct PendingLibrarySnapshot {
     write: AdmittedAtomicWrite,
 }
 
+#[derive(Debug)]
+struct PreparedLibrarySnapshot {
+    write: AtomicWriteReservation,
+    payload: Vec<u8>,
+}
+
 struct InMemoryLibraryEffectIdMigration {
     data: Arc<RwLock<InMemoryLibraryData>>,
     mutation_gate: Arc<RwLock<()>>,
@@ -411,9 +425,9 @@ struct JsonLibraryEffectIdMigration {
     candidate: InMemoryLibraryData,
     source_uncertain: HashMap<EffectId, UncertainFavoriteChange>,
     candidate_uncertain: HashMap<EffectId, UncertainFavoriteChange>,
-    pending: Option<PendingLibrarySnapshot>,
+    pending: Option<PreparedLibrarySnapshot>,
+    admitted: Option<AdmittedAtomicWrite>,
     migrated: usize,
-    persisted: bool,
 }
 
 struct InMemoryLibraryEffectIdMigrationPublication {
@@ -582,6 +596,18 @@ impl JsonLibraryStore {
             .map_err(JsonPersistError::Serialize)?;
         Ok(PendingLibrarySnapshot {
             write: self.writer.reserve().admit(bytes),
+        })
+    }
+
+    fn prepared_snapshot(
+        &self,
+        data: &InMemoryLibraryData,
+    ) -> Result<PreparedLibrarySnapshot, JsonPersistError> {
+        let payload = serialize_json_pretty(&LibrarySnapshot::from_data(data))
+            .map_err(JsonPersistError::Serialize)?;
+        Ok(PreparedLibrarySnapshot {
+            write: self.writer.reserve(),
+            payload,
         })
     }
 
@@ -781,10 +807,16 @@ impl JsonLibraryStore {
     }
 }
 
-#[async_trait]
 impl LibraryEffectIdMigration for InMemoryLibraryEffectIdMigration {
-    fn persist(&mut self) -> Result<(), LibraryStoreError> {
-        Ok(())
+    fn admit(self: Box<Self>) -> Box<dyn AdmittedLibraryEffectIdMigration> {
+        self
+    }
+}
+
+#[async_trait]
+impl AdmittedLibraryEffectIdMigration for InMemoryLibraryEffectIdMigration {
+    fn persist(&mut self) -> crate::domain::effect::IdentityMigrationPersistence {
+        crate::domain::effect::IdentityMigrationPersistence::Written
     }
 
     async fn prepare_publication(
@@ -805,25 +837,34 @@ impl LibraryEffectIdMigration for InMemoryLibraryEffectIdMigration {
     }
 }
 
-#[async_trait]
 impl LibraryEffectIdMigration for JsonLibraryEffectIdMigration {
-    fn persist(&mut self) -> Result<(), LibraryStoreError> {
-        let pending = self.pending.take().ok_or_else(|| {
-            LibraryStoreError::Persistence(
-                "library effect ID migration was already persisted".to_owned(),
-            )
-        })?;
-        match pending.write.commit_stage_aware() {
+    fn admit(mut self: Box<Self>) -> Box<dyn AdmittedLibraryEffectIdMigration> {
+        let pending = self
+            .pending
+            .take()
+            .expect("prepared library migration must admit exactly once");
+        self.admitted = Some(pending.write.admit(pending.payload));
+        self
+    }
+}
+
+#[async_trait]
+impl AdmittedLibraryEffectIdMigration for JsonLibraryEffectIdMigration {
+    fn persist(&mut self) -> crate::domain::effect::IdentityMigrationPersistence {
+        let pending = self
+            .admitted
+            .take()
+            .expect("admitted library migration must persist exactly once");
+        match pending.commit_stage_aware() {
             AtomicWriteCommitResult::DurableWritten => {
-                self.persisted = true;
-                Ok(())
+                crate::domain::effect::IdentityMigrationPersistence::Written
             }
-            AtomicWriteCommitResult::Superseded => Err(LibraryStoreError::Persistence(
-                "effect ID migration was superseded by a newer library snapshot".to_owned(),
-            )),
+            AtomicWriteCommitResult::Superseded => {
+                crate::domain::effect::IdentityMigrationPersistence::Superseded
+            }
             AtomicWriteCommitResult::FailedBeforeReplacement(error)
             | AtomicWriteCommitResult::ReplacementVisibleButNotDurable(error) => {
-                Err(LibraryStoreError::Persistence(error.to_string()))
+                crate::domain::effect::IdentityMigrationPersistence::Retrying(error.to_string())
             }
         }
     }
@@ -831,11 +872,6 @@ impl LibraryEffectIdMigration for JsonLibraryEffectIdMigration {
     async fn prepare_publication(
         self: Box<Self>,
     ) -> Result<Box<dyn LibraryEffectIdMigrationPublication>, LibraryStoreError> {
-        if !self.persisted {
-            return Err(LibraryStoreError::Persistence(
-                "library effect ID migration was not durably persisted".to_owned(),
-            ));
-        }
         let guard = Arc::clone(&self.mutation_gate).write_owned().await;
         let data = self.data.read().await;
         let uncertain = self
@@ -1036,7 +1072,10 @@ impl LibraryStore for InMemoryLibraryStore {
         let mut data = self.data.write().await;
         Ok(data.playlists.remove(&id).is_some())
     }
+}
 
+#[async_trait]
+impl LibraryIdentityMigration for InMemoryLibraryStore {
     async fn prepare_effect_id_migration(
         &self,
         migrations: &EffectIdMigrations,
@@ -1305,7 +1344,10 @@ impl LibraryStore for JsonLibraryStore {
         }
         Ok(removed)
     }
+}
 
+#[async_trait]
+impl LibraryIdentityMigration for JsonLibraryStore {
     async fn prepare_effect_id_migration(
         &self,
         migrations: &EffectIdMigrations,
@@ -1325,7 +1367,7 @@ impl LibraryStore for JsonLibraryStore {
             return Ok(None);
         }
         let pending = self
-            .pending_snapshot(&candidate)
+            .prepared_snapshot(&candidate)
             .map_err(|error| LibraryStoreError::Persistence(error.to_string()))?;
         Ok(Some(Box::new(JsonLibraryEffectIdMigration {
             data: Arc::clone(&self.data),
@@ -1336,8 +1378,8 @@ impl LibraryStore for JsonLibraryStore {
             source_uncertain,
             candidate_uncertain,
             pending: Some(pending),
+            admitted: None,
             migrated,
-            persisted: false,
         })))
     }
 }
@@ -1348,8 +1390,8 @@ mod tests {
 
     use super::{
         ConditionalFavoriteMutation, ConditionalFavoriteMutationOutcome, InMemoryLibraryData,
-        InMemoryLibraryStore, JsonLibraryStore, JsonLibraryStoreOpenError, LibrarySnapshot,
-        LibraryStore, ProjectedFavoriteState,
+        InMemoryLibraryStore, JsonLibraryStore, JsonLibraryStoreOpenError,
+        LibraryIdentityMigration, LibrarySnapshot, LibraryStore, ProjectedFavoriteState,
     };
     use hypercolor_types::effect::EffectId;
     use hypercolor_types::library::{
@@ -1529,12 +1571,16 @@ mod tests {
             4,
         );
 
-        let mut migration = store
+        let migration = store
             .prepare_effect_id_migration(&HashMap::from([(legacy_id, canonical_id)]))
             .await
             .expect("migration should prepare")
             .expect("uncertain favorite should require migration");
-        migration.persist().expect("migration should persist");
+        let mut migration = migration.admit();
+        assert_eq!(
+            migration.persist(),
+            crate::domain::effect::IdentityMigrationPersistence::Written
+        );
         let publication = migration
             .prepare_publication()
             .await
