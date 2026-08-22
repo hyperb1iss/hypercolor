@@ -38,7 +38,7 @@ different schema version is rejected by the registry.
 - `DriverDescriptor`, `DRIVER_API_SCHEMA_VERSION`
 - `DeviceAuthState`, `DeviceAuthSummary`, `PairingDescriptor`, `PairDeviceRequest`,
   `PairDeviceOutcome`, `ClearPairingOutcome`
-- `DriverDiscoveredDevice`, `DiscoveryRequest`, `DiscoveryResult`
+- `DiscoveredDevice`, `DiscoveryRequest`
 - `ValidatedControlChanges`, `DriverConfigProvider`, `DriverConfigView`
 - `CredentialStore` (re-exported from `net::credentials`), `MdnsBrowser`, `MdnsService`
 
