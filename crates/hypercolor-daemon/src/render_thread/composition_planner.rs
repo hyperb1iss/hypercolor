@@ -300,7 +300,9 @@ mod tests {
     use super::{CompositionPlanner, PlannedSceneLayer};
     use crate::render_thread::producer_queue::ProducerFrame;
     use crate::render_thread::scene_snapshot::{SceneRuntimeSnapshot, SceneTransitionSnapshot};
-    use crate::render_thread::sparkleflinger::{CompositionLayer, CompositionPlan, SparkleFlinger};
+    use crate::render_thread::sparkleflinger::SparkleFlinger;
+    #[cfg(feature = "wgpu")]
+    use crate::render_thread::sparkleflinger::{CompositionLayer, CompositionPlan};
 
     fn solid_canvas(color: Rgba) -> Canvas {
         let mut canvas = Canvas::new(2, 2);
