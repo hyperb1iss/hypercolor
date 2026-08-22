@@ -2,13 +2,13 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::AtomicBool;
 #[cfg(any(target_os = "macos", test))]
 use std::sync::atomic::AtomicU64;
 #[cfg(test)]
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
 use arc_swap::{ArcSwap, ArcSwapOption};
@@ -69,6 +69,25 @@ use crate::zone_layout_preview::ZoneLayoutPreviewStore;
 
 #[cfg(test)]
 static APP_STATE_TEST_DATA_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn test_constructor_task_spawner() -> tokio::runtime::Handle {
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        return handle;
+    }
+
+    static FALLBACK_RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+    FALLBACK_RUNTIME
+        .get_or_init(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1)
+                .thread_name("hypercolor-test-runtime")
+                .enable_all()
+                .build()
+                .expect("test AppState runtime should initialize")
+        })
+        .handle()
+        .clone()
+}
 
 #[cfg(target_os = "macos")]
 type CapturePickerPersistenceTask = Arc<StdMutex<Option<(u64, JoinHandle<()>)>>>;
@@ -506,7 +525,7 @@ impl AppState {
             credential_store: Arc::clone(&credential_store),
             in_progress: Arc::clone(&discovery_in_progress),
             pending_scans: Arc::default(),
-            task_spawner: tokio::runtime::Handle::current(),
+            task_spawner: test_constructor_task_spawner(),
         };
         let driver_host = Arc::new(DaemonDriverHost::new(
             discovery_runtime,
@@ -762,7 +781,12 @@ impl Default for AppState {
 mod tests {
     use hypercolor_types::config::RenderAccelerationMode;
 
-    use super::effect_renderer_acceleration_mode;
+    use super::{AppState, effect_renderer_acceleration_mode};
+
+    #[test]
+    fn test_app_state_constructs_without_an_ambient_runtime() {
+        let _state = AppState::new();
+    }
 
     #[test]
     fn effect_renderer_mode_keeps_cpu_and_auto_requests() {
