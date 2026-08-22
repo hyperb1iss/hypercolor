@@ -451,7 +451,7 @@ impl SceneService {
                 ))
             }
             Err(error) => {
-                ticket.release(events);
+                ticket.discard();
                 Ok(SceneCommit::new(
                     generation,
                     generation,
