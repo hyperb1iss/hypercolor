@@ -5,7 +5,7 @@ use super::{
     pointer_scanout_geometry, prepare_duplication, scanout_to_logical, session_rebuild_error,
     take_frame_plane,
 };
-use crate::shared::{LegacyFramePlane, recycle_legacy_frame_plane};
+use crate::shared::{RgbaFramePlane, recycle_rgba_frame_plane};
 use crate::{
     CaptureError, CaptureExtent, CaptureRegion, CaptureResourceAdmission, CaptureResourceKind,
     CaptureResourceLease, CaptureResourceReservation, CaptureResult,
@@ -2169,23 +2169,23 @@ impl Drop for CountingLease {
     }
 }
 
-fn counted_plane(admission: &CountingAdmission, bytes: usize) -> LegacyFramePlane {
+fn counted_plane(admission: &CountingAdmission, bytes: usize) -> RgbaFramePlane {
     let lease = admission
-        .try_reserve(CaptureResourceKind::CompatibilityFramePlane, bytes as u64)
+        .try_reserve(CaptureResourceKind::RgbaFramePlane, bytes as u64)
         .expect("test plane quote succeeds")
         .commit(bytes as u64)
         .expect("test plane commit succeeds");
     let mut rgba = vec![0; bytes].into_boxed_slice().into_vec();
     rgba.clear();
     assert_eq!(lease.bytes(), rgba.capacity() as u64);
-    LegacyFramePlane {
+    RgbaFramePlane {
         rgba,
         resource_lease: lease,
     }
 }
 
 #[test]
-fn compatibility_frame_pool_reuses_the_smallest_fitting_admitted_plane() {
+fn rgba_frame_pool_reuses_the_smallest_fitting_admitted_plane() {
     let reserved = Arc::new(AtomicU64::new(0));
     let admission = CountingAdmission {
         reserved: Arc::clone(&reserved),
@@ -2205,7 +2205,7 @@ fn compatibility_frame_pool_reuses_the_smallest_fitting_admitted_plane() {
 }
 
 #[test]
-fn compatibility_frame_pool_replaces_smallest_plane_and_releases_its_lease() {
+fn rgba_frame_pool_replaces_smallest_plane_and_releases_its_lease() {
     let reserved = Arc::new(AtomicU64::new(0));
     let admission = CountingAdmission {
         reserved: Arc::clone(&reserved),
@@ -2218,7 +2218,7 @@ fn compatibility_frame_pool_replaces_smallest_plane_and_releases_its_lease() {
     let incoming = counted_plane(&admission, 16);
     assert_eq!(reserved.load(Ordering::Acquire), 40);
 
-    recycle_legacy_frame_plane(&pool, incoming);
+    recycle_rgba_frame_plane(&pool, incoming);
     assert_eq!(reserved.load(Ordering::Acquire), 36);
     let mut capacities = pool
         .lock()
