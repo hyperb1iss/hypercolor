@@ -48,7 +48,7 @@ export abstract class WebGLEffect<T> extends BaseEffect<T> {
     protected preserveDrawingBuffer: boolean
     protected currentAudioData: AudioData | null = null
     protected captureMode: boolean
-    private wheelTotal = 0
+    private lineScrollTotal = 0
 
     constructor(config: WebGLEffectConfig) {
         super(config)
@@ -349,10 +349,10 @@ export abstract class WebGLEffect<T> extends BaseEffect<T> {
 
     private pushInputUniforms(): void {
         const input = getInputData()
-        this.wheelTotal += input.mouse.wheel
+        this.lineScrollTotal += input.mouse.scroll.line120Y
         this.setUniform('iMouse', [input.mouse.nx, input.mouse.ny])
         this.setUniform('iMouseDown', input.mouse.down ? 1 : 0)
-        this.setUniform('iWheel', this.wheelTotal)
+        this.setUniform('iWheel', this.lineScrollTotal)
     }
 
     /** Register custom uniforms. Called during initialization. */
