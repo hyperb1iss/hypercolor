@@ -813,9 +813,14 @@ fn effect_metadata_empty_tags_default() {
 }
 
 #[test]
-fn requires_interaction_covers_flag_category_and_legacy_tags() {
+fn requires_interaction_uses_only_the_flag_or_category() {
     let mut metadata = sample_metadata();
-    metadata.tags = vec!["ambient".into()];
+    metadata.tags = vec![
+        "interactive".into(),
+        "input".into(),
+        "Mouse".into(),
+        "KEYBOARD".into(),
+    ];
     assert!(!metadata.requires_interaction());
 
     metadata.input_reactive = true;
@@ -824,15 +829,6 @@ fn requires_interaction_covers_flag_category_and_legacy_tags() {
     metadata.input_reactive = false;
     metadata.category = EffectCategory::Interactive;
     assert!(metadata.requires_interaction());
-
-    metadata.category = EffectCategory::Ambient;
-    for tag in ["interactive", "input", "Mouse", "KEYBOARD"] {
-        metadata.tags = vec![tag.into()];
-        assert!(
-            metadata.requires_interaction(),
-            "tag {tag} should opt into interaction"
-        );
-    }
 }
 
 #[test]

@@ -1231,6 +1231,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn free_form_tags_do_not_create_interaction_capture_demand() {
+        let effect_id = EffectId::from(Uuid::now_v7());
+        let mut entry = sample_entry(effect_id, false, false);
+        entry.metadata.tags = ["interactive", "input", "mouse", "keyboard"]
+            .map(ToOwned::to_owned)
+            .into();
+        let mut registry = EffectRegistry::default();
+        registry.register(entry);
+        let state = minimal_render_thread_state(registry);
+        let scene_runtime = SceneRuntimeSnapshot {
+            active_scene_id: None,
+            active_scene_name: None,
+            active_transition: None,
+            active_render_groups: vec![sample_group(effect_id)].into(),
+            active_render_groups_revision: 7,
+            zone_layout_preview_generation: 0,
+            active_render_group_count: 1,
+            active_display_group_target_fps: HashMap::new(),
+            active_display_group_output_routes: HashMap::new(),
+            active_display_group_descriptors: HashMap::new(),
+            unassigned_behavior: UnassignedBehavior::default(),
+            device_registry_generation: 0,
+        };
+        let mut scene_snapshot_cache = SceneSnapshotCache::new();
+
+        let snapshot =
+            current_effect_scene_snapshot(&state, &mut scene_snapshot_cache, &scene_runtime, false)
+                .await;
+
+        assert!(snapshot.demand.effect_running);
+        assert!(!snapshot.demand.interaction_capture_active);
+    }
+
+    #[tokio::test]
     async fn refresh_effect_scene_snapshot_picks_up_mid_frame_registry_changes() {
         let effect_id = EffectId::from(Uuid::now_v7());
         let mut registry = EffectRegistry::default();

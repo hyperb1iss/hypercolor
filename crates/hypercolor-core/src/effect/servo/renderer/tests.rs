@@ -473,9 +473,11 @@ fn interaction_updates_are_limited_to_interaction_aware_metadata() {
     let interactive = html_metadata(PathBuf::from("interactive.html"));
     assert!(interactive.requires_interaction());
 
-    let mut tagged = ambient.clone();
-    tagged.tags.push("mouse".to_owned());
-    assert!(tagged.requires_interaction());
+    let mut tagged = ambient;
+    tagged
+        .tags
+        .extend(["interactive", "input", "mouse", "keyboard"].map(ToOwned::to_owned));
+    assert!(!tagged.requires_interaction());
 }
 
 #[test]

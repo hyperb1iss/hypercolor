@@ -671,18 +671,11 @@ impl EffectMetadata {
     /// Whether this effect wants host keyboard/mouse data injected.
     ///
     /// Single predicate shared by renderer payload injection and capture
-    /// demand: the explicit `input_reactive` capability, the `Interactive`
-    /// category, or one of the legacy opt-in tags.
+    /// demand: the explicit `input_reactive` capability or the `Interactive`
+    /// category.
     #[must_use]
     pub fn requires_interaction(&self) -> bool {
-        self.input_reactive
-            || self.category == EffectCategory::Interactive
-            || self.tags.iter().any(|tag| {
-                tag.eq_ignore_ascii_case("interactive")
-                    || tag.eq_ignore_ascii_case("input")
-                    || tag.eq_ignore_ascii_case("mouse")
-                    || tag.eq_ignore_ascii_case("keyboard")
-            })
+        self.input_reactive || self.category == EffectCategory::Interactive
     }
 
     /// Look up a control definition by id (case-insensitive).
