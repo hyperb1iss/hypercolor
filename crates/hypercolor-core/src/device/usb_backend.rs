@@ -51,6 +51,14 @@ const DELIVERY_STARTED: u8 = 1;
 const DELIVERY_REJECTED: u8 = 2;
 const DELIVERY_TERMINAL: u8 = 3;
 
+struct AbortTaskOnDrop(tokio::task::AbortHandle);
+
+impl Drop for AbortTaskOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct UsbActorMetricsSnapshot {
     pub display_frames_total: u64,
@@ -474,6 +482,7 @@ impl UsbDevice {
             }
             return Ok(());
         };
+        let _actor_abort = AbortTaskOnDrop(actor_task.abort_handle());
 
         let (response_tx, response_rx) = oneshot::channel();
         let command_sent = self
@@ -486,9 +495,10 @@ impl UsbDevice {
 
         let shutdown_result = if command_sent {
             match tokio::time::timeout(USB_ACTOR_SHUTDOWN_TIMEOUT, response_rx).await {
-                Ok(result) => result.map_err(|_| DeviceError::Disconnected {
+                Ok(Ok(result)) => result,
+                Ok(Err(_)) => Err(DeviceError::Disconnected {
                     device: device_id.to_string(),
-                })?,
+                }),
                 Err(_) => Err(DeviceError::Timeout {
                     after: USB_ACTOR_SHUTDOWN_TIMEOUT,
                 }),

@@ -12,23 +12,15 @@ use tokio::time::MissedTickBehavior;
 use tracing::{debug, trace, warn};
 
 use super::{
-    DeviceTransportOperation, MAX_RETRIES, RETRY_BACKOFF, UsbBackend, UsbDeviceCommand,
-    UsbDisplayPayload, UsbFramePayload, describe_packet, format_error_chain, format_hex_preview,
-    map_hal_transport_error, map_transport_error, record_usb_display_lane,
+    AbortTaskOnDrop, DeviceTransportOperation, MAX_RETRIES, RETRY_BACKOFF, UsbBackend,
+    UsbDeviceCommand, UsbDisplayPayload, UsbFramePayload, describe_packet, format_error_chain,
+    format_hex_preview, map_hal_transport_error, map_transport_error, record_usb_display_lane,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum FrameWriteDisposition {
     Transient,
     Fatal,
-}
-
-struct AbortTaskOnDrop(tokio::task::AbortHandle);
-
-impl Drop for AbortTaskOnDrop {
-    fn drop(&mut self) {
-        self.0.abort();
-    }
 }
 
 impl UsbBackend {

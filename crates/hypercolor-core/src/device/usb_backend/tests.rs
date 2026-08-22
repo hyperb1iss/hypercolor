@@ -1279,6 +1279,93 @@ async fn hung_display_transport_has_bounded_actor_shutdown() {
 }
 
 #[tokio::test]
+async fn cancelled_shutdown_aborts_the_taken_actor_task() {
+    let device_id = DeviceId::new();
+    let command_received = Arc::new(Notify::new());
+    let actor_dropped = Arc::new(AtomicBool::new(false));
+    let (command_tx, mut command_rx) = mpsc::unbounded_channel();
+    let actor_task = tokio::spawn({
+        let command_received = Arc::clone(&command_received);
+        let actor_dropped = Arc::clone(&actor_dropped);
+        async move {
+            let _drop_signal = ActorDropSignal(actor_dropped);
+            let Some(UsbDeviceCommand::Shutdown { response_tx, .. }) = command_rx.recv().await
+            else {
+                panic!("shutdown command should reach the actor");
+            };
+            let _response_tx = response_tx;
+            command_received.notify_one();
+            std::future::pending::<()>().await;
+        }
+    });
+    let mut device = usb_device_with_actor_task(device_id, command_tx, actor_task);
+    let shutdown_task = tokio::spawn(async move { device.shutdown(device_id).await });
+
+    timeout(Duration::from_secs(1), command_received.notified())
+        .await
+        .expect("shutdown should take the actor handle and send its command");
+    shutdown_task.abort();
+    assert!(
+        shutdown_task
+            .await
+            .expect_err("shutdown caller should be cancelled")
+            .is_cancelled()
+    );
+    wait_for_actor_drop(&actor_dropped).await;
+}
+
+#[tokio::test]
+async fn shutdown_response_loss_still_joins_a_failing_actor() {
+    let device_id = DeviceId::new();
+    let response_dropped = Arc::new(Notify::new());
+    let actor_release = Arc::new(Notify::new());
+    let actor_dropped = Arc::new(AtomicBool::new(false));
+    let (command_tx, mut command_rx) = mpsc::unbounded_channel();
+    let actor_task = tokio::spawn({
+        let response_dropped = Arc::clone(&response_dropped);
+        let actor_release = Arc::clone(&actor_release);
+        let actor_dropped = Arc::clone(&actor_dropped);
+        async move {
+            let _drop_signal = ActorDropSignal(actor_dropped);
+            let Some(UsbDeviceCommand::Shutdown { response_tx, .. }) = command_rx.recv().await
+            else {
+                panic!("shutdown command should reach the actor");
+            };
+            drop(response_tx);
+            response_dropped.notify_one();
+            actor_release.notified().await;
+            panic!("injected actor failure after shutdown response loss");
+        }
+    });
+    let mut device = usb_device_with_actor_task(device_id, command_tx, actor_task);
+    let mut shutdown_task = tokio::spawn(async move { (device.shutdown(device_id).await, device) });
+
+    timeout(Duration::from_secs(1), response_dropped.notified())
+        .await
+        .expect("actor should drop the shutdown response channel");
+    assert!(
+        timeout(Duration::from_millis(50), &mut shutdown_task)
+            .await
+            .is_err(),
+        "response loss must not return before actor cleanup"
+    );
+
+    actor_release.notify_one();
+    let (shutdown_result, device) = timeout(Duration::from_secs(1), shutdown_task)
+        .await
+        .expect("shutdown should finish after the failing actor terminates")
+        .expect("shutdown task should join");
+    assert_eq!(
+        shutdown_result,
+        Err(DeviceError::Disconnected {
+            device: device_id.to_string(),
+        })
+    );
+    assert!(device.actor_task.is_none());
+    assert!(actor_dropped.load(Ordering::Acquire));
+}
+
+#[tokio::test]
 async fn usb_display_transport_failure_keeps_its_queue_generation() {
     let device_id = DeviceId::new();
     let transport =
@@ -1416,6 +1503,52 @@ async fn shutdown_gate_prevents_post_cleanup_tracked_publication() {
     assert_eq!(ack.status, DeviceDeliveryStatus::Failed);
     assert!(!ack.transport_started);
     assert!(frame_tx.borrow().is_none());
+}
+
+struct ActorDropSignal(Arc<AtomicBool>);
+
+impl Drop for ActorDropSignal {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
+
+fn usb_device_with_actor_task(
+    device_id: DeviceId,
+    command_tx: mpsc::UnboundedSender<UsbDeviceCommand>,
+    actor_task: JoinHandle<()>,
+) -> UsbDevice {
+    let (frame_tx, _frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
+    let (display_tx, _display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
+    let mut info = temporary_control_test_device(true, 1);
+    info.id = device_id;
+
+    UsbDevice {
+        protocol: Arc::new(FairnessProtocol),
+        transport_name: "shutdown-test",
+        target_fps: None,
+        resolved_led_count: 1,
+        frame_tx,
+        display_tx,
+        command_tx,
+        actor_task: Some(actor_task),
+        active: Arc::new(AtomicBool::new(true)),
+        lifecycle_gate: Arc::new(Mutex::new(())),
+        last_async_error: Arc::new(Mutex::new(None)),
+        info_template: info,
+        frame_diagnostics_emitted: false,
+        non_black_frame_diagnostics_emitted: false,
+    }
+}
+
+async fn wait_for_actor_drop(actor_dropped: &AtomicBool) {
+    timeout(Duration::from_secs(1), async {
+        while !actor_dropped.load(Ordering::Acquire) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("cancelled shutdown should abort and drop the actor task");
 }
 
 async fn assert_transient_frame_failure_survival(
