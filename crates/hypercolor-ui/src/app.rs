@@ -42,8 +42,8 @@ use crate::ws::messages::scene_event_affects_active_effect;
 use crate::ws::{
     AudioLevel, BackpressureNotice, CanvasFrame, ControlSurfaceEventHint, DeviceEventHint,
     EffectErrorHint, ExtensionEventHint, InputInjectEdge, InputSourceStatusEventHint,
-    InteractivePreviewLifecycle, InteractivePreviewRequest, MacosDaemonOwnershipEventHint,
-    PerformanceMetrics, SceneEventHint, ScreenZonesFrame, WsManager,
+    InteractivePreviewLifecycle, InteractivePreviewRequest, PerformanceMetrics, SceneEventHint,
+    ScreenZonesFrame, WsManager,
 };
 
 mod effect_state;
@@ -104,7 +104,7 @@ pub struct WsContext {
     /// canonical REST status snapshot.
     pub last_input_source_status_event: ReadSignal<Option<InputSourceStatusEventHint>>,
     /// Latest daemon-owner transition, used to invalidate canonical status.
-    pub last_macos_daemon_ownership_event: ReadSignal<Option<MacosDaemonOwnershipEventHint>>,
+    pub last_macos_daemon_ownership_event: ReadSignal<Option<api::MacosDaemonOwnershipStatus>>,
     /// Increments each time the daemon socket (re)opens. Fold into fetcher
     /// epochs to refetch REST mirrors after a reconnect gap, since bus
     /// events are not replayed.
@@ -277,7 +277,7 @@ impl EffectsContext {
         // named zone has to be targeted.
         let target_zone_id = apply_target.zone_id().map(ToOwned::to_owned);
         let body =
-            (stored_prefs.is_some() || target_zone_id.is_some()).then(|| api::ApplyEffectBody {
+            (stored_prefs.is_some() || target_zone_id.is_some()).then(|| api::ApplyEffectRequest {
                 preset_id: stored_prefs
                     .as_ref()
                     .and_then(|prefs| prefs.preset_id.as_deref())
@@ -304,7 +304,7 @@ impl EffectsContext {
                         .ok()
                         .map(hypercolor_types::scene::ZoneId)
                 }),
-                ..api::ApplyEffectBody::default()
+                ..api::ApplyEffectRequest::default()
             });
 
         // A named-zone apply renders into that zone and leaves the default

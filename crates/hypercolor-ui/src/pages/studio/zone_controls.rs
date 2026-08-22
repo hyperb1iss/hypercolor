@@ -280,7 +280,7 @@ fn commit_zone_rename(studio: StudioContext, zone_id: &str, name: &str) {
     if name.is_empty() {
         return;
     }
-    let request = api::zones::UpdateZoneRequest {
+    let request = api::zones::PatchZoneRequest {
         name: Some(name),
         ..Default::default()
     };
@@ -288,7 +288,7 @@ fn commit_zone_rename(studio: StudioContext, zone_id: &str, name: &str) {
 }
 
 fn commit_zone_color(studio: StudioContext, zone_id: &str, color: &str) {
-    let request = api::zones::UpdateZoneRequest {
+    let request = api::zones::PatchZoneRequest {
         color: Some(Some(color.to_owned())),
         ..Default::default()
     };
@@ -296,7 +296,7 @@ fn commit_zone_color(studio: StudioContext, zone_id: &str, color: &str) {
 }
 
 fn commit_zone_enabled(studio: StudioContext, zone_id: &str, enabled: bool) {
-    let request = api::zones::UpdateZoneRequest {
+    let request = api::zones::PatchZoneRequest {
         enabled: Some(enabled),
         ..Default::default()
     };
@@ -315,7 +315,7 @@ fn commit_zone_enabled(studio: StudioContext, zone_id: &str, enabled: bool) {
 fn apply_zone_update(
     studio: StudioContext,
     zone_id: &str,
-    request: api::zones::UpdateZoneRequest,
+    request: api::zones::PatchZoneRequest,
     success: &'static str,
 ) {
     let Some((_, revision)) = scene_context(studio) else {

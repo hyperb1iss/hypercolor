@@ -16,7 +16,7 @@ use crate::control_surface_api::path_segment;
 
 pub type ZoneOutcome<T> = MutationOutcome<T>;
 
-pub use hypercolor_types::api::scene::PatchZoneRequest as UpdateZoneRequest;
+pub use hypercolor_types::api::scene::PatchZoneRequest;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum OutputAssignment {
@@ -46,7 +46,7 @@ pub async fn create_zone(
 
 pub async fn update_zone(
     zone_id: &str,
-    request: &UpdateZoneRequest,
+    request: &PatchZoneRequest,
     expected_revision: u64,
 ) -> Result<ZoneOutcome<ZoneResource>, String> {
     client::send_json_versioned::<_, ZoneResource>(

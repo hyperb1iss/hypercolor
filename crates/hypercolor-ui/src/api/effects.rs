@@ -21,7 +21,7 @@ pub use hypercolor_types::api::effects::{
     EffectCapabilitySet, EffectDetailResponse, EffectListResponse, EffectPresetListResponse,
     EffectPresetOrigin, EffectPresetSummary, EffectSummary, InstalledEffectResponse,
 };
-pub use hypercolor_types::api::scene::ApplyEffectRequest as ApplyEffectBody;
+pub use hypercolor_types::api::scene::ApplyEffectRequest;
 
 /// UI projection of the top effect layer in the live scene.
 #[derive(Debug, Clone, PartialEq)]
@@ -103,9 +103,9 @@ pub async fn apply_effect_preset(
         .transpose()?;
     client::post_json_discard(
         &path,
-        &ApplyEffectBody {
+        &ApplyEffectRequest {
             zone,
-            ..ApplyEffectBody::default()
+            ..ApplyEffectRequest::default()
         },
     )
     .await
@@ -114,7 +114,7 @@ pub async fn apply_effect_preset(
 
 /// Apply an effect by ID or name. Pass `None` for a bare start; pass
 /// `Some(body)` to deliver preferences atomically.
-pub async fn apply_effect(id: &str, body: Option<&ApplyEffectBody>) -> Result<(), String> {
+pub async fn apply_effect(id: &str, body: Option<&ApplyEffectRequest>) -> Result<(), String> {
     let path = format!("/api/v1/effects/{}/apply", path_segment(id));
     match body {
         Some(body) => client::post_json_discard(&path, body)

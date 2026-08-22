@@ -32,7 +32,7 @@ use super::interactive_preview::{
 use super::messages::{
     AudioLevel, BackpressureNotice, CanvasFrame, ConnectionState, ControlSurfaceEventHint,
     DeviceEventHint, EffectErrorHint, ExtensionEventHint, InitialSubscriptionAdmission,
-    InputSourceStatusEventHint, MacosDaemonOwnershipEventHint, OutputPowerReconciler,
+    InputSourceStatusEventHint, OutputPowerReconciler,
     PerformanceMetrics, PreviewBinaryDecoder, PreviewBinaryMessage, PreviewFrameChannel,
     SceneEventHint, ScreenZonesFrame, handle_json_message, initial_subscription_admission,
     interactive_preview_supported, is_resync_required, reset_layer_health_cache,
@@ -45,7 +45,7 @@ use super::preview::{
     send_screen_canvas_unsubscribe, send_screen_zones_subscribe, send_screen_zones_unsubscribe,
     send_web_viewport_canvas_unsubscribe, should_stream_preview,
 };
-use crate::api::DeviceMetricsSnapshot;
+use crate::api::{DeviceMetricsSnapshot, MacosDaemonOwnershipStatus};
 use crate::api::client;
 
 const BACKPRESSURE_RECOVERY_MS: f64 = 2_000.0;
@@ -156,7 +156,7 @@ pub struct WsManager {
     pub last_input_source_status_event: ReadSignal<Option<InputSourceStatusEventHint>>,
     /// Latest authoritative macOS daemon-owner transition. REST remains
     /// canonical; consumers use this only to invalidate their snapshots.
-    pub last_macos_daemon_ownership_event: ReadSignal<Option<MacosDaemonOwnershipEventHint>>,
+    pub last_macos_daemon_ownership_event: ReadSignal<Option<MacosDaemonOwnershipStatus>>,
     /// Increments each time the daemon socket (re)opens. Bus events fired
     /// while the socket was down are not replayed, so resources mirroring
     /// daemon state over REST should fold this into their fetcher epochs
@@ -227,7 +227,7 @@ impl WsManager {
         let (last_input_source_status_event, set_last_input_source_status_event) =
             signal(None::<InputSourceStatusEventHint>);
         let (last_macos_daemon_ownership_event, set_last_macos_daemon_ownership_event) =
-            signal(None::<MacosDaemonOwnershipEventHint>);
+            signal(None::<MacosDaemonOwnershipStatus>);
         let (last_scene_event, set_last_scene_event) = signal(None::<SceneEventHint>);
         let (last_effect_error, set_last_effect_error) = signal(None::<EffectErrorHint>);
         let (last_control_surface_event, set_last_control_surface_event) =

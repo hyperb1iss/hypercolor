@@ -45,7 +45,7 @@ pub fn set_zone_enabled(zones_ctx: ZonesContext, zone_id: String, enabled: bool)
     };
     let revision = scene.revision;
     spawn_local(async move {
-        let request = api::zones::UpdateZoneRequest {
+        let request = api::zones::PatchZoneRequest {
             enabled: Some(enabled),
             ..Default::default()
         };

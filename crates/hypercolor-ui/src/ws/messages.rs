@@ -498,9 +498,6 @@ pub struct InputSourceStatusEventHint {
     pub retired: bool,
 }
 
-/// Authoritative macOS daemon-owner snapshot used to invalidate REST status.
-pub type MacosDaemonOwnershipEventHint = MacosDaemonOwnershipStatus;
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct ControlSurfaceEventHint {
     pub event_type: String,
@@ -908,7 +905,7 @@ pub(super) fn handle_json_message(
     set_last_control_surface_event: &WriteSignal<Option<ControlSurfaceEventHint>>,
     set_last_extension_event: &WriteSignal<Option<ExtensionEventHint>>,
     set_last_input_source_status_event: &WriteSignal<Option<InputSourceStatusEventHint>>,
-    set_last_macos_daemon_ownership_event: &WriteSignal<Option<MacosDaemonOwnershipEventHint>>,
+    set_last_macos_daemon_ownership_event: &WriteSignal<Option<MacosDaemonOwnershipStatus>>,
     set_layer_health: &WriteSignal<HashMap<String, LayerHealth>>,
     set_audio_level: &WriteSignal<AudioLevel>,
     set_engine_preview_target: &WriteSignal<u32>,
@@ -1139,8 +1136,8 @@ pub fn extract_input_source_status_event_hint(
 
 pub fn extract_macos_daemon_ownership_event_hint(
     data: &serde_json::Value,
-) -> Option<MacosDaemonOwnershipEventHint> {
-    MacosDaemonOwnershipEventHint::deserialize(data).ok()
+) -> Option<MacosDaemonOwnershipStatus> {
+    MacosDaemonOwnershipStatus::deserialize(data).ok()
 }
 
 pub fn extract_control_surface_event_hint(
