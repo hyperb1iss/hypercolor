@@ -20,7 +20,7 @@ use crate::app_state::AppState;
 use crate::domain::{DomainError, ResourceKind};
 use crate::playlist_runtime::ActivePlaylistRuntime;
 
-use super::{metadata_for_effect_id, resolve_preset_id, store_error_to_response, unix_epoch_ms};
+use super::{metadata_for_effect_id, resolve_preset_id, store_error, unix_epoch_ms};
 
 // Wire contracts live in hypercolor-types::api::library — shared with
 // the web UI and the TUI.
@@ -84,7 +84,7 @@ pub async fn create_playlist(
     };
 
     if let Err(error) = state.library_store.insert_playlist(playlist.clone()).await {
-        return store_error_to_response(&error);
+        return store_error(&error).into_response();
     }
     state
         .event_bus
@@ -129,7 +129,7 @@ pub async fn update_playlist(
     };
 
     if let Err(error) = state.library_store.update_playlist(playlist.clone()).await {
-        return store_error_to_response(&error);
+        return store_error(&error).into_response();
     }
     state
         .event_bus
@@ -167,7 +167,7 @@ pub async fn delete_playlist(
 
     let removed = match state.library_store.remove_playlist(playlist_id).await {
         Ok(removed) => removed,
-        Err(error) => return store_error_to_response(&error),
+        Err(error) => return store_error(&error).into_response(),
     };
     if !removed {
         return DomainError::not_found(ResourceKind::Playlist, &id).into_response();

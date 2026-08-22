@@ -10,7 +10,6 @@ pub use presets::*;
 
 use std::sync::Arc;
 
-use axum::response::{IntoResponse, Response};
 use hypercolor_types::effect::{EffectId, EffectMetadata};
 use hypercolor_types::library::PresetId;
 
@@ -44,22 +43,20 @@ pub(crate) async fn metadata_for_effect_id(
     Ok(metadata)
 }
 
-pub(crate) fn store_error_to_response(error: &LibraryStoreError) -> Response {
+pub(crate) fn store_error(error: &LibraryStoreError) -> DomainError {
     match error {
-        LibraryStoreError::PresetNotFound(id) => {
-            DomainError::not_found(ResourceKind::Preset, id).into_response()
-        }
+        LibraryStoreError::PresetNotFound(id) => DomainError::not_found(ResourceKind::Preset, id),
         LibraryStoreError::PresetConflict(id) => {
-            DomainError::conflict(format!("Preset already exists: {id}")).into_response()
+            DomainError::conflict(format!("Preset already exists: {id}"))
         }
         LibraryStoreError::PlaylistNotFound(id) => {
-            DomainError::not_found(ResourceKind::Playlist, id).into_response()
+            DomainError::not_found(ResourceKind::Playlist, id)
         }
         LibraryStoreError::PlaylistConflict(id) => {
-            DomainError::conflict(format!("Playlist already exists: {id}")).into_response()
+            DomainError::conflict(format!("Playlist already exists: {id}"))
         }
         LibraryStoreError::Persistence(message) => {
-            DomainError::Internal(anyhow::anyhow!(message.clone())).into_response()
+            DomainError::Internal(anyhow::anyhow!(message.clone()))
         }
     }
 }

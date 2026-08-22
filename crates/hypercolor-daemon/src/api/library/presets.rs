@@ -16,7 +16,7 @@ use crate::api::envelope;
 use crate::app_state::AppState;
 use crate::domain::{DomainError, ResourceKind};
 
-use super::{normalize_tags, resolve_preset_id, store_error_to_response, unix_epoch_ms};
+use super::{normalize_tags, resolve_preset_id, store_error, unix_epoch_ms};
 
 // Wire contracts live in hypercolor-types::api::library — shared with
 // the web UI and the TUI.
@@ -88,7 +88,7 @@ pub async fn create_preset(
     };
 
     if let Err(error) = state.library_store.insert_preset(preset.clone()).await {
-        return store_error_to_response(&error);
+        return store_error(&error).into_response();
     }
     state
         .event_bus
@@ -145,7 +145,7 @@ pub async fn update_preset(
     };
 
     if let Err(error) = state.library_store.update_preset(preset.clone()).await {
-        return store_error_to_response(&error);
+        return store_error(&error).into_response();
     }
     state
         .event_bus
@@ -166,7 +166,7 @@ pub async fn delete_preset(State(state): State<Arc<AppState>>, Path(id): Path<St
 
     let removed = match state.library_store.remove_preset(preset_id).await {
         Ok(removed) => removed,
-        Err(error) => return store_error_to_response(&error),
+        Err(error) => return store_error(&error).into_response(),
     };
     if !removed {
         return DomainError::not_found(ResourceKind::Preset, &id).into_response();

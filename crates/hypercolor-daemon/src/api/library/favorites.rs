@@ -77,7 +77,7 @@ pub async fn add_favorite(
         .await;
     let favorite = match favorite {
         Ok(favorite) => favorite,
-        Err(error) => return super::store_error_to_response(&error),
+        Err(error) => return super::store_error(&error).into_response(),
     };
     state
         .event_bus
@@ -108,7 +108,7 @@ pub async fn remove_favorite(
 
     let removed = match state.library_store.remove_favorite(effect.id).await {
         Ok(removed) => removed,
-        Err(error) => return super::store_error_to_response(&error),
+        Err(error) => return super::store_error(&error).into_response(),
     };
     if !removed {
         return DomainError::not_found(ResourceKind::Favorite, effect.id).into_response();

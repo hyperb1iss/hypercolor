@@ -267,7 +267,7 @@ pub async fn apply_control_surface_values(
         .into_response();
     }
     if body.values.is_empty() {
-        return empty_control_values(&surface_id);
+        return empty_control_values_error(&surface_id).into_response();
     }
 
     let mut changes = Vec::with_capacity(body.values.len());
@@ -441,7 +441,9 @@ async fn invoke_driver_control_action(
             publish_action_progress(state, &result);
             envelope::ok(result)
         }
-        Err(error) => control_action_failed(&surface_id, &action_id, &error.to_string()),
+        Err(error) => {
+            control_action_error(&surface_id, &action_id, &error.to_string()).into_response()
+        }
     }
 }
 
@@ -480,7 +482,9 @@ async fn invoke_device_control_action(
             publish_action_progress(state, &result);
             envelope::ok(result)
         }
-        Err(error) => control_action_failed(&surface_id, &action_id, &error.to_string()),
+        Err(error) => {
+            control_action_error(&surface_id, &action_id, &error.to_string()).into_response()
+        }
     }
 }
 
@@ -535,7 +539,9 @@ async fn invoke_driver_device_control_action(
             publish_action_progress(state, &result);
             envelope::ok(result)
         }
-        Err(error) => control_action_failed(&surface_id, &action_id, &error.to_string()),
+        Err(error) => {
+            control_action_error(&surface_id, &action_id, &error.to_string()).into_response()
+        }
     }
 }
 
@@ -576,7 +582,7 @@ fn publish_action_progress(state: &AppState, result: &ControlActionResult) {
         ));
 }
 
-fn empty_control_values(surface_id: &str) -> Response {
+fn empty_control_values_error(surface_id: &str) -> DomainError {
     DomainError::validation_details(
         "At least one control value is required",
         serde_json::json!({
@@ -584,10 +590,9 @@ fn empty_control_values(surface_id: &str) -> Response {
             "surface_id": surface_id,
         }),
     )
-    .into_response()
 }
 
-fn control_action_failed(surface_id: &str, action_id: &str, detail: &str) -> Response {
+fn control_action_error(surface_id: &str, action_id: &str, detail: &str) -> DomainError {
     DomainError::validation_details(
         format!("Control action failed: {detail}"),
         serde_json::json!({
@@ -597,10 +602,9 @@ fn control_action_failed(surface_id: &str, action_id: &str, detail: &str) -> Res
             "detail": detail,
         }),
     )
-    .into_response()
 }
 
-fn driver_control_validation_failed(surface_id: &str, driver_id: &str, detail: &str) -> Response {
+fn driver_control_validation_error(surface_id: &str, driver_id: &str, detail: &str) -> DomainError {
     DomainError::validation_details(
         format!("Invalid driver controls: {detail}"),
         serde_json::json!({
@@ -610,15 +614,14 @@ fn driver_control_validation_failed(surface_id: &str, driver_id: &str, detail: &
             "detail": detail,
         }),
     )
-    .into_response()
 }
 
-fn driver_device_control_validation_failed(
+fn driver_device_control_validation_error(
     surface_id: &str,
     driver_id: &str,
     device_id: DeviceId,
     detail: &str,
-) -> Response {
+) -> DomainError {
     DomainError::validation_details(
         format!("Invalid device controls: {detail}"),
         serde_json::json!({
@@ -629,7 +632,6 @@ fn driver_device_control_validation_failed(
             "detail": detail,
         }),
     )
-    .into_response()
 }
 
 fn host_identify_request(input: ControlValueMap) -> Result<devices::IdentifyRequest, DomainError> {
@@ -701,7 +703,8 @@ async fn apply_driver_control_surface_values(
     {
         Ok(changes) => changes,
         Err(error) => {
-            return driver_control_validation_failed(&surface_id, &driver_id, &error.to_string());
+            return driver_control_validation_error(&surface_id, &driver_id, &error.to_string())
+                .into_response();
         }
     };
     if let Err(error) = ensure_driver_level_impacts_supported(&driver_id, &validated.impacts) {
@@ -791,12 +794,13 @@ async fn apply_driver_device_control_surface_values(
     {
         Ok(changes) => changes,
         Err(error) => {
-            return driver_device_control_validation_failed(
+            return driver_device_control_validation_error(
                 &surface_id,
                 &driver_id,
                 device_id,
                 &error.to_string(),
-            );
+            )
+            .into_response();
         }
     };
     if let Err(error) = ensure_driver_device_impacts_supported(&driver_id, &validated.impacts) {
