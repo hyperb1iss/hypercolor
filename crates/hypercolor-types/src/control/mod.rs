@@ -865,18 +865,9 @@ impl ControlValue {
             return Ok(Self::Text(value.to_owned()));
         }
         if let Some(array) = value.as_array() {
-            if array.len() == 4 && array.iter().all(serde_json::Value::is_number) {
-                let mut color = [0.0_f32; 4];
-                for (index, component) in array.iter().enumerate() {
-                    color[index] = narrow_effect_f32(
-                        component
-                            .as_f64()
-                            .ok_or(EffectJsonValueError::UnsupportedShape)?,
-                    )?;
-                }
-                return Ok(Self::linear_color(color));
+            if array.iter().all(serde_json::Value::is_number) {
+                return Err(EffectJsonValueError::UnsupportedShape);
             }
-
             let gradient = Self::Gradient(
                 array
                     .iter()
@@ -890,6 +881,13 @@ impl ControlValue {
             return Ok(gradient);
         }
         if let Some(object) = value.as_object() {
+            if object.len() != 4
+                || !["x", "y", "width", "height"]
+                    .into_iter()
+                    .all(|key| object.contains_key(key))
+            {
+                return Err(EffectJsonValueError::UnsupportedShape);
+            }
             let component = |name| {
                 object
                     .get(name)
@@ -905,6 +903,29 @@ impl ControlValue {
             )));
         }
         Err(EffectJsonValueError::UnsupportedShape)
+    }
+
+    /// Admit the effect renderer's four-channel linear color shape.
+    ///
+    /// A bare four-number array is ambiguous without an effect control
+    /// schema. Callers may use this explicit entry point only after the
+    /// addressed control is known to be a color picker.
+    pub fn try_from_effect_color_json(
+        value: &serde_json::Value,
+    ) -> Result<Self, EffectJsonValueError> {
+        let components = value
+            .as_array()
+            .filter(|components| components.len() == 4)
+            .ok_or(EffectJsonValueError::UnsupportedShape)?;
+        let mut color = [0.0_f32; 4];
+        for (index, component) in components.iter().enumerate() {
+            color[index] = narrow_effect_f32(
+                component
+                    .as_f64()
+                    .ok_or(EffectJsonValueError::UnsupportedShape)?,
+            )?;
+        }
+        Ok(Self::linear_color(color))
     }
 
     /// Project a canonical value into the raw JSON value consumed by an

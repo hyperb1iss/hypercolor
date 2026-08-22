@@ -889,12 +889,27 @@ pub(crate) fn normalize_control_payload(
     let mut rejected = Vec::new();
 
     for (name, value) in raw_controls {
-        let Ok(parsed) = ControlValue::try_from_effect_json(value) else {
+        let definition = metadata.control_by_id(name);
+        let parsed = definition
+            .filter(|control| {
+                matches!(
+                    control.control_type,
+                    hypercolor_types::effect::ControlType::ColorPicker
+                )
+            })
+            .map_or_else(
+                || ControlValue::try_from_effect_json(value),
+                |_| {
+                    ControlValue::try_from_effect_color_json(value)
+                        .or_else(|_| ControlValue::try_from_effect_json(value))
+                },
+            );
+        let Ok(parsed) = parsed else {
             rejected.push(format!("{name} (unsupported JSON shape or numeric range)"));
             continue;
         };
 
-        let result = metadata.control_by_id(name).map_or_else(
+        let result = definition.map_or_else(
             || Ok(parsed.clone()),
             |control| control.validate_value(&parsed),
         );

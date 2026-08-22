@@ -15,7 +15,7 @@ use std::collections::HashMap;
 
 use hypercolor_types::canvas::LinearRgba;
 use hypercolor_types::control::ControlValue;
-use hypercolor_types::effect::ControlDefinition;
+use hypercolor_types::effect::{ControlDefinition, ControlType};
 
 /// Convert a raw control-panel JSON value into a typed [`ControlValue`],
 /// using the effect's control schema to disambiguate string and color
@@ -26,13 +26,21 @@ pub fn json_to_control_value(
     controls: &[ControlDefinition],
     value: &serde_json::Value,
 ) -> Option<ControlValue> {
-    let parsed = ControlValue::try_from_effect_json(value).ok()?;
-    controls
+    let definition = controls
         .iter()
-        .find(|definition| definition.control_id().eq_ignore_ascii_case(control_name))
-        .map_or(Some(parsed.clone()), |definition| {
-            definition.validate_value(&parsed).ok()
-        })
+        .find(|definition| definition.control_id().eq_ignore_ascii_case(control_name));
+    let parsed = if definition.is_some_and(|definition| {
+        matches!(definition.control_type, ControlType::ColorPicker)
+    }) {
+        ControlValue::try_from_effect_color_json(value)
+            .or_else(|_| ControlValue::try_from_effect_json(value))
+            .ok()?
+    } else {
+        ControlValue::try_from_effect_json(value).ok()?
+    };
+    definition.map_or(Some(parsed.clone()), |definition| {
+        definition.validate_value(&parsed).ok()
+    })
 }
 
 /// Fold one raw control edit into a control-value map, returning the

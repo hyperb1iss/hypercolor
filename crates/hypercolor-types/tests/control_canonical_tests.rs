@@ -120,7 +120,7 @@ fn effect_json_admission_uses_checked_scalar_narrowing() {
         Err(EffectJsonValueError::IntegerOutOfRange)
     );
     assert_eq!(
-        ControlValue::try_from_effect_json(&serde_json::json!([
+        ControlValue::try_from_effect_color_json(&serde_json::json!([
             0.0,
             0.5,
             f64::from(f32::MAX) * 2.0,
@@ -134,11 +134,25 @@ fn effect_json_admission_uses_checked_scalar_narrowing() {
 fn effect_json_admission_rejects_malformed_composites() {
     assert!(ControlValue::try_from_effect_json(&serde_json::json!([0.0, 1.0, 0.0])).is_err());
     assert_eq!(
+        ControlValue::try_from_effect_json(&serde_json::json!([0.1, 0.2, 0.3, 0.4])),
+        Err(EffectJsonValueError::UnsupportedShape)
+    );
+    assert_eq!(
         ControlValue::try_from_effect_json(&serde_json::json!({
             "x": 0.1,
             "y": 0.2,
             "width": "wide",
             "height": 0.4
+        })),
+        Err(EffectJsonValueError::UnsupportedShape)
+    );
+    assert_eq!(
+        ControlValue::try_from_effect_json(&serde_json::json!({
+            "x": 0.1,
+            "y": 0.2,
+            "width": 0.5,
+            "height": 0.4,
+            "future": true
         })),
         Err(EffectJsonValueError::UnsupportedShape)
     );
@@ -312,8 +326,8 @@ fn effect_gradient_projection_refuses_invalid_canonical_values() {
 #[test]
 fn effect_json_admission_builds_canonical_composites() {
     let raw_color = serde_json::json!([0.1, 0.2, 0.3, 0.4]);
-    let color = ControlValue::try_from_effect_json(&raw_color)
-        .expect("four-channel color should enter the canonical algebra");
+    let color = ControlValue::try_from_effect_color_json(&raw_color)
+        .expect("an explicitly addressed color should enter the canonical algebra");
     assert_eq!(color, ControlValue::linear_color([0.1, 0.2, 0.3, 0.4]));
     assert_eq!(
         color

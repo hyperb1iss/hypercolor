@@ -268,7 +268,7 @@ fn json_to_control_value_uses_control_type_for_strings() {
 
 #[test]
 fn json_to_control_value_accepts_rgba_arrays() {
-    let controls: Vec<ControlDefinition> = Vec::new();
+    let controls = vec![color_control("accent")];
     let Some(ControlValue::ColorLinear(color)) = json_to_control_value(
         "accent",
         &controls,
@@ -280,6 +280,15 @@ fn json_to_control_value_accepts_rgba_arrays() {
     assert!((color.g - 0.5).abs() < 1e-6);
     assert!((color.b - 0.25).abs() < 1e-6);
     assert!((color.a - 1.0).abs() < 1e-6);
+    assert_eq!(
+        json_to_control_value(
+            "unknown",
+            &controls,
+            &serde_json::json!([1.0, 0.5, 0.25, 1.0]),
+        ),
+        None,
+        "a bare four-number array needs a color control definition"
+    );
 }
 
 #[test]
@@ -330,7 +339,10 @@ fn controls_to_json_serializes_typed_values_for_api_payloads() {
     assert_eq!(json.get("count"), Some(&serde_json::json!(7)));
     assert_eq!(json.get("enabled"), Some(&serde_json::json!(true)));
     assert_eq!(json.get("mode"), Some(&serde_json::json!("high")));
-    assert_eq!(json.get("accent"), Some(&serde_json::json!("#80ffea")));
+    assert_eq!(
+        json.get("accent"),
+        Some(&serde_json::json!([0.21586053, 1.0, 0.82278585, 1.0]))
+    );
 }
 
 #[test]
