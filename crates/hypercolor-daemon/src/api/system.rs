@@ -72,8 +72,11 @@ async fn system_status_with_privacy(
     let scene_count = state.scene_manager.snapshot().await.scene_count();
     let subscribers = state.event_bus.subscriber_count();
 
-    // Query the live effect engine for the active effect name.
-    let active_effect = crate::api::effects::active_primary_effect(state.as_ref())
+    // Query the active scene for its primary effect name.
+    let active_effect = state
+        .domains
+        .effects
+        .active_primary_effect()
         .await
         .map(|(_, effect)| effect.name);
     let (active_scene, active_scene_snapshot_locked) = {

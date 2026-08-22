@@ -186,6 +186,29 @@ fn effect_fallback_worker_uses_domain_authority() {
 }
 
 #[test]
+fn active_effect_queries_use_domain_authority() {
+    let sources = daemon_sources();
+    let source = |suffix: &str| {
+        sources
+            .iter()
+            .find(|(path, _)| path.ends_with(suffix))
+            .map(|(_, source)| source.as_str())
+            .unwrap_or_else(|| panic!("missing daemon source {suffix}"))
+    };
+    let mcp_payload = source("mcp/payload.rs");
+    let system_api = source("api/system.rs");
+    let effect_api = source("api/effects.rs");
+
+    for adapter in [mcp_payload, system_api] {
+        assert!(adapter.contains(".active_primary_effect()"));
+        assert!(!adapter.contains("api::effects::active_primary_effect"));
+        assert!(!adapter.contains("api::effects::active_effect_metadata"));
+    }
+    assert!(!effect_api.contains("fn active_primary_effect"));
+    assert!(!effect_api.contains("fn active_effect_metadata"));
+}
+
+#[test]
 fn domain_errors_do_not_render_transport_responses() {
     let banned = [
         "use axum",

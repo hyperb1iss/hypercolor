@@ -7,7 +7,6 @@ use super::results::{
     InputAvailability, InputStatusResult, InteractionAvailability, StatusResult,
 };
 use super::tools::{brightness_percent, render_capacity_fps};
-use crate::api::effects::active_effect_metadata;
 use crate::app_state::AppState;
 use crate::domain::input_status::input_status_snapshot;
 
@@ -45,7 +44,12 @@ pub(crate) async fn build_status_payload(state: &AppState) -> StatusResult {
     };
 
     let brightness = brightness_percent(state.output_power.global_brightness());
-    let active_effect = active_effect_metadata(state).await;
+    let active_effect = state
+        .domains
+        .effects
+        .active_primary_effect()
+        .await
+        .map(|(_, metadata)| metadata);
     let effect_count = state.domains.effects.len().await;
     let scene_count = state.scene_manager.snapshot().await.scene_count();
     let devices = state.device_registry.list().await;

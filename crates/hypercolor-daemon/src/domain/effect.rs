@@ -91,6 +91,20 @@ impl EffectContext {
             .collect()
     }
 
+    /// Resolve the active scene's primary zone and its first effect.
+    pub async fn active_primary_effect(&self) -> Option<(Zone, EffectMetadata)> {
+        let zone = self
+            .scene
+            .snapshot()
+            .await
+            .active_scene()?
+            .primary_zone()
+            .cloned()?;
+        let effect_id = zone.effect_ids().next()?;
+        let metadata = self.metadata(effect_id).await?;
+        Some((zone, metadata))
+    }
+
     /// Return the number of registered effects.
     pub async fn len(&self) -> usize {
         self.registry.read().await.len()

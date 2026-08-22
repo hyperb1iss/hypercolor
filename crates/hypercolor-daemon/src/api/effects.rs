@@ -24,7 +24,6 @@ use hypercolor_types::api::scene::{
 use hypercolor_types::effect::{ControlValue, EffectCategory, EffectMetadata, EffectSource};
 use hypercolor_types::event::HypercolorEvent;
 use hypercolor_types::library::PresetId;
-use hypercolor_types::scene::Zone;
 
 use crate::api::control_values::json_to_control_value;
 use crate::api::envelope;
@@ -645,24 +644,6 @@ async fn resolve_effect_preset(
             id: preset.id,
             controls: preset.controls.clone(),
         })
-}
-
-pub(crate) async fn active_primary_group(state: &AppState) -> Option<Zone> {
-    let scene_manager = state.scene_manager.snapshot().await;
-    scene_manager.active_scene()?.primary_zone().cloned()
-}
-
-pub(crate) async fn active_primary_effect(state: &AppState) -> Option<(Zone, EffectMetadata)> {
-    let group = active_primary_group(state).await?;
-    let effect_id = group.effect_ids().next()?;
-    let metadata = state.domains.effects.metadata(effect_id).await?;
-    Some((group, metadata))
-}
-
-pub(crate) async fn active_effect_metadata(state: &AppState) -> Option<EffectMetadata> {
-    active_primary_effect(state)
-        .await
-        .map(|(_, metadata)| metadata)
 }
 
 pub(crate) fn normalize_control_payload(
