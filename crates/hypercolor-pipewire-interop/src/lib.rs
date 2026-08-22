@@ -3,6 +3,7 @@
 
 //! Audited XDG Portal and PipeWire capture boundary.
 
+use std::fmt;
 use std::fs::File;
 
 mod channel;
@@ -10,9 +11,10 @@ mod model;
 
 pub use channel::{LoopReceiver, LoopSendError, LoopSender, loop_channel};
 pub use model::{
-    BufferFault, CallbackAction, CaptureFormatRequest, D4Transform, DequeueOutcome, FormatEvent,
-    FormatFault, FormatOffer, FormatOfferError, FrameView, MetaFault, NegotiatedVideoFormat,
-    PackedVideoFormat, PixelCrop, StateChange, StreamError, StreamState, VideoFraction,
+    BufferFault, CallbackAction, CaptureFormatRequest, D4Transform, DequeueOutcome, DmaBufIdentity,
+    FormatEvent, FormatFault, FormatOffer, FormatOfferError, MetaFault, NegotiatedVideoFormat,
+    PackedVideoFormat, PixelCrop, SpaBufferView, SpaChunk, StateChange, StreamError, StreamState,
+    VideoFraction,
 };
 
 /// One source selected through the XDG ScreenCast portal.
@@ -100,9 +102,66 @@ mod linux;
 mod stubs;
 
 #[cfg(target_os = "linux")]
-pub use linux::{PortalSession, PortalSessionGuard, open_portal_session};
+pub use linux::{PortalSession, PortalSessionGuard, ProcessBuffer, open_portal_session};
 #[cfg(not(target_os = "linux"))]
-pub use stubs::{PortalSession, PortalSessionGuard, open_portal_session};
+pub use stubs::{PortalSession, PortalSessionGuard, ProcessBuffer, open_portal_session};
+
+#[cfg(target_os = "linux")]
+pub use linux::{StreamControl, StreamSession, connect_stream};
+#[cfg(not(target_os = "linux"))]
+pub use stubs::{StreamControl, StreamSession, connect_stream};
+
+/// Synchronous policy handler invoked by the native stream callbacks.
+pub trait StreamEventHandler: 'static {
+    /// Handles one translated format event.
+    fn format_changed(&mut self, control: &StreamControl<'_>, event: FormatEvent)
+    -> CallbackAction;
+
+    /// Handles one translated stream-state change.
+    fn state_changed(&mut self, event: StateChange) -> CallbackAction;
+
+    /// Handles one exact native process opportunity.
+    fn process(&mut self, buffer: ProcessBuffer<'_>) -> CallbackAction;
+}
+
+/// Native stream-construction failure that preserves the command receiver.
+pub struct StreamConnectError<C: 'static> {
+    error: StreamError,
+    receiver: LoopReceiver<C>,
+}
+
+impl<C: 'static> StreamConnectError<C> {
+    pub(crate) const fn new(error: StreamError, receiver: LoopReceiver<C>) -> Self {
+        Self { error, receiver }
+    }
+
+    /// Splits the failure into its diagnostic and retained command receiver.
+    #[must_use]
+    pub fn into_parts(self) -> (StreamError, LoopReceiver<C>) {
+        (self.error, self.receiver)
+    }
+}
+
+impl<C: 'static> fmt::Debug for StreamConnectError<C> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("StreamConnectError")
+            .field("error", &self.error)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<C: 'static> fmt::Display for StreamConnectError<C> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.error.fmt(formatter)
+    }
+}
+
+impl<C: 'static> std::error::Error for StreamConnectError<C> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
+    }
+}
 
 #[cfg(test)]
 mod tests {

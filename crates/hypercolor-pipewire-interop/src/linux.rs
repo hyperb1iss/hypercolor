@@ -11,6 +11,13 @@ use tracing::info;
 
 use super::{PortalError, PortalRemote, PortalRequest, PortalStreamDescriptor};
 
+mod buffer;
+pub(crate) mod format;
+mod stream;
+
+pub use buffer::ProcessBuffer;
+pub use stream::{StreamControl, StreamSession, connect_stream};
+
 /// Live portal selection retaining the native session until capture ends.
 pub struct PortalSession {
     guard: PortalSessionGuard,

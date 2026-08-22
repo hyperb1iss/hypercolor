@@ -5587,6 +5587,7 @@ name = "hypercolor-pipewire-interop"
 version = "0.3.2"
 dependencies = [
  "ashpd",
+ "libc",
  "pipewire",
  "thiserror 2.0.18",
  "tracing",

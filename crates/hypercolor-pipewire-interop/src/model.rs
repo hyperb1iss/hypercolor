@@ -1,3 +1,6 @@
+use std::marker::PhantomData;
+use std::rc::Rc;
+
 /// Packed raw pixel formats accepted by the capture boundary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PackedVideoFormat {
@@ -185,6 +188,12 @@ pub enum StreamError {
         /// Native error detail.
         detail: String,
     },
+    /// A policy callback panicked while PipeWire was dispatching through FFI.
+    #[error("{callback} PipeWire callback panicked")]
+    CallbackPanicked {
+        /// Stable callback class.
+        callback: &'static str,
+    },
 }
 
 /// Crop rectangle in native storage coordinates.
@@ -233,23 +242,76 @@ impl D4Transform {
     }
 }
 
-/// Validated borrowed frame presented during one native dequeue.
-#[derive(Clone, Copy, Debug)]
-pub struct FrameView<'a> {
-    /// Mapped storage containing the frame chunk.
-    pub data: &'a [u8],
-    /// Byte offset of the chunk within `data`.
+/// Validated native chunk coordinates within one mapped plane.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SpaChunk {
+    /// Byte offset of the chunk within its mapped plane.
     pub offset: usize,
     /// Byte length of the chunk.
     pub size: usize,
     /// Signed native row stride.
     pub stride: i32,
-    /// Negotiated packed format.
-    pub format: NegotiatedVideoFormat,
-    /// Optional crop metadata. A malformed value is carried as a typed fault.
-    pub crop: Option<Result<PixelCrop, MetaFault>>,
-    /// Optional transform metadata. A malformed value is carried as a typed fault.
-    pub transform: Option<Result<D4Transform, MetaFault>>,
+}
+
+/// Stable kernel allocation identity for one DMA-BUF plane.
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+pub struct DmaBufIdentity {
+    pub(crate) device: u64,
+    pub(crate) inode: u64,
+    pub(crate) plane_offset: u32,
+    pub(crate) plane_size: u32,
+}
+
+/// Validated borrowed frame presented during one native dequeue.
+///
+/// ```compile_fail
+/// fn require_send<T: Send>() {}
+/// require_send::<hypercolor_pipewire_interop::SpaBufferView<'static>>();
+/// ```
+///
+/// ```compile_fail
+/// fn require_sync<T: Sync>() {}
+/// require_sync::<hypercolor_pipewire_interop::SpaBufferView<'static>>();
+/// ```
+#[derive(Clone, Copy, Debug)]
+pub struct SpaBufferView<'a> {
+    pub(crate) data: &'a [u8],
+    pub(crate) chunk: SpaChunk,
+    pub(crate) crop: Option<Result<PixelCrop, MetaFault>>,
+    pub(crate) transform: Option<Result<D4Transform, MetaFault>>,
+    pub(crate) dma_buf_identity: Result<Option<DmaBufIdentity>, BufferFault>,
+    pub(crate) _callback_thread: PhantomData<Rc<()>>,
+}
+
+impl<'a> SpaBufferView<'a> {
+    /// Returns the complete mapped plane containing the validated chunk.
+    #[must_use]
+    pub const fn bytes(&self) -> &'a [u8] {
+        self.data
+    }
+
+    /// Returns the validated chunk coordinates.
+    #[must_use]
+    pub const fn chunk(&self) -> SpaChunk {
+        self.chunk
+    }
+
+    /// Returns optional crop metadata or its typed validation fault.
+    #[must_use]
+    pub const fn crop(&self) -> Option<Result<PixelCrop, MetaFault>> {
+        self.crop
+    }
+
+    /// Returns optional D4 metadata or its typed validation fault.
+    #[must_use]
+    pub const fn transform(&self) -> Option<Result<D4Transform, MetaFault>> {
+        self.transform
+    }
+
+    /// Returns stable DMA-BUF allocation identity when the plane is DMA-backed.
+    pub const fn dma_buf_identity(&self) -> Result<Option<DmaBufIdentity>, BufferFault> {
+        self.dma_buf_identity
+    }
 }
 
 /// Native buffer validation fault before the visitor runs.
@@ -269,6 +331,8 @@ pub enum BufferFault {
     InvalidLayout,
     /// Chunk offset or size conversion failed.
     InvalidChunkBounds,
+    /// DMA-BUF identity could not be proven from the native descriptor.
+    InvalidDmaBuf,
 }
 
 /// Fault in optional native frame metadata.
