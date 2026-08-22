@@ -27,6 +27,9 @@ class DiagnoseDeviceOutputItem:
         coalesced_target_cadence (int):
         completed_payload_bytes (int):
         delivered_fps (float):
+        display_transport_completed (int):
+        display_transport_failed (int):
+        display_transport_started (int):
         errors_total (int):
         fps_queued (float):
         fps_sent (float):
@@ -46,6 +49,7 @@ class DiagnoseDeviceOutputItem:
         transport_started (int):
         uses_frame_sink (bool):
         worker_finished (bool):
+        display_queue_generation (int | None | Unset):
         last_error (None | str | Unset):
         last_sent_ago_ms (int | None | Unset):
     """
@@ -62,6 +66,9 @@ class DiagnoseDeviceOutputItem:
     coalesced_target_cadence: int
     completed_payload_bytes: int
     delivered_fps: float
+    display_transport_completed: int
+    display_transport_failed: int
+    display_transport_started: int
     errors_total: int
     fps_queued: float
     fps_sent: float
@@ -81,6 +88,7 @@ class DiagnoseDeviceOutputItem:
     transport_started: int
     uses_frame_sink: bool
     worker_finished: bool
+    display_queue_generation: int | None | Unset = UNSET
     last_error: None | str | Unset = UNSET
     last_sent_ago_ms: int | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -109,6 +117,12 @@ class DiagnoseDeviceOutputItem:
         completed_payload_bytes = self.completed_payload_bytes
 
         delivered_fps = self.delivered_fps
+
+        display_transport_completed = self.display_transport_completed
+
+        display_transport_failed = self.display_transport_failed
+
+        display_transport_started = self.display_transport_started
 
         errors_total = self.errors_total
 
@@ -148,6 +162,12 @@ class DiagnoseDeviceOutputItem:
 
         worker_finished = self.worker_finished
 
+        display_queue_generation: int | None | Unset
+        if isinstance(self.display_queue_generation, Unset):
+            display_queue_generation = UNSET
+        else:
+            display_queue_generation = self.display_queue_generation
+
         last_error: None | str | Unset
         if isinstance(self.last_error, Unset):
             last_error = UNSET
@@ -176,6 +196,9 @@ class DiagnoseDeviceOutputItem:
                 "coalesced_target_cadence": coalesced_target_cadence,
                 "completed_payload_bytes": completed_payload_bytes,
                 "delivered_fps": delivered_fps,
+                "display_transport_completed": display_transport_completed,
+                "display_transport_failed": display_transport_failed,
+                "display_transport_started": display_transport_started,
                 "errors_total": errors_total,
                 "fps_queued": fps_queued,
                 "fps_sent": fps_sent,
@@ -197,6 +220,8 @@ class DiagnoseDeviceOutputItem:
                 "worker_finished": worker_finished,
             }
         )
+        if display_queue_generation is not UNSET:
+            field_dict["display_queue_generation"] = display_queue_generation
         if last_error is not UNSET:
             field_dict["last_error"] = last_error
         if last_sent_ago_ms is not UNSET:
@@ -230,6 +255,12 @@ class DiagnoseDeviceOutputItem:
         completed_payload_bytes = d.pop("completed_payload_bytes")
 
         delivered_fps = d.pop("delivered_fps")
+
+        display_transport_completed = d.pop("display_transport_completed")
+
+        display_transport_failed = d.pop("display_transport_failed")
+
+        display_transport_started = d.pop("display_transport_started")
 
         errors_total = d.pop("errors_total")
 
@@ -269,6 +300,17 @@ class DiagnoseDeviceOutputItem:
 
         worker_finished = d.pop("worker_finished")
 
+        def _parse_display_queue_generation(data: object) -> int | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(int | None | Unset, data)
+
+        display_queue_generation = _parse_display_queue_generation(
+            d.pop("display_queue_generation", UNSET)
+        )
+
         def _parse_last_error(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -300,6 +342,9 @@ class DiagnoseDeviceOutputItem:
             coalesced_target_cadence=coalesced_target_cadence,
             completed_payload_bytes=completed_payload_bytes,
             delivered_fps=delivered_fps,
+            display_transport_completed=display_transport_completed,
+            display_transport_failed=display_transport_failed,
+            display_transport_started=display_transport_started,
             errors_total=errors_total,
             fps_queued=fps_queued,
             fps_sent=fps_sent,
@@ -319,6 +364,7 @@ class DiagnoseDeviceOutputItem:
             transport_started=transport_started,
             uses_frame_sink=uses_frame_sink,
             worker_finished=worker_finished,
+            display_queue_generation=display_queue_generation,
             last_error=last_error,
             last_sent_ago_ms=last_sent_ago_ms,
         )
