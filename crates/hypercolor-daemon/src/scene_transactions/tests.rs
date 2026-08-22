@@ -1,11 +1,11 @@
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
 use super::{
     LayoutActivationControl, LayoutActivationDecision, LayoutPersistenceOutcome,
-    LayoutPersistencePhase, LayoutTransactionRejection, LayoutUpdateError, PreparedLayoutUpdate,
-    SceneTransaction, SceneTransactionQueue, apply_prepared_layout_update_under_guard,
-    apply_prepared_layout_update_under_guard_with_persistence, publish_prepared_layout_activation,
+    LayoutPersistencePhase, LayoutTransactionAuthority, LayoutTransactionRejection,
+    LayoutUpdateError, LayoutUpdateGuard, SceneTransaction, SceneTransactionQueue,
 };
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::scene::SceneManager;
@@ -52,15 +52,30 @@ async fn apply_layout_update(
     layout: SpatialLayout,
 ) -> Result<(), LayoutUpdateError> {
     let guard = scene_transactions.acquire_layout_update_guard().await;
-    let prepared = PreparedLayoutUpdate::try_new(layout)?;
-    apply_prepared_layout_update_under_guard(
+    LayoutTransactionAuthority::new(
         spatial_engine.clone(),
         scene_manager.clone(),
         scene_transactions.clone(),
-        &guard,
-        prepared,
     )
+    .apply_under_guard(&guard, layout)
     .await
+}
+
+async fn apply_layout_update_with_persistence<F, Fut>(
+    spatial_engine: SpatialService,
+    scene_manager: SceneService,
+    scene_transactions: SceneTransactionQueue,
+    guard: &LayoutUpdateGuard,
+    layout: SpatialLayout,
+    persist: F,
+) -> Result<(), LayoutUpdateError>
+where
+    F: FnMut(LayoutPersistencePhase) -> Fut + Send + 'static,
+    Fut: Future<Output = LayoutPersistenceOutcome> + Send + 'static,
+{
+    LayoutTransactionAuthority::new(spatial_engine, scene_manager, scene_transactions)
+        .apply_under_guard_with_persistence(guard, layout, persist)
+        .await
 }
 
 async fn commit_scene_mutation(
@@ -138,16 +153,16 @@ async fn publish_commit(
     scene_manager: &SceneService,
 ) -> Result<(), LayoutTransactionRejection> {
     wait_for_decision(&accepted.activation, LayoutActivationDecision::Commit).await;
-    let result = publish_prepared_layout_activation(
-        spatial_engine,
-        scene_manager,
-        accepted.spatial_engine,
-        &accepted.expected_layout,
-        accepted.active_scene_id,
-        accepted.source_active_render_groups_revision,
-        |_| {},
-    )
-    .await;
+    let result = scene_manager
+        .publish_layout_activation(
+            spatial_engine,
+            accepted.spatial_engine,
+            &accepted.expected_layout,
+            accepted.active_scene_id,
+            accepted.source_active_render_groups_revision,
+            |_| {},
+        )
+        .await;
     accepted.activation.complete(result.clone());
     result
 }
@@ -500,20 +515,19 @@ async fn admitted_persistence_failure_aborts_and_persists_fresh_rollback() {
     let (spatial_engine, scene_manager, queue) = state(initial.clone());
     let _consumer = queue.consumer();
     let guard = queue.acquire_layout_update_guard().await;
-    let prepared = PreparedLayoutUpdate::try_new(layout("candidate", 640, 480))
-        .expect("candidate layout should prepare");
+    let candidate = layout("candidate", 640, 480);
     let update_spatial_engine = spatial_engine.clone();
     let update_scene_manager = scene_manager.clone();
     let update_queue = queue.clone();
     let phases = Arc::new(std::sync::Mutex::new(Vec::new()));
     let update_phases = Arc::clone(&phases);
     let update = tokio::spawn(async move {
-        apply_prepared_layout_update_under_guard_with_persistence(
+        apply_layout_update_with_persistence(
             update_spatial_engine,
             update_scene_manager,
             update_queue,
             &guard,
-            prepared,
+            candidate,
             move |phase| {
                 let phases = Arc::clone(&update_phases);
                 async move {
@@ -580,18 +594,17 @@ async fn superseded_precommit_aborts_renderer_admission() {
     let (spatial_engine, scene_manager, queue) = state(initial.clone());
     let _consumer = queue.consumer();
     let guard = queue.acquire_layout_update_guard().await;
-    let prepared = PreparedLayoutUpdate::try_new(layout("candidate", 640, 480))
-        .expect("candidate layout should prepare");
+    let candidate = layout("candidate", 640, 480);
     let update_spatial_engine = spatial_engine.clone();
     let update_scene_manager = scene_manager.clone();
     let update_queue = queue.clone();
     let update = tokio::spawn(async move {
-        apply_prepared_layout_update_under_guard_with_persistence(
+        apply_layout_update_with_persistence(
             update_spatial_engine,
             update_scene_manager,
             update_queue,
             &guard,
-            prepared,
+            candidate,
             |phase| async move {
                 match phase {
                     LayoutPersistencePhase::Precommit(_) => LayoutPersistenceOutcome::Superseded,
@@ -642,18 +655,18 @@ async fn persistence_finishes_before_armed_renderer_publication() {
     let persisted_path = tempdir.path().join("active-layout");
     std::fs::write(&persisted_path, &initial.id).expect("seed persisted generation");
     let guard = queue.acquire_layout_update_guard().await;
-    let prepared = PreparedLayoutUpdate::try_new(candidate.clone()).expect("candidate prepares");
     let update_spatial_engine = spatial_engine.clone();
     let update_scene_manager = scene_manager.clone();
     let update_queue = queue.clone();
     let update_path = persisted_path.clone();
+    let update_candidate = candidate.clone();
     let update = tokio::spawn(async move {
-        apply_prepared_layout_update_under_guard_with_persistence(
+        apply_layout_update_with_persistence(
             update_spatial_engine,
             update_scene_manager,
             update_queue,
             &guard,
-            prepared,
+            update_candidate,
             move |phase| {
                 let path = update_path.clone();
                 async move {
@@ -712,19 +725,18 @@ async fn renderer_shutdown_after_persistence_rolls_disk_back_to_live_generation(
     let persisted_path = tempdir.path().join("active-layout");
     std::fs::write(&persisted_path, &initial.id).expect("seed persisted generation");
     let guard = queue.acquire_layout_update_guard().await;
-    let prepared = PreparedLayoutUpdate::try_new(candidate).expect("candidate prepares");
     let update_spatial_engine = spatial_engine.clone();
     let update_scene_manager = scene_manager.clone();
     let update_queue = queue.clone();
     let update_path = persisted_path.clone();
     let rollback_spatial_engine = spatial_engine.clone();
     let update = tokio::spawn(async move {
-        apply_prepared_layout_update_under_guard_with_persistence(
+        apply_layout_update_with_persistence(
             update_spatial_engine,
             update_scene_manager,
             update_queue,
             &guard,
-            prepared,
+            candidate,
             move |phase| {
                 let path = update_path.clone();
                 let spatial_engine = rollback_spatial_engine.clone();
@@ -796,18 +808,17 @@ async fn renderer_rejection_with_rollback_outcome(
     let (spatial_engine, scene_manager, queue) = state(layout("initial", 320, 200));
     let _consumer = queue.consumer();
     let guard = queue.acquire_layout_update_guard().await;
-    let prepared = PreparedLayoutUpdate::try_new(layout("candidate", 640, 480))
-        .expect("candidate layout should prepare");
+    let candidate = layout("candidate", 640, 480);
     let rollback_outcome = Arc::new(std::sync::Mutex::new(Some(rollback_outcome)));
     let update_rollback_outcome = Arc::clone(&rollback_outcome);
     let update_queue = queue.clone();
     let update = tokio::spawn(async move {
-        apply_prepared_layout_update_under_guard_with_persistence(
+        apply_layout_update_with_persistence(
             spatial_engine,
             scene_manager,
             update_queue,
             &guard,
-            prepared,
+            candidate,
             move |phase| {
                 let rollback_outcome = Arc::clone(&update_rollback_outcome);
                 async move {

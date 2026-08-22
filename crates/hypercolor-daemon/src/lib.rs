@@ -38,7 +38,12 @@ pub mod profile_import;
 pub mod render_thread;
 pub mod runtime_state;
 pub mod scene_store;
-pub mod scene_transactions;
+pub(crate) mod scene_transactions;
+#[doc(hidden)]
+pub use scene_transactions::{
+    LayoutPublicationTestExecutor, LayoutTransactionRejection, SceneTransactionConsumer,
+    SceneTransactionQueue,
+};
 pub mod session;
 pub mod simulators;
 pub mod startup;

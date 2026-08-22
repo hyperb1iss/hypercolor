@@ -32,8 +32,8 @@ use crate::domain::{DomainError, ResourceKind};
 use crate::layout_auto_exclusions;
 use crate::network::DaemonDriverHost;
 use crate::scene_transactions::{
-    LayoutTransactionRejection, LayoutUpdateError, LayoutUpdateGuard, SceneActivationGuard,
-    SceneTransactionQueue,
+    LayoutPublicationTestExecutor, LayoutTransactionRejection, LayoutUpdateError,
+    LayoutUpdateGuard, SceneActivationGuard, SceneTransactionQueue,
 };
 
 use self::catalog::LayoutCatalog;
@@ -183,11 +183,9 @@ impl<'a> LayoutTestFixture<'a> {
 impl LayoutTestWorkflows<'_> {
     pub async fn publish(&self, layout: SpatialLayout) -> Result<(), String> {
         let guard = self.context.acquire_update_guard().await;
-        let prepared = crate::scene_transactions::PreparedLayoutUpdate::try_new(layout)
-            .map_err(|error| error.to_string())?;
         self.context
             .publication
-            .apply_prepared_under_guard(&guard, prepared)
+            .apply_prepared_under_guard(&guard, layout)
             .await
             .map_err(|error| error.to_string())
     }
@@ -433,6 +431,12 @@ impl LayoutContext {
     #[must_use]
     pub const fn test_workflows(&self) -> LayoutTestWorkflows<'_> {
         LayoutTestWorkflows { context: self }
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub fn layout_publication_test_executor(&self) -> LayoutPublicationTestExecutor {
+        self.publication.test_executor()
     }
 
     pub(crate) async fn restore_startup_layout(

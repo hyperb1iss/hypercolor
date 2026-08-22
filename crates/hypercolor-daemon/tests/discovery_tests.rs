@@ -15,6 +15,7 @@ use hypercolor_core::device::{
 };
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
+use hypercolor_daemon::SceneTransactionQueue;
 use hypercolor_daemon::attachment_profiles::ComponentProfileStore;
 use hypercolor_daemon::device_settings::DeviceSettingsStore;
 use hypercolor_daemon::discovery::{
@@ -28,7 +29,6 @@ use hypercolor_daemon::driver_inventory::{DRIVER_INVENTORY_FILENAME, DriverInven
 use hypercolor_daemon::layout_auto_exclusions::LayoutAutoExclusionKey;
 use hypercolor_daemon::logical_devices::{LogicalDevice, LogicalDeviceKind};
 use hypercolor_daemon::network::{self, DaemonDriverHost};
-use hypercolor_daemon::scene_transactions::SceneTransactionQueue;
 use hypercolor_driver_api::{
     CredentialStore, DiscoveryCapability, DiscoveryRequest, DriverConfigView, DriverDescriptor,
     DriverError, DriverHost, DriverModule,

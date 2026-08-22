@@ -14,10 +14,9 @@ use crate::network::DaemonDriverHost;
 use crate::persistence::{AtomicFileWriter, AtomicWriteOutcome};
 use crate::runtime_state::RuntimeSessionError;
 use crate::scene_transactions::{
-    LayoutPersistenceOutcome, LayoutPersistencePhase, LayoutUpdateError, LayoutUpdateGuard,
-    PreparedLayoutUpdate, SceneActivationGuard, SceneTransactionQueue,
-    apply_prepared_layout_update_under_guard,
-    apply_prepared_layout_update_under_guard_with_persistence,
+    LayoutPersistenceOutcome, LayoutPersistencePhase, LayoutPublicationTestExecutor,
+    LayoutTransactionAuthority, LayoutUpdateError, LayoutUpdateGuard, SceneActivationGuard,
+    SceneTransactionQueue,
 };
 
 use super::LayoutPersistenceStatus;
@@ -28,7 +27,7 @@ const LAYOUT_DURABILITY_TIMEOUT: Duration = Duration::from_secs(5);
 pub(super) struct LayoutPublication {
     spatial: SpatialService,
     scenes: SceneService,
-    transactions: SceneTransactionQueue,
+    transactions: LayoutTransactionAuthority,
     runtime_state_path: PathBuf,
     runtime_projection: RuntimeSessionProjection,
 }
@@ -42,9 +41,13 @@ impl LayoutPublication {
         runtime_projection: RuntimeSessionProjection,
     ) -> Self {
         Self {
+            transactions: LayoutTransactionAuthority::new(
+                spatial.clone(),
+                scenes.clone(),
+                transactions,
+            ),
             spatial,
             scenes,
-            transactions,
             runtime_state_path,
             runtime_projection,
         }
@@ -56,6 +59,10 @@ impl LayoutPublication {
 
     pub(super) fn scenes(&self) -> &SceneService {
         &self.scenes
+    }
+
+    pub(super) fn test_executor(&self) -> LayoutPublicationTestExecutor {
+        self.transactions.test_executor()
     }
 
     #[cfg(feature = "persistence-test-hooks")]
@@ -101,16 +108,9 @@ impl LayoutPublication {
     pub(super) async fn apply_prepared_under_guard(
         &self,
         guard: &LayoutUpdateGuard,
-        prepared: PreparedLayoutUpdate,
+        layout: SpatialLayout,
     ) -> Result<(), LayoutUpdateError> {
-        apply_prepared_layout_update_under_guard(
-            self.spatial.clone(),
-            self.scenes.clone(),
-            self.transactions.clone(),
-            guard,
-            prepared,
-        )
-        .await
+        self.transactions.apply_under_guard(guard, layout).await
     }
 
     pub(super) async fn admit_persisted_under_guard(
@@ -119,20 +119,13 @@ impl LayoutPublication {
         layout: SpatialLayout,
         driver_host: Arc<DaemonDriverHost>,
     ) -> Result<(), LayoutUpdateError> {
-        let prepared = PreparedLayoutUpdate::try_new(layout)?;
         let persistence = self.persistence_context(driver_host);
-        apply_prepared_layout_update_under_guard_with_persistence(
-            self.spatial.clone(),
-            self.scenes.clone(),
-            self.transactions.clone(),
-            guard,
-            prepared,
-            move |phase| {
+        self.transactions
+            .apply_under_guard_with_persistence(guard, layout, move |phase| {
                 let persistence = persistence.clone();
                 async move { persist_layout_runtime_phase(&persistence, phase).await }
-            },
-        )
-        .await
+            })
+            .await
     }
 
     pub(super) async fn persist_convergence(

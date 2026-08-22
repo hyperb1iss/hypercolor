@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 use std::future::Future;
-use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 
 use thiserror::Error;
@@ -39,11 +39,8 @@ pub(crate) enum LayoutUpdateError {
     PersistenceRollback(String),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct LayoutTransactionToken(u64);
-
 #[derive(Debug, Clone)]
-pub(crate) struct PreparedLayoutUpdate {
+struct PreparedLayoutUpdate {
     spatial_engine: SpatialEngine,
 }
 
@@ -82,8 +79,7 @@ impl PreparedLayoutUpdate {
 }
 
 #[derive(Debug)]
-pub struct PrepareLayoutTransaction {
-    token: LayoutTransactionToken,
+pub(crate) struct PrepareLayoutTransaction {
     spatial_engine: SpatialEngine,
     expected_layout: SpatialLayout,
     active_scene_id: Option<SceneId>,
@@ -97,42 +93,37 @@ pub struct PrepareLayoutTransaction {
 
 impl PrepareLayoutTransaction {
     #[must_use]
-    pub const fn token(&self) -> LayoutTransactionToken {
-        self.token
-    }
-
-    #[must_use]
-    pub fn spatial_engine(&self) -> &SpatialEngine {
+    pub(crate) fn spatial_engine(&self) -> &SpatialEngine {
         &self.spatial_engine
     }
 
     #[must_use]
-    pub fn expected_layout(&self) -> &SpatialLayout {
+    pub(crate) fn expected_layout(&self) -> &SpatialLayout {
         &self.expected_layout
     }
 
     #[must_use]
-    pub fn active_scene_id(&self) -> Option<SceneId> {
+    pub(crate) fn active_scene_id(&self) -> Option<SceneId> {
         self.active_scene_id
     }
 
     #[must_use]
-    pub fn active_render_groups(&self) -> Arc<[Zone]> {
+    pub(crate) fn active_render_groups(&self) -> Arc<[Zone]> {
         Arc::clone(&self.active_render_groups)
     }
 
     #[must_use]
-    pub const fn source_active_render_groups_revision(&self) -> u64 {
+    pub(crate) const fn source_active_render_groups_revision(&self) -> u64 {
         self.source_active_render_groups_revision
     }
 
     #[must_use]
-    pub const fn active_render_groups_revision(&self) -> u64 {
+    pub(crate) const fn active_render_groups_revision(&self) -> u64 {
         self.active_render_groups_revision
     }
 
     #[must_use]
-    pub fn unassigned_behavior(&self) -> &UnassignedBehavior {
+    pub(crate) fn unassigned_behavior(&self) -> &UnassignedBehavior {
         &self.unassigned_behavior
     }
 
@@ -144,21 +135,11 @@ impl PrepareLayoutTransaction {
         self.acknowledgment.is_closed()
     }
 
-    #[doc(hidden)]
-    pub fn accept(self) {
+    pub(crate) fn accept(self) {
         let _ = self.acknowledgment.send(Ok(()));
     }
 
-    #[doc(hidden)]
-    pub fn accept_and_commit_for_test(self) {
-        let activation = self.activation();
-        self.accept();
-        activation.commit();
-        activation.complete(Ok(()));
-    }
-
-    #[doc(hidden)]
-    pub async fn accept_and_publish_for_test<F, Fut>(
+    async fn accept_and_publish<F, Fut>(
         self,
         spatial_engine: &SpatialService,
         scene_manager: &SceneService,
@@ -183,22 +164,21 @@ impl PrepareLayoutTransaction {
         }
 
         before_publication().await;
-        let result = publish_prepared_layout_activation(
-            spatial_engine,
-            scene_manager,
-            candidate_spatial_engine,
-            &expected_layout,
-            expected_active_scene_id,
-            expected_active_render_groups_revision,
-            |_| {},
-        )
-        .await;
+        let result = scene_manager
+            .publish_layout_activation(
+                spatial_engine,
+                candidate_spatial_engine,
+                &expected_layout,
+                expected_active_scene_id,
+                expected_active_render_groups_revision,
+                |_| {},
+            )
+            .await;
         activation.complete(result.clone());
         result
     }
 
-    #[doc(hidden)]
-    pub fn reject(self, rejection: LayoutTransactionRejection) {
+    pub(crate) fn reject(self, rejection: LayoutTransactionRejection) {
         let _ = self.acknowledgment.send(Err(rejection));
     }
 }
@@ -289,7 +269,7 @@ impl LayoutActivationReceipt {
 }
 
 #[derive(Debug)]
-pub enum SceneTransaction {
+pub(crate) enum SceneTransaction {
     PrepareLayout(PrepareLayoutTransaction),
     SetScreenCaptureConfigured(bool),
 }
@@ -305,7 +285,6 @@ pub struct SceneTransactionQueue {
     inner: Arc<StdMutex<SceneTransactionQueueState>>,
     scene_activation_lock: Arc<Mutex<()>>,
     layout_update_lock: Arc<Mutex<()>>,
-    next_layout_token: Arc<AtomicU64>,
 }
 
 impl Default for SceneTransactionQueue {
@@ -330,6 +309,155 @@ impl Clone for LayoutUpdateGuard {
     }
 }
 
+#[derive(Clone)]
+pub(crate) struct LayoutTransactionAuthority {
+    spatial_engine: SpatialService,
+    scene_manager: SceneService,
+    scene_transactions: SceneTransactionQueue,
+}
+
+impl LayoutTransactionAuthority {
+    pub(crate) fn new(
+        spatial_engine: SpatialService,
+        scene_manager: SceneService,
+        scene_transactions: SceneTransactionQueue,
+    ) -> Self {
+        Self {
+            spatial_engine,
+            scene_manager,
+            scene_transactions,
+        }
+    }
+
+    pub(crate) async fn acquire_layout_update_guard(&self) -> LayoutUpdateGuard {
+        self.scene_transactions.acquire_layout_update_guard().await
+    }
+
+    pub(crate) async fn acquire_scene_activation_guard(&self) -> SceneActivationGuard {
+        self.scene_transactions
+            .acquire_scene_activation_guard()
+            .await
+    }
+
+    pub(crate) fn test_executor(&self) -> LayoutPublicationTestExecutor {
+        LayoutPublicationTestExecutor::new(
+            self.scene_transactions.clone(),
+            self.spatial_engine.clone(),
+            self.scene_manager.clone(),
+        )
+    }
+
+    pub(crate) async fn apply_under_guard(
+        &self,
+        guard: &LayoutUpdateGuard,
+        layout: SpatialLayout,
+    ) -> Result<(), LayoutUpdateError> {
+        self.apply_under_guard_with_persistence(guard, layout, |_| async {
+            LayoutPersistenceOutcome::Written
+        })
+        .await
+    }
+
+    pub(crate) async fn apply_under_guard_with_persistence<F, Fut>(
+        &self,
+        guard: &LayoutUpdateGuard,
+        layout: SpatialLayout,
+        mut persist: F,
+    ) -> Result<(), LayoutUpdateError>
+    where
+        F: FnMut(LayoutPersistencePhase) -> Fut + Send + 'static,
+        Fut: Future<Output = LayoutPersistenceOutcome> + Send + 'static,
+    {
+        let prepared = PreparedLayoutUpdate::try_new(layout)?;
+        let spatial_engine = self.spatial_engine.clone();
+        let scene_manager = self.scene_manager.clone();
+        let scene_transactions = self.scene_transactions.clone();
+        let retained_guard = guard.clone();
+        tokio::spawn(async move {
+            let retained_guard = retained_guard;
+            let prepared_engine = prepared.into_spatial_engine();
+            let (
+                expected_layout,
+                active_scene_id,
+                active_render_groups,
+                source_active_render_groups_revision,
+                active_render_groups_revision,
+                unassigned_behavior,
+            ) = {
+                let manager = scene_manager.snapshot().await;
+                let authoritative_spatial_engine = spatial_engine.snapshot();
+                let (active_render_groups, active_render_groups_revision) = manager
+                    .active_render_groups_for_primary_layout(prepared_engine.layout().as_ref());
+                (
+                    authoritative_spatial_engine.layout().as_ref().clone(),
+                    manager.active_scene_id().copied(),
+                    active_render_groups,
+                    manager.active_render_groups_revision(),
+                    active_render_groups_revision,
+                    manager
+                        .active_scene()
+                        .map(|scene| scene.unassigned_behavior.clone())
+                        .unwrap_or_default(),
+                )
+            };
+            let submission = scene_transactions.submit_layout_preparation(
+                prepared_engine.clone(),
+                expected_layout,
+                active_scene_id,
+                Arc::clone(&active_render_groups),
+                source_active_render_groups_revision,
+                active_render_groups_revision,
+                unassigned_behavior,
+            )?;
+            submission.preparation.wait().await?;
+            let commit_state = LayoutPersistenceState {
+                layout: prepared_engine.layout().as_ref().clone(),
+                active_scene_id,
+                active_render_groups: Arc::clone(&active_render_groups),
+            };
+            match persist(LayoutPersistencePhase::Precommit(commit_state)).await {
+                LayoutPersistenceOutcome::Written => {}
+                LayoutPersistenceOutcome::Superseded => {
+                    submission.activation.abort();
+                    let _ = submission.completion.wait().await;
+                    return Err(LayoutUpdateError::PersistenceSuperseded);
+                }
+                LayoutPersistenceOutcome::BeforeAdmission(error) => {
+                    submission.activation.abort();
+                    let _ = submission.completion.wait().await;
+                    return Err(LayoutUpdateError::Persistence(error));
+                }
+                LayoutPersistenceOutcome::RetryArmed(error) => {
+                    submission.activation.abort();
+                    let _ = submission.completion.wait().await;
+                    let rollback = persist(LayoutPersistencePhase::Rollback).await;
+                    if rollback != LayoutPersistenceOutcome::Written {
+                        return Err(LayoutUpdateError::PersistenceRollback(format!(
+                            "{error}; rollback outcome: {rollback:?}"
+                        )));
+                    }
+                    return Err(LayoutUpdateError::Persistence(error));
+                }
+            }
+            submission.activation.commit();
+            let renderer_result = submission.completion.wait().await;
+            if let Err(error) = renderer_result {
+                let rollback = persist(LayoutPersistencePhase::Rollback).await;
+                if rollback != LayoutPersistenceOutcome::Written {
+                    return Err(LayoutUpdateError::PersistenceRollback(format!(
+                        "{error}; rollback outcome: {rollback:?}"
+                    )));
+                }
+                return Err(error.into());
+            }
+            drop(retained_guard);
+            Ok::<(), LayoutUpdateError>(())
+        })
+        .await
+        .map_err(|error| LayoutUpdateError::Coordinator(error.to_string()))?
+    }
+}
+
 pub struct SceneTransactionConsumer {
     queue: SceneTransactionQueue,
 }
@@ -347,11 +475,13 @@ impl SceneTransactionQueue {
             inner: Arc::default(),
             scene_activation_lock: Arc::default(),
             layout_update_lock: Arc::default(),
-            next_layout_token: Arc::default(),
         }
     }
 
-    pub fn push(&self, transaction: SceneTransaction) -> Result<(), LayoutTransactionRejection> {
+    pub(crate) fn push(
+        &self,
+        transaction: SceneTransaction,
+    ) -> Result<(), LayoutTransactionRejection> {
         let mut state = self
             .inner
             .lock()
@@ -365,7 +495,6 @@ impl SceneTransactionQueue {
 
     fn submit_layout_preparation(
         &self,
-        token: LayoutTransactionToken,
         spatial_engine: SpatialEngine,
         expected_layout: SpatialLayout,
         active_scene_id: Option<SceneId>,
@@ -377,7 +506,6 @@ impl SceneTransactionQueue {
         let (acknowledgment, receipt) = oneshot::channel();
         let (activation, completion) = LayoutActivationControl::new();
         self.push(SceneTransaction::PrepareLayout(PrepareLayoutTransaction {
-            token,
             spatial_engine,
             expected_layout,
             active_scene_id,
@@ -395,22 +523,41 @@ impl SceneTransactionQueue {
         })
     }
 
-    fn next_layout_token(&self) -> LayoutTransactionToken {
-        LayoutTransactionToken(
-            self.next_layout_token
-                .fetch_add(1, Ordering::Relaxed)
-                .saturating_add(1),
-        )
-    }
-
     #[must_use]
-    pub fn drain(&self) -> Vec<SceneTransaction> {
+    pub(crate) fn drain(&self) -> Vec<SceneTransaction> {
         self.inner
             .lock()
             .expect("scene transaction queue should lock")
             .pending
             .drain(..)
             .collect()
+    }
+
+    fn take_next_layout_preparation(&self) -> Option<PrepareLayoutTransaction> {
+        let mut state = self
+            .inner
+            .lock()
+            .expect("scene transaction queue should lock");
+        let index = state
+            .pending
+            .iter()
+            .position(|transaction| matches!(transaction, SceneTransaction::PrepareLayout(_)))?;
+        match state.pending.remove(index) {
+            Some(SceneTransaction::PrepareLayout(transaction)) => Some(transaction),
+            Some(SceneTransaction::SetScreenCaptureConfigured(_)) | None => {
+                unreachable!("selected queue entry should be a layout preparation")
+            }
+        }
+    }
+
+    fn pending_layout_preparation_count(&self) -> usize {
+        self.inner
+            .lock()
+            .expect("scene transaction queue should lock")
+            .pending
+            .iter()
+            .filter(|transaction| matches!(transaction, SceneTransaction::PrepareLayout(_)))
+            .count()
     }
 
     /// Whether any transaction is waiting to be retired.
@@ -473,14 +620,92 @@ impl SceneTransactionQueue {
             .closed
     }
 
-    #[doc(hidden)]
-    #[must_use]
-    pub fn pending_len(&self) -> usize {
+    #[cfg(test)]
+    fn pending_len(&self) -> usize {
         self.inner
             .lock()
             .expect("scene transaction queue should lock")
             .pending
             .len()
+    }
+}
+
+#[derive(Clone)]
+#[doc(hidden)]
+pub struct LayoutPublicationTestExecutor {
+    queue: SceneTransactionQueue,
+    spatial_engine: SpatialService,
+    scene_manager: SceneService,
+}
+
+impl LayoutPublicationTestExecutor {
+    #[must_use]
+    pub(crate) fn new(
+        queue: SceneTransactionQueue,
+        spatial_engine: SpatialService,
+        scene_manager: SceneService,
+    ) -> Self {
+        Self {
+            queue,
+            spatial_engine,
+            scene_manager,
+        }
+    }
+
+    pub async fn execute_next_layout_publication(
+        &self,
+    ) -> Result<Option<SpatialLayout>, LayoutTransactionRejection> {
+        self.execute_next_layout_publication_before(|| async {})
+            .await
+    }
+
+    #[cfg(feature = "persistence-test-hooks")]
+    pub async fn execute_next_layout_publication_with_hook<F, Fut>(
+        &self,
+        before_publication: F,
+    ) -> Result<Option<SpatialLayout>, LayoutTransactionRejection>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = ()>,
+    {
+        self.execute_next_layout_publication_before(before_publication)
+            .await
+    }
+
+    #[cfg(feature = "persistence-test-hooks")]
+    pub fn reject_next_layout_publication(&self, rejection: LayoutTransactionRejection) -> bool {
+        let Some(transaction) = self.queue.take_next_layout_preparation() else {
+            return false;
+        };
+        transaction.reject(rejection);
+        true
+    }
+
+    #[must_use]
+    pub fn pending_layout_publications(&self) -> usize {
+        self.queue.pending_layout_preparation_count()
+    }
+
+    async fn execute_next_layout_publication_before<F, Fut>(
+        &self,
+        before_publication: F,
+    ) -> Result<Option<SpatialLayout>, LayoutTransactionRejection>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = ()>,
+    {
+        let Some(transaction) = self.queue.take_next_layout_preparation() else {
+            return Ok(None);
+        };
+        let layout = transaction.spatial_engine().layout().as_ref().clone();
+        transaction
+            .accept_and_publish(
+                &self.spatial_engine,
+                &self.scene_manager,
+                before_publication,
+            )
+            .await?;
+        Ok(Some(layout))
     }
 }
 
@@ -498,152 +723,6 @@ impl LayoutTransactionReceipt {
             .await
             .unwrap_or(Err(LayoutTransactionRejection::RendererStopped))
     }
-}
-
-pub(crate) async fn publish_prepared_layout_activation<F>(
-    spatial_engine: &SpatialService,
-    scene_manager: &SceneService,
-    candidate_spatial_engine: SpatialEngine,
-    expected_layout: &SpatialLayout,
-    expected_active_scene_id: Option<SceneId>,
-    expected_active_render_groups_revision: u64,
-    publish_renderer_state: F,
-) -> Result<(), LayoutTransactionRejection>
-where
-    F: FnOnce(SpatialEngine),
-{
-    // The render thread owns the frame-boundary swap, but the scene
-    // sequencer still owns admission. Holding the scene lock across the
-    // compare-and-swap, authored layout update, and admission makes a
-    // layout publication one ordinary scene revision rather than a
-    // second concurrency domain.
-    scene_manager
-        .publish_layout_activation(
-            spatial_engine,
-            candidate_spatial_engine,
-            expected_layout,
-            expected_active_scene_id,
-            expected_active_render_groups_revision,
-            publish_renderer_state,
-        )
-        .await
-}
-
-pub(crate) async fn apply_prepared_layout_update_under_guard(
-    spatial_engine: SpatialService,
-    scene_manager: SceneService,
-    scene_transactions: SceneTransactionQueue,
-    guard: &LayoutUpdateGuard,
-    prepared: PreparedLayoutUpdate,
-) -> Result<(), LayoutUpdateError> {
-    apply_prepared_layout_update_under_guard_with_persistence(
-        spatial_engine,
-        scene_manager,
-        scene_transactions,
-        guard,
-        prepared,
-        |_| async { LayoutPersistenceOutcome::Written },
-    )
-    .await
-}
-
-pub(crate) async fn apply_prepared_layout_update_under_guard_with_persistence<F, Fut>(
-    spatial_engine: SpatialService,
-    scene_manager: SceneService,
-    scene_transactions: SceneTransactionQueue,
-    guard: &LayoutUpdateGuard,
-    prepared: PreparedLayoutUpdate,
-    mut persist: F,
-) -> Result<(), LayoutUpdateError>
-where
-    F: FnMut(LayoutPersistencePhase) -> Fut + Send + 'static,
-    Fut: Future<Output = LayoutPersistenceOutcome> + Send + 'static,
-{
-    let retained_guard = guard.clone();
-    tokio::spawn(async move {
-        let retained_guard = retained_guard;
-        let prepared_engine = prepared.into_spatial_engine();
-        let (
-            expected_layout,
-            active_scene_id,
-            active_render_groups,
-            source_active_render_groups_revision,
-            active_render_groups_revision,
-            unassigned_behavior,
-        ) = {
-            let manager = scene_manager.snapshot().await;
-            let authoritative_spatial_engine = spatial_engine.snapshot();
-            let (active_render_groups, active_render_groups_revision) =
-                manager.active_render_groups_for_primary_layout(prepared_engine.layout().as_ref());
-            (
-                authoritative_spatial_engine.layout().as_ref().clone(),
-                manager.active_scene_id().copied(),
-                active_render_groups,
-                manager.active_render_groups_revision(),
-                active_render_groups_revision,
-                manager
-                    .active_scene()
-                    .map(|scene| scene.unassigned_behavior.clone())
-                    .unwrap_or_default(),
-            )
-        };
-        let token = scene_transactions.next_layout_token();
-        let submission = scene_transactions.submit_layout_preparation(
-            token,
-            prepared_engine.clone(),
-            expected_layout,
-            active_scene_id,
-            Arc::clone(&active_render_groups),
-            source_active_render_groups_revision,
-            active_render_groups_revision,
-            unassigned_behavior,
-        )?;
-        submission.preparation.wait().await?;
-        let commit_state = LayoutPersistenceState {
-            layout: prepared_engine.layout().as_ref().clone(),
-            active_scene_id,
-            active_render_groups: Arc::clone(&active_render_groups),
-        };
-        match persist(LayoutPersistencePhase::Precommit(commit_state)).await {
-            LayoutPersistenceOutcome::Written => {}
-            LayoutPersistenceOutcome::Superseded => {
-                submission.activation.abort();
-                let _ = submission.completion.wait().await;
-                return Err(LayoutUpdateError::PersistenceSuperseded);
-            }
-            LayoutPersistenceOutcome::BeforeAdmission(error) => {
-                submission.activation.abort();
-                let _ = submission.completion.wait().await;
-                return Err(LayoutUpdateError::Persistence(error));
-            }
-            LayoutPersistenceOutcome::RetryArmed(error) => {
-                submission.activation.abort();
-                let _ = submission.completion.wait().await;
-                let rollback = persist(LayoutPersistencePhase::Rollback).await;
-                if rollback != LayoutPersistenceOutcome::Written {
-                    return Err(LayoutUpdateError::PersistenceRollback(format!(
-                        "{error}; rollback outcome: {rollback:?}"
-                    )));
-                }
-                return Err(LayoutUpdateError::Persistence(error));
-            }
-        }
-        submission.activation.commit();
-        let renderer_result = submission.completion.wait().await;
-        if let Err(error) = renderer_result {
-            let rollback = persist(LayoutPersistencePhase::Rollback).await;
-            if rollback != LayoutPersistenceOutcome::Written {
-                return Err(LayoutUpdateError::PersistenceRollback(format!(
-                    "{error}; rollback outcome: {rollback:?}"
-                )));
-            }
-            return Err(error.into());
-        }
-        drop(retained_guard);
-        Ok::<(), LayoutUpdateError>(())
-    })
-    .await
-    .map_err(|error| LayoutUpdateError::Coordinator(error.to_string()))?
 }
 
 #[cfg(test)]

@@ -39,6 +39,7 @@ use hypercolor_core::input::{
     SourceStatusHandle, SourceStatusReporter,
 };
 use hypercolor_core::types::event::InputButtonState;
+use hypercolor_daemon::LayoutTransactionRejection;
 use hypercolor_daemon::api;
 use hypercolor_daemon::api::local::TrustedLocalApi;
 use hypercolor_daemon::app_state::AppState;
@@ -49,7 +50,6 @@ use hypercolor_daemon::library::JsonLibraryStore;
 #[cfg(feature = "persistence-test-hooks")]
 use hypercolor_daemon::persistence::AtomicFileWriter;
 use hypercolor_daemon::runtime_state;
-use hypercolor_daemon::scene_transactions::SceneTransaction;
 use hypercolor_daemon::session::{OutputOverride, OutputPowerState};
 #[cfg(feature = "persistence-test-hooks")]
 use hypercolor_daemon::simulators::SimulatedDisplayConfig;
@@ -1051,7 +1051,12 @@ async fn request_with_layout_ack(
     request: Request<Body>,
     state: &Arc<AppState>,
 ) -> (axum::response::Response, Vec<SpatialLayout>) {
-    request_with_layout_ack_and_hook(app, request, state, || async {}).await
+    let request = async move {
+        app.oneshot(request)
+            .await
+            .expect("failed to execute request")
+    };
+    drive_request_with_layout_ack(request, state).await
 }
 
 async fn trusted_request_with_layout_ack(
@@ -1064,9 +1069,10 @@ async fn trusted_request_with_layout_ack(
             .await
             .expect("trusted local request should execute")
     };
-    drive_request_with_layout_ack(request, state, || async {}).await
+    drive_request_with_layout_ack(request, state).await
 }
 
+#[cfg(feature = "persistence-test-hooks")]
 async fn request_with_layout_ack_and_hook<F, Fut>(
     app: axum::Router,
     request: Request<Body>,
@@ -1082,10 +1088,50 @@ where
             .await
             .expect("failed to execute request")
     };
-    drive_request_with_layout_ack(request, state, before_publication).await
+    drive_request_with_layout_ack_and_hook(request, state, before_publication).await
 }
 
-async fn drive_request_with_layout_ack<R, F, Fut>(
+async fn drive_request_with_layout_ack<R>(
+    request: R,
+    state: &Arc<AppState>,
+) -> (axum::response::Response, Vec<SpatialLayout>)
+where
+    R: Future<Output = axum::response::Response>,
+{
+    tokio::pin!(request);
+    let executor = state.layout_publication_test_executor();
+    let mut publications: Vec<
+        tokio::task::JoinHandle<Result<Option<SpatialLayout>, LayoutTransactionRejection>>,
+    > = Vec::new();
+    loop {
+        tokio::select! {
+            response = &mut request => {
+                let mut applied = Vec::new();
+                for publication in publications {
+                    if let Some(layout) = publication
+                        .await
+                        .expect("layout publication task should not panic")
+                        .expect("layout publication should succeed")
+                    {
+                        applied.push(layout);
+                    }
+                }
+                return (response, applied);
+            }
+            () = tokio::time::sleep(Duration::from_millis(1)) => {
+                if executor.pending_layout_publications() > 0 {
+                    let executor = executor.clone();
+                    publications.push(tokio::spawn(async move {
+                        executor.execute_next_layout_publication().await
+                    }));
+                }
+            }
+        }
+    }
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+async fn drive_request_with_layout_ack_and_hook<R, F, Fut>(
     request: R,
     state: &Arc<AppState>,
     before_publication: F,
@@ -1096,51 +1142,34 @@ where
     Fut: Future<Output = ()> + Send + 'static,
 {
     tokio::pin!(request);
-    let mut applied = Vec::new();
+    let executor = state.layout_publication_test_executor();
     let mut publications: Vec<
-        tokio::task::JoinHandle<
-            Result<(), hypercolor_daemon::scene_transactions::LayoutTransactionRejection>,
-        >,
+        tokio::task::JoinHandle<Result<Option<SpatialLayout>, LayoutTransactionRejection>>,
     > = Vec::new();
     loop {
         tokio::select! {
             response = &mut request => {
+                let mut applied = Vec::new();
                 for publication in publications {
-                    publication
+                    if let Some(layout) = publication
                         .await
                         .expect("layout publication task should not panic")
-                        .expect("layout publication should succeed");
+                        .expect("layout publication should succeed")
+                    {
+                        applied.push(layout);
+                    }
                 }
                 return (response, applied);
             }
             () = tokio::time::sleep(Duration::from_millis(1)) => {
-                let mut deferred = Vec::new();
-                for transaction in state.scene_transactions.drain() {
-                    match transaction {
-                        SceneTransaction::PrepareLayout(transaction) => {
-                            applied.push(transaction.spatial_engine().layout().as_ref().clone());
-                            let spatial_engine = state.spatial_engine.clone();
-                            let scene_manager = state.scene_manager.clone();
-                            let before_publication = before_publication.clone();
-                            publications.push(tokio::spawn(async move {
-                                transaction
-                                    .accept_and_publish_for_test(
-                                        &spatial_engine,
-                                        &scene_manager,
-                                        before_publication,
-                                    )
-                                    .await
-                            }));
-                        }
-                        transaction @ SceneTransaction::SetScreenCaptureConfigured(_) => {
-                            deferred.push(transaction);
-                        }
-                    }
-                }
-                for transaction in deferred {
-                    state.scene_transactions
-                        .push(transaction)
-                        .expect("test transaction queue should remain open");
+                if executor.pending_layout_publications() > 0 {
+                    let executor = executor.clone();
+                    let before_publication = before_publication.clone();
+                    publications.push(tokio::spawn(async move {
+                        executor
+                            .execute_next_layout_publication_with_hook(before_publication)
+                            .await
+                    }));
                 }
             }
         }
@@ -1155,51 +1184,40 @@ async fn run_two_layout_publications_with_gates(
     release_second_admission: Arc<Semaphore>,
 ) {
     tokio::time::timeout(Duration::from_secs(5), async move {
+        let executor = state.layout_publication_test_executor();
         let mut publication_index = 0;
         while publication_index < 2 {
-            let mut deferred = Vec::new();
-            for transaction in state.scene_transactions.drain() {
-                match transaction {
-                    SceneTransaction::PrepareLayout(transaction) => {
-                        let index = publication_index;
-                        let entered = Arc::clone(&first_publication_entered);
-                        let release = Arc::clone(&release_first_publication);
-                        transaction
-                            .accept_and_publish_for_test(
-                                &state.spatial_engine,
-                                &state.scene_manager,
-                                move || async move {
-                                    if index == 0 {
-                                        entered.notify_one();
-                                        let _permit = release
-                                            .acquire_owned()
-                                            .await
-                                            .expect("first publication gate should remain open");
-                                    }
-                                },
-                            )
-                            .await
-                            .expect("layout publication should succeed");
-                        publication_index += 1;
-                        if publication_index == 1 {
-                            let _permit = Arc::clone(&release_second_admission)
-                                .acquire_owned()
+            if executor.pending_layout_publications() == 0 {
+                tokio::task::yield_now().await;
+                continue;
+            }
+            let index = publication_index;
+            let entered = Arc::clone(&first_publication_entered);
+            let release = Arc::clone(&release_first_publication);
+            executor
+                .execute_next_layout_publication_with_hook(move || async move {
+                    if index == 0 {
+                        entered.notify_one();
+                        let _permit =
+                            tokio::time::timeout(Duration::from_secs(2), release.acquire_owned())
                                 .await
-                                .expect("second admission gate should remain open");
-                        }
+                                .expect("first publication release should arrive")
+                                .expect("first publication gate should remain open");
                     }
-                    transaction @ SceneTransaction::SetScreenCaptureConfigured(_) => {
-                        deferred.push(transaction);
-                    }
-                }
+                })
+                .await
+                .expect("layout publication should succeed")
+                .expect("layout publication should be pending");
+            publication_index += 1;
+            if publication_index == 1 {
+                let _permit = tokio::time::timeout(
+                    Duration::from_secs(2),
+                    Arc::clone(&release_second_admission).acquire_owned(),
+                )
+                .await
+                .expect("second admission release should arrive")
+                .expect("second admission gate should remain open");
             }
-            for transaction in deferred {
-                state
-                    .scene_transactions
-                    .push(transaction)
-                    .expect("test transaction queue should remain open");
-            }
-            tokio::task::yield_now().await;
         }
     })
     .await
@@ -1213,39 +1231,24 @@ async fn run_one_layout_publication_with_gate(
     release_publication: Arc<Semaphore>,
 ) {
     tokio::time::timeout(Duration::from_secs(5), async move {
+        let executor = state.layout_publication_test_executor();
         loop {
-            let mut deferred = Vec::new();
-            for transaction in state.scene_transactions.drain() {
-                match transaction {
-                    SceneTransaction::PrepareLayout(transaction) => {
-                        let entered = Arc::clone(&publication_entered);
-                        let release = Arc::clone(&release_publication);
-                        transaction
-                            .accept_and_publish_for_test(
-                                &state.spatial_engine,
-                                &state.scene_manager,
-                                move || async move {
-                                    entered.notify_one();
-                                    let _permit = release
-                                        .acquire_owned()
-                                        .await
-                                        .expect("publication gate should remain open");
-                                },
-                            )
-                            .await
-                            .expect("layout publication should succeed");
-                        return;
-                    }
-                    transaction @ SceneTransaction::SetScreenCaptureConfigured(_) => {
-                        deferred.push(transaction);
-                    }
-                }
-            }
-            for transaction in deferred {
-                state
-                    .scene_transactions
-                    .push(transaction)
-                    .expect("test transaction queue should remain open");
+            if executor.pending_layout_publications() > 0 {
+                let entered = Arc::clone(&publication_entered);
+                let release = Arc::clone(&release_publication);
+                executor
+                    .execute_next_layout_publication_with_hook(move || async move {
+                        entered.notify_one();
+                        let _permit =
+                            tokio::time::timeout(Duration::from_secs(2), release.acquire_owned())
+                                .await
+                                .expect("publication release should arrive")
+                                .expect("publication gate should remain open");
+                    })
+                    .await
+                    .expect("layout publication should succeed")
+                    .expect("layout publication should be pending");
+                return;
             }
             tokio::task::yield_now().await;
         }
@@ -1259,32 +1262,15 @@ async fn run_layout_publications(
     expected_count: usize,
 ) -> Vec<SpatialLayout> {
     let mut applied = Vec::with_capacity(expected_count);
+    let executor = state.layout_publication_test_executor();
     let result = tokio::time::timeout(Duration::from_secs(5), async {
         while applied.len() < expected_count {
-            let mut deferred = Vec::new();
-            for transaction in state.scene_transactions.drain() {
-                match transaction {
-                    SceneTransaction::PrepareLayout(transaction) => {
-                        applied.push(transaction.spatial_engine().layout().as_ref().clone());
-                        transaction
-                            .accept_and_publish_for_test(
-                                &state.spatial_engine,
-                                &state.scene_manager,
-                                || async {},
-                            )
-                            .await
-                            .expect("layout publication should succeed");
-                    }
-                    transaction @ SceneTransaction::SetScreenCaptureConfigured(_) => {
-                        deferred.push(transaction);
-                    }
-                }
-            }
-            for transaction in deferred {
-                state
-                    .scene_transactions
-                    .push(transaction)
-                    .expect("test transaction queue should remain open");
+            if let Some(layout) = executor
+                .execute_next_layout_publication()
+                .await
+                .expect("layout publication should succeed")
+            {
+                applied.push(layout);
             }
             tokio::task::yield_now().await;
         }
@@ -1357,36 +1343,23 @@ where
     .expect("condition should become true");
 }
 
+#[cfg(feature = "persistence-test-hooks")]
 async fn request_with_layout_rejection(
     app: axum::Router,
     request: Request<Body>,
     state: &Arc<AppState>,
-    rejection: hypercolor_daemon::scene_transactions::LayoutTransactionRejection,
+    rejection: LayoutTransactionRejection,
 ) -> axum::response::Response {
     let request = app.oneshot(request);
     tokio::pin!(request);
+    let executor = state.layout_publication_test_executor();
     loop {
         tokio::select! {
             response = &mut request => {
                 return response.expect("failed to execute request");
             }
             () = tokio::time::sleep(Duration::from_millis(1)) => {
-                let mut deferred = Vec::new();
-                for transaction in state.scene_transactions.drain() {
-                    match transaction {
-                        SceneTransaction::PrepareLayout(transaction) => {
-                            transaction.reject(rejection.clone());
-                        }
-                        transaction @ SceneTransaction::SetScreenCaptureConfigured(_) => {
-                            deferred.push(transaction);
-                        }
-                    }
-                }
-                for transaction in deferred {
-                    state.scene_transactions
-                        .push(transaction)
-                        .expect("test transaction queue should remain open");
-                }
+                executor.reject_next_layout_publication(rejection.clone());
             }
         }
     }
@@ -8046,10 +8019,9 @@ async fn layout_apply_returns_conflict_when_precommit_is_superseded() {
     );
 }
 
+#[cfg(feature = "persistence-test-hooks")]
 #[tokio::test]
 async fn layout_apply_maps_renderer_rejections_to_explicit_statuses() {
-    use hypercolor_daemon::scene_transactions::LayoutTransactionRejection;
-
     let cases = [
         (
             LayoutTransactionRejection::PreparationFailed {
@@ -8084,10 +8056,9 @@ async fn layout_apply_maps_renderer_rejections_to_explicit_statuses() {
     }
 }
 
+#[cfg(feature = "persistence-test-hooks")]
 #[tokio::test]
 async fn layout_preview_maps_renderer_rejections_to_explicit_statuses() {
-    use hypercolor_daemon::scene_transactions::LayoutTransactionRejection;
-
     let cases = [
         (
             LayoutTransactionRejection::PreparationFailed {
@@ -8243,7 +8214,9 @@ async fn concurrent_apply_and_delete_cannot_activate_a_removed_layout() {
             .await
             .expect("failed to execute apply request")
     });
-    first_entered.notified().await;
+    tokio::time::timeout(Duration::from_secs(2), first_entered.notified())
+        .await
+        .expect("first publication should reach its gate");
     let delete_id = candidate.id.clone();
     let before_delete_guard = state.domains.layout.test_fixture().hooks().install(
         LayoutMutationTestPoint::BeforeGuard,
@@ -8262,7 +8235,12 @@ async fn concurrent_apply_and_delete_cannot_activate_a_removed_layout() {
         .expect("failed to execute delete request")
     });
 
-    before_delete_guard.wait_until_entered().await;
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        before_delete_guard.wait_until_entered(),
+    )
+    .await
+    .expect("delete should reach its guard");
     assert!(
         state
             .domains
@@ -8275,17 +8253,20 @@ async fn concurrent_apply_and_delete_cannot_activate_a_removed_layout() {
     );
     before_delete_guard.release();
     release_first.add_permits(1);
-    assert_eq!(
-        apply.await.expect("apply task should not panic").status(),
-        StatusCode::OK
-    );
     release_second.add_permits(1);
-    assert_eq!(
-        delete.await.expect("delete task should not panic").status(),
-        StatusCode::OK
-    );
-    renderer
+    let apply_response = tokio::time::timeout(Duration::from_secs(5), apply)
         .await
+        .expect("apply should converge after both renderer gates open")
+        .expect("apply task should not panic");
+    assert_eq!(apply_response.status(), StatusCode::OK);
+    let delete_response = tokio::time::timeout(Duration::from_secs(5), delete)
+        .await
+        .expect("delete should converge after both renderer gates open")
+        .expect("delete task should not panic");
+    assert_eq!(delete_response.status(), StatusCode::OK);
+    tokio::time::timeout(Duration::from_secs(5), renderer)
+        .await
+        .expect("layout publication worker should finish")
         .expect("layout publication worker should not panic");
 
     assert!(
@@ -8419,7 +8400,9 @@ async fn concurrent_active_and_fallback_deletes_cannot_publish_removed_fallback(
             .await
             .expect("failed to execute active delete request")
     });
-    first_entered.notified().await;
+    tokio::time::timeout(Duration::from_secs(2), first_entered.notified())
+        .await
+        .expect("first publication should reach its gate");
     let fallback_id = fallback.id.clone();
     let before_fallback_guard = state.domains.layout.test_fixture().hooks().install(
         LayoutMutationTestPoint::BeforeGuard,
@@ -8438,7 +8421,12 @@ async fn concurrent_active_and_fallback_deletes_cannot_publish_removed_fallback(
         .expect("failed to execute fallback delete request")
     });
 
-    before_fallback_guard.wait_until_entered().await;
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        before_fallback_guard.wait_until_entered(),
+    )
+    .await
+    .expect("fallback delete should reach its guard");
     assert!(
         state
             .domains
@@ -8451,23 +8439,20 @@ async fn concurrent_active_and_fallback_deletes_cannot_publish_removed_fallback(
     );
     before_fallback_guard.release();
     release_first.add_permits(1);
-    assert_eq!(
-        first_delete
-            .await
-            .expect("active delete task should not panic")
-            .status(),
-        StatusCode::OK
-    );
     release_second.add_permits(1);
-    assert_eq!(
-        fallback_delete
-            .await
-            .expect("fallback delete task should not panic")
-            .status(),
-        StatusCode::OK
-    );
-    renderer
+    let first_response = tokio::time::timeout(Duration::from_secs(5), first_delete)
         .await
+        .expect("active delete should converge after both renderer gates open")
+        .expect("active delete task should not panic");
+    assert_eq!(first_response.status(), StatusCode::OK);
+    let fallback_response = tokio::time::timeout(Duration::from_secs(5), fallback_delete)
+        .await
+        .expect("fallback delete should converge after both renderer gates open")
+        .expect("fallback delete task should not panic");
+    assert_eq!(fallback_response.status(), StatusCode::OK);
+    tokio::time::timeout(Duration::from_secs(5), renderer)
+        .await
+        .expect("layout publication worker should finish")
         .expect("layout publication worker should not panic");
 
     assert!(
@@ -9579,7 +9564,12 @@ async fn layout_delete_rolls_back_when_the_fallback_plan_is_rejected() {
     let layouts = state.domains.layout.test_fixture().catalog().read().await;
     assert_eq!(layouts.get(&active.id), Some(&active));
     assert_eq!(layouts.get(&invalid.id), Some(&invalid));
-    assert!(state.scene_transactions.drain().is_empty());
+    assert_eq!(
+        state
+            .layout_publication_test_executor()
+            .pending_layout_publications(),
+        0
+    );
 }
 
 #[tokio::test]
@@ -9699,7 +9689,12 @@ async fn layout_update_rejects_unaddressable_gaussian_without_mutating() {
             .expect("stored layout should resolve"),
         stored
     );
-    assert!(state.scene_transactions.drain().is_empty());
+    assert_eq!(
+        state
+            .layout_publication_test_executor()
+            .pending_layout_publications(),
+        0
+    );
 }
 
 #[tokio::test]
@@ -9892,11 +9887,8 @@ async fn persist_current_layouts_for_test(state: &Arc<AppState>) {
     let mut entries = layouts.values().collect::<Vec<_>>();
     entries.sort_by(|left, right| left.id.cmp(&right.id));
     let payload = serde_json::to_vec_pretty(&entries).expect("layout fixture should serialize");
-    std::fs::write(
-        state.domains.layout.test_fixture().catalog_path(),
-        payload,
-    )
-    .expect("layout fixture should write");
+    std::fs::write(state.domains.layout.test_fixture().catalog_path(), payload)
+        .expect("layout fixture should write");
 }
 
 fn test_state_with_temp_output_store() -> (Arc<AppState>, tempfile::TempDir) {

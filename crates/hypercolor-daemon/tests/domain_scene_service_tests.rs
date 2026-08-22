@@ -51,7 +51,6 @@ use hypercolor_daemon::domain::scene_tree::{
 };
 use hypercolor_daemon::domain::{DomainError, MutationContext};
 use hypercolor_daemon::scene_store::SceneStore;
-use hypercolor_daemon::scene_transactions::SceneTransaction;
 use hypercolor_daemon::zone_layout_preview::ZoneLayoutPreviewOwner;
 
 // ── Harness ──────────────────────────────────────────────────────────────
@@ -101,23 +100,11 @@ async fn await_with_layout_publication<T>(
             tokio::select! {
                 result = &mut workflow => break result,
                 () = tokio::time::sleep(Duration::from_millis(1)) => {
-                    for transaction in state.scene_transactions.drain() {
-                        match transaction {
-                            SceneTransaction::PrepareLayout(transaction) => {
-                                transaction
-                                    .accept_and_publish_for_test(
-                                        &state.spatial_engine,
-                                        &state.scene_manager,
-                                        || async {},
-                                    )
-                                    .await
-                                    .expect("layout publication should succeed");
-                            }
-                            SceneTransaction::SetScreenCaptureConfigured(_) => {
-                                panic!("layout publication should not reconfigure screen capture");
-                            }
-                        }
-                    }
+                    state
+                        .layout_publication_test_executor()
+                        .execute_next_layout_publication()
+                        .await
+                        .expect("layout publication should succeed");
                 }
             }
         }
@@ -881,23 +868,11 @@ async fn activation_applies_a_named_layout_without_reentering_its_guard() {
             tokio::select! {
                 result = &mut activation => break result,
                 () = tokio::time::sleep(Duration::from_millis(1)) => {
-                    for transaction in state.scene_transactions.drain() {
-                        match transaction {
-                            SceneTransaction::PrepareLayout(transaction) => {
-                                transaction
-                                    .accept_and_publish_for_test(
-                                        &state.spatial_engine,
-                                        &state.scene_manager,
-                                        || async {},
-                                    )
-                                    .await
-                                    .expect("layout publication should succeed");
-                            }
-                            SceneTransaction::SetScreenCaptureConfigured(_) => {
-                                panic!("activation should not reconfigure screen capture");
-                            }
-                        }
-                    }
+                    state
+                        .layout_publication_test_executor()
+                        .execute_next_layout_publication()
+                        .await
+                        .expect("layout publication should succeed");
                 }
             }
         }

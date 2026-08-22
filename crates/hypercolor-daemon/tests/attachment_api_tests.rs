@@ -13,7 +13,6 @@ use tower::ServiceExt;
 use hypercolor_core::config::ConfigManager;
 use hypercolor_daemon::api;
 use hypercolor_daemon::app_state::AppState;
-use hypercolor_daemon::scene_transactions::SceneTransaction;
 use hypercolor_driver_api::{BackendInfo, DeviceBackend};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceError, DeviceFamily,
@@ -336,23 +335,11 @@ async fn set_active_layout_for_device(state: &Arc<AppState>, device_id: DeviceId
             tokio::select! {
                 response = &mut preview => break response,
                 () = tokio::task::yield_now() => {
-                    for transaction in state.scene_transactions.drain() {
-                        match transaction {
-                            SceneTransaction::PrepareLayout(transaction) => {
-                                transaction
-                                    .accept_and_publish_for_test(
-                                        &state.spatial_engine,
-                                        &state.scene_manager,
-                                        || async {},
-                                    )
-                                    .await
-                                    .expect("attachment layout should publish");
-                            }
-                            SceneTransaction::SetScreenCaptureConfigured(_) => {
-                                panic!("attachment layout should not change capture state");
-                            }
-                        }
-                    }
+                    state
+                        .layout_publication_test_executor()
+                        .execute_next_layout_publication()
+                        .await
+                        .expect("attachment layout should publish");
                 }
             }
         }

@@ -59,7 +59,7 @@ use crate::playlist_runtime::PlaylistRuntimeState;
 use crate::preview_runtime::PreviewRuntime;
 use crate::render_thread::{ConfiguredFpsTier, InputPublicationDemandHandle};
 use crate::scene_store::SceneStore;
-use crate::scene_transactions::SceneTransactionQueue;
+use crate::scene_transactions::{LayoutPublicationTestExecutor, SceneTransactionQueue};
 use crate::session::OutputPowerState;
 use crate::simulators::{SimulatedDisplayBackend, SimulatedDisplayRuntime, SimulatedDisplayStore};
 use crate::zone_layout_preview::ZoneLayoutPreviewStore;
@@ -231,7 +231,7 @@ pub struct AppState {
     pub output_power_transition: Arc<Mutex<()>>,
 
     /// Frame-boundary scene changes mirrored into the render thread.
-    pub scene_transactions: SceneTransactionQueue,
+    pub(crate) scene_transactions: SceneTransactionQueue,
 
     /// Saved effect library storage (favorites, presets, playlists).
     pub library_store: Arc<dyn LibraryStore>,
@@ -730,6 +730,12 @@ impl AppState {
         self.server_session_id = Some(attestation.server_session_id.as_str().to_owned());
         self.security_state
             .install_macos_daemon_session(attestation);
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub fn layout_publication_test_executor(&self) -> LayoutPublicationTestExecutor {
+        self.domains.layout.layout_publication_test_executor()
     }
 }
 

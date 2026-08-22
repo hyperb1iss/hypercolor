@@ -35,7 +35,6 @@ use crate::discovery::handle_async_write_failures;
 use crate::performance::OutputFrameSourceKind;
 use crate::scene_transactions::{
     LayoutActivationDecision, LayoutTransactionRejection, SceneTransaction,
-    publish_prepared_layout_activation,
 };
 
 #[expect(
@@ -79,35 +78,36 @@ pub(crate) async fn service_scene_transactions(
                 } = prepared;
                 let completion = activation.clone();
                 let mut reconcile_error = None;
-                let publication = publish_prepared_layout_activation(
-                    &state.spatial_engine,
-                    &state.scene_manager,
-                    spatial_engine,
-                    &expected_layout,
-                    active_scene_id,
-                    source_active_render_groups_revision,
-                    |spatial_engine| {
-                        if let Some(prepared_resize) = prepared_resize {
-                            render.commit_canvas_resize(prepared_resize);
-                            state.canvas_dims.set(width, height);
-                            frame_loop.throttle.reset_for_canvas_resize();
-                            info!(width, height, "Applied live canvas resize");
-                        } else if let Some(sampling_preparation) = sampling_preparation {
-                            render.commit_spatial_sampling_plan(sampling_preparation);
-                        }
-                        render
-                            .sparkleflinger
-                            .apply_projected_scene_resources(prepared_projected_scene);
-                        if let Err(error) = render
-                            .render_group_runtime
-                            .commit_reconcile(prepared_groups)
-                        {
-                            reconcile_error = Some(error.to_string());
-                        }
-                        scene.render_state.replace_spatial_engine(spatial_engine);
-                    },
-                )
-                .await;
+                let publication = state
+                    .scene_manager
+                    .publish_layout_activation(
+                        &state.spatial_engine,
+                        spatial_engine,
+                        &expected_layout,
+                        active_scene_id,
+                        source_active_render_groups_revision,
+                        |spatial_engine| {
+                            if let Some(prepared_resize) = prepared_resize {
+                                render.commit_canvas_resize(prepared_resize);
+                                state.canvas_dims.set(width, height);
+                                frame_loop.throttle.reset_for_canvas_resize();
+                                info!(width, height, "Applied live canvas resize");
+                            } else if let Some(sampling_preparation) = sampling_preparation {
+                                render.commit_spatial_sampling_plan(sampling_preparation);
+                            }
+                            render
+                                .sparkleflinger
+                                .apply_projected_scene_resources(prepared_projected_scene);
+                            if let Err(error) = render
+                                .render_group_runtime
+                                .commit_reconcile(prepared_groups)
+                            {
+                                reconcile_error = Some(error.to_string());
+                            }
+                            scene.render_state.replace_spatial_engine(spatial_engine);
+                        },
+                    )
+                    .await;
                 let publication = publication.and_then(|()| {
                     reconcile_error.map_or(Ok(()), |message| {
                         Err(LayoutTransactionRejection::PreparationFailed { message })

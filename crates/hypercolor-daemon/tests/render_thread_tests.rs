@@ -53,6 +53,7 @@ use hypercolor_types::spatial::{
     StripDirection,
 };
 
+use hypercolor_daemon::SceneTransactionQueue;
 use hypercolor_daemon::discovery::DiscoveryRuntime;
 use hypercolor_daemon::logical_devices::LogicalDevice;
 use hypercolor_daemon::performance::PerformanceTracker;
@@ -61,7 +62,6 @@ use hypercolor_daemon::render_thread::{
     CanvasDims, InputPublicationConsumer, InputPublicationDemand,
     InputPublicationDemandRegistration, RenderThread, RenderThreadState,
 };
-use hypercolor_daemon::scene_transactions::SceneTransactionQueue;
 use hypercolor_daemon::session::OutputPowerState;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────

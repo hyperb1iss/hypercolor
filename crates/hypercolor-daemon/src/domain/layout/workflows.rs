@@ -10,7 +10,6 @@ use hypercolor_types::identity::LayoutId;
 use hypercolor_types::spatial::{SamplingMode, SpatialLayout};
 
 use crate::domain::DomainError;
-use crate::scene_transactions::{LayoutUpdateError, PreparedLayoutUpdate};
 
 use super::{
     LayoutContext, LayoutMutationResult, LayoutMutationTestOperation, LayoutMutationTestPoint,
@@ -337,11 +336,8 @@ impl LayoutContext {
         .await;
         let guard = self.acquire_update_guard().await;
         let reference = layout.id.clone();
-        let prepared = PreparedLayoutUpdate::try_new(layout)
-            .map_err(LayoutUpdateError::from)
-            .map_err(layout_update_domain_error)?;
         self.publication
-            .apply_prepared_under_guard(&guard, prepared)
+            .apply_prepared_under_guard(&guard, layout)
             .await
             .map_err(layout_update_domain_error)?;
         drop(guard);
@@ -496,11 +492,8 @@ impl LayoutContext {
         let mut updated = current;
         updated.canvas_width = width;
         updated.canvas_height = height;
-        let prepared = PreparedLayoutUpdate::try_new(updated.clone())
-            .map_err(LayoutUpdateError::from)
-            .map_err(layout_update_domain_error)?;
         self.publication
-            .apply_prepared_under_guard(&guard, prepared)
+            .apply_prepared_under_guard(&guard, updated.clone())
             .await
             .map_err(layout_update_domain_error)?;
 
@@ -567,15 +560,11 @@ impl LayoutContext {
         )
         .await;
         let active_layout_error = if let Some(layout) = active_layout {
-            match PreparedLayoutUpdate::try_new(layout) {
-                Ok(prepared) => self
-                    .publication
-                    .apply_prepared_under_guard(&guard, prepared)
-                    .await
-                    .err()
-                    .map(layout_update_domain_error),
-                Err(error) => Some(layout_update_domain_error(error.into())),
-            }
+            self.publication
+                .apply_prepared_under_guard(&guard, layout)
+                .await
+                .err()
+                .map(layout_update_domain_error)
         } else {
             None
         };

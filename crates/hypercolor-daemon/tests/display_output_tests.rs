@@ -25,6 +25,7 @@ use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
 };
 
+use hypercolor_daemon::SceneTransactionQueue;
 use hypercolor_daemon::display_frames::{DisplayFrameRuntime, DisplayFrameSnapshot};
 use hypercolor_daemon::display_output::{DisplayOutputState, DisplayOutputThread};
 use hypercolor_daemon::domain::layout::LayoutContext;
@@ -32,7 +33,6 @@ use hypercolor_daemon::domain::scene::SceneService;
 use hypercolor_daemon::domain::spatial::SpatialService;
 use hypercolor_daemon::logical_devices::{LogicalDevice, LogicalDeviceKind};
 use hypercolor_daemon::preview_runtime::PreviewRuntime;
-use hypercolor_daemon::scene_transactions::{SceneTransaction, SceneTransactionQueue};
 use hypercolor_daemon::session::OutputPowerState;
 use hypercolor_daemon::simulators::SIMULATED_DISPLAY_BACKEND_ID;
 
@@ -623,19 +623,16 @@ async fn publish_spatial_layout(spatial: &SpatialService, layout: SpatialLayout)
         transactions.clone(),
         state_dir.path().join("runtime-state.json"),
     );
+    let executor = context.layout_publication_test_executor();
     let publication = tokio::spawn(async move { context.test_workflows().publish(layout).await });
 
     loop {
-        if let Some(transaction) = transactions.drain().into_iter().next() {
-            match transaction {
-                SceneTransaction::PrepareLayout(transaction) => transaction
-                    .accept_and_publish_for_test(spatial, &scenes, || async {})
-                    .await
-                    .expect("layout publication should succeed"),
-                SceneTransaction::SetScreenCaptureConfigured(_) => {
-                    panic!("layout publication should not change screen capture")
-                }
-            }
+        if executor
+            .execute_next_layout_publication()
+            .await
+            .expect("layout publication should succeed")
+            .is_some()
+        {
             break;
         }
         tokio::task::yield_now().await;

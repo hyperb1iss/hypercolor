@@ -10,7 +10,6 @@ use hypercolor_daemon::api;
 use hypercolor_daemon::app_state::AppState;
 use hypercolor_daemon::display_frames::DisplayFrameSnapshot;
 use hypercolor_daemon::runtime_state;
-use hypercolor_daemon::scene_transactions::SceneTransaction;
 use hypercolor_daemon::simulators::{
     SimulatedDisplayConfig, SimulatedDisplayStore, activate_simulated_displays,
     default_layout_device_id, logical_device_ids_for_simulator,
@@ -34,29 +33,13 @@ impl Drop for LayoutPublisher {
 }
 
 fn spawn_layout_publisher(state: &Arc<AppState>) -> LayoutPublisher {
-    let queue = state.scene_transactions.clone();
-    let spatial_engine = state.spatial_engine.clone();
-    let scene_manager = state.scene_manager.clone();
+    let executor = state.layout_publication_test_executor();
     LayoutPublisher(tokio::spawn(async move {
-        let _consumer = queue.consumer();
         loop {
-            for transaction in queue.drain() {
-                match transaction {
-                    SceneTransaction::PrepareLayout(transaction) => {
-                        transaction
-                            .accept_and_publish_for_test(
-                                &spatial_engine,
-                                &scene_manager,
-                                || async {},
-                            )
-                            .await
-                            .expect("layout publication should succeed");
-                    }
-                    transaction @ SceneTransaction::SetScreenCaptureConfigured(_) => queue
-                        .push(transaction)
-                        .expect("test transaction queue should remain open"),
-                }
-            }
+            executor
+                .execute_next_layout_publication()
+                .await
+                .expect("layout publication should succeed");
             tokio::time::sleep(std::time::Duration::from_millis(1)).await;
         }
     }))

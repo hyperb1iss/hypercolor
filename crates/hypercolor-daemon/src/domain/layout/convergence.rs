@@ -6,7 +6,6 @@ use hypercolor_types::spatial::{EdgeBehavior, Output, SamplingMode, SpatialLayou
 
 use crate::discovery::DiscoveryRuntime;
 use crate::logical_devices::LogicalDevice;
-use crate::scene_transactions::PreparedLayoutUpdate;
 
 use super::auto_layout::{
     append_auto_layout_zones_for_device, reconcile_auto_layout_zones_for_device,
@@ -249,16 +248,9 @@ impl LayoutConvergence {
             return;
         }
 
-        let prepared = match PreparedLayoutUpdate::try_new(layout.clone()) {
-            Ok(prepared) => prepared,
-            Err(error) => {
-                tracing::warn!(%error, "rejected auto-layout repair before persistence");
-                return;
-            }
-        };
         if let Err(error) = self
             .publication
-            .apply_prepared_under_guard(&guard, prepared)
+            .apply_prepared_under_guard(&guard, layout.clone())
             .await
         {
             tracing::warn!(%error, "rejected auto-layout repair before persistence");
@@ -306,15 +298,12 @@ impl LayoutConvergence {
             layouts.clone()
         };
         let layout_store_rollback = self.catalog.save_snapshot(rollback_snapshot).await.err();
-        let renderer_rollback = match PreparedLayoutUpdate::try_new(rollback_layout) {
-            Ok(prepared) => self
-                .publication
-                .apply_prepared_under_guard(guard, prepared)
-                .await
-                .err()
-                .map(|error| error.to_string()),
-            Err(error) => Some(error.to_string()),
-        };
+        let renderer_rollback = self
+            .publication
+            .apply_prepared_under_guard(guard, rollback_layout)
+            .await
+            .err()
+            .map(|error| error.to_string());
         tracing::warn!(
             path = %self.catalog.path().display(),
             %error,

@@ -219,10 +219,6 @@ fn layout_transport_uses_the_layout_domain_authority() {
     assert!(!auto_layout.contains("\npub fn append_auto_layout_zones_for_device"));
     assert!(!auto_layout.contains("\npub fn reconcile_auto_layout_zones_for_device"));
 
-    let scene_transactions = source("scene_transactions.rs");
-    assert!(!scene_transactions.contains("pub async fn apply_layout_update"));
-    assert!(!scene_transactions.contains("pub async fn apply_prepared_layout_update_under_guard"));
-
     let adapter = source("api/layouts.rs");
     for bypass in [
         "state.layouts",
@@ -241,4 +237,69 @@ fn layout_transport_uses_the_layout_domain_authority() {
 
     let websocket = source("api/ws/session.rs");
     assert!(!websocket.contains("crate::api::layouts"));
+}
+
+#[test]
+fn layout_mutation_capabilities_have_named_visibility_boundaries() {
+    let sources = daemon_sources();
+    let source = |suffix: &str| {
+        sources
+            .iter()
+            .find(|(path, _)| path.ends_with(suffix))
+            .map(|(_, source)| source.as_str())
+            .unwrap_or_else(|| panic!("missing daemon source {suffix}"))
+    };
+
+    let library = source("lib.rs");
+    assert!(library.contains("pub(crate) mod scene_transactions;"));
+    assert!(!library.contains("pub mod scene_transactions;"));
+    assert!(library.contains("LayoutPublicationTestExecutor"));
+    assert!(library.contains("SceneTransactionQueue"));
+
+    let layout_store = source("layout_store.rs");
+    assert!(layout_store.contains("pub(crate) fn save("));
+    assert!(!layout_store.contains("\npub fn save("));
+    let exclusions = source("layout_auto_exclusions.rs");
+    assert!(!exclusions.contains("fn save("));
+    assert!(exclusions.contains("pub(crate) fn serialize("));
+
+    let app_state = source("app_state.rs");
+    assert!(app_state.contains("pub(crate) scene_transactions: SceneTransactionQueue"));
+    assert!(!app_state.contains("pub scene_transactions: SceneTransactionQueue"));
+    assert!(app_state.contains("pub fn layout_publication_test_executor("));
+
+    let transactions = source("scene_transactions.rs");
+    assert!(transactions.contains("pub struct LayoutPublicationTestExecutor"));
+    assert!(
+        transactions.contains(
+            "impl LayoutPublicationTestExecutor {\n    #[must_use]\n    pub(crate) fn new("
+        )
+    );
+    assert!(transactions.contains("pub(crate) struct LayoutTransactionAuthority"));
+    assert!(transactions.contains("\nstruct PreparedLayoutUpdate"));
+    assert!(!transactions.contains("pub(crate) struct PreparedLayoutUpdate"));
+    assert!(transactions.contains("pub(crate) fn drain(&self)"));
+    assert!(!transactions.contains("pub fn drain(&self)"));
+    assert!(transactions.contains("pub(crate) fn accept(self)"));
+    assert!(!transactions.contains("\npub fn accept(self)"));
+    for removed_bypass in [
+        "accept_and_commit_for_test",
+        "accept_and_publish_for_test",
+        "apply_prepared_layout_update_under_guard",
+        "publish_prepared_layout_activation",
+    ] {
+        assert!(
+            !transactions.contains(removed_bypass),
+            "scene transaction bypass remains: {removed_bypass}"
+        );
+    }
+    assert!(transactions.contains("pub async fn execute_next_layout_publication("));
+    assert!(
+        transactions.contains(
+            "#[cfg(feature = \"persistence-test-hooks\")]\n    pub async fn execute_next_layout_publication_with_hook"
+        )
+    );
+    assert!(transactions.contains(
+        "#[cfg(feature = \"persistence-test-hooks\")]\n    pub fn reject_next_layout_publication"
+    ));
 }
