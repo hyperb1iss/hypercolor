@@ -1,3 +1,5 @@
+//! Transport-independent input health projection.
+
 use std::time::{Duration, Instant};
 
 use hypercolor_core::input::{
@@ -36,7 +38,7 @@ pub(crate) fn input_status_snapshot(state: &AppState) -> InputStatus {
     input_status_snapshot_with_privacy(state, false)
 }
 
-pub(super) fn input_status_snapshot_with_privacy(
+pub(crate) fn input_status_snapshot_with_privacy(
     state: &AppState,
     include_private_selection_ids: bool,
 ) -> InputStatus {
@@ -132,7 +134,7 @@ pub(crate) fn actionable_input_diagnostics(input: &InputStatus) -> Vec<InputDiag
         .collect()
 }
 
-pub(super) fn input_source_status(
+pub(crate) fn input_source_status(
     source: &SourceStatus,
     now: Instant,
     include_private_selection_ids: bool,
@@ -405,7 +407,7 @@ const fn macos_daemon_owner(owner: MacosDaemonOwner) -> MacosCapabilityOwner {
     }
 }
 
-pub(super) fn macos_daemon_ownership(snapshot: &MacosOwnerSnapshot) -> MacosDaemonOwnershipStatus {
+pub(crate) fn macos_daemon_ownership(snapshot: &MacosOwnerSnapshot) -> MacosDaemonOwnershipStatus {
     MacosDaemonOwnershipStatus {
         active_owner: macos_daemon_owner(snapshot.active_owner),
         owner_epoch: snapshot.owner_epoch,
@@ -465,7 +467,7 @@ const fn macos_daemon_handover_phase(phase: MacosHandoverPhase) -> MacosDaemonHa
     }
 }
 
-pub(super) fn macos_selection_state(selection: &CoreMacosSelectionState) -> MacosSelectionState {
+pub(crate) fn macos_selection_state(selection: &CoreMacosSelectionState) -> MacosSelectionState {
     match selection {
         CoreMacosSelectionState::None => MacosSelectionState::None,
         CoreMacosSelectionState::Display { source_id } => MacosSelectionState::Display {
@@ -479,7 +481,7 @@ pub(super) fn macos_selection_state(selection: &CoreMacosSelectionState) -> Maco
     }
 }
 
-pub(super) fn macos_tahoe_selection_capabilities(
+pub(crate) fn macos_tahoe_selection_capabilities(
     capabilities: &CoreMacosTahoeSelectionCapabilities,
     include_private_selection_ids: bool,
 ) -> MacosTahoeSelectionCapabilities {

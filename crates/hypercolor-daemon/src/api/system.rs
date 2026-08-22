@@ -28,20 +28,21 @@ use crate::domain::output::brightness_percent;
 use hypercolor_core::config::ConfigManager;
 
 mod audio;
-mod input;
 mod metrics;
 
+use crate::domain::input_status::{input_status_snapshot_with_privacy, macos_daemon_ownership};
 pub(crate) use audio::capture_input_available;
 pub use audio::{list_audio_devices, should_offer_named_audio_device};
-pub(crate) use input::{actionable_input_diagnostics, input_status_snapshot};
-use input::{input_status_snapshot_with_privacy, macos_daemon_ownership};
 use metrics::{
     effect_health_status, latest_frame_status, paced_fps, preview_runtime_status,
     render_acceleration_status, round_1, round_2,
 };
 
 #[cfg(test)]
-use input::{input_source_status, macos_selection_state, macos_tahoe_selection_capabilities};
+use crate::domain::input_status::{
+    input_source_status, input_status_snapshot, macos_selection_state,
+    macos_tahoe_selection_capabilities,
+};
 #[cfg(test)]
 mod tests;
 

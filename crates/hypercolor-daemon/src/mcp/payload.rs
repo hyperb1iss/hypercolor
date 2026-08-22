@@ -8,8 +8,8 @@ use super::results::{
 };
 use super::tools::{brightness_percent, render_capacity_fps};
 use crate::api::effects::active_effect_metadata;
-use crate::api::system::input_status_snapshot;
 use crate::app_state::AppState;
+use crate::domain::input_status::input_status_snapshot;
 
 #[derive(Debug, Default)]
 pub(crate) struct DeviceInventoryFilter<'a> {
