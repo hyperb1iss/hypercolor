@@ -10,16 +10,21 @@
 mod identity;
 
 pub(crate) use identity::{
-    EffectIdMigrations, reload_registry_file, remap_effect_id, remap_zones, rescan_registry,
+    EffectIdMigrations, install_registry_file, reload_registry_file, remap_effect_id, remap_zones,
+    rescan_registry,
 };
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::fs;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use hypercolor_core::effect::{EffectEntry, EffectRegistry, RescanReport};
 use strum::VariantNames;
+use tempfile::NamedTempFile;
 
 use hypercolor_types::api::scene::SideEffectOutcome;
 use hypercolor_types::effect::{
@@ -58,6 +63,8 @@ pub struct EffectContext {
     #[cfg(test)]
     identity_publication_test_barrier:
         Arc<std::sync::Mutex<Option<Arc<EffectResolutionTestBarrier>>>>,
+    #[cfg(test)]
+    install_test_barrier: Arc<std::sync::Mutex<Option<Arc<EffectResolutionTestBarrier>>>>,
 }
 
 #[cfg(test)]
@@ -67,6 +74,7 @@ pub(crate) struct EffectResolutionTestBarrier {
 }
 
 pub(crate) struct EffectRegistryUpdate<'a> {
+    pending_file: Option<PendingEffectFile>,
     update_guard: OwnedRwLockWriteGuard<()>,
     registry: &'a RwLock<EffectRegistry>,
     base_generation: u64,
@@ -75,10 +83,29 @@ pub(crate) struct EffectRegistryUpdate<'a> {
 }
 
 pub(crate) struct EffectRegistryPublication<'a> {
+    pending_file: Option<PendingEffectFile>,
     update_guard: OwnedRwLockWriteGuard<()>,
     registry: RwLockWriteGuard<'a, EffectRegistry>,
     candidate: EffectRegistry,
     report: RescanReport,
+}
+
+#[derive(Debug)]
+pub(crate) struct InstalledEffect {
+    pub(crate) metadata: EffectMetadata,
+    pub(crate) source_path: PathBuf,
+    pub(crate) replaced_existing: bool,
+    pub(crate) report: RescanReport,
+}
+
+struct PendingEffectFile {
+    path: PathBuf,
+    rollback: Option<EffectFileRollback>,
+}
+
+enum EffectFileRollback {
+    Remove,
+    Restore(Vec<u8>),
 }
 
 /// Effect metadata qualified by the catalog generation that resolved it.
@@ -125,6 +152,8 @@ impl EffectContext {
             resolution_test_barrier: Arc::new(std::sync::Mutex::new(None)),
             #[cfg(test)]
             identity_publication_test_barrier: Arc::new(std::sync::Mutex::new(None)),
+            #[cfg(test)]
+            install_test_barrier: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -323,6 +352,7 @@ impl EffectContext {
         let mut report = candidate.rescan();
         retire_legacy_registry_entries(&mut candidate, &mut report);
         EffectRegistryUpdate {
+            pending_file: None,
             update_guard: gate,
             registry: self.registry.as_ref(),
             base_generation,
@@ -340,12 +370,72 @@ impl EffectContext {
         let mut report = candidate.reload_single(path);
         retire_legacy_registry_entries(&mut candidate, &mut report);
         EffectRegistryUpdate {
+            pending_file: None,
             update_guard: gate,
             registry: self.registry.as_ref(),
             base_generation,
             candidate,
             report,
         }
+    }
+
+    pub(crate) async fn prepare_install(
+        &self,
+        path: &Path,
+        raw_html: &str,
+    ) -> Result<(EffectRegistryUpdate<'_>, EffectMetadata, bool), DomainError> {
+        let gate = Arc::clone(&self.update_gate).write_owned().await;
+        let pending_file =
+            PendingEffectFile::replace(path, raw_html.as_bytes()).map_err(DomainError::Internal)?;
+        #[cfg(test)]
+        self.pause_after_install_write_for_test().await;
+
+        let modified = path
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .unwrap_or_else(|_| SystemTime::now());
+        let registry = self.registry.read().await;
+        let base_generation = registry.generation();
+        let mut candidate = registry.clone();
+        drop(registry);
+        let (mut report, effect_id) =
+            candidate
+                .reload_source(path, raw_html, modified)
+                .map_err(|error| {
+                    DomainError::Internal(anyhow::anyhow!(
+                        "Failed to register uploaded effect '{}': {}",
+                        error.path.display(),
+                        error.message
+                    ))
+                })?;
+        let Some(effect_id) = effect_id else {
+            return Err(DomainError::validation(
+                "Uploaded effect is not supported by this daemon build.",
+            ));
+        };
+        retire_legacy_registry_entries(&mut candidate, &mut report);
+        let metadata = candidate
+            .get(&effect_id)
+            .map(|entry| entry.metadata.clone())
+            .ok_or_else(|| {
+                DomainError::Internal(anyhow::anyhow!(
+                    "installed effect was absent from its candidate"
+                ))
+            })?;
+        let replaced_existing = pending_file.replaced_existing();
+
+        Ok((
+            EffectRegistryUpdate {
+                pending_file: Some(pending_file),
+                update_guard: gate,
+                registry: self.registry.as_ref(),
+                base_generation,
+                candidate,
+                report,
+            },
+            metadata,
+            replaced_existing,
+        ))
     }
 
     /// Register one already canonical entry and report whether it replaced one.
@@ -388,6 +478,19 @@ impl EffectContext {
     }
 
     #[cfg(test)]
+    pub(crate) fn pause_next_install_write_for_test(&self) -> Arc<EffectResolutionTestBarrier> {
+        let barrier = Arc::new(EffectResolutionTestBarrier {
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+        });
+        *self
+            .install_test_barrier
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&barrier));
+        barrier
+    }
+
+    #[cfg(test)]
     async fn pause_after_resolution_for_test(&self) {
         let barrier = self
             .resolution_test_barrier
@@ -412,6 +515,99 @@ impl EffectContext {
             barrier.release.notified().await;
         }
     }
+
+    #[cfg(test)]
+    async fn pause_after_install_write_for_test(&self) {
+        let barrier = self
+            .install_test_barrier
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(barrier) = barrier {
+            barrier.entered.notify_one();
+            barrier.release.notified().await;
+        }
+    }
+}
+
+impl PendingEffectFile {
+    fn replace(path: &Path, contents: &[u8]) -> anyhow::Result<Self> {
+        let parent = path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("effect install path has no parent"))?;
+        fs::create_dir_all(parent)?;
+        let rollback = match fs::read(path) {
+            Ok(contents) => EffectFileRollback::Restore(contents),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                EffectFileRollback::Remove
+            }
+            Err(error) => return Err(error.into()),
+        };
+        replace_file_atomically(path, contents)?;
+        Ok(Self {
+            path: path.to_path_buf(),
+            rollback: Some(rollback),
+        })
+    }
+
+    fn replaced_existing(&self) -> bool {
+        matches!(self.rollback.as_ref(), Some(EffectFileRollback::Restore(_)))
+    }
+
+    fn commit(mut self) {
+        self.rollback = None;
+    }
+
+    fn rollback(&mut self) -> anyhow::Result<()> {
+        let Some(rollback) = self.rollback.take() else {
+            return Ok(());
+        };
+        match rollback {
+            EffectFileRollback::Restore(contents) => replace_file_atomically(&self.path, &contents),
+            EffectFileRollback::Remove => match fs::remove_file(&self.path) {
+                Ok(()) => sync_parent_directory(&self.path),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(error.into()),
+            },
+        }
+    }
+}
+
+impl Drop for PendingEffectFile {
+    fn drop(&mut self) {
+        if let Err(error) = self.rollback() {
+            tracing::error!(
+                path = %self.path.display(),
+                %error,
+                "Failed to roll back an unpublished effect installation"
+            );
+        }
+    }
+}
+
+fn replace_file_atomically(path: &Path, contents: &[u8]) -> anyhow::Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("effect install path has no parent"))?;
+    let mut temporary = NamedTempFile::new_in(parent)?;
+    temporary.write_all(contents)?;
+    temporary.as_file_mut().sync_all()?;
+    temporary.persist(path).map_err(|error| error.error)?;
+    sync_parent_directory(path)
+}
+
+#[cfg(unix)]
+fn sync_parent_directory(path: &Path) -> anyhow::Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("effect install path has no parent"))?;
+    fs::File::open(parent)?.sync_all()?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn sync_parent_directory(_path: &Path) -> anyhow::Result<()> {
+    Ok(())
 }
 
 fn retire_legacy_registry_entries(registry: &mut EffectRegistry, report: &mut RescanReport) {
@@ -448,6 +644,7 @@ impl<'a> EffectRegistryUpdate<'a> {
             ));
         }
         Ok(EffectRegistryPublication {
+            pending_file: self.pending_file,
             update_guard: self.update_guard,
             registry,
             candidate: self.candidate,
@@ -459,6 +656,9 @@ impl<'a> EffectRegistryUpdate<'a> {
 impl EffectRegistryPublication<'_> {
     pub(crate) fn publish(mut self) -> RescanReport {
         *self.registry = self.candidate;
+        if let Some(pending_file) = self.pending_file.take() {
+            pending_file.commit();
+        }
         drop(self.update_guard);
         self.report
     }

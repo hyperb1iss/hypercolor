@@ -9,7 +9,7 @@ use hypercolor_types::library::{EffectPlaylist, PlaylistItemTarget};
 use hypercolor_types::scene::Zone;
 use tokio::sync::{OwnedMutexGuard, OwnedRwLockWriteGuard};
 
-use super::{EffectRegistryPublication, EffectRegistryUpdate};
+use super::{EffectRegistryPublication, EffectRegistryUpdate, InstalledEffect};
 use crate::app_state::AppState;
 use crate::display_preferences::{
     AdmittedDisplayPreferencesEffectIdMigration, DisplayPreferencesEffectIdMigrationPublication,
@@ -104,6 +104,30 @@ pub(crate) async fn reload_registry_file(
 ) -> Result<RescanReport, DomainError> {
     let update = state.domains.effects.prepare_reload(path).await;
     apply_registry_update(state, update).await
+}
+
+pub(crate) async fn install_registry_file(
+    state: &AppState,
+    path: &Path,
+    raw_html: &str,
+) -> Result<InstalledEffect, DomainError> {
+    let (update, metadata, replaced_existing) = state
+        .domains
+        .effects
+        .prepare_install(path, raw_html)
+        .await?;
+    let source_path = match &metadata.source {
+        hypercolor_types::effect::EffectSource::Html { path } => path.clone(),
+        hypercolor_types::effect::EffectSource::Native { .. }
+        | hypercolor_types::effect::EffectSource::Shader { .. } => path.to_path_buf(),
+    };
+    let report = apply_registry_update(state, update).await?;
+    Ok(InstalledEffect {
+        metadata,
+        source_path,
+        replaced_existing,
+        report,
+    })
 }
 
 async fn apply_registry_update(
@@ -408,7 +432,7 @@ mod tests {
     };
     use tempfile::TempDir;
 
-    use super::{reload_registry_file, remap_zones, rescan_registry};
+    use super::{install_registry_file, reload_registry_file, remap_zones, rescan_registry};
     use crate::app_state::AppState;
     use crate::display_preferences::DisplayPreference;
     use crate::domain::DomainError;
@@ -448,6 +472,12 @@ mod tests {
             ),
         )
         .expect("effect should be written");
+    }
+
+    fn installable_effect(title: &str, marker: &str) -> String {
+        format!(
+            "<!DOCTYPE html><html><head><title>{title}</title></head><body><canvas id=\"exCanvas\"></canvas><script>{marker}</script></body></html>"
+        )
     }
 
     async fn late_migration_fixture(temp: &TempDir) -> LateMigrationFixture {
@@ -712,6 +742,105 @@ mod tests {
         assert_eq!(migrated, 1);
         assert_eq!(zone.layers[0].id, layer_id);
         assert_eq!(zone.effect_ids().collect::<Vec<_>>(), vec![canonical_id]);
+    }
+
+    #[tokio::test]
+    async fn same_stem_installs_and_watcher_reload_publish_whole_file_versions() {
+        let temp = TempDir::new().expect("tempdir");
+        let state = Arc::new(AppState::new_with_data_dir(temp.path().join("state")));
+        let effect_path = temp.path().join("state/effects/user/shared.html");
+        let first_html = installable_effect("First Version", "const version = 'first';");
+        let second_html = installable_effect("Second Version", "const version = 'second';");
+        let barrier = state.domains.effects.pause_next_install_write_for_test();
+
+        let first_install = {
+            let state = Arc::clone(&state);
+            let effect_path = effect_path.clone();
+            tokio::spawn(async move {
+                install_registry_file(state.as_ref(), &effect_path, &first_html).await
+            })
+        };
+        barrier.wait_until_entered().await;
+
+        let watcher_reload = {
+            let state = Arc::clone(&state);
+            let effect_path = effect_path.clone();
+            tokio::spawn(async move { reload_registry_file(state.as_ref(), &effect_path).await })
+        };
+        tokio::task::yield_now().await;
+        let second_install = {
+            let state = Arc::clone(&state);
+            let effect_path = effect_path.clone();
+            tokio::spawn(async move {
+                install_registry_file(state.as_ref(), &effect_path, &second_html).await
+            })
+        };
+        tokio::task::yield_now().await;
+
+        assert!(!watcher_reload.is_finished());
+        assert!(!second_install.is_finished());
+        barrier.release();
+
+        let first = first_install
+            .await
+            .expect("first install task should finish")
+            .expect("first install should publish");
+        assert_eq!(first.metadata.name, "First Version");
+        watcher_reload
+            .await
+            .expect("watcher task should finish")
+            .expect("watcher should reload the first publication");
+        let second = second_install
+            .await
+            .expect("second install task should finish")
+            .expect("second install should publish");
+        assert_eq!(second.metadata.name, "Second Version");
+        assert_eq!(second.metadata.id, first.metadata.id);
+
+        let written = std::fs::read_to_string(&effect_path).expect("installed file should read");
+        assert!(written.contains("const version = 'second';"));
+        let registry = state.domains.effects.registry_handle();
+        let registry = registry.read().await;
+        assert_eq!(
+            registry
+                .get(&second.metadata.id)
+                .map(|entry| entry.metadata.name.as_str()),
+            Some("Second Version")
+        );
+    }
+
+    #[tokio::test]
+    async fn rejected_install_restores_the_previous_file_and_publication() {
+        let temp = TempDir::new().expect("tempdir");
+        let state = AppState::new_with_data_dir(temp.path().join("state"));
+        let effect_path = temp.path().join("state/effects/user/shared.html");
+        let original_html = installable_effect("Original", "const version = 'original';");
+        let original = install_registry_file(&state, &effect_path, &original_html)
+            .await
+            .expect("original install should publish");
+        let invalid_html = r#"<!DOCTYPE html>
+<html><head><title>Broken</title>
+<meta preset="One" preset-id="duplicate" preset-controls='{}' />
+<meta preset="Two" preset-id="duplicate" preset-controls='{}' />
+</head><body><canvas id="exCanvas"></canvas><script>1</script></body></html>"#;
+
+        let error = install_registry_file(&state, &effect_path, invalid_html)
+            .await
+            .expect_err("duplicate preset ids should reject the install");
+
+        assert!(error.to_string().contains("duplicate bundled preset id"));
+        assert_eq!(
+            std::fs::read_to_string(&effect_path).expect("restored file should read"),
+            original_html
+        );
+        let registry = state.domains.effects.registry_handle();
+        let registry = registry.read().await;
+        assert_eq!(
+            registry
+                .get(&original.metadata.id)
+                .map(|entry| entry.metadata.name.as_str()),
+            Some("Original")
+        );
     }
 
     #[tokio::test]

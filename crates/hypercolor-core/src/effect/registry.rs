@@ -309,6 +309,30 @@ impl EffectRegistry {
                 return RescanReport::default();
             }
         };
+        self.apply_loaded_file(path, loaded)
+    }
+
+    /// Replace one file-backed effect from an already captured source version.
+    ///
+    /// The caller supplies the source bytes and timestamp together, allowing a
+    /// higher-level filesystem transaction to publish exactly the version it
+    /// parsed without reading a concurrently replaced path.
+    pub fn reload_source(
+        &mut self,
+        path: &Path,
+        raw_html: &str,
+        modified: SystemTime,
+    ) -> Result<(RescanReport, Option<EffectId>), super::HtmlDiscoveryError> {
+        let loaded = super::loader::inspect_html_effect_source(path, raw_html, modified)?;
+        let effect_id = loaded.entry.as_ref().map(|entry| entry.metadata.id);
+        Ok((self.apply_loaded_file(path, loaded), effect_id))
+    }
+
+    fn apply_loaded_file(
+        &mut self,
+        path: &Path,
+        loaded: super::loader::HtmlEffectFile,
+    ) -> RescanReport {
         let legacy_effect_ids = loaded.legacy_effect_ids.into_iter().collect();
         let Some(entry) = loaded.entry else {
             let removed_count = self.remove_by_source_path(path);

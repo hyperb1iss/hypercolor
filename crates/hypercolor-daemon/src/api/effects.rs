@@ -15,7 +15,7 @@ use tokio::fs;
 use tracing::{info, warn};
 
 use hypercolor_core::effect::{
-    HtmlControlKind, ParsedHtmlEffectMetadata, load_html_effect_file, parse_html_effect_metadata,
+    HtmlControlKind, ParsedHtmlEffectMetadata, parse_html_effect_metadata,
 };
 use hypercolor_types::api::scene::{
     ApplyEffectRequest as SceneApplyEffectRequest, ApplyEffectResponse as SceneApplyEffectResponse,
@@ -473,14 +473,6 @@ pub async fn install_effect(
     };
 
     let install_dir = user_effects_install_dir(state.as_ref());
-    if let Err(error) = fs::create_dir_all(&install_dir).await {
-        return DomainError::Internal(anyhow::anyhow!(
-            "Failed to create user effects directory '{}': {error}",
-            install_dir.display()
-        ))
-        .into_response();
-    }
-
     let preferred_stem = file_name
         .as_deref()
         .and_then(uploaded_file_stem)
@@ -492,63 +484,35 @@ pub async fn install_effect(
     // so existing assignments follow the update instead of a `-2` clone
     // appearing beside the original.
     let installed_path = install_dir.join(format!("{preferred_stem}.html"));
-    let replacing = installed_path.exists();
-
-    if let Err(error) = fs::write(&installed_path, html.as_bytes()).await {
-        return DomainError::Internal(anyhow::anyhow!(
-            "Failed to write uploaded effect to '{}': {error}",
-            installed_path.display()
-        ))
-        .into_response();
-    }
-
-    let entry = match load_html_effect_file(&installed_path) {
-        Ok(Some(entry)) => entry,
-        Ok(None) => {
-            let _ = fs::remove_file(&installed_path).await;
-            return DomainError::validation(
-                "Uploaded effect is not supported by this daemon build.",
-            )
-            .into_response();
-        }
-        Err(error) => {
-            let _ = fs::remove_file(&installed_path).await;
-            return DomainError::Internal(anyhow::anyhow!(
-                "Failed to register uploaded effect '{}': {}",
-                error.path.display(),
-                error.message
-            ))
-            .into_response();
-        }
-    };
-
-    let report =
-        match crate::domain::effect::reload_registry_file(state.as_ref(), &installed_path).await {
-            Ok(report) => report,
+    let installed =
+        match crate::domain::effect::install_registry_file(state.as_ref(), &installed_path, &html)
+            .await
+        {
+            Ok(installed) => installed,
             Err(error) => return error.into_response(),
         };
 
     state
         .event_bus
         .publish(HypercolorEvent::EffectRegistryUpdated {
-            added: report.added,
-            removed: report.removed,
-            updated: report.updated,
+            added: installed.report.added,
+            removed: installed.report.removed,
+            updated: installed.report.updated,
         });
 
     info!(
-        effect = %entry.metadata.name,
-        path = %entry.source_path.display(),
-        replaced_existing = replacing,
+        effect = %installed.metadata.name,
+        path = %installed.source_path.display(),
+        replaced_existing = installed.replaced_existing,
         "Installed uploaded effect"
     );
 
     envelope::created(InstalledEffectResponse {
-        id: entry.metadata.id.to_string(),
-        name: entry.metadata.name,
-        path: entry.source_path.display().to_string(),
-        controls: entry.metadata.controls.len(),
-        presets: entry.metadata.presets.len(),
+        id: installed.metadata.id.to_string(),
+        name: installed.metadata.name,
+        path: installed.source_path.display().to_string(),
+        controls: installed.metadata.controls.len(),
+        presets: installed.metadata.presets.len(),
     })
 }
 

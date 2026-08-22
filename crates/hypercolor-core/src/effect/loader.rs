@@ -174,7 +174,20 @@ pub(super) fn inspect_html_effect_file(file: &Path) -> Result<HtmlEffectFile, Ht
         message: format!("failed to read file: {error}"),
     })?;
 
-    let parsed = parse_html_effect_metadata(&raw_html);
+    let modified = file
+        .metadata()
+        .and_then(|metadata| metadata.modified())
+        .unwrap_or_else(|_| SystemTime::now());
+
+    inspect_html_effect_source(file, &raw_html, modified)
+}
+
+pub(super) fn inspect_html_effect_source(
+    file: &Path,
+    raw_html: &str,
+    modified: SystemTime,
+) -> Result<HtmlEffectFile, HtmlDiscoveryError> {
+    let parsed = parse_html_effect_metadata(raw_html);
     let source_path = normalize_path(file);
     let canonical_id = html_effect_id(&source_path, &parsed);
     let legacy_effect_ids = html_effect_id_migrations(&source_path, canonical_id)
@@ -194,11 +207,6 @@ pub(super) fn inspect_html_effect_file(file: &Path) -> Result<HtmlEffectFile, Ht
     } else {
         parsed.title.clone()
     };
-
-    let modified = file
-        .metadata()
-        .and_then(|metadata| metadata.modified())
-        .unwrap_or_else(|_| SystemTime::now());
 
     let controls: Vec<ControlDefinition> = parsed
         .controls
