@@ -152,10 +152,7 @@ impl ConnectionEventGate {
         if self.socket_generation.get_value() != self.generation || self.terminal.get() {
             return;
         }
-        let terminal = matches!(
-            event,
-            WebSocketEvent::Closed { .. } | WebSocketEvent::Error { .. }
-        );
+        let terminal = matches!(event, WebSocketEvent::Closed { .. });
         if terminal {
             self.terminal.set(true);
         }
@@ -1190,41 +1187,58 @@ mod tests {
     }
 
     #[test]
-    fn connection_gate_delivers_one_terminal_event_in_either_order() {
-        for events in [
-            vec![
-                WebSocketEvent::Error {
-                    message: "transport failed".to_owned(),
-                },
-                closed_event(),
-            ],
-            vec![
-                closed_event(),
-                WebSocketEvent::Error {
-                    message: "transport failed".to_owned(),
-                },
-            ],
-        ] {
-            Owner::new().with(|| {
-                let socket_generation = StoredValue::new(11_u64);
-                let received = Rc::new(RefCell::new(Vec::new()));
-                let received_for_process = Rc::clone(&received);
-                let gate = ConnectionEventGate::new(
-                    socket_generation,
-                    11,
-                    Rc::new(move |event| received_for_process.borrow_mut().push(event)),
-                );
-                gate.activate();
-                let handler = gate.handler();
+    fn connection_gate_preserves_closed_cleanup_after_error() {
+        Owner::new().with(|| {
+            let socket_generation = StoredValue::new(11_u64);
+            let received = Rc::new(RefCell::new(Vec::new()));
+            let received_for_process = Rc::clone(&received);
+            let gate = ConnectionEventGate::new(
+                socket_generation,
+                11,
+                Rc::new(move |event| received_for_process.borrow_mut().push(event)),
+            );
+            gate.activate();
+            let handler = gate.handler();
 
-                for event in events {
-                    handler(event);
-                }
-
-                assert_eq!(received.borrow().len(), 1);
-                assert_eq!(socket_generation.get_value(), 12);
+            handler(WebSocketEvent::Error {
+                message: "transport failed".to_owned(),
             });
-        }
+            assert_eq!(received.borrow().len(), 1);
+            assert_eq!(socket_generation.get_value(), 11);
+
+            handler(closed_event());
+            assert_eq!(received.borrow().len(), 2);
+            assert_eq!(socket_generation.get_value(), 12);
+
+            handler(WebSocketEvent::Error {
+                message: "late transport failure".to_owned(),
+            });
+            assert_eq!(received.borrow().len(), 2);
+        });
+    }
+
+    #[test]
+    fn connection_gate_fences_error_after_closed() {
+        Owner::new().with(|| {
+            let socket_generation = StoredValue::new(14_u64);
+            let received = Rc::new(RefCell::new(Vec::new()));
+            let received_for_process = Rc::clone(&received);
+            let gate = ConnectionEventGate::new(
+                socket_generation,
+                14,
+                Rc::new(move |event| received_for_process.borrow_mut().push(event)),
+            );
+            gate.activate();
+            let handler = gate.handler();
+
+            handler(closed_event());
+            handler(WebSocketEvent::Error {
+                message: "late transport failure".to_owned(),
+            });
+
+            assert_eq!(received.borrow().as_slice(), [closed_event()]);
+            assert_eq!(socket_generation.get_value(), 15);
+        });
     }
 
     struct SynchronousCloseConnection {
