@@ -2499,9 +2499,6 @@ pub struct ScreenPhysicalReductionDescriptor {
     color_pipeline: ResolvedScreenColorPipeline,
 }
 
-/// Canonical sharing key for physical reduction work.
-pub type ScreenPhysicalReductionKey = ScreenPhysicalReductionDescriptor;
-
 impl ScreenPhysicalReductionDescriptor {
     /// Exact source epoch fenced by this reduction.
     #[must_use]

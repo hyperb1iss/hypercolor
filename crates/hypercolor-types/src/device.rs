@@ -1347,9 +1347,6 @@ impl FingerprintNamespace {
 #[serde(transparent)]
 pub struct DeviceFingerprint(String);
 
-/// Canonical short name for driver-qualified device fingerprints.
-pub type Fingerprint = DeviceFingerprint;
-
 impl DeviceFingerprint {
     /// Mint a canonical driver-qualified device fingerprint.
     #[must_use]

@@ -9,10 +9,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use hypercolor_types::canvas::{
-    BYTES_PER_PIXEL, BlendMode, Canvas, Color, ColorFormat, DEFAULT_CANVAS_HEIGHT,
-    DEFAULT_CANVAS_WIDTH, LinearRgba, Oklab, Oklch, PublishedSurface, RenderSurfacePool, Rgb, Rgba,
-    SamplingMethod, SurfaceDescriptor, SurfaceResourceError, SurfaceState, linear_to_srgb,
-    srgb_to_linear,
+    BYTES_PER_PIXEL, BlendMode, Canvas, ColorFormat, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH,
+    LinearRgba, Oklab, Oklch, PublishedSurface, RenderSurfacePool, Rgb, Rgba, SamplingMethod,
+    SurfaceDescriptor, SurfaceResourceError, SurfaceState, linear_to_srgb, srgb_to_linear,
 };
 
 // ── Kernel re-export identity ──────────────────────────────────────────────
@@ -25,7 +24,7 @@ fn canvas_color_paths_are_the_kernel_types() {
     let rgb: hypercolor_color::Rgb = Rgb::new(1, 2, 3);
     let rgba: hypercolor_color::Rgba = Rgba::new(1, 2, 3, 4);
     let linear: hypercolor_color::LinearRgba = LinearRgba::new(0.1, 0.2, 0.3, 0.4);
-    let color: Color = linear;
+    let color: LinearRgba = linear;
     let lab: hypercolor_color::Oklab = Oklab::new(0.5, 0.0, 0.0, 1.0);
     let lch: hypercolor_color::Oklch = Oklch::new(0.5, 0.1, 90.0, 1.0);
 
@@ -79,14 +78,14 @@ fn byte_color_json_shape_is_unchanged() {
 }
 
 /// The float color keeps its `r`/`g`/`b`/`a` map under both its
-/// canonical name and the canvas `Color` alias.
+/// canonical name and the canvas re-export.
 #[test]
 fn linear_color_json_shape_is_unchanged() {
     let linear = LinearRgba::new(0.25, 0.5, 0.75, 1.0);
     let json = serde_json::to_string(&linear).expect("serialize");
     assert_eq!(json, r#"{"r":0.25,"g":0.5,"b":0.75,"a":1.0}"#);
     assert_eq!(
-        serde_json::from_str::<Color>(&json).expect("deserialize"),
+        serde_json::from_str::<LinearRgba>(&json).expect("deserialize"),
         linear
     );
 }
@@ -137,7 +136,7 @@ fn byte_color_promotion_and_demotion() {
 
 #[test]
 fn linear_color_default_is_opaque_black() {
-    let c = Color::default();
+    let c = LinearRgba::default();
     assert_eq!(c, LinearRgba::new(0.0, 0.0, 0.0, 1.0));
 }
 

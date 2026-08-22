@@ -101,14 +101,6 @@ pub use hypercolor_color::{
     LinearRgba, Oklab, Oklch, Rgb, Rgba, linear_to_output_u8, linear_to_srgb, srgb_to_linear,
 };
 
-// ── Color (alias) ──────────────────────────────────────────────────────────
-
-/// High-level color type — linear sRGB with float precision.
-///
-/// Canvas vocabulary for [`LinearRgba`], used throughout the effect
-/// pipeline where "Color" is the natural word.
-pub type Color = LinearRgba;
-
 // ── ColorFormat ────────────────────────────────────────────────────────────
 
 /// Wire color format for device backends.
