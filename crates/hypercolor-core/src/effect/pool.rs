@@ -32,6 +32,7 @@ use crate::input::{InteractionData, ScreenData};
 pub struct EffectPool {
     slots: HashMap<EffectSlotKey, EffectSlot>,
     asset_library: Option<Arc<RwLock<AssetLibrary>>>,
+    generation: u64,
 }
 
 /// Effect-pool changes with allocation and control validation completed.
@@ -39,6 +40,7 @@ pub struct PreparedEffectPoolReconcile {
     slots: HashMap<EffectSlotKey, EffectSlot>,
     reused_keys: Vec<EffectSlotKey>,
     control_updates: Vec<PreparedControlUpdate>,
+    source_generation: u64,
 }
 
 struct PreparedControlUpdate {
@@ -80,6 +82,7 @@ impl EffectPool {
         Self {
             slots: HashMap::new(),
             asset_library: None,
+            generation: 0,
         }
     }
 
@@ -90,7 +93,9 @@ impl EffectPool {
 
     /// Provide the asset library used by asset-backed effect renderers.
     pub fn set_asset_library(&mut self, asset_library: Arc<RwLock<AssetLibrary>>) {
+        let next_generation = self.next_generation();
         self.asset_library = Some(asset_library);
+        self.generation = next_generation;
     }
 
     pub fn reconcile(
@@ -179,6 +184,7 @@ impl EffectPool {
             slots,
             reused_keys,
             control_updates,
+            source_generation: self.generation,
         })
     }
 
@@ -191,7 +197,13 @@ impl EffectPool {
             mut slots,
             reused_keys,
             control_updates,
+            source_generation,
         } = prepared;
+        assert_eq!(
+            self.generation, source_generation,
+            "prepared effect pool must commit against its source generation"
+        );
+        let next_generation = self.next_generation();
         assert!(
             reused_keys.iter().all(|key| self.slots.contains_key(key))
                 && control_updates
@@ -214,14 +226,29 @@ impl EffectPool {
             slots.insert(key, slot);
         }
         self.slots = slots;
+        self.generation = next_generation;
     }
 
     pub fn clear(&mut self) {
-        self.slots.clear();
+        if !self.slots.is_empty() {
+            let next_generation = self.next_generation();
+            self.slots.clear();
+            self.generation = next_generation;
+        }
     }
 
     pub fn remove_group(&mut self, group_id: ZoneId) {
-        self.slots.retain(|key, _| key.group_id != group_id);
+        if self.slots.keys().any(|key| key.group_id == group_id) {
+            let next_generation = self.next_generation();
+            self.slots.retain(|key, _| key.group_id != group_id);
+            self.generation = next_generation;
+        }
+    }
+
+    fn next_generation(&self) -> u64 {
+        self.generation
+            .checked_add(1)
+            .expect("effect pool generation overflowed")
     }
 
     #[expect(

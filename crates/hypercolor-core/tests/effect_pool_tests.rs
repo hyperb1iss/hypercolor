@@ -115,6 +115,17 @@ fn set_effect_control(group: &mut Zone, name: &str, value: ControlValue) {
         .insert(name.to_owned(), value);
 }
 
+fn set_effect_id(group: &mut Zone, effect_id: EffectId) {
+    let stored_effect_id = group
+        .layers
+        .iter_mut()
+        .find_map(|layer| match &mut layer.source {
+            LayerSource::Effect { effect_id, .. } => Some(effect_id),
+            _ => None,
+        });
+    *stored_effect_id.expect("fixture should store an effect layer") = effect_id;
+}
+
 fn set_effect_control_binding(group: &mut Zone, name: &str, binding: ControlBinding) {
     let bindings = group
         .layers
@@ -401,6 +412,69 @@ fn stale_prepared_pool_is_rejected_before_any_live_control_update() {
     )
     .expect("untouched live slot should remain renderable");
     assert_eq!(top_left(&canvas), Rgba::new(255, 0, 0, 255));
+}
+
+#[test]
+fn stale_preparation_rejects_same_key_renderer_replacement() {
+    let registry = registry_with_builtins();
+    let solid_id = builtin_effect_id(&registry, "solid_color");
+    let rainbow_id = builtin_effect_id(&registry, "rainbow");
+    let mut live_group = render_group(ZoneId::new(), solid_id);
+    set_effect_control(
+        &mut live_group,
+        "color",
+        ControlValue::linear_color([1.0, 0.0, 0.0, 1.0]),
+    );
+    let mut stale_candidate = live_group.clone();
+    set_effect_control(
+        &mut stale_candidate,
+        "color",
+        ControlValue::linear_color([0.0, 0.0, 1.0, 1.0]),
+    );
+    stale_candidate.controls_version += 1;
+
+    let mut pool = EffectPool::new();
+    pool.reconcile(
+        std::slice::from_ref(&live_group),
+        &registry,
+        &HashMap::new(),
+    )
+    .expect("live group should reconcile");
+    let stale = pool
+        .prepare_reconcile(
+            std::slice::from_ref(&stale_candidate),
+            &registry,
+            &HashMap::new(),
+        )
+        .expect("control update should prepare against the solid renderer");
+
+    let mut replacement = live_group.clone();
+    set_effect_id(&mut replacement, rainbow_id);
+    pool.reconcile(
+        std::slice::from_ref(&replacement),
+        &registry,
+        &HashMap::new(),
+    )
+    .expect("same-key rainbow renderer should replace the solid renderer");
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        pool.commit_reconcile(stale);
+    }));
+
+    assert!(result.is_err());
+    assert_eq!(pool.slot_count(), 1);
+    let mut canvas = Canvas::new(1, 1);
+    pool.render_group_into(
+        &replacement,
+        0.016,
+        &AudioData::silence(),
+        &InteractionData::default(),
+        None,
+        &EMPTY_SENSORS,
+        hypercolor_core::effect::FrameDataSources::default(),
+        &mut canvas,
+    )
+    .expect("replacement renderer should remain live after stale commit rejection");
 }
 
 #[test]
