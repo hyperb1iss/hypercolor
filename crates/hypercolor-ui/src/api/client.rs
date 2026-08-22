@@ -397,7 +397,11 @@ pub fn authorization_token() -> Option<String> {
 /// must never reach a transport, because the default browser adapter would
 /// attach the local bearer credential to it.
 fn validate_relative_path(path: &str) -> ApiResult<()> {
-    if !path.starts_with('/') || path.starts_with("//") {
+    if !path.starts_with('/')
+        || path.starts_with("//")
+        || path.contains('\\')
+        || path.chars().any(char::is_control)
+    {
         return Err(ApiError::Network(
             "authenticated daemon API URLs must be relative".to_owned(),
         ));

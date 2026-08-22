@@ -207,6 +207,19 @@ fn injected_transport_preserves_the_logical_http_contract() {
         .is_err()
     );
     assert!(ready(fetch_json::<serde_json::Value>("//attacker.example/steal")).is_err());
+    assert!(ready(fetch_json::<serde_json::Value>("/\\attacker.example/steal")).is_err());
+    assert!(
+        ready(fetch_json::<serde_json::Value>(
+            "/\n/attacker.example/steal"
+        ))
+        .is_err()
+    );
+    assert!(
+        ready(fetch_json::<serde_json::Value>(
+            "/\t/attacker.example/steal"
+        ))
+        .is_err()
+    );
     assert_eq!(requests.borrow().len(), before_invalid);
 
     let requests = requests.borrow();
