@@ -124,7 +124,7 @@ function rgbCss(color: Rgb): string {
 }
 
 interface AudioState {
-    level: number
+    levelLinear: number
     bass: number
     treble: number
     pulse: number
@@ -140,7 +140,7 @@ function analyzeAudio(a: AudioData, synthPhase: number): AudioState {
         const pulse = clamp(Math.max(a.beatPulse, a.onsetPulse * 0.8, a.bass * 0.6), 0, 1)
         return {
             bass: clamp(Math.max(a.bassEnv, a.bass), 0, 1),
-            level: clamp(Math.max(a.levelShort, a.levelLinear), 0, 1),
+            levelLinear: clamp(Math.max(a.levelShort, a.levelLinear), 0, 1),
             onset: clamp(a.onsetPulse, 0, 1),
             present: true,
             pulse,
@@ -153,7 +153,7 @@ function analyzeAudio(a: AudioData, synthPhase: number): AudioState {
     const synthBeat = Math.max(0, Math.sin(synthPhase * 1.65)) ** 7 * 0.78
     return {
         bass: 0.16 + Math.sin(synthPhase * 0.72) * 0.08,
-        level: 0.2 + Math.sin(synthPhase * 0.36) * 0.06,
+        levelLinear: 0.2 + Math.sin(synthPhase * 0.36) * 0.06,
         onset: synthBeat,
         present: false,
         pulse: synthBeat,
@@ -582,7 +582,7 @@ export default canvas.stateful(
             }
             smBass = smoothAttackRelease(smBass, analysis.bass, 14, 3.2)
             smTreble = smoothAttackRelease(smTreble, analysis.treble, 12, 4)
-            smLevel = smoothAttackRelease(smLevel, analysis.level, 9, 3)
+            smLevel = smoothAttackRelease(smLevel, analysis.levelLinear, 9, 3)
             smPulse = smoothAttackRelease(smPulse, analysis.pulse, 22, 2.4)
 
             // Continuous drifts keep the image alive and flowing even in silence.
@@ -705,7 +705,7 @@ export default canvas.stateful(
             // pumping cleanly without visible steps on transients.
             const renderAudio: AudioState = {
                 bass: smBass,
-                level: smLevel,
+                levelLinear: smLevel,
                 onset: analysis.onset,
                 present: analysis.present,
                 pulse: smPulse,
