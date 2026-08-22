@@ -1,18 +1,31 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use super::super::{CaptureSourceId, ScreenPublicationHub};
 use super::{
-    CaptureExactState, CaptureSession, CaptureSessionAuthority, CaptureSessionAuthorityExhausted,
-    CaptureSessionDeadline, CaptureSessionReadiness, CaptureSessionSet, CaptureSessionTransaction,
-    PreparedCaptureSession, ReservedCaptureSessionAuthority,
+    CaptureExactState, CapturePublication, CapturePublicationFence, CaptureSession,
+    CaptureSessionAuthority, CaptureSessionAuthorityExhausted, CaptureSessionDeadline,
+    CaptureSessionReadiness, CaptureSessionSet, CaptureSessionTransaction, PreparedCaptureSession,
+    ReservedCaptureSessionAuthority,
 };
+
+type BackendCompatibilityPublication<B> = CapturePublication<
+    <B as CaptureBackend>::CompatibilityFence,
+    <B as CaptureBackend>::CompatibilityEpoch,
+    <B as CaptureBackend>::CompatibilityValue,
+>;
 
 pub(in crate::input::screen) trait CaptureBackend: Sized {
     type Worker: CaptureSession + Send + 'static;
     type Readiness: CaptureSessionReadiness + Send + 'static;
     type SpawnRequest;
     type ExactState: CaptureExactState;
+    type CompatibilityFence: CapturePublicationFence<Self::CompatibilityEpoch>
+        + Default
+        + Send
+        + 'static;
+    type CompatibilityEpoch: PartialEq + Send + 'static;
+    type CompatibilityValue: Send + 'static;
 
     const READINESS_TIMEOUT: Duration;
 
@@ -24,6 +37,7 @@ pub(in crate::input::screen) trait CaptureBackend: Sized {
 
 pub(in crate::input::screen) struct ScreenCaptureAdapter<B: CaptureBackend> {
     sessions: CaptureSessionSet<B::Worker>,
+    compatibility: Arc<Mutex<BackendCompatibilityPublication<B>>>,
     exact: Arc<B::ExactState>,
 }
 
@@ -41,8 +55,21 @@ impl<B: CaptureBackend> ScreenCaptureAdapter<B> {
     pub(in crate::input::screen) fn new(exact: Arc<B::ExactState>) -> Self {
         Self {
             sessions: CaptureSessionSet::default(),
+            compatibility: Arc::new(Mutex::new(CapturePublication::default())),
             exact,
         }
+    }
+
+    pub(in crate::input::screen) fn compatibility_publication(
+        &self,
+    ) -> &Mutex<BackendCompatibilityPublication<B>> {
+        &self.compatibility
+    }
+
+    pub(in crate::input::screen) fn compatibility_publication_handle(
+        &self,
+    ) -> Arc<Mutex<BackendCompatibilityPublication<B>>> {
+        Arc::clone(&self.compatibility)
     }
 
     pub(in crate::input::screen) fn exact_state(&self) -> &B::ExactState {

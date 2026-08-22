@@ -125,7 +125,7 @@ fn retired_worker_cannot_republish_after_stop_returns() {
             .expect("authority activates"),
     );
     {
-        let mut publication = lock(&input.publication);
+        let mut publication = lock(input.adapter.compatibility_publication());
         publication
             .replace_fence_preserving_latest(MacosPublicationFence(1), 1)
             .expect("test worker owns compatibility publication");
@@ -164,7 +164,7 @@ fn retired_worker_cannot_republish_after_stop_returns() {
             .exact_state()
             .replace_source_if_current(authority, Some(source(&frame())))
     );
-    let mut publication = lock(&input.publication);
+    let mut publication = lock(input.adapter.compatibility_publication());
     assert!(!publication.is_active(&1));
     assert!(publication.publish(&1, Arc::new(InputData::None)).is_err());
     drop(publication);

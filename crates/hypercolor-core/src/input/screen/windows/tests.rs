@@ -1416,7 +1416,8 @@ fn retired_worker_cannot_republish_after_stop_returns() {
     let epoch = active_epoch("display:main", 3, 1, 1);
     {
         let mut publication = input
-            .publication
+            .adapter
+            .compatibility_publication()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert!(publication.activate(epoch.clone()).is_ok());
@@ -1451,7 +1452,8 @@ fn retired_worker_cannot_republish_after_stop_returns() {
 
     assert!(!input.adapter.exact_state().is_current_authority(authority));
     let mut publication = input
-        .publication
+        .adapter
+        .compatibility_publication()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     assert!(publication.activate(epoch.clone()).is_err());

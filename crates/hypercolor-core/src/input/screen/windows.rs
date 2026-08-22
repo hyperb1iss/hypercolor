@@ -565,7 +565,6 @@ pub struct WindowsScreenCaptureInput {
     settings: Arc<SharedSettings>,
     running: bool,
     capture_demand: ScreenCaptureDemand,
-    publication: Arc<Mutex<CapturePublication<AnalyzedScreenSnapshot>>>,
     adapter: ScreenCaptureAdapter<WindowsCaptureBackend>,
     status: SourceStatusReporter,
     status_session: SourceSessionSlot,
@@ -682,6 +681,9 @@ impl CaptureBackend for WindowsCaptureBackend {
     type Readiness = WindowsSessionReadiness;
     type SpawnRequest = WindowsWorkerSpawn;
     type ExactState = ExactPublicationShared;
+    type CompatibilityFence = CaptureAuthorityFence;
+    type CompatibilityEpoch = ActiveCaptureEpoch;
+    type CompatibilityValue = AnalyzedScreenSnapshot;
 
     const READINESS_TIMEOUT: Duration = WORKER_READY_TIMEOUT;
 
@@ -1022,6 +1024,7 @@ impl WindowsScreenCaptureInput {
         compute_capacity_policy: ScreenComputeCapacityPolicy,
     ) -> Self {
         let exact = Arc::new(ExactPublicationShared::default());
+        let adapter = ScreenCaptureAdapter::new(exact);
         Self {
             settings: Arc::new(SharedSettings {
                 values: VersionedCaptureSettings::new(
@@ -1037,8 +1040,7 @@ impl WindowsScreenCaptureInput {
             }),
             running: false,
             capture_demand: ScreenCaptureDemand::Inactive,
-            publication: Arc::new(Mutex::new(CapturePublication::default())),
-            adapter: ScreenCaptureAdapter::new(exact),
+            adapter,
             status: SourceStatusReporter::new(
                 "windows_screen_capture",
                 SourceKind::Screen,
@@ -1090,7 +1092,7 @@ impl WindowsScreenCaptureInput {
         source.fixture = Some(Arc::clone(&state));
         let fixture = WindowsScreenCaptureFixture {
             state,
-            publication: Arc::clone(&source.publication),
+            publication: source.adapter.compatibility_publication_handle(),
             status_session: source.status_session.clone(),
         };
         Ok((source, fixture))
@@ -1117,7 +1119,7 @@ impl WindowsScreenCaptureInput {
         let prepared = self.adapter.prepare_worker(
             WindowsWorkerSpawn {
                 settings: Arc::clone(&self.settings),
-                publication: Arc::clone(&self.publication),
+                publication: self.adapter.compatibility_publication_handle(),
                 exact: self.adapter.exact_state_handle(),
                 status_session: self.status_session.clone(),
                 source_sink: self.source_sink.clone(),
@@ -1217,7 +1219,7 @@ impl WindowsScreenCaptureInput {
                 true,
             ));
         }
-        clear_capture_publication(&self.publication);
+        clear_capture_publication(self.adapter.compatibility_publication());
         self.retire_exact_authority(authority);
         self.adapter.reap_finished_workers(|_, result| {
             if let Err(panic) = result {
@@ -1280,7 +1282,8 @@ impl WindowsScreenCaptureInput {
                 activity_generation,
                 duplication_generation: 1,
             };
-            let activated = activate_capture_epoch(&self.publication, active.clone());
+            let activated =
+                activate_capture_epoch(self.adapter.compatibility_publication(), active.clone());
             if !activated {
                 anyhow::bail!("deterministic Windows capture epoch was fenced before activation");
             }
@@ -1392,7 +1395,8 @@ impl WindowsScreenCaptureInput {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = prepared.analyzer;
         if snapshot.source_generation != prepared.source_generation {
             let displaced = {
-                self.publication
+                self.adapter
+                    .compatibility_publication()
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .fence_source(prepared.source_generation)
@@ -1443,7 +1447,8 @@ impl WindowsScreenCaptureInput {
         #[cfg(not(feature = "windows-capture-fixtures"))]
         drop(admission);
         let previous_publication = self
-            .publication
+            .adapter
+            .compatibility_publication()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .checkpoint();
@@ -1455,7 +1460,8 @@ impl WindowsScreenCaptureInput {
                 .fetch_add(1, Ordering::AcqRel)
                 .wrapping_add(1);
             let displaced = {
-                self.publication
+                self.adapter
+                    .compatibility_publication()
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .fence_activity(generation)
@@ -1491,7 +1497,8 @@ impl WindowsScreenCaptureInput {
                     .fetch_add(1, Ordering::AcqRel)
                     .wrapping_add(1);
                 let displaced = {
-                    self.publication
+                    self.adapter
+                        .compatibility_publication()
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .fence_activity(rollback_generation)
@@ -1504,7 +1511,8 @@ impl WindowsScreenCaptureInput {
                 }
                 let displaced = {
                     let mut publication = self
-                        .publication
+                        .adapter
+                        .compatibility_publication()
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
                     let active = publication
@@ -1522,7 +1530,8 @@ impl WindowsScreenCaptureInput {
             } else {
                 let (cleared, displaced) = {
                     let mut publication = self
-                        .publication
+                        .adapter
+                        .compatibility_publication()
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
                     let cleared = publication.clear();
@@ -1637,7 +1646,7 @@ impl InputSource for WindowsScreenCaptureInput {
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         }
 
-        clear_capture_publication(&self.publication);
+        clear_capture_publication(self.adapter.compatibility_publication());
     }
 
     fn sample(&mut self) -> anyhow::Result<InputData> {
@@ -1647,7 +1656,8 @@ impl InputSource for WindowsScreenCaptureInput {
         }
 
         let publication = self
-            .publication
+            .adapter
+            .compatibility_publication()
             .lock()
             .map_err(|_| anyhow!("windows screen capture publication mutex poisoned"))?;
         let Some(snapshot) = publication.snapshot() else {

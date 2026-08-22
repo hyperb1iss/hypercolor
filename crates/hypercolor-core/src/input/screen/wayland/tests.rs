@@ -63,6 +63,16 @@ fn settings(session_generation: u64) -> Arc<SharedSettings> {
 }
 
 #[test]
+fn adapter_and_wayland_settings_share_capture_state() {
+    let input = WaylandScreenCaptureInput::new(CaptureConfig::default());
+    let publication = input.adapter.compatibility_publication_handle();
+    let exact = input.adapter.exact_state_handle();
+
+    assert!(Arc::ptr_eq(&publication, &input.settings.publication));
+    assert!(Arc::ptr_eq(&exact, &input.settings.exact));
+}
+
+#[test]
 fn portal_pending_worker_retirement_does_not_wait_for_picker_exit() {
     let mut input = WaylandScreenCaptureInput::new(CaptureConfig::default());
     let (command_tx, _command_rx) = super::loop_channel();

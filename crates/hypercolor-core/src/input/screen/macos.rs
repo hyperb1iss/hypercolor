@@ -379,6 +379,9 @@ impl CaptureBackend for MacosCaptureBackend {
     type Readiness = ();
     type SpawnRequest = MacosWorkerSpawn;
     type ExactState = MacosExactPublicationShared;
+    type CompatibilityFence = MacosPublicationFence;
+    type CompatibilityEpoch = u64;
+    type CompatibilityValue = Arc<InputData>;
 
     const READINESS_TIMEOUT: Duration = Duration::ZERO;
 
@@ -581,7 +584,6 @@ pub struct MacosScreenCaptureInput {
     admission: ScreenByteAdmissionCoordinator,
     #[cfg(feature = "macos-capture-fixtures")]
     compute_capacity_policy: ScreenComputeCapacityPolicy,
-    publication: Arc<Mutex<MacosPublication>>,
     telemetry: Arc<MacosScreenRuntimeTelemetry>,
     adapter: ScreenCaptureAdapter<MacosCaptureBackend>,
     worker_generation: u64,

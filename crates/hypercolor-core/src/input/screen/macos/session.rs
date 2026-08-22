@@ -1,5 +1,5 @@
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use anyhow::anyhow;
@@ -20,10 +20,10 @@ use crate::input::{SourceKind, SourceStatusReporter};
 use super::status::protected_screen_action_issue;
 use super::{
     CaptureConfig, CaptureSessionAuthority, MacosCaptureControl, MacosExactPublicationShared,
-    MacosPublication, MacosScreenCaptureInput, MacosScreenRuntimeTelemetry, MacosWorkerSpawn,
-    PixelExtent, PreparedWorker, ScreenByteAdmissionCoordinator, ScreenCaptureAdapter,
-    ScreenCaptureDemand, ScreenComputeCapacityPolicy, StagedCaptureWorker, color_space_name,
-    dynamic_range_name, executable_architecture, frame_drop_counters, lock, map_tahoe_capabilities,
+    MacosScreenCaptureInput, MacosScreenRuntimeTelemetry, MacosWorkerSpawn, PixelExtent,
+    PreparedWorker, ScreenByteAdmissionCoordinator, ScreenCaptureAdapter, ScreenCaptureDemand,
+    ScreenComputeCapacityPolicy, StagedCaptureWorker, color_space_name, dynamic_range_name,
+    executable_architecture, frame_drop_counters, lock, map_tahoe_capabilities,
     map_tahoe_selection_capabilities, nonzero_telemetry, pixel_format_name,
     production_stream_request, timing_status, transfer_function_name,
 };
@@ -105,6 +105,7 @@ impl MacosScreenCaptureInput {
         let exact = Arc::new(MacosExactPublicationShared::with_compute_capacity_policy(
             compute_capacity_policy,
         ));
+        let adapter = ScreenCaptureAdapter::new(exact);
         let mut source = Self {
             config,
             control,
@@ -112,9 +113,8 @@ impl MacosScreenCaptureInput {
             admission,
             #[cfg(feature = "macos-capture-fixtures")]
             compute_capacity_policy,
-            publication: Arc::new(Mutex::new(MacosPublication::default())),
             telemetry,
-            adapter: ScreenCaptureAdapter::new(exact),
+            adapter,
             worker_generation: 0,
             demand: ScreenCaptureDemand::Inactive,
             running: false,
@@ -370,7 +370,7 @@ impl MacosScreenCaptureInput {
                 prepared,
                 mailbox,
                 control: Arc::clone(&self.control),
-                publication: Arc::clone(&self.publication),
+                publication: self.adapter.compatibility_publication_handle(),
                 exact: self.adapter.exact_state_handle(),
                 telemetry: Arc::clone(&self.telemetry),
                 status_session: self.status_session.clone(),
@@ -393,8 +393,8 @@ impl MacosScreenCaptureInput {
             CaptureSessionAuthority::new(generation),
             "staged macOS worker authority matches its reserved generation"
         );
-        let checkpoint_publication = Arc::clone(&self.publication);
-        let commit_publication = Arc::clone(&self.publication);
+        let checkpoint_publication = self.adapter.compatibility_publication_handle();
+        let commit_publication = self.adapter.compatibility_publication_handle();
         let exact = self.adapter.exact_state_handle();
         let committed_generation = &mut self.worker_generation;
         let authority = self
@@ -482,7 +482,7 @@ impl MacosScreenCaptureInput {
         self.worker_generation = retirement_generation;
         let displaced_exact = retirement.into_displaced();
         let (displaced_active, displaced_latest) = {
-            let mut publication = lock(&self.publication);
+            let mut publication = lock(self.adapter.compatibility_publication());
             let displaced_active = publication
                 .replace_fence_preserving_latest(
                     super::MacosPublicationFence(retirement_generation),

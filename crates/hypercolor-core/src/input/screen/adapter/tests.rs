@@ -182,6 +182,9 @@ impl CaptureBackend for FakeCaptureBackend {
     type Readiness = FakeReadiness;
     type SpawnRequest = (FakeSession, FakeReadiness);
     type ExactState = CaptureExactPublicationShared<FakeSource, FakeOwnedSource>;
+    type CompatibilityFence = FakeFence;
+    type CompatibilityEpoch = FakeEpoch;
+    type CompatibilityValue = &'static str;
 
     const READINESS_TIMEOUT: Duration = Duration::from_secs(1);
 
@@ -204,6 +207,9 @@ impl CaptureBackend for FailingCaptureBackend {
     type Readiness = FakeReadiness;
     type SpawnRequest = ();
     type ExactState = CaptureExactPublicationShared<FakeSource, FakeOwnedSource>;
+    type CompatibilityFence = FakeFence;
+    type CompatibilityEpoch = FakeEpoch;
+    type CompatibilityValue = &'static str;
 
     const READINESS_TIMEOUT: Duration = Duration::from_secs(1);
 
@@ -218,6 +224,7 @@ impl CaptureBackend for FailingCaptureBackend {
 struct DropOrderExactState {
     common: CaptureExactPublicationShared<FakeSource, FakeOwnedSource>,
     session_detaches: Arc<AtomicUsize>,
+    compatibility_dropped: Arc<AtomicBool>,
     dropped: Arc<AtomicBool>,
 }
 
@@ -233,7 +240,16 @@ impl CaptureExactState for DropOrderExactState {
 impl Drop for DropOrderExactState {
     fn drop(&mut self) {
         assert_eq!(self.session_detaches.load(Ordering::Acquire), 1);
+        assert!(self.compatibility_dropped.load(Ordering::Acquire));
         self.dropped.store(true, Ordering::Release);
+    }
+}
+
+struct CompatibilityDropProbe(Arc<AtomicBool>);
+
+impl Drop for CompatibilityDropProbe {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
     }
 }
 
@@ -244,6 +260,9 @@ impl CaptureBackend for DropOrderCaptureBackend {
     type Readiness = FakeReadiness;
     type SpawnRequest = (FakeSession, FakeReadiness);
     type ExactState = DropOrderExactState;
+    type CompatibilityFence = FakeFence;
+    type CompatibilityEpoch = FakeEpoch;
+    type CompatibilityValue = CompatibilityDropProbe;
 
     const READINESS_TIMEOUT: Duration = Duration::from_secs(1);
 
@@ -324,6 +343,35 @@ fn adapter_and_backend_handles_share_one_exact_state() {
     let exact = Arc::new(CaptureExactPublicationShared::<FakeSource, FakeOwnedSource>::default());
     let adapter = ScreenCaptureAdapter::<FakeCaptureBackend>::new(Arc::clone(&exact));
     assert_eq!(Arc::strong_count(&exact), 2);
+    let compatibility = adapter.compatibility_publication_handle();
+    assert!(std::ptr::eq(
+        adapter.compatibility_publication(),
+        compatibility.as_ref()
+    ));
+    assert_eq!(Arc::strong_count(&compatibility), 2);
+
+    let epoch = FakeEpoch {
+        source: 0,
+        activity: 0,
+        session: 1,
+        topology: 2,
+        resource: 3,
+    };
+    {
+        let mut worker_publication = compatibility
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(worker_publication.activate(epoch).is_ok());
+        assert!(worker_publication.publish(&epoch, "worker frame").is_ok());
+    }
+    let sampled = adapter
+        .compatibility_publication()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .snapshot()
+        .expect("adapter samples the worker publication");
+    assert_eq!(sampled.epoch, epoch);
+    assert_eq!(sampled.value, "worker frame");
 
     for _ in 0..3 {
         let borrowed = adapter.exact_state();
@@ -367,13 +415,37 @@ fn adapter_and_backend_handles_share_one_exact_state() {
 #[test]
 fn adapter_detaches_sessions_before_releasing_exact_state() {
     let detaches = Arc::new(AtomicUsize::new(0));
+    let compatibility_dropped = Arc::new(AtomicBool::new(false));
     let dropped = Arc::new(AtomicBool::new(false));
     let exact = Arc::new(DropOrderExactState {
         common: CaptureExactPublicationShared::default(),
         session_detaches: Arc::clone(&detaches),
+        compatibility_dropped: Arc::clone(&compatibility_dropped),
         dropped: Arc::clone(&dropped),
     });
     let mut adapter = ScreenCaptureAdapter::<DropOrderCaptureBackend>::new(Arc::clone(&exact));
+    let epoch = FakeEpoch {
+        source: 0,
+        activity: 0,
+        session: 1,
+        topology: 2,
+        resource: 3,
+    };
+    {
+        let mut publication = adapter
+            .compatibility_publication()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(publication.activate(epoch).is_ok());
+        assert!(
+            publication
+                .publish(
+                    &epoch,
+                    CompatibilityDropProbe(Arc::clone(&compatibility_dropped)),
+                )
+                .is_ok()
+        );
+    }
     drop(exact);
     let mut session = FakeSession::new(1);
     session.detaches = Arc::clone(&detaches);
@@ -382,6 +454,7 @@ fn adapter_detaches_sessions_before_releasing_exact_state() {
     drop(adapter);
 
     assert_eq!(detaches.load(Ordering::Acquire), 1);
+    assert!(compatibility_dropped.load(Ordering::Acquire));
     assert!(dropped.load(Ordering::Acquire));
 }
 

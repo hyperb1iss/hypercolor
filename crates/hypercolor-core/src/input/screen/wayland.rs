@@ -1575,7 +1575,6 @@ pub struct WaylandScreenCaptureInput {
     settings: Arc<SharedSettings>,
     running: bool,
     capture_demand: ScreenCaptureDemand,
-    publication: Arc<Mutex<WaylandCapturePublication>>,
     status_snapshot_generation: u64,
     adapter: ScreenCaptureAdapter<WaylandCaptureBackend>,
     token_sink: Option<RestoreTokenSink>,
@@ -1636,8 +1635,9 @@ impl WaylandScreenCaptureInput {
         admission_coordinator: ScreenByteAdmissionCoordinator,
         compute_capacity_policy: ScreenComputeCapacityPolicy,
     ) -> Self {
-        let publication = Arc::new(Mutex::new(WaylandCapturePublication::default()));
         let exact = Arc::new(WaylandExactPublicationShared::default());
+        let adapter = ScreenCaptureAdapter::new(Arc::clone(&exact));
+        let publication = adapter.compatibility_publication_handle();
         Self {
             settings: Arc::new(SharedSettings {
                 values: VersionedCaptureSettings::new(config, ScreenCaptureDemand::Inactive),
@@ -1648,13 +1648,12 @@ impl WaylandScreenCaptureInput {
                 session_generation: AtomicU64::new(0),
                 session_guard: Mutex::new(()),
                 publication: Arc::clone(&publication),
-                exact: Arc::clone(&exact),
+                exact,
             }),
             running: false,
             capture_demand: ScreenCaptureDemand::Inactive,
-            publication,
             status_snapshot_generation: 0,
-            adapter: ScreenCaptureAdapter::new(exact),
+            adapter,
             token_sink: None,
             next_adoption_id: 0,
             status: SourceStatusReporter::new(
@@ -1974,7 +1973,8 @@ impl WaylandScreenCaptureInput {
                 self.settings.clear_expected_epoch();
             }
             let latest = self
-                .publication
+                .adapter
+                .compatibility_publication()
                 .lock()
                 .ok()
                 .and_then(|mut publication| publication.clear_latest());
@@ -2016,7 +2016,8 @@ impl WaylandScreenCaptureInput {
 
         let latest = (previous.is_active() != demand.is_active())
             .then(|| {
-                self.publication
+                self.adapter
+                    .compatibility_publication()
                     .lock()
                     .ok()
                     .and_then(|mut publication| publication.clear_latest())
@@ -2232,7 +2233,8 @@ impl InputSource for WaylandScreenCaptureInput {
         }
 
         let latest = self
-            .publication
+            .adapter
+            .compatibility_publication()
             .lock()
             .ok()
             .and_then(|mut publication| publication.clear_latest());
@@ -2252,7 +2254,8 @@ impl InputSource for WaylandScreenCaptureInput {
         }
 
         let publication = self
-            .publication
+            .adapter
+            .compatibility_publication()
             .lock()
             .map_err(|_| anyhow!("wayland screen capture snapshot mutex poisoned"))?;
         let snapshot = publication.snapshot();
@@ -2497,6 +2500,9 @@ impl CaptureBackend for WaylandCaptureBackend {
     type Readiness = WaylandSessionReadiness;
     type SpawnRequest = WaylandWorkerSpawn;
     type ExactState = WaylandExactPublicationShared;
+    type CompatibilityFence = WaylandPublicationFence;
+    type CompatibilityEpoch = CaptureEpoch;
+    type CompatibilityValue = CapturedScreenSnapshot;
 
     const READINESS_TIMEOUT: Duration = WORKER_READY_TIMEOUT;
 

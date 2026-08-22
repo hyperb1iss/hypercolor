@@ -52,7 +52,7 @@ impl InputSource for MacosScreenCaptureInput {
         #[cfg(feature = "macos-capture-fixtures")]
         {
             let data = {
-                let publication = lock(&self.publication);
+                let publication = lock(self.adapter.compatibility_publication());
                 publication
                     .snapshot()
                     .filter(|snapshot| snapshot.epoch == self.worker_generation)
@@ -85,7 +85,7 @@ impl InputSource for MacosScreenCaptureInput {
         #[cfg(feature = "macos-capture-fixtures")]
         {
             let data = {
-                let publication = lock(&self.publication);
+                let publication = lock(self.adapter.compatibility_publication());
                 publication
                     .snapshot()
                     .filter(|snapshot| snapshot.epoch == self.worker_generation)
