@@ -1,3 +1,4 @@
+mod authority;
 pub(in crate::input::screen) mod exact;
 mod session;
 #[cfg(any(target_os = "linux", target_os = "windows", test))]
@@ -16,9 +17,12 @@ use super::{
     ScreenWorkerPreparationTicket, ScreenWorkerRetirement,
 };
 
+pub(in crate::input::screen) use authority::{
+    CaptureSessionAuthority, CaptureSessionAuthorityExhausted, CaptureSessionAuthoritySequencer,
+    ReservedCaptureSessionAuthority, StaleCaptureSessionReservation,
+};
 pub(in crate::input::screen) use exact::{
     CaptureExactPublicationShared, CaptureOwnedSource, CapturePublicationSource,
-    CaptureSessionAuthority,
 };
 #[cfg(any(target_os = "linux", target_os = "windows", test))]
 pub(in crate::input::screen) use session::CaptureSessionReadiness;

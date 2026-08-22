@@ -481,7 +481,6 @@ pub struct MacosScreenCaptureInput {
     telemetry: Arc<MacosScreenRuntimeTelemetry>,
     sessions: CaptureSessionSet<CaptureWorker>,
     worker_generation: u64,
-    next_worker_generation: AtomicU64,
     demand: ScreenCaptureDemand,
     running: bool,
     status: SourceStatusReporter,

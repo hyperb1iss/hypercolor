@@ -7,6 +7,7 @@ use super::publication::{
 };
 use super::worker::{report_macos_worker_health, synchronize_macos_invalidation_generation};
 use super::*;
+use crate::input::screen::adapter::CaptureSessionAuthoritySequencer;
 use crate::input::screen::{
     CpuReductionLayout, CpuReductionRequest, ExactBoxList, InputPublicationDemandRevision,
     PreparedLedToneMap, ResolvedScreenColorTransform, ScreenAdmissionCapacity, ScreenAspectPolicy,
@@ -42,6 +43,9 @@ fn staged_worker_rollback_does_not_wait_for_native_exit() {
         release_rx.recv().expect("test releases native exit");
         let _ = exit_tx.send(Ok(()));
     });
+    let reservation = CaptureSessionAuthoritySequencer::default()
+        .reserve()
+        .expect("test authority reserves");
     let prepared = CaptureSessionTransaction::new(
         CaptureWorker {
             authority: CaptureSessionAuthority::new(1),
@@ -53,6 +57,7 @@ fn staged_worker_rollback_does_not_wait_for_native_exit() {
             join: Some(join),
         },
         (),
+        reservation,
     )
     .prepare(CaptureSessionDeadline::after(Duration::ZERO))
     .expect("test worker stages");
@@ -107,8 +112,14 @@ fn retired_worker_cannot_republish_after_stop_returns() {
         MacosScreenCaptureFixture::source(CaptureConfig::default(), admission);
     let authority = CaptureSessionAuthority::new(1);
     input.worker_generation = 1;
-    input.next_worker_generation.store(1, Ordering::Release);
-    drop(input.exact.activate_authority(authority));
+    let reservation = input.exact.reserve_authority().expect("authority reserves");
+    assert_eq!(reservation.authority(), authority);
+    drop(
+        input
+            .exact
+            .activate_reserved_authority(reservation)
+            .expect("authority activates"),
+    );
     {
         let mut publication = lock(&input.publication);
         publication

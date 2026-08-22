@@ -172,8 +172,17 @@ impl MacosExactPublicationShared {
         &self,
         next: Option<MacosPublicationSource>,
     ) {
-        let authority = CaptureSessionAuthority::new(1);
-        drop(self.activate_authority(authority));
+        let authority = if let Some(authority) = self.current_authority() {
+            authority
+        } else {
+            let reservation = self.reserve_authority().expect("test authority reserves");
+            let authority = reservation.authority();
+            drop(
+                self.activate_reserved_authority(reservation)
+                    .expect("test authority activates"),
+            );
+            authority
+        };
         self.replace_current_source(authority, next);
     }
 
@@ -182,8 +191,17 @@ impl MacosExactPublicationShared {
         &self,
         source: Box<crate::input::screen::ExactBoxNode<super::super::MacosOwnedSource>>,
     ) -> bool {
-        let authority = CaptureSessionAuthority::new(1);
-        drop(self.activate_authority(authority));
+        let authority = if let Some(authority) = self.current_authority() {
+            authority
+        } else {
+            let reservation = self.reserve_authority().expect("test authority reserves");
+            let authority = reservation.authority();
+            drop(
+                self.activate_reserved_authority(reservation)
+                    .expect("test authority activates"),
+            );
+            authority
+        };
         self.register_owned_source_if_current(authority, source)
     }
 

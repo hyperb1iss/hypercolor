@@ -1,6 +1,8 @@
 use std::time::{Duration, Instant};
 
-use super::{CaptureExactCommandEndpoint, CaptureSessionAuthority};
+use super::{
+    CaptureExactCommandEndpoint, CaptureSessionAuthority, ReservedCaptureSessionAuthority,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(not(any(target_os = "windows", test)), allow(dead_code))]
@@ -63,10 +65,12 @@ where
 {
     session: Option<S>,
     readiness: Option<R>,
+    reservation: Option<ReservedCaptureSessionAuthority>,
 }
 
 pub(in crate::input::screen) struct PreparedCaptureSession<S: CaptureSession> {
     session: Option<S>,
+    reservation: Option<ReservedCaptureSessionAuthority>,
 }
 
 pub(in crate::input::screen) struct CaptureSessionCommit {
@@ -84,10 +88,16 @@ where
     S: CaptureSession,
     R: CaptureSessionReadiness,
 {
-    pub(in crate::input::screen) fn new(session: S, readiness: R) -> Self {
+    pub(in crate::input::screen) fn new(
+        session: S,
+        readiness: R,
+        reservation: ReservedCaptureSessionAuthority,
+    ) -> Self {
+        assert_eq!(session.authority(), reservation.authority());
         Self {
             session: Some(session),
             readiness: Some(readiness),
+            reservation: Some(reservation),
         }
     }
 
@@ -108,6 +118,7 @@ where
         }
         Ok(PreparedCaptureSession {
             session: self.session.take(),
+            reservation: self.reservation.take(),
         })
     }
 }
@@ -123,8 +134,8 @@ impl<S: CaptureSession> PreparedCaptureSession<S> {
     pub(in crate::input::screen) fn commit_into<P, D>(
         mut self,
         sessions: &mut CaptureSessionSet<S>,
-        checkpoint: impl FnOnce() -> Option<P>,
-        commit_authority: impl FnOnce(CaptureSessionAuthority, P) -> D,
+        checkpoint: impl FnOnce(&ReservedCaptureSessionAuthority) -> Option<P>,
+        commit_authority: impl FnOnce(ReservedCaptureSessionAuthority, P) -> D,
     ) -> Result<CaptureSessionCommit, Self> {
         let candidate = self
             .session
@@ -134,7 +145,11 @@ impl<S: CaptureSession> PreparedCaptureSession<S> {
             return Err(self);
         }
         let authority = candidate.authority();
-        let Some(checkpoint) = checkpoint() else {
+        let reservation = self
+            .reservation
+            .as_ref()
+            .expect("prepared capture authority remains owned before commit");
+        let Some(checkpoint) = checkpoint(reservation) else {
             return Err(self);
         };
         if S::SUCCESSOR_POLICY == CaptureSuccessorPolicy::AllowOverlap {
@@ -147,7 +162,11 @@ impl<S: CaptureSession> PreparedCaptureSession<S> {
         sessions
             .install(session)
             .unwrap_or_else(|_| unreachable!("capture successor admission was proven"));
-        let displaced = commit_authority(authority, checkpoint);
+        let reservation = self
+            .reservation
+            .take()
+            .expect("prepared capture authority commits exactly once");
+        let displaced = commit_authority(reservation, checkpoint);
         drop(displaced);
         sessions.start_active(authority);
         Ok(CaptureSessionCommit { authority })

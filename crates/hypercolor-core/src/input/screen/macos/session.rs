@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -118,7 +118,6 @@ impl MacosScreenCaptureInput {
             telemetry,
             sessions: CaptureSessionSet::default(),
             worker_generation: 0,
-            next_worker_generation: AtomicU64::new(0),
             demand: ScreenCaptureDemand::Inactive,
             running: false,
             status: SourceStatusReporter::new(
@@ -361,13 +360,12 @@ impl MacosScreenCaptureInput {
         &self,
         prepared: PreparedWorker,
     ) -> anyhow::Result<StagedCaptureWorker> {
-        let worker_generation = self
-            .next_worker_generation
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |generation| {
-                generation.checked_add(1)
-            })
-            .map_err(|_| anyhow!("macOS capture worker generation exhausted"))?
-            + 1;
+        let reservation = self
+            .exact
+            .reserve_authority()
+            .map_err(|error| anyhow!("macOS capture worker generation exhausted: {error}"))?;
+        let authority = reservation.authority();
+        let worker_generation = authority.generation();
         let mailbox = self.control.mailbox();
         let worker_mailbox = mailbox.clone();
         let control = Arc::clone(&self.control);
@@ -376,7 +374,6 @@ impl MacosScreenCaptureInput {
         let telemetry = Arc::clone(&self.telemetry);
         let status_session = self.status_session.clone();
         let target_fps = prepared.target_fps;
-        let authority = CaptureSessionAuthority::new(worker_generation);
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = Arc::clone(&stop);
         let start = Arc::new(AtomicBool::new(false));
@@ -431,6 +428,7 @@ impl MacosScreenCaptureInput {
                 join: Some(join),
             },
             (),
+            reservation,
         );
         Ok(StagedCaptureWorker {
             generation: worker_generation,
@@ -455,10 +453,12 @@ impl MacosScreenCaptureInput {
         let commit = prepared
             .commit_into(
                 &mut self.sessions,
-                || Some(lock(&checkpoint_publication).checkpoint()),
-                move |authority, checkpoint| {
+                |_| Some(lock(&checkpoint_publication).checkpoint()),
+                move |reservation, checkpoint| {
                     *committed_generation = generation;
-                    let displaced_exact = exact.activate_authority(authority);
+                    let displaced_exact = exact
+                        .activate_reserved_authority(reservation)
+                        .expect("reserved macOS capture authority remains current");
                     let displaced_publication = {
                         let mut publication = lock(&commit_publication);
                         let _previous = publication
@@ -522,18 +522,16 @@ impl MacosScreenCaptureInput {
     }
 
     fn retire_worker_authority(&mut self, authority: CaptureSessionAuthority) {
-        debug_assert!(self.exact.is_current_authority(authority));
-        let retirement_generation = self
-            .next_worker_generation
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |generation| {
-                generation.checked_add(1)
-            })
-            .expect("macOS capture worker generation exhausted during retirement")
-            + 1;
-        self.worker_generation = retirement_generation;
-        let displaced_exact = self
+        let Some(retirement) = self
             .exact
-            .activate_authority(CaptureSessionAuthority::new(retirement_generation));
+            .retire_authority_if_current(authority)
+            .expect("macOS capture worker generation exhausted during retirement")
+        else {
+            return;
+        };
+        let retirement_generation = retirement.replacement().generation();
+        self.worker_generation = retirement_generation;
+        let displaced_exact = retirement.into_displaced();
         let (displaced_active, displaced_latest) = {
             let mut publication = lock(&self.publication);
             let displaced_active = publication

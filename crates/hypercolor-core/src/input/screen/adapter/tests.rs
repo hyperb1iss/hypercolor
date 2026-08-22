@@ -2,10 +2,11 @@ use super::{
     CaptureExactCommand, CaptureExactCommandEndpoint, CaptureExactCommandRejected,
     CaptureExactPublicationShared, CaptureExactRuntimeCollection, CaptureExactRuntimeOwner,
     CaptureExactRuntimeStore, CaptureOwnedSource, CapturePublication, CapturePublicationFence,
-    CapturePublicationSource, CaptureSession, CaptureSessionAuthority, CaptureSessionDeadline,
-    CaptureSessionReadiness, CaptureSessionSet, CaptureSessionTransaction, CaptureSuccessorPolicy,
-    VersionedCaptureSettings, begin_capture_exact_retirement, exact_preparation_abort,
-    reap_capture_exact_runtimes,
+    CapturePublicationSource, CaptureSession, CaptureSessionAuthority,
+    CaptureSessionAuthoritySequencer, CaptureSessionDeadline, CaptureSessionReadiness,
+    CaptureSessionSet, CaptureSessionTransaction, CaptureSuccessorPolicy,
+    ReservedCaptureSessionAuthority, VersionedCaptureSettings, begin_capture_exact_retirement,
+    exact_preparation_abort, reap_capture_exact_runtimes,
 };
 use crate::input::screen::{
     CaptureSourceId, ExactBoxList, PixelExtent, ScreenCaptureDemand, ScreenCommittedState,
@@ -178,6 +179,15 @@ fn readiness_deadline() -> CaptureSessionDeadline {
     CaptureSessionDeadline::after(Duration::from_secs(1))
 }
 
+fn reservation(generation: u64) -> ReservedCaptureSessionAuthority {
+    let sequencer = CaptureSessionAuthoritySequencer::default();
+    let mut reservation = None;
+    for _ in 0..generation {
+        reservation = Some(sequencer.reserve().expect("test authority reserves"));
+    }
+    reservation.expect("test authority generation is nonzero")
+}
+
 #[test]
 fn session_transaction_readiness_failure_preserves_prior_and_detaches_candidate() {
     let mut sessions = CaptureSessionSet::default();
@@ -187,8 +197,12 @@ fn session_transaction_readiness_failure_preserves_prior_and_detaches_candidate(
     let wakes = Arc::clone(&candidate.wakes);
     let detaches = Arc::clone(&candidate.detaches);
 
-    let result = CaptureSessionTransaction::new(candidate, FakeReadiness::failed("not ready"))
-        .prepare(readiness_deadline());
+    let result = CaptureSessionTransaction::new(
+        candidate,
+        FakeReadiness::failed("not ready"),
+        reservation(2),
+    )
+    .prepare(readiness_deadline());
 
     assert!(result.is_err());
     assert_eq!(aborts.load(Ordering::Relaxed), 1);
@@ -208,7 +222,7 @@ fn session_transaction_candidate_exit_before_commit_preserves_prior() {
     candidate.finished.store(true, Ordering::Release);
     let detaches = Arc::clone(&candidate.detaches);
 
-    let result = CaptureSessionTransaction::new(candidate, FakeReadiness::ready())
+    let result = CaptureSessionTransaction::new(candidate, FakeReadiness::ready(), reservation(2))
         .prepare(readiness_deadline());
 
     assert!(result.is_err());
@@ -229,20 +243,22 @@ fn session_transaction_commits_checkpoint_retirement_authority_and_start_in_orde
     let candidate_starts = Arc::clone(&candidate.starts);
     let mut sessions = CaptureSessionSet::default();
     assert!(sessions.install(prior).is_ok());
-    let prepared = CaptureSessionTransaction::new(candidate, FakeReadiness::ready())
-        .prepare(readiness_deadline())
-        .expect("candidate becomes ready");
+    let prepared =
+        CaptureSessionTransaction::new(candidate, FakeReadiness::ready(), reservation(2))
+            .prepare(readiness_deadline())
+            .expect("candidate becomes ready");
 
     let commit = prepared
         .commit_into(
             &mut sessions,
-            || {
+            |_| {
                 Some({
                     assert_eq!(prior_aborts.load(Ordering::Relaxed), 0);
                     "checkpoint"
                 })
             },
-            |authority, checkpoint| {
+            |reservation, checkpoint| {
+                let authority = reservation.authority();
                 assert_eq!(authority, CaptureSessionAuthority::new(2));
                 assert_eq!(checkpoint, "checkpoint");
                 assert_eq!(prior_aborts.load(Ordering::Relaxed), 1);
@@ -264,7 +280,8 @@ fn session_transaction_commits_checkpoint_retirement_authority_and_start_in_orde
 #[test]
 fn session_transaction_candidate_endpoint_is_hidden_until_commit() {
     let mut sessions = CaptureSessionSet::default();
-    let transaction = CaptureSessionTransaction::new(FakeSession::new(1), FakeReadiness::ready());
+    let transaction =
+        CaptureSessionTransaction::new(FakeSession::new(1), FakeReadiness::ready(), reservation(1));
     assert!(sessions.exact_endpoint().is_none());
     let prepared = transaction
         .prepare(readiness_deadline())
@@ -272,7 +289,7 @@ fn session_transaction_candidate_endpoint_is_hidden_until_commit() {
     assert!(sessions.exact_endpoint().is_none());
 
     prepared
-        .commit_into(&mut sessions, || Some(()), |_, ()| ())
+        .commit_into(&mut sessions, |_| Some(()), |_, ()| ())
         .unwrap_or_else(|_| panic!("ready candidate commits"));
 
     assert!(sessions.exact_endpoint().is_some());
@@ -286,11 +303,12 @@ fn session_transaction_checkpoint_rejection_preserves_prior() {
     let candidate_detaches = Arc::clone(&candidate.detaches);
     let mut sessions = CaptureSessionSet::default();
     assert!(sessions.install(prior).is_ok());
-    let prepared = CaptureSessionTransaction::new(candidate, FakeReadiness::ready())
-        .prepare(readiness_deadline())
-        .expect("candidate becomes ready");
+    let prepared =
+        CaptureSessionTransaction::new(candidate, FakeReadiness::ready(), reservation(2))
+            .prepare(readiness_deadline())
+            .expect("candidate becomes ready");
 
-    let result = prepared.commit_into(&mut sessions, || None::<()>, |_, ()| ());
+    let result = prepared.commit_into(&mut sessions, |_| None::<()>, |_, ()| ());
 
     assert!(result.is_err());
     drop(result);
@@ -775,8 +793,8 @@ fn publication_requires_current_source_and_activity_before_reactivation() {
 #[test]
 fn exact_publication_state_versions_sources_and_reaps_unowned_incarnations() {
     let state = CaptureExactPublicationShared::<FakeSource, FakeOwnedSource>::default();
-    let first_authority = CaptureSessionAuthority::new(1);
-    let successor_authority = CaptureSessionAuthority::new(2);
+    let first_reservation = state.reserve_authority().expect("first authority reserves");
+    let first_authority = first_reservation.authority();
     let first = FakeSource {
         id: CaptureSourceId::new("fake:first").expect("test source id is valid"),
         incarnation: 1,
@@ -787,7 +805,11 @@ fn exact_publication_state_versions_sources_and_reaps_unowned_incarnations() {
     };
 
     assert_eq!(state.resolution_revision(), 0);
-    drop(state.activate_authority(first_authority));
+    drop(
+        state
+            .activate_reserved_authority(first_reservation)
+            .expect("first authority activates"),
+    );
     assert!(state.is_current_authority(first_authority));
     state.replace_source_if_current(first_authority, Some(first.clone()));
     assert_eq!(state.resolution_revision(), 1);
@@ -835,7 +857,15 @@ fn exact_publication_state_versions_sources_and_reaps_unowned_incarnations() {
 
     state.replace_source_if_current(first_authority, Some(first.clone()));
     assert_eq!(state.resolution_revision(), 4);
-    drop(state.activate_authority(successor_authority));
+    let successor_reservation = state
+        .reserve_authority()
+        .expect("successor authority reserves");
+    let successor_authority = successor_reservation.authority();
+    drop(
+        state
+            .activate_reserved_authority(successor_reservation)
+            .expect("successor authority activates"),
+    );
     assert!(state.is_current_authority(successor_authority));
     assert_eq!(state.resolution_revision(), 5);
     assert!(!state.replace_source_if_current(first_authority, Some(replacement.clone())));
@@ -852,14 +882,128 @@ fn exact_publication_state_versions_sources_and_reaps_unowned_incarnations() {
 }
 
 #[test]
+fn authority_reservations_burn_on_drop_and_stale_commits_cannot_regress() {
+    let sequencer = CaptureSessionAuthoritySequencer::default();
+    let foreign = CaptureSessionAuthoritySequencer::default();
+    let foreign_reservation = foreign.reserve().expect("foreign authority reserves");
+    assert!(sequencer.commit(foreign_reservation).is_err());
+    {
+        let burned = sequencer.reserve().expect("first authority reserves");
+        assert_eq!(burned.authority().generation(), 1);
+    }
+    let stale = sequencer.reserve().expect("second authority reserves");
+    let successor = sequencer.reserve().expect("third authority reserves");
+
+    assert_eq!(
+        sequencer
+            .commit(successor)
+            .expect("newest authority commits")
+            .generation(),
+        3
+    );
+    assert!(sequencer.commit(stale).is_err());
+    assert_eq!(
+        sequencer
+            .current()
+            .expect("committed authority remains current")
+            .generation(),
+        3
+    );
+}
+
+#[test]
+fn exact_authority_retirement_is_conditional_and_does_not_consume_on_stale_retry() {
+    let state = CaptureExactPublicationShared::<FakeSource, FakeOwnedSource>::default();
+    let reservation = state.reserve_authority().expect("first authority reserves");
+    let authority = reservation.authority();
+    drop(
+        state
+            .activate_reserved_authority(reservation)
+            .expect("first authority activates"),
+    );
+    let source = FakeSource {
+        id: CaptureSourceId::new("fake:retirement").expect("test source id is valid"),
+        incarnation: 1,
+    };
+    assert!(state.replace_source_if_current(authority, Some(source)));
+
+    let retirement = state
+        .retire_authority_if_current(authority)
+        .expect("retirement authority reserves")
+        .expect("current authority retires");
+    let replacement = retirement.replacement();
+    assert_eq!(replacement.generation(), 2);
+    assert!(state.source().is_none());
+    assert!(!state.replace_source_if_current(authority, None));
+    assert!(
+        state
+            .retire_authority_if_current(authority)
+            .expect("stale retirement is not exhaustion")
+            .is_none()
+    );
+    let following = state
+        .reserve_authority()
+        .expect("stale retirement consumed no authority");
+    assert_eq!(following.authority().generation(), 3);
+    drop((retirement, following));
+}
+
+#[test]
+fn exact_authority_retirement_linearizes_against_source_installation() {
+    for incarnation in 1..=32 {
+        let state =
+            Arc::new(CaptureExactPublicationShared::<FakeSource, FakeOwnedSource>::default());
+        let reservation = state.reserve_authority().expect("authority reserves");
+        let authority = reservation.authority();
+        drop(
+            state
+                .activate_reserved_authority(reservation)
+                .expect("authority activates"),
+        );
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let installing_state = Arc::clone(&state);
+        let installing_barrier = Arc::clone(&barrier);
+        let install = std::thread::spawn(move || {
+            let source = FakeSource {
+                id: CaptureSourceId::new(format!("fake:race:{incarnation}"))
+                    .expect("test source id is valid"),
+                incarnation,
+            };
+            installing_barrier.wait();
+            installing_state.replace_source_if_current(authority, Some(source))
+        });
+        let retiring_state = Arc::clone(&state);
+        let retiring_barrier = Arc::clone(&barrier);
+        let retire = std::thread::spawn(move || {
+            retiring_barrier.wait();
+            retiring_state
+                .retire_authority_if_current(authority)
+                .expect("retirement authority reserves")
+                .expect("current authority retires")
+        });
+        barrier.wait();
+        let _installed = install.join().expect("source installer exits");
+        let retirement = retire.join().expect("authority retiree exits");
+
+        assert!(state.source().is_none());
+        assert_eq!(state.current_authority(), Some(retirement.replacement()));
+        drop(retirement);
+    }
+}
+
+#[test]
 fn authority_displacement_drops_owned_sources_after_releasing_ledger_locks() {
     let state = Arc::new(CaptureExactPublicationShared::<
         FakeSource,
         ReentrantOwnedSource,
     >::default());
-    let first_authority = CaptureSessionAuthority::new(1);
-    let successor_authority = CaptureSessionAuthority::new(2);
-    drop(state.activate_authority(first_authority));
+    let first_reservation = state.reserve_authority().expect("first authority reserves");
+    let first_authority = first_reservation.authority();
+    drop(
+        state
+            .activate_reserved_authority(first_reservation)
+            .expect("first authority activates"),
+    );
     let dropped = Arc::new(AtomicBool::new(false));
     assert!(state.register_owned_source_if_current(
         first_authority,
@@ -870,7 +1014,13 @@ fn authority_displacement_drops_owned_sources_after_releasing_ledger_locks() {
         }),
     ));
 
-    let displaced = state.activate_authority(successor_authority);
+    let successor_reservation = state
+        .reserve_authority()
+        .expect("successor authority reserves");
+    let successor_authority = successor_reservation.authority();
+    let displaced = state
+        .activate_reserved_authority(successor_reservation)
+        .expect("successor authority activates");
     assert!(!dropped.load(Ordering::Acquire));
     drop(displaced);
     assert!(dropped.load(Ordering::Acquire));
@@ -902,9 +1052,19 @@ fn extracted_nodes_keep_their_original_destruction_order() {
 #[test]
 fn stale_reap_leaves_successor_owned_sources_and_runtimes_intact() {
     let state = CaptureExactPublicationShared::<FakeSource, FakeOwnedSource>::default();
-    let stale_authority = CaptureSessionAuthority::new(1);
-    let successor_authority = CaptureSessionAuthority::new(2);
-    drop(state.activate_authority(successor_authority));
+    let stale_authority = state
+        .reserve_authority()
+        .expect("stale authority reserves")
+        .authority();
+    let successor_reservation = state
+        .reserve_authority()
+        .expect("successor authority reserves");
+    let successor_authority = successor_reservation.authority();
+    drop(
+        state
+            .activate_reserved_authority(successor_reservation)
+            .expect("successor authority activates"),
+    );
     assert!(state.register_owned_source_if_current(
         successor_authority,
         ExactBoxList::boxed_node(FakeOwnedSource {

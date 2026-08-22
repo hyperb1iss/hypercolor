@@ -38,14 +38,23 @@ use crate::input::{SourceIssue, SourceKind, SourceState, SourceStatusReporter};
 fn settings(session_generation: u64) -> Arc<SharedSettings> {
     let publication = Arc::new(Mutex::new(WaylandCapturePublication::default()));
     let exact = WaylandExactPublicationShared::default();
-    drop(exact.activate_authority(CaptureSessionAuthority::new(session_generation)));
+    let mut reservation = None;
+    for _ in 0..session_generation {
+        reservation = Some(exact.reserve_authority().expect("test authority reserves"));
+    }
+    let reservation = reservation.expect("test session generation is nonzero");
+    assert_eq!(reservation.authority().generation(), session_generation);
+    drop(
+        exact
+            .activate_reserved_authority(reservation)
+            .expect("test authority activates"),
+    );
     Arc::new(SharedSettings {
         values: VersionedCaptureSettings::new(CaptureConfig::default(), active_demand()),
         admission_coordinator: ScreenByteAdmissionCoordinator::default(),
         compute_capacity_policy: ScreenComputeCapacityPolicy::UNBOUNDED,
         topology_generation: 0.into(),
         topology: Mutex::new(None),
-        next_session_generation: session_generation.into(),
         session_generation: session_generation.into(),
         session_guard: Mutex::new(()),
         publication,
@@ -1237,17 +1246,24 @@ fn rolled_back_session_generation_is_not_reused() {
     let settings = settings(61);
 
     let rolled_back = settings
-        .reserve_session_generation()
+        .exact
+        .reserve_authority()
         .expect("first candidate reserves a generation");
     let successor = settings
-        .reserve_session_generation()
+        .exact
+        .reserve_authority()
         .expect("successor reserves a fresh generation");
     settings
-        .prepare_reserved_session_commit(successor)
+        .prepare_reserved_session_commit(&successor)
         .expect("reserved successor remains newer than current authority")
-        .commit();
+        .commit(successor);
 
-    assert_eq!(rolled_back, 62);
+    assert_eq!(rolled_back.authority().generation(), 62);
+    let successor = settings
+        .exact
+        .current_authority()
+        .expect("successor authority commits")
+        .generation();
     assert_eq!(successor, 63);
     assert_eq!(
         settings.session_generation.load(Ordering::Acquire),
@@ -1266,30 +1282,33 @@ fn successor_commit_serializes_retirement_without_a_tombstone() {
     let prior_cancel = AtomicBool::new(false);
     let prior_generation = AtomicU64::new(61);
     let successor = settings
-        .reserve_session_generation()
+        .exact
+        .reserve_authority()
         .expect("successor reserves a fresh generation");
     let commit = settings
-        .prepare_reserved_session_commit(successor)
+        .prepare_reserved_session_commit(&successor)
         .expect("successor reservation remains current before retirement");
+    let successor_generation = successor.authority().generation();
 
     prior_cancel.store(true, Ordering::SeqCst);
-    commit.commit();
+    commit.commit(successor);
     settings.cancel_worker_session(&prior_cancel, &prior_generation);
 
-    assert_eq!(successor, 62);
+    assert_eq!(successor_generation, 62);
     assert_eq!(
         settings.session_generation.load(Ordering::Acquire),
-        successor
-    );
-    assert_eq!(
-        settings.next_session_generation.load(Ordering::Acquire),
-        successor
+        successor_generation
     );
     assert!(
         settings
             .exact
-            .is_current_authority(CaptureSessionAuthority::new(successor))
+            .is_current_authority(CaptureSessionAuthority::new(successor_generation))
     );
+    let following = settings
+        .exact
+        .reserve_authority()
+        .expect("following authority reserves");
+    assert_eq!(following.authority().generation(), 63);
 }
 
 #[test]

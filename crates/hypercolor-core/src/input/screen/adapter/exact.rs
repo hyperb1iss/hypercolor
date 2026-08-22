@@ -1,19 +1,13 @@
-use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 #[cfg(test)]
 use super::super::ExactBoxNode;
 use super::super::{CaptureSourceId, ExactBoxList, ScreenCommittedState, ScreenPublicationHub};
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(in crate::input::screen) struct CaptureSessionAuthority(NonZeroU64);
-
-impl CaptureSessionAuthority {
-    pub(in crate::input::screen) fn new(generation: u64) -> Self {
-        Self(NonZeroU64::new(generation).expect("capture session authority must be nonzero"))
-    }
-}
+use super::{
+    CaptureSessionAuthority, CaptureSessionAuthorityExhausted, CaptureSessionAuthoritySequencer,
+    ReservedCaptureSessionAuthority, StaleCaptureSessionReservation,
+};
 
 pub(in crate::input::screen) trait CapturePublicationSource:
     Clone + PartialEq
@@ -32,8 +26,23 @@ pub(in crate::input::screen) struct CaptureAuthorityDisplacement<S, O> {
     _owned_sources: ExactBoxList<O>,
 }
 
+pub(in crate::input::screen) struct CaptureAuthorityRetirement<S, O> {
+    replacement: CaptureSessionAuthority,
+    displaced: CaptureAuthorityDisplacement<S, O>,
+}
+
+impl<S, O> CaptureAuthorityRetirement<S, O> {
+    pub(in crate::input::screen) const fn replacement(&self) -> CaptureSessionAuthority {
+        self.replacement
+    }
+
+    pub(in crate::input::screen) fn into_displaced(self) -> CaptureAuthorityDisplacement<S, O> {
+        self.displaced
+    }
+}
+
 pub(in crate::input::screen) struct CaptureExactPublicationShared<S, O> {
-    authority: AtomicU64,
+    authority: CaptureSessionAuthoritySequencer,
     source: Mutex<Option<S>>,
     owned_sources: Mutex<ExactBoxList<O>>,
     hub: Mutex<Option<Arc<ScreenPublicationHub>>>,
@@ -43,7 +52,7 @@ pub(in crate::input::screen) struct CaptureExactPublicationShared<S, O> {
 impl<S, O> Default for CaptureExactPublicationShared<S, O> {
     fn default() -> Self {
         Self {
-            authority: AtomicU64::new(0),
+            authority: CaptureSessionAuthoritySequencer::default(),
             source: Mutex::new(None),
             owned_sources: Mutex::new(ExactBoxList::default()),
             hub: Mutex::new(None),
@@ -57,10 +66,24 @@ where
     S: CapturePublicationSource,
     O: CaptureOwnedSource,
 {
-    pub(in crate::input::screen) fn activate_authority(
+    pub(in crate::input::screen) fn reserve_authority(
         &self,
-        authority: CaptureSessionAuthority,
-    ) -> CaptureAuthorityDisplacement<S, O> {
+    ) -> Result<ReservedCaptureSessionAuthority, CaptureSessionAuthorityExhausted> {
+        self.authority.reserve()
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(in crate::input::screen) fn can_activate_reserved_authority(
+        &self,
+        reservation: &ReservedCaptureSessionAuthority,
+    ) -> bool {
+        self.authority.can_commit(reservation)
+    }
+
+    pub(in crate::input::screen) fn activate_reserved_authority(
+        &self,
+        reservation: ReservedCaptureSessionAuthority,
+    ) -> Result<CaptureAuthorityDisplacement<S, O>, StaleCaptureSessionReservation> {
         let mut source = self
             .source
             .lock()
@@ -69,13 +92,7 @@ where
             .owned_sources
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if self.authority.load(Ordering::Acquire) == authority.0.get() {
-            return CaptureAuthorityDisplacement {
-                _source: None,
-                _owned_sources: ExactBoxList::default(),
-            };
-        }
-        self.authority.store(authority.0.get(), Ordering::Release);
+        self.authority.commit(reservation)?;
         let displaced_source = source.take();
         let displaced_owned_sources = std::mem::take(&mut *owned_sources);
         if displaced_source.is_some() {
@@ -83,17 +100,58 @@ where
         }
         drop(owned_sources);
         drop(source);
-        CaptureAuthorityDisplacement {
+        Ok(CaptureAuthorityDisplacement {
             _source: displaced_source,
             _owned_sources: displaced_owned_sources,
+        })
+    }
+
+    pub(in crate::input::screen) fn retire_authority_if_current(
+        &self,
+        expected: CaptureSessionAuthority,
+    ) -> Result<Option<CaptureAuthorityRetirement<S, O>>, CaptureSessionAuthorityExhausted> {
+        let mut source = self
+            .source
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut owned_sources = self
+            .owned_sources
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !self.authority.is_current(expected) {
+            return Ok(None);
         }
+        let reservation = self.authority.reserve()?;
+        let replacement = self
+            .authority
+            .commit(reservation)
+            .expect("reserved retirement authority remains newer than current");
+        let displaced_source = source.take();
+        let displaced_owned_sources = std::mem::take(&mut *owned_sources);
+        if displaced_source.is_some() {
+            self.advance_resolution_revision();
+        }
+        drop(owned_sources);
+        drop(source);
+        Ok(Some(CaptureAuthorityRetirement {
+            replacement,
+            displaced: CaptureAuthorityDisplacement {
+                _source: displaced_source,
+                _owned_sources: displaced_owned_sources,
+            },
+        }))
     }
 
     pub(in crate::input::screen) fn is_current_authority(
         &self,
         authority: CaptureSessionAuthority,
     ) -> bool {
-        self.authority.load(Ordering::Acquire) == authority.0.get()
+        self.authority.is_current(authority)
+    }
+
+    #[cfg(test)]
+    pub(in crate::input::screen) fn current_authority(&self) -> Option<CaptureSessionAuthority> {
+        self.authority.current()
     }
 
     pub(in crate::input::screen) fn replace_source_if_current(

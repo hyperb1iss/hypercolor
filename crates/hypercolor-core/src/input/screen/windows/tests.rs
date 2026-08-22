@@ -1277,7 +1277,11 @@ fn deactivated_worker_is_reused_when_capture_reactivates() {
         .expect("active capture owns a worker thread")
         .thread()
         .id();
-    let first_generation = input.settings.session_generation.load(Ordering::Acquire);
+    let first_generation = input
+        .exact
+        .current_authority()
+        .expect("active worker owns exact authority")
+        .generation();
 
     input
         .set_capture_demand_state(ScreenCaptureDemand::Inactive)
@@ -1304,7 +1308,11 @@ fn deactivated_worker_is_reused_when_capture_reactivates() {
 
     assert_eq!(reactivated_thread, first_thread);
     assert_eq!(
-        input.settings.session_generation.load(Ordering::Acquire),
+        input
+            .exact
+            .current_authority()
+            .expect("reactivated worker retains exact authority")
+            .generation(),
         first_generation,
         "reactivation must not spawn a replacement worker"
     );
@@ -1367,7 +1375,11 @@ fn disconnected_worker_is_reaped_before_activation_retries_once() {
     assert!(exited.load(Ordering::Acquire));
     assert_ne!(replacement_thread, disconnected_thread);
     assert_eq!(
-        input.settings.session_generation.load(Ordering::Acquire),
+        input
+            .exact
+            .current_authority()
+            .expect("replacement worker owns exact authority")
+            .generation(),
         1,
         "only the replacement worker allocates a capture session"
     );
@@ -1379,11 +1391,14 @@ fn disconnected_worker_is_reaped_before_activation_retries_once() {
 fn retired_worker_cannot_republish_after_stop_returns() {
     let mut input = WindowsScreenCaptureInput::new(CaptureConfig::default());
     let authority = CaptureSessionAuthority::new(1);
-    input
-        .settings
-        .session_generation
-        .store(1, Ordering::Release);
-    drop(input.exact.activate_authority(authority));
+    let reservation = input.exact.reserve_authority().expect("authority reserves");
+    assert_eq!(reservation.authority(), authority);
+    drop(
+        input
+            .exact
+            .activate_reserved_authority(reservation)
+            .expect("authority activates"),
+    );
 
     let epoch = active_epoch("display:main", 3, 1, 1);
     {

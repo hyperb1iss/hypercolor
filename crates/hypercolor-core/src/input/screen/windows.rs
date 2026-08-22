@@ -122,7 +122,6 @@ struct SharedSettings {
     values: VersionedCaptureSettings<VersionedCaptureConfig>,
     compute_capacity_policy: ScreenComputeCapacityPolicy,
     admission_coordinator: ScreenByteAdmissionCoordinator,
-    session_generation: AtomicU64,
     activity_generation: AtomicU64,
 }
 
@@ -465,8 +464,17 @@ impl Deref for ExactPublicationShared {
 impl ExactPublicationShared {
     #[cfg(test)]
     fn install_test_source(&self, next: Option<WindowsPublicationSource>) -> bool {
-        let authority = CaptureSessionAuthority::new(1);
-        drop(self.activate_authority(authority));
+        let authority = if let Some(authority) = self.current_authority() {
+            authority
+        } else {
+            let reservation = self.reserve_authority().expect("test authority reserves");
+            let authority = reservation.authority();
+            drop(
+                self.activate_reserved_authority(reservation)
+                    .expect("test authority activates"),
+            );
+            authority
+        };
         self.replace_source_if_current(authority, next)
     }
 
@@ -940,7 +948,6 @@ impl WindowsScreenCaptureInput {
                 ),
                 compute_capacity_policy,
                 admission_coordinator,
-                session_generation: AtomicU64::new(0),
                 activity_generation: AtomicU64::new(0),
             }),
             running: false,
@@ -1031,15 +1038,12 @@ impl WindowsScreenCaptureInput {
         let processed_activity_generation = Arc::clone(&worker_processed_activity_generation);
         let status_session = self.status_session.clone();
         let source_sink = self.source_sink.clone();
-        let session_generation = self
-            .settings
-            .session_generation
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |generation| {
-                generation.checked_add(1)
-            })
-            .map_err(|_| anyhow!("Windows capture session generation exhausted"))?
-            + 1;
-        let authority = CaptureSessionAuthority::new(session_generation);
+        let reservation = self
+            .exact
+            .reserve_authority()
+            .map_err(|error| anyhow!("Windows capture session generation exhausted: {error}"))?;
+        let authority = reservation.authority();
+        let session_generation = authority.generation();
 
         let join_handle = spawn_worker(
             thread::Builder::new().name("hypercolor-screen-capture".to_owned()),
@@ -1072,14 +1076,19 @@ impl WindowsScreenCaptureInput {
                 processed_activity_generation,
             },
             WindowsSessionReadiness(ready_rx),
+            reservation,
         );
         let prepared = transaction.prepare(CaptureSessionDeadline::after(WORKER_READY_TIMEOUT))?;
         let exact = Arc::clone(&self.exact);
         let commit = prepared
             .commit_into(
                 &mut self.sessions,
-                || Some(()),
-                move |authority, ()| exact.activate_authority(authority),
+                |_| Some(()),
+                move |reservation, ()| {
+                    exact
+                        .activate_reserved_authority(reservation)
+                        .expect("reserved Windows capture authority remains current")
+                },
             )
             .map_err(|_| anyhow!("Windows capture successor admission changed before commit"))?;
         assert_eq!(commit.authority(), authority);
@@ -1173,21 +1182,11 @@ impl WindowsScreenCaptureInput {
     }
 
     fn retire_exact_authority(&self, authority: CaptureSessionAuthority) {
-        if !self.exact.is_current_authority(authority) {
-            return;
-        }
-        let retirement_generation = self
-            .settings
-            .session_generation
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |generation| {
-                generation.checked_add(1)
-            })
-            .expect("Windows capture session generation exhausted during retirement")
-            + 1;
-        drop(
-            self.exact
-                .activate_authority(CaptureSessionAuthority::new(retirement_generation)),
-        );
+        let retirement = self
+            .exact
+            .retire_authority_if_current(authority)
+            .expect("Windows capture session generation exhausted during retirement");
+        drop(retirement);
     }
 
     fn send_activity_command(&self, active: bool, activity_generation: u64) -> bool {
