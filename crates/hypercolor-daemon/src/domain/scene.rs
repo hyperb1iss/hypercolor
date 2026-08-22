@@ -95,7 +95,9 @@ pub(crate) struct PersistedSceneEffectIdMigration {
 pub(crate) struct SceneEffectIdMigrationPublication {
     manager: OwnedRwLockWriteGuard<SceneManager>,
     store: Option<OwnedRwLockWriteGuard<SceneStore>>,
-    migration: PersistedSceneEffectIdMigration,
+    candidate: Option<SceneManager>,
+    stored_scenes: Option<HashMap<SceneId, Scene>>,
+    _snapshot_save_guard: OwnedRwLockWriteGuard<()>,
 }
 
 struct SceneServiceInner {
@@ -324,34 +326,40 @@ impl SceneService {
             None
         };
 
+        let PersistedSceneEffectIdMigration {
+            base_revision: _,
+            candidate,
+            stored_scenes,
+            snapshot_save_guard,
+        } = migration;
         Ok(SceneEffectIdMigrationPublication {
             manager,
             store,
-            migration,
+            candidate: Some(candidate),
+            stored_scenes,
+            _snapshot_save_guard: snapshot_save_guard,
         })
     }
 
     pub(crate) fn publish_effect_id_migration(
         &self,
-        publication: SceneEffectIdMigrationPublication,
+        publication: &mut SceneEffectIdMigrationPublication,
     ) -> SceneCommit {
         let SceneEffectIdMigrationPublication {
-            mut manager,
-            mut store,
-            migration,
-        } = publication;
-        let PersistedSceneEffectIdMigration {
-            base_revision: _,
+            manager,
+            store,
             candidate,
             stored_scenes,
-            snapshot_save_guard: _snapshot_save_guard,
-        } = migration;
+            _snapshot_save_guard: _,
+        } = publication;
 
-        if let (Some(store), Some(stored_scenes)) = (store.as_mut(), stored_scenes) {
+        if let (Some(store), Some(stored_scenes)) = (store.as_mut(), stored_scenes.take()) {
             store.replace_named_scenes(stored_scenes.into_values());
         }
 
-        *manager = candidate;
+        **manager = candidate
+            .take()
+            .expect("scene migration publication must publish exactly once");
         let ticket = self.0.commits.admit(Arc::clone(&self.0.event_bus));
         self.0
             .plan

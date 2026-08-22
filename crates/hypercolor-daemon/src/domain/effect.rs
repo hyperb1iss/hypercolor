@@ -35,7 +35,7 @@ use hypercolor_types::layer::LayerSource;
 use hypercolor_types::library::PresetId;
 use hypercolor_types::scene::{SceneId, Zone, ZoneId};
 use hypercolor_types::spatial::SpatialLayout;
-use tokio::sync::{OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock, RwLockWriteGuard};
+use tokio::sync::{OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
 
 use crate::domain::commit::SceneCommit;
 use crate::domain::context::SceneContext;
@@ -64,6 +64,9 @@ pub struct EffectContext {
     identity_publication_test_barrier:
         Arc<std::sync::Mutex<Option<Arc<EffectResolutionTestBarrier>>>>,
     #[cfg(test)]
+    identity_inter_component_test_barrier:
+        Arc<std::sync::Mutex<Option<Arc<EffectResolutionTestBarrier>>>>,
+    #[cfg(test)]
     install_test_barrier: Arc<std::sync::Mutex<Option<Arc<EffectResolutionTestBarrier>>>>,
 }
 
@@ -73,20 +76,20 @@ pub(crate) struct EffectResolutionTestBarrier {
     release: tokio::sync::Notify,
 }
 
-pub(crate) struct EffectRegistryUpdate<'a> {
+pub(crate) struct EffectRegistryUpdate {
     pending_file: Option<PendingEffectFile>,
     update_guard: OwnedRwLockWriteGuard<()>,
-    registry: &'a RwLock<EffectRegistry>,
+    registry: Arc<RwLock<EffectRegistry>>,
     base_generation: u64,
     candidate: EffectRegistry,
     report: RescanReport,
 }
 
-pub(crate) struct EffectRegistryPublication<'a> {
+pub(crate) struct EffectRegistryPublication {
     pending_file: Option<PendingEffectFile>,
-    update_guard: OwnedRwLockWriteGuard<()>,
-    registry: RwLockWriteGuard<'a, EffectRegistry>,
-    candidate: EffectRegistry,
+    _update_guard: OwnedRwLockWriteGuard<()>,
+    registry: OwnedRwLockWriteGuard<EffectRegistry>,
+    candidate: Option<EffectRegistry>,
     report: RescanReport,
 }
 
@@ -152,6 +155,8 @@ impl EffectContext {
             resolution_test_barrier: Arc::new(std::sync::Mutex::new(None)),
             #[cfg(test)]
             identity_publication_test_barrier: Arc::new(std::sync::Mutex::new(None)),
+            #[cfg(test)]
+            identity_inter_component_test_barrier: Arc::new(std::sync::Mutex::new(None)),
             #[cfg(test)]
             install_test_barrier: Arc::new(std::sync::Mutex::new(None)),
         }
@@ -343,7 +348,7 @@ impl EffectContext {
         })
     }
 
-    pub(crate) async fn prepare_rescan(&self) -> EffectRegistryUpdate<'_> {
+    pub(crate) async fn prepare_rescan(&self) -> EffectRegistryUpdate {
         let gate = Arc::clone(&self.update_gate).write_owned().await;
         let registry = self.registry.read().await;
         let base_generation = registry.generation();
@@ -354,14 +359,14 @@ impl EffectContext {
         EffectRegistryUpdate {
             pending_file: None,
             update_guard: gate,
-            registry: self.registry.as_ref(),
+            registry: Arc::clone(&self.registry),
             base_generation,
             candidate,
             report,
         }
     }
 
-    pub(crate) async fn prepare_reload(&self, path: &Path) -> EffectRegistryUpdate<'_> {
+    pub(crate) async fn prepare_reload(&self, path: &Path) -> EffectRegistryUpdate {
         let gate = Arc::clone(&self.update_gate).write_owned().await;
         let registry = self.registry.read().await;
         let base_generation = registry.generation();
@@ -372,7 +377,7 @@ impl EffectContext {
         EffectRegistryUpdate {
             pending_file: None,
             update_guard: gate,
-            registry: self.registry.as_ref(),
+            registry: Arc::clone(&self.registry),
             base_generation,
             candidate,
             report,
@@ -383,7 +388,7 @@ impl EffectContext {
         &self,
         path: &Path,
         raw_html: &str,
-    ) -> Result<(EffectRegistryUpdate<'_>, EffectMetadata, bool), DomainError> {
+    ) -> Result<(EffectRegistryUpdate, EffectMetadata, bool), DomainError> {
         let gate = Arc::clone(&self.update_gate).write_owned().await;
         let pending_file =
             PendingEffectFile::replace(path, raw_html.as_bytes()).map_err(DomainError::Internal)?;
@@ -428,7 +433,7 @@ impl EffectContext {
             EffectRegistryUpdate {
                 pending_file: Some(pending_file),
                 update_guard: gate,
-                registry: self.registry.as_ref(),
+                registry: Arc::clone(&self.registry),
                 base_generation,
                 candidate,
                 report,
@@ -478,6 +483,21 @@ impl EffectContext {
     }
 
     #[cfg(test)]
+    pub(crate) fn pause_next_identity_inter_component_for_test(
+        &self,
+    ) -> Arc<EffectResolutionTestBarrier> {
+        let barrier = Arc::new(EffectResolutionTestBarrier {
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+        });
+        *self
+            .identity_inter_component_test_barrier
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&barrier));
+        barrier
+    }
+
+    #[cfg(test)]
     pub(crate) fn pause_next_install_write_for_test(&self) -> Arc<EffectResolutionTestBarrier> {
         let barrier = Arc::new(EffectResolutionTestBarrier {
             entered: tokio::sync::Notify::new(),
@@ -507,6 +527,19 @@ impl EffectContext {
     pub(crate) async fn pause_before_identity_publication_for_test(&self) {
         let barrier = self
             .identity_publication_test_barrier
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(barrier) = barrier {
+            barrier.entered.notify_one();
+            barrier.release.notified().await;
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn pause_between_identity_components_for_test(&self) {
+        let barrier = self
+            .identity_inter_component_test_barrier
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
@@ -629,15 +662,15 @@ impl EffectResolutionTestBarrier {
     }
 }
 
-impl<'a> EffectRegistryUpdate<'a> {
+impl EffectRegistryUpdate {
     pub(crate) const fn report(&self) -> &RescanReport {
         &self.report
     }
 
     pub(crate) async fn prepare_publication(
         self,
-    ) -> Result<EffectRegistryPublication<'a>, DomainError> {
-        let registry = self.registry.write().await;
+    ) -> Result<EffectRegistryPublication, DomainError> {
+        let registry = Arc::clone(&self.registry).write_owned().await;
         if registry.generation() != self.base_generation {
             return Err(DomainError::conflict(
                 "effect registry changed while publishing an identity migration",
@@ -645,22 +678,24 @@ impl<'a> EffectRegistryUpdate<'a> {
         }
         Ok(EffectRegistryPublication {
             pending_file: self.pending_file,
-            update_guard: self.update_guard,
+            _update_guard: self.update_guard,
             registry,
-            candidate: self.candidate,
+            candidate: Some(self.candidate),
             report: self.report,
         })
     }
 }
 
-impl EffectRegistryPublication<'_> {
-    pub(crate) fn publish(mut self) -> RescanReport {
-        *self.registry = self.candidate;
+impl EffectRegistryPublication {
+    pub(crate) fn publish(&mut self) -> RescanReport {
+        *self.registry = self
+            .candidate
+            .take()
+            .expect("effect registry publication must publish exactly once");
         if let Some(pending_file) = self.pending_file.take() {
             pending_file.commit();
         }
-        drop(self.update_guard);
-        self.report
+        std::mem::take(&mut self.report)
     }
 }
 

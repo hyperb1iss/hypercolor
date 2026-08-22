@@ -77,7 +77,8 @@ pub(crate) struct PersistedDisplayPreferencesEffectIdMigration {
 
 pub(crate) struct DisplayPreferencesEffectIdMigrationPublication {
     store: OwnedRwLockWriteGuard<DisplayPreferencesStore>,
-    migration: PersistedDisplayPreferencesEffectIdMigration,
+    candidate: Option<HashMap<DeviceId, DisplayPreference>>,
+    migrated: usize,
 }
 
 impl DisplayPreferencesStore {
@@ -363,13 +364,19 @@ impl DisplayPreferencesEffectIdMigrationPublication {
         if !store.effect_id_migration_is_current(&migration) {
             anyhow::bail!("effect ID migration was superseded by newer display preferences");
         }
-        Ok(Self { store, migration })
+        Ok(Self {
+            store,
+            candidate: Some(migration.candidate),
+            migrated: migration.migrated,
+        })
     }
 
-    pub(crate) fn publish(mut self) -> usize {
-        debug_assert!(self.store.effect_id_migration_is_current(&self.migration));
-        self.store.preferences = self.migration.candidate;
-        self.migration.migrated
+    pub(crate) fn publish(&mut self) -> usize {
+        self.store.preferences = self
+            .candidate
+            .take()
+            .expect("display migration publication must publish exactly once");
+        self.migrated
     }
 }
 

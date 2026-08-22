@@ -39,13 +39,13 @@ struct ActivePlaylistEffectIdMigrationPublication {
     migrated: usize,
 }
 
-struct EffectIdMigrationPublication<'a> {
-    registry: EffectRegistryPublication<'a>,
+struct EffectIdMigrationPublication {
+    registry: EffectRegistryPublication,
     scene: SceneEffectIdMigrationPublication,
     display: Option<DisplayPreferencesEffectIdMigrationPublication>,
     library: Option<Box<dyn LibraryEffectIdMigrationPublication>>,
     active_playlist: ActivePlaylistEffectIdMigrationPublication,
-    runtime: PersistedRuntimeSessionEffectIdMigration,
+    _runtime: PersistedRuntimeSessionEffectIdMigration,
 }
 
 struct EffectIdMigrationPublicationParts {
@@ -135,11 +135,12 @@ pub(crate) async fn install_registry_file(
 
 async fn apply_registry_update(
     state: &AppState,
-    update: EffectRegistryUpdate<'_>,
+    update: EffectRegistryUpdate,
 ) -> Result<RescanReport, DomainError> {
     let migrations = update.report().legacy_effect_ids.clone();
     if migrations.is_empty() {
-        let report = update.prepare_publication().await?.publish();
+        let mut publication = update.prepare_publication().await?;
+        let report = publication.publish();
         if report.added > 0 || report.removed > 0 || report.updated > 0 {
             crate::domain::effect::invalidate_active_zones(&state.domains.effects).await?;
         }
@@ -319,8 +320,8 @@ impl ActivePlaylistEffectIdMigration {
 }
 
 impl ActivePlaylistEffectIdMigrationPublication {
-    fn publish(mut self) -> usize {
-        if let (Some(playlist), Some(candidate)) = (self.playlist.as_mut(), self.candidate) {
+    fn publish(&mut self) -> usize {
+        if let (Some(playlist), Some(candidate)) = (self.playlist.as_mut(), self.candidate.take()) {
             **playlist = candidate;
         }
         self.migrated
@@ -370,24 +371,21 @@ impl EffectIdMigrationPublicationParts {
         })
     }
 
-    fn with_registry(
-        self,
-        registry: EffectRegistryPublication<'_>,
-    ) -> EffectIdMigrationPublication<'_> {
+    fn with_registry(self, registry: EffectRegistryPublication) -> EffectIdMigrationPublication {
         EffectIdMigrationPublication {
             registry,
             scene: self.scene,
             display: self.display,
             library: self.library,
             active_playlist: self.active_playlist,
-            runtime: self.runtime,
+            _runtime: self.runtime,
         }
     }
 }
 
-impl EffectIdMigrationPublication<'_> {
+impl EffectIdMigrationPublication {
     async fn publish(
-        self,
+        mut self,
         state: &AppState,
     ) -> (
         RescanReport,
@@ -395,25 +393,24 @@ impl EffectIdMigrationPublication<'_> {
         usize,
         usize,
     ) {
-        let Self {
-            registry,
-            scene,
-            display,
-            library,
-            active_playlist,
-            runtime,
-        } = self;
-        let library_migrated = match library {
+        let library_migrated = match self.library.as_mut() {
             Some(library) => library.publish().await,
             None => 0,
         };
-        if let Some(display) = display {
+        #[cfg(test)]
+        state
+            .domains
+            .effects
+            .pause_between_identity_components_for_test()
+            .await;
+        if let Some(display) = self.display.as_mut() {
             display.publish();
         }
-        let active_playlist_migrated = active_playlist.publish();
-        let scene_commit = state.scene_manager.publish_effect_id_migration(scene);
-        let report = registry.publish();
-        drop(runtime);
+        let active_playlist_migrated = self.active_playlist.publish();
+        let scene_commit = state
+            .scene_manager
+            .publish_effect_id_migration(&mut self.scene);
+        let report = self.registry.publish();
         (
             report,
             scene_commit,

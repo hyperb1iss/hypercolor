@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::Json;
 use axum::extract::{Path as AxumPath, State};
@@ -570,6 +571,142 @@ async fn late_rescan_migrates_every_live_and_durable_reference_before_publicatio
         .map(|path| std::fs::read(path).expect("migrated store should read again"))
         .collect::<Vec<_>>();
     assert_eq!(after_restart, before_restart);
+}
+
+#[tokio::test]
+async fn identity_publication_blocks_every_observer_until_registry_assignment() {
+    let temp = TempDir::new().expect("tempdir");
+    let fixture = late_migration_fixture(&temp).await;
+    let legacy_id = fixture.legacy_id;
+    let canonical_id = fixture.canonical_id;
+    let device_id = fixture.device_id;
+    let state = Arc::new(fixture.state);
+    let barrier = state
+        .domains
+        .effects
+        .pause_next_identity_inter_component_for_test();
+    let rescan_state = Arc::clone(&state);
+    let rescan = tokio::spawn(async move { rescan_registry(rescan_state.as_ref()).await });
+
+    barrier.wait_until_entered().await;
+
+    let library_state = Arc::clone(&state);
+    let mut library_observer =
+        tokio::spawn(
+            async move { library_state.library_store.list_favorites().await[0].effect_id },
+        );
+    let display_state = Arc::clone(&state);
+    let mut display_observer = tokio::spawn(async move {
+        display_state
+            .display_preferences
+            .read()
+            .await
+            .get(device_id)
+            .map(|preference| preference.effect_id)
+    });
+    let scene_state = Arc::clone(&state);
+    let mut scene_observer = tokio::spawn(async move {
+        scene_state
+            .scene_manager
+            .snapshot()
+            .await
+            .list()
+            .into_iter()
+            .flat_map(|scene| &scene.zones)
+            .flat_map(hypercolor_types::scene::Zone::effect_ids)
+            .collect::<Vec<_>>()
+    });
+    let registry = state.domains.effects.registry_handle();
+    let mut registry_observer = tokio::spawn(async move {
+        let registry = registry.read().await;
+        (
+            registry.get(&legacy_id).is_some(),
+            registry.get(&canonical_id).is_some(),
+        )
+    });
+    let playlist_state = Arc::clone(&state);
+    let mut playlist_observer = tokio::spawn(async move {
+        let playlist = playlist_state
+            .playlist_runtime
+            .lock()
+            .await
+            .active
+            .as_ref()
+            .map(|active| Arc::clone(&active.playlist))
+            .expect("playlist should remain active");
+        playlist.read().await.items[0].target.clone()
+    });
+
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), &mut library_observer)
+            .await
+            .is_err(),
+        "library observer escaped the retained publication transaction"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), &mut display_observer)
+            .await
+            .is_err(),
+        "display observer escaped the retained publication transaction"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), &mut registry_observer)
+            .await
+            .is_err(),
+        "registry observer escaped the retained publication transaction"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), &mut scene_observer)
+            .await
+            .is_err(),
+        "scene observer escaped the retained publication transaction"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), &mut playlist_observer)
+            .await
+            .is_err(),
+        "playlist observer escaped the retained publication transaction"
+    );
+
+    barrier.release();
+    rescan
+        .await
+        .expect("rescan should not panic")
+        .expect("rescan should publish atomically");
+
+    assert_eq!(
+        library_observer
+            .await
+            .expect("library observer should finish"),
+        canonical_id
+    );
+    assert_eq!(
+        display_observer
+            .await
+            .expect("display observer should finish"),
+        Some(canonical_id)
+    );
+    assert!(
+        scene_observer
+            .await
+            .expect("scene observer should finish")
+            .into_iter()
+            .all(|effect_id| effect_id == canonical_id)
+    );
+    assert_eq!(
+        registry_observer
+            .await
+            .expect("registry observer should finish"),
+        (false, true)
+    );
+    assert_eq!(
+        playlist_observer
+            .await
+            .expect("playlist observer should finish"),
+        PlaylistItemTarget::Effect {
+            effect_id: canonical_id
+        }
+    );
 }
 
 #[tokio::test]

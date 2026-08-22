@@ -154,7 +154,7 @@ pub(crate) trait AdmittedLibraryEffectIdMigration: Send {
 #[async_trait]
 #[doc(hidden)]
 pub(crate) trait LibraryEffectIdMigrationPublication: Send {
-    async fn publish(self: Box<Self>) -> usize;
+    async fn publish(&mut self) -> usize;
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -431,18 +431,18 @@ struct JsonLibraryEffectIdMigration {
 }
 
 struct InMemoryLibraryEffectIdMigrationPublication {
-    data: Arc<RwLock<InMemoryLibraryData>>,
+    data: OwnedRwLockWriteGuard<InMemoryLibraryData>,
     _mutation_guard: OwnedRwLockWriteGuard<()>,
-    candidate: InMemoryLibraryData,
+    candidate: Option<InMemoryLibraryData>,
     migrated: usize,
 }
 
 struct JsonLibraryEffectIdMigrationPublication {
-    data: Arc<RwLock<InMemoryLibraryData>>,
+    data: OwnedRwLockWriteGuard<InMemoryLibraryData>,
     uncertain_favorites: Arc<std::sync::Mutex<HashMap<EffectId, UncertainFavoriteChange>>>,
     _mutation_guard: OwnedRwLockWriteGuard<()>,
-    candidate: InMemoryLibraryData,
-    candidate_uncertain: HashMap<EffectId, UncertainFavoriteChange>,
+    candidate: Option<InMemoryLibraryData>,
+    candidate_uncertain: Option<HashMap<EffectId, UncertainFavoriteChange>>,
     migrated: usize,
 }
 
@@ -823,15 +823,16 @@ impl AdmittedLibraryEffectIdMigration for InMemoryLibraryEffectIdMigration {
         self: Box<Self>,
     ) -> Result<Box<dyn LibraryEffectIdMigrationPublication>, LibraryStoreError> {
         let guard = Arc::clone(&self.mutation_gate).write_owned().await;
-        if *self.data.read().await != self.source {
+        let data = Arc::clone(&self.data).write_owned().await;
+        if *data != self.source {
             return Err(LibraryStoreError::Persistence(
                 "effect ID migration was superseded by newer library state".to_owned(),
             ));
         }
         Ok(Box::new(InMemoryLibraryEffectIdMigrationPublication {
-            data: self.data,
+            data,
             _mutation_guard: guard,
-            candidate: self.candidate,
+            candidate: Some(self.candidate),
             migrated: self.migrated,
         }))
     }
@@ -873,7 +874,7 @@ impl AdmittedLibraryEffectIdMigration for JsonLibraryEffectIdMigration {
         self: Box<Self>,
     ) -> Result<Box<dyn LibraryEffectIdMigrationPublication>, LibraryStoreError> {
         let guard = Arc::clone(&self.mutation_gate).write_owned().await;
-        let data = self.data.read().await;
+        let data = Arc::clone(&self.data).write_owned().await;
         let uncertain = self
             .uncertain_favorites
             .lock()
@@ -884,13 +885,12 @@ impl AdmittedLibraryEffectIdMigration for JsonLibraryEffectIdMigration {
             ));
         }
         drop(uncertain);
-        drop(data);
         Ok(Box::new(JsonLibraryEffectIdMigrationPublication {
-            data: self.data,
+            data,
             uncertain_favorites: self.uncertain_favorites,
             _mutation_guard: guard,
-            candidate: self.candidate,
-            candidate_uncertain: self.candidate_uncertain,
+            candidate: Some(self.candidate),
+            candidate_uncertain: Some(self.candidate_uncertain),
             migrated: self.migrated,
         }))
     }
@@ -898,20 +898,29 @@ impl AdmittedLibraryEffectIdMigration for JsonLibraryEffectIdMigration {
 
 #[async_trait]
 impl LibraryEffectIdMigrationPublication for InMemoryLibraryEffectIdMigrationPublication {
-    async fn publish(self: Box<Self>) -> usize {
-        *self.data.write().await = self.candidate;
+    async fn publish(&mut self) -> usize {
+        *self.data = self
+            .candidate
+            .take()
+            .expect("library migration publication must publish exactly once");
         self.migrated
     }
 }
 
 #[async_trait]
 impl LibraryEffectIdMigrationPublication for JsonLibraryEffectIdMigrationPublication {
-    async fn publish(self: Box<Self>) -> usize {
-        *self.data.write().await = self.candidate;
+    async fn publish(&mut self) -> usize {
+        *self.data = self
+            .candidate
+            .take()
+            .expect("library migration publication must publish exactly once");
         *self
             .uncertain_favorites
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = self.candidate_uncertain;
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = self
+            .candidate_uncertain
+            .take()
+            .expect("library migration uncertainty must publish exactly once");
         self.migrated
     }
 }
@@ -1581,7 +1590,7 @@ mod tests {
             migration.persist(),
             crate::domain::effect::IdentityMigrationPersistence::Written
         );
-        let publication = migration
+        let mut publication = migration
             .prepare_publication()
             .await
             .expect("migration should prepare publication");
