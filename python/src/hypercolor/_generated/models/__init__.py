@@ -41,6 +41,10 @@ from .api_response_control_surface_list_response import (
 from .api_response_control_surface_list_response_data import (
     ApiResponseControlSurfaceListResponseData,
 )
+from .api_response_device_bindings_response import ApiResponseDeviceBindingsResponse
+from .api_response_device_bindings_response_data import (
+    ApiResponseDeviceBindingsResponseData,
+)
 from .api_response_device_list_response import ApiResponseDeviceListResponse
 from .api_response_device_list_response_data import ApiResponseDeviceListResponseData
 from .api_response_device_summary import ApiResponseDeviceSummary
@@ -63,10 +67,22 @@ from .api_response_effect_preset_list_response import (
 from .api_response_effect_preset_list_response_data import (
     ApiResponseEffectPresetListResponseData,
 )
+from .api_response_media_authorization_response import (
+    ApiResponseMediaAuthorizationResponse,
+)
+from .api_response_media_authorization_response_data import (
+    ApiResponseMediaAuthorizationResponseData,
+)
 from .api_response_output_resource import ApiResponseOutputResource
 from .api_response_output_resource_data import ApiResponseOutputResourceData
-from .api_response_system_resource import ApiResponseSystemResource
-from .api_response_system_resource_data import ApiResponseSystemResourceData
+from .api_response_rebind_device_response import ApiResponseRebindDeviceResponse
+from .api_response_rebind_device_response_data import (
+    ApiResponseRebindDeviceResponseData,
+)
+from .api_response_server_info import ApiResponseServerInfo
+from .api_response_server_info_data import ApiResponseServerInfoData
+from .api_response_system_status import ApiResponseSystemStatus
+from .api_response_system_status_data import ApiResponseSystemStatusData
 from .api_response_vec_capture_monitor import ApiResponseVecCaptureMonitor
 from .api_response_vec_capture_monitor_data_item import (
     ApiResponseVecCaptureMonitorDataItem,
@@ -99,22 +115,6 @@ from .b_tree_map_additional_property import BTreeMapAdditionalProperty
 from .capture_authorization_response import CaptureAuthorizationResponse
 from .capture_monitor import CaptureMonitor
 from .capture_picker_response import CapturePickerResponse
-from .component_binding import ComponentBinding
-from .component_binding_summary import ComponentBindingSummary
-from .component_canvas_size import ComponentCanvasSize
-from .component_category_type_0 import ComponentCategoryType0
-from .component_category_type_1 import ComponentCategoryType1
-from .component_category_type_2 import ComponentCategoryType2
-from .component_category_type_3 import ComponentCategoryType3
-from .component_category_type_4 import ComponentCategoryType4
-from .component_category_type_5 import ComponentCategoryType5
-from .component_category_type_6 import ComponentCategoryType6
-from .component_category_type_7 import ComponentCategoryType7
-from .component_category_type_8 import ComponentCategoryType8
-from .component_category_type_9 import ComponentCategoryType9
-from .component_category_type_10 import ComponentCategoryType10
-from .component_slot import ComponentSlot
-from .component_suggested_zone import ComponentSuggestedZone
 from .config_key_schema_entry import ConfigKeySchemaEntry
 from .config_mutation_response import ConfigMutationResponse
 from .control_access import ControlAccess
@@ -179,7 +179,6 @@ from .corner import Corner
 from .device_auth_state import DeviceAuthState
 from .device_auth_summary import DeviceAuthSummary
 from .device_class_hint import DeviceClassHint
-from .device_components_response import DeviceComponentsResponse
 from .device_connection_summary import DeviceConnectionSummary
 from .device_list_response import DeviceListResponse
 from .device_origin import DeviceOrigin
@@ -194,6 +193,15 @@ from .driver_module_kind import DriverModuleKind
 from .driver_presentation import DriverPresentation
 from .driver_protocol_descriptor import DriverProtocolDescriptor
 from .driver_summary import DriverSummary
+from .driver_transport_availability_type_0 import DriverTransportAvailabilityType0
+from .driver_transport_availability_type_0_status import (
+    DriverTransportAvailabilityType0Status,
+)
+from .driver_transport_availability_type_1 import DriverTransportAvailabilityType1
+from .driver_transport_availability_type_1_status import (
+    DriverTransportAvailabilityType1Status,
+)
+from .driver_transport_descriptor import DriverTransportDescriptor
 from .driver_transport_kind_type_0 import DriverTransportKindType0
 from .driver_transport_kind_type_1 import DriverTransportKindType1
 from .driver_transport_kind_type_2 import DriverTransportKindType2
@@ -219,10 +227,6 @@ from .health_checks import HealthChecks
 from .health_response import HealthResponse
 from .identify_request import IdentifyRequest
 from .input_source_issue_status import InputSourceIssueStatus
-from .input_source_platform_status_type_0 import InputSourcePlatformStatusType0
-from .input_source_platform_status_type_0_type import InputSourcePlatformStatusType0Type
-from .input_source_platform_status_type_1 import InputSourcePlatformStatusType1
-from .input_source_platform_status_type_1_type import InputSourcePlatformStatusType1Type
 from .input_source_status import InputSourceStatus
 from .input_status import InputStatus
 from .invoke_control_action_request import InvokeControlActionRequest
@@ -245,8 +249,6 @@ from .led_topology_type_5_type import LedTopologyType5Type
 from .led_topology_type_6 import LedTopologyType6
 from .led_topology_type_6_type import LedTopologyType6Type
 from .live_section import LiveSection
-from .macos_architecture_api import MacosArchitectureApi
-from .macos_authorization_state_api import MacosAuthorizationStateApi
 from .macos_capability_owner_api import MacosCapabilityOwnerApi
 from .macos_daemon_handover_phase_api import MacosDaemonHandoverPhaseApi
 from .macos_daemon_owner_conflict_api_status import MacosDaemonOwnerConflictApiStatus
@@ -254,22 +256,9 @@ from .macos_daemon_owner_recovery_required_api_status import (
     MacosDaemonOwnerRecoveryRequiredApiStatus,
 )
 from .macos_daemon_ownership_api_status import MacosDaemonOwnershipApiStatus
-from .macos_frame_drop_api_status import MacosFrameDropApiStatus
-from .macos_input_telemetry_api_status import MacosInputTelemetryApiStatus
-from .macos_protected_source_state_api import MacosProtectedSourceStateApi
-from .macos_screen_telemetry_api_status import MacosScreenTelemetryApiStatus
-from .macos_screen_timing_api_status import MacosScreenTimingApiStatus
-from .macos_selection_state_api_type_0 import MacosSelectionStateApiType0
-from .macos_selection_state_api_type_0_type import MacosSelectionStateApiType0Type
-from .macos_selection_state_api_type_1 import MacosSelectionStateApiType1
-from .macos_selection_state_api_type_1_type import MacosSelectionStateApiType1Type
-from .macos_selection_state_api_type_2 import MacosSelectionStateApiType2
-from .macos_selection_state_api_type_2_type import MacosSelectionStateApiType2Type
-from .macos_tahoe_capabilities_api_status import MacosTahoeCapabilitiesApiStatus
-from .macos_tahoe_selection_capabilities_api_status import (
-    MacosTahoeSelectionCapabilitiesApiStatus,
-)
-from .macos_timing_api_status import MacosTimingApiStatus
+from .media_authorization_adapter import MediaAuthorizationAdapter
+from .media_authorization_request import MediaAuthorizationRequest
+from .media_authorization_response import MediaAuthorizationResponse
 from .meta import Meta
 from .normalized_position import NormalizedPosition
 from .normalized_rect import NormalizedRect
@@ -288,7 +277,8 @@ from .preset_template_controls import PresetTemplateControls
 from .preview_demand_status import PreviewDemandStatus
 from .preview_runtime_status import PreviewRuntimeStatus
 from .preview_source import PreviewSource
-from .protected_source_grant_owner import ProtectedSourceGrantOwner
+from .rebind_candidate_summary import RebindCandidateSummary
+from .rebind_device_request import RebindDeviceRequest
 from .redaction import Redaction
 from .rejected_control_change import RejectedControlChange
 from .rejected_control_change_attempted_value import RejectedControlChangeAttemptedValue
@@ -308,28 +298,16 @@ from .sampling_mode_type_2_type import SamplingModeType2Type
 from .sampling_mode_type_3 import SamplingModeType3
 from .sampling_mode_type_3_type import SamplingModeType3Type
 from .screen_capture_capacity_status import ScreenCaptureCapacityStatus
-from .segment_summary import SegmentSummary
-from .segment_topology_summary_type_0 import SegmentTopologySummaryType0
-from .segment_topology_summary_type_0_type import SegmentTopologySummaryType0Type
-from .segment_topology_summary_type_1 import SegmentTopologySummaryType1
-from .segment_topology_summary_type_1_type import SegmentTopologySummaryType1Type
-from .segment_topology_summary_type_2 import SegmentTopologySummaryType2
-from .segment_topology_summary_type_2_type import SegmentTopologySummaryType2Type
-from .segment_topology_summary_type_3 import SegmentTopologySummaryType3
-from .segment_topology_summary_type_3_type import SegmentTopologySummaryType3Type
-from .segment_topology_summary_type_4 import SegmentTopologySummaryType4
-from .segment_topology_summary_type_4_type import SegmentTopologySummaryType4Type
-from .segment_topology_summary_type_5 import SegmentTopologySummaryType5
-from .segment_topology_summary_type_5_type import SegmentTopologySummaryType5Type
 from .server_identity import ServerIdentity
 from .server_info import ServerInfo
 from .session_performance_status import SessionPerformanceStatus
+from .source_diagnostics_display_field import SourceDiagnosticsDisplayField
+from .source_diagnostics_envelope import SourceDiagnosticsEnvelope
 from .space_definition import SpaceDefinition
 from .spatial_layout import SpatialLayout
 from .strip_direction import StripDirection
-from .system_resource import SystemResource
 from .system_status import SystemStatus
-from .update_attachments_request import UpdateAttachmentsRequest
+from .unresolved_binding_summary import UnresolvedBindingSummary
 from .update_device_request import UpdateDeviceRequest
 from .viewport_rect import ViewportRect
 from .wall import Wall
@@ -342,6 +320,19 @@ from .zone_shape_type_2 import ZoneShapeType2
 from .zone_shape_type_2_shape_type import ZoneShapeType2ShapeType
 from .zone_shape_type_3 import ZoneShapeType3
 from .zone_shape_type_3_shape_type import ZoneShapeType3ShapeType
+from .zone_summary import ZoneSummary
+from .zone_topology_summary_type_0 import ZoneTopologySummaryType0
+from .zone_topology_summary_type_0_type import ZoneTopologySummaryType0Type
+from .zone_topology_summary_type_1 import ZoneTopologySummaryType1
+from .zone_topology_summary_type_1_type import ZoneTopologySummaryType1Type
+from .zone_topology_summary_type_2 import ZoneTopologySummaryType2
+from .zone_topology_summary_type_2_type import ZoneTopologySummaryType2Type
+from .zone_topology_summary_type_3 import ZoneTopologySummaryType3
+from .zone_topology_summary_type_3_type import ZoneTopologySummaryType3Type
+from .zone_topology_summary_type_4 import ZoneTopologySummaryType4
+from .zone_topology_summary_type_4_type import ZoneTopologySummaryType4Type
+from .zone_topology_summary_type_5 import ZoneTopologySummaryType5
+from .zone_topology_summary_type_5_type import ZoneTopologySummaryType5Type
 
 __all__ = (
     "ActionConfirmation",
@@ -363,6 +354,8 @@ __all__ = (
     "ApiResponseControlSurfaceDocumentDataValues",
     "ApiResponseControlSurfaceListResponse",
     "ApiResponseControlSurfaceListResponseData",
+    "ApiResponseDeviceBindingsResponse",
+    "ApiResponseDeviceBindingsResponseData",
     "ApiResponseDeviceListResponse",
     "ApiResponseDeviceListResponseData",
     "ApiResponseDeviceSummary",
@@ -377,10 +370,16 @@ __all__ = (
     "ApiResponseEffectListResponseData",
     "ApiResponseEffectPresetListResponse",
     "ApiResponseEffectPresetListResponseData",
+    "ApiResponseMediaAuthorizationResponse",
+    "ApiResponseMediaAuthorizationResponseData",
     "ApiResponseOutputResource",
     "ApiResponseOutputResourceData",
-    "ApiResponseSystemResource",
-    "ApiResponseSystemResourceData",
+    "ApiResponseRebindDeviceResponse",
+    "ApiResponseRebindDeviceResponseData",
+    "ApiResponseServerInfo",
+    "ApiResponseServerInfoData",
+    "ApiResponseSystemStatus",
+    "ApiResponseSystemStatusData",
     "ApiResponseVecCaptureMonitor",
     "ApiResponseVecCaptureMonitorDataItem",
     "AppliedControlChange",
@@ -411,22 +410,6 @@ __all__ = (
     "CaptureAuthorizationResponse",
     "CaptureMonitor",
     "CapturePickerResponse",
-    "ComponentBinding",
-    "ComponentBindingSummary",
-    "ComponentCanvasSize",
-    "ComponentCategoryType0",
-    "ComponentCategoryType1",
-    "ComponentCategoryType10",
-    "ComponentCategoryType2",
-    "ComponentCategoryType3",
-    "ComponentCategoryType4",
-    "ComponentCategoryType5",
-    "ComponentCategoryType6",
-    "ComponentCategoryType7",
-    "ComponentCategoryType8",
-    "ComponentCategoryType9",
-    "ComponentSlot",
-    "ComponentSuggestedZone",
     "ConfigKeySchemaEntry",
     "ConfigMutationResponse",
     "ControlAccess",
@@ -485,7 +468,6 @@ __all__ = (
     "DeviceAuthState",
     "DeviceAuthSummary",
     "DeviceClassHint",
-    "DeviceComponentsResponse",
     "DeviceConnectionSummary",
     "DeviceListResponse",
     "DeviceOrigin",
@@ -500,6 +482,11 @@ __all__ = (
     "DriverPresentation",
     "DriverProtocolDescriptor",
     "DriverSummary",
+    "DriverTransportAvailabilityType0",
+    "DriverTransportAvailabilityType0Status",
+    "DriverTransportAvailabilityType1",
+    "DriverTransportAvailabilityType1Status",
+    "DriverTransportDescriptor",
     "DriverTransportKindType0",
     "DriverTransportKindType1",
     "DriverTransportKindType2",
@@ -525,10 +512,6 @@ __all__ = (
     "HealthResponse",
     "IdentifyRequest",
     "InputSourceIssueStatus",
-    "InputSourcePlatformStatusType0",
-    "InputSourcePlatformStatusType0Type",
-    "InputSourcePlatformStatusType1",
-    "InputSourcePlatformStatusType1Type",
     "InputSourceStatus",
     "InputStatus",
     "InvokeControlActionRequest",
@@ -551,27 +534,14 @@ __all__ = (
     "LedTopologyType6",
     "LedTopologyType6Type",
     "LiveSection",
-    "MacosArchitectureApi",
-    "MacosAuthorizationStateApi",
     "MacosCapabilityOwnerApi",
     "MacosDaemonHandoverPhaseApi",
     "MacosDaemonOwnerConflictApiStatus",
     "MacosDaemonOwnerRecoveryRequiredApiStatus",
     "MacosDaemonOwnershipApiStatus",
-    "MacosFrameDropApiStatus",
-    "MacosInputTelemetryApiStatus",
-    "MacosProtectedSourceStateApi",
-    "MacosScreenTelemetryApiStatus",
-    "MacosScreenTimingApiStatus",
-    "MacosSelectionStateApiType0",
-    "MacosSelectionStateApiType0Type",
-    "MacosSelectionStateApiType1",
-    "MacosSelectionStateApiType1Type",
-    "MacosSelectionStateApiType2",
-    "MacosSelectionStateApiType2Type",
-    "MacosTahoeCapabilitiesApiStatus",
-    "MacosTahoeSelectionCapabilitiesApiStatus",
-    "MacosTimingApiStatus",
+    "MediaAuthorizationAdapter",
+    "MediaAuthorizationRequest",
+    "MediaAuthorizationResponse",
     "Meta",
     "NormalizedPosition",
     "NormalizedRect",
@@ -590,7 +560,8 @@ __all__ = (
     "PreviewDemandStatus",
     "PreviewRuntimeStatus",
     "PreviewSource",
-    "ProtectedSourceGrantOwner",
+    "RebindCandidateSummary",
+    "RebindDeviceRequest",
     "Redaction",
     "RejectedControlChange",
     "RejectedControlChangeAttemptedValue",
@@ -610,28 +581,16 @@ __all__ = (
     "SamplingModeType3",
     "SamplingModeType3Type",
     "ScreenCaptureCapacityStatus",
-    "SegmentSummary",
-    "SegmentTopologySummaryType0",
-    "SegmentTopologySummaryType0Type",
-    "SegmentTopologySummaryType1",
-    "SegmentTopologySummaryType1Type",
-    "SegmentTopologySummaryType2",
-    "SegmentTopologySummaryType2Type",
-    "SegmentTopologySummaryType3",
-    "SegmentTopologySummaryType3Type",
-    "SegmentTopologySummaryType4",
-    "SegmentTopologySummaryType4Type",
-    "SegmentTopologySummaryType5",
-    "SegmentTopologySummaryType5Type",
     "ServerIdentity",
     "ServerInfo",
     "SessionPerformanceStatus",
+    "SourceDiagnosticsDisplayField",
+    "SourceDiagnosticsEnvelope",
     "SpaceDefinition",
     "SpatialLayout",
     "StripDirection",
-    "SystemResource",
     "SystemStatus",
-    "UpdateAttachmentsRequest",
+    "UnresolvedBindingSummary",
     "UpdateDeviceRequest",
     "ViewportRect",
     "Wall",
@@ -644,4 +603,17 @@ __all__ = (
     "ZoneShapeType2ShapeType",
     "ZoneShapeType3",
     "ZoneShapeType3ShapeType",
+    "ZoneSummary",
+    "ZoneTopologySummaryType0",
+    "ZoneTopologySummaryType0Type",
+    "ZoneTopologySummaryType1",
+    "ZoneTopologySummaryType1Type",
+    "ZoneTopologySummaryType2",
+    "ZoneTopologySummaryType2Type",
+    "ZoneTopologySummaryType3",
+    "ZoneTopologySummaryType3Type",
+    "ZoneTopologySummaryType4",
+    "ZoneTopologySummaryType4Type",
+    "ZoneTopologySummaryType5",
+    "ZoneTopologySummaryType5Type",
 )

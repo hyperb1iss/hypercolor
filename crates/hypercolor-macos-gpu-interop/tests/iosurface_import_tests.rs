@@ -3,7 +3,7 @@
 use std::sync::{Arc, mpsc};
 
 use hypercolor_macos_gpu_interop::{
-    ImportedFrameFormat, MacosGpuInteropError, MacosIosurfaceImportDescriptor,
+    FrameOrigin, ImportedFrameFormat, MacosGpuInteropError, MacosIosurfaceImportDescriptor,
     MacosIosurfaceImporter, create_bgra_iosurface, write_bgra_pixels,
 };
 
@@ -35,14 +35,16 @@ fn imports_synthetic_iosurface_into_wgpu_texture() -> Result<(), String> {
         hypercolor_macos_gpu_interop::MacosMetalStorageMode::Managed
     );
     let frame = importer
-        .import_iosurface_for_test(&wgpu.device, &iosurface)
+        .import_iosurface_for_test(&wgpu.device, &iosurface, FrameOrigin::BottomLeft)
         .map_err(|error| error.to_string())?;
     let pixels = read_texture_pixels(&wgpu.device, &wgpu.queue, &frame.texture, WIDTH, HEIGHT)?;
 
     assert_eq!(frame.width, WIDTH);
     assert_eq!(frame.height, HEIGHT);
     assert_eq!(frame.format, ImportedFrameFormat::Bgra8Unorm);
-    assert_ne!(frame.storage_id, 0);
+    assert_ne!(frame.allocation_id.get(), 0);
+    assert_ne!(frame.content_generation, 0);
+    assert_eq!(frame.origin, FrameOrigin::BottomLeft);
     assert_eq!(pixels, expected_pixels);
 
     Ok(())
@@ -63,15 +65,16 @@ fn reuses_cached_wrap_for_repeated_iosurface_imports() -> Result<(), String> {
     assert_eq!(importer.cached_wrap_count(), 0);
 
     let first = importer
-        .import_iosurface(&wgpu.device, &iosurface, 7)
+        .import_iosurface(&wgpu.device, &iosurface, 7, FrameOrigin::BottomLeft)
         .map_err(|error| error.to_string())?;
-    assert_eq!(first.storage_id, 7);
+    assert_eq!(first.content_generation, 7);
     assert_eq!(importer.cached_wrap_count(), 1);
 
     let second = importer
-        .import_iosurface(&wgpu.device, &iosurface, 8)
+        .import_iosurface(&wgpu.device, &iosurface, 8, FrameOrigin::BottomLeft)
         .map_err(|error| error.to_string())?;
-    assert_eq!(second.storage_id, 8);
+    assert_eq!(second.content_generation, 8);
+    assert_eq!(second.allocation_id, first.allocation_id);
     assert_eq!(importer.cached_wrap_count(), 1);
     assert!(
         Arc::ptr_eq(&first.texture, &second.texture),
@@ -81,14 +84,15 @@ fn reuses_cached_wrap_for_repeated_iosurface_imports() -> Result<(), String> {
         Arc::ptr_eq(&first.view, &second.view),
         "re-importing the same IOSurface must reuse the cached wgpu view"
     );
-    assert_eq!(second.timings.wrap_us, 0);
+    assert_eq!(second.timings.wrap_us, Some(0));
 
     let other_iosurface =
         create_bgra_iosurface(WIDTH, HEIGHT).map_err(|error| error.to_string())?;
     let third = importer
-        .import_iosurface(&wgpu.device, &other_iosurface, 9)
+        .import_iosurface(&wgpu.device, &other_iosurface, 9, FrameOrigin::BottomLeft)
         .map_err(|error| error.to_string())?;
-    assert_eq!(third.storage_id, 9);
+    assert_eq!(third.content_generation, 9);
+    assert_ne!(third.allocation_id, first.allocation_id);
     assert_eq!(importer.cached_wrap_count(), 2);
     assert!(
         !Arc::ptr_eq(&first.texture, &third.texture),
@@ -106,6 +110,16 @@ fn rejects_zero_sized_descriptors() {
     assert!(
         MacosIosurfaceImportDescriptor::new(WIDTH, 0, ImportedFrameFormat::Bgra8Unorm).is_err()
     );
+}
+
+#[test]
+fn rejects_foreign_frame_format() {
+    assert!(matches!(
+        MacosIosurfaceImportDescriptor::new(WIDTH, HEIGHT, ImportedFrameFormat::Rgba8Unorm),
+        Err(MacosGpuInteropError::UnsupportedFrameFormat {
+            format: ImportedFrameFormat::Rgba8Unorm,
+        })
+    ));
 }
 
 #[test]

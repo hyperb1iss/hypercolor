@@ -23,11 +23,15 @@ tui = ["dep:hypercolor-tui"]
 hypercolor-color = { workspace = true }
 hypercolor-core = { workspace = true }
 hypercolor-macos-owner = { workspace = true }
+hypercolor-platform-fs = { workspace = true }
 hypercolor-types = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
 anyhow = { workspace = true }
 tokio = { workspace = true }
+zbus = { workspace = true, features = ["blocking-api"] }
 futures-util = { workspace = true }
 tokio-tungstenite = { workspace = true }
 tracing-subscriber = { workspace = true }
@@ -47,3 +51,6 @@ hypercolor-core = { path = "../hypercolor-core", default-features = false }
 hypercolor-daemon = { path = "../hypercolor-daemon", default-features = false }
 tempfile = { workspace = true }
 axum = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3.7.0"

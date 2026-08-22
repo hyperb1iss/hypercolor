@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::{Duration, Instant};
@@ -8,15 +8,13 @@ use hypercolor_core::asset::AssetLibrary;
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::effect::{EffectRegistry, InputSourceAvailability};
 use hypercolor_core::input::routing::{
-    ConsumerIncarnation, InteractionRouteContext, InteractionRouteDiagnostics,
-    InteractionRouteRequest, InteractionRouteSource, InteractionRouteSourceClass,
-    InteractionRouter, RoutedInteraction, SourceIncarnation,
+    ConsumerIncarnation, InteractionRouteCatalog, InteractionRouteDiagnostics, InteractionRouter,
+    RoutedInteraction,
 };
 use hypercolor_core::input::screen::PixelExtent;
 use hypercolor_core::input::{
     BrowserInputAttachment, BrowserInputChildKey, BrowserInputPublicationId, InputData,
-    InputGraphHandle, InputGraphSnapshot, SourceFreshness, SourceKind, SourceState,
-    SourceStatusHandle,
+    InputGraphHandle, InputGraphSnapshot, SourceKind,
 };
 use hypercolor_core::scene::SceneManager;
 use hypercolor_types::audio::AudioData;
@@ -24,14 +22,14 @@ use hypercolor_types::canvas::{PublishedSurface, SurfaceDescriptor};
 use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::display::DisplayDescriptor;
 use hypercolor_types::event::{HypercolorEvent, ZoneColors};
-use hypercolor_types::layer::LayerSource;
+use hypercolor_types::layer::{BindingSource, LayerSource};
 use hypercolor_types::scene::{SceneId, Zone, ZoneId};
 use hypercolor_types::sensor::SystemSnapshot;
 use tokio::sync::{RwLock, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use crate::interaction_routing::InteractionRoutingControl;
+use crate::interaction_routing::{InteractionRoutingControl, selected_input_availability};
 use crate::preview_runtime::PreviewPixelFormat;
 #[cfg(feature = "wgpu")]
 use crate::render_thread::gpu_device::GpuRenderDevice;
@@ -50,6 +48,7 @@ pub(crate) use resources::{PreviewCapacityLedger, PreviewResourceLease};
 pub use resources::{PreviewCapacitySnapshot, PreviewResourceLedger};
 
 const MAX_PREVIEW_FPS: u32 = 60;
+const BACKGROUND_INPUT_HZ: u32 = 1;
 static NEXT_CONSUMER_INCARNATION: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -196,7 +195,6 @@ pub struct InteractivePreviewContext {
     pub asset_library: Option<Arc<RwLock<AssetLibrary>>>,
     pub event_bus: Arc<HypercolorBus>,
     pub input_graph: InputGraphHandle,
-    pub sensor_snapshots: Option<watch::Receiver<Arc<SystemSnapshot>>>,
     pub interaction_routing: InteractionRoutingControl,
     pub input_demands: InputPublicationDemandHandle,
     pub canvas_width: u32,
@@ -215,7 +213,6 @@ struct InteractivePreviewExecutorInner {
     catalog: PreviewSceneCatalogSource,
     interaction_routing: InteractionRoutingControl,
     input_graph: InputGraphHandle,
-    sensor_snapshots: Option<watch::Receiver<Arc<SystemSnapshot>>>,
     input_demands: InputPublicationDemandHandle,
     asset_library: Option<Arc<RwLock<AssetLibrary>>>,
     acceleration: InteractivePreviewAcceleration,
@@ -334,14 +331,9 @@ struct PreviewLaneId {
 
 struct PreviewLaneInput {
     graph: InputGraphHandle,
-    sensor_snapshots: Option<watch::Receiver<Arc<SystemSnapshot>>>,
     routing: InteractionRoutingControl,
     publication_id: BrowserInputPublicationId,
-    graph_generation: Option<u64>,
-    browser_generation: Option<u64>,
-    interaction_sources: Vec<InteractionRouteSource>,
-    interaction_statuses: BTreeMap<SourceIncarnation, SourceStatusHandle>,
-    availability: BTreeMap<SourceIncarnation, CachedAvailability>,
+    interaction_catalog: InteractionRouteCatalog,
     router: InteractionRouter,
     routed: RoutedInteraction,
     audio: Option<Arc<InputData>>,
@@ -351,23 +343,6 @@ struct PreviewLaneInput {
     sensors: Option<Arc<InputData>>,
     empty_audio: AudioData,
     sensor_snapshot: Arc<SystemSnapshot>,
-}
-
-#[derive(Clone, Copy, Eq, PartialEq)]
-struct AvailabilityFingerprint {
-    configured: bool,
-    consented: bool,
-    demanded: bool,
-    state: SourceState,
-    freshness: SourceFreshness,
-    session_generation: u64,
-    retired: bool,
-}
-
-#[derive(Clone, Copy)]
-struct CachedAvailability {
-    fingerprint: AvailabilityFingerprint,
-    revision: u64,
 }
 
 impl InteractivePreviewExecutor {
@@ -404,7 +379,6 @@ impl InteractivePreviewExecutor {
                 catalog,
                 interaction_routing: context.interaction_routing,
                 input_graph: context.input_graph,
-                sensor_snapshots: context.sensor_snapshots,
                 input_demands: context.input_demands,
                 asset_library: context.asset_library,
                 acceleration,
@@ -487,7 +461,6 @@ impl InteractivePreviewExecutor {
             spec,
             catalog: self.inner.catalog.clone(),
             graph: self.inner.input_graph.clone(),
-            sensor_snapshots: self.inner.sensor_snapshots.clone(),
             routing: self.inner.interaction_routing.clone(),
             demands: self.inner.input_demands.clone(),
             asset_library: self.inner.asset_library.clone(),
@@ -796,7 +769,6 @@ struct PreviewLaneContext {
     spec: InteractivePreviewSpec,
     catalog: PreviewSceneCatalogSource,
     graph: InputGraphHandle,
-    sensor_snapshots: Option<watch::Receiver<Arc<SystemSnapshot>>>,
     routing: InteractionRoutingControl,
     demands: InputPublicationDemandHandle,
     asset_library: Option<Arc<RwLock<AssetLibrary>>>,
@@ -930,7 +902,6 @@ impl PreviewLane {
             .register(InputPublicationConsumer::Preview, current_demand.clone());
         let input = PreviewLaneInput::new(
             context.graph,
-            context.sensor_snapshots,
             context.routing,
             context.id.publication_id,
             context.consumer,
@@ -1213,21 +1184,15 @@ fn preview_zone_runtime(
 impl PreviewLaneInput {
     fn new(
         graph: InputGraphHandle,
-        sensor_snapshots: Option<watch::Receiver<Arc<SystemSnapshot>>>,
         routing: InteractionRoutingControl,
         publication_id: BrowserInputPublicationId,
         consumer: ConsumerIncarnation,
     ) -> Self {
         Self {
             graph,
-            sensor_snapshots,
             routing,
             publication_id,
-            graph_generation: None,
-            browser_generation: None,
-            interaction_sources: Vec::new(),
-            interaction_statuses: BTreeMap::new(),
-            availability: BTreeMap::new(),
+            interaction_catalog: InteractionRouteCatalog::default(),
             router: InteractionRouter::default(),
             routed: RoutedInteraction::new(consumer),
             audio: None,
@@ -1243,92 +1208,18 @@ impl PreviewLaneInput {
     fn read(&mut self) {
         let graph = self.graph.snapshot();
         let browser = self.routing.browser_registry_snapshot();
-        if self.graph_generation != Some(graph.generation())
-            || self.browser_generation != Some(browser.generation())
-        {
-            self.rebuild_interaction_sources(&graph, &browser);
-        }
+        self.interaction_catalog
+            .refresh(&graph, &browser, Instant::now());
         self.read_typed(&graph);
-        if let Some(sensors) = self.sensor_snapshots.as_ref() {
-            self.sensor_snapshot = Arc::clone(&sensors.borrow());
-        }
-        self.refresh_availability();
         let routing = self.routing.snapshot();
-        self.router.resolve_into(
+        self.interaction_catalog.resolve_into(
+            &mut self.router,
             self.routed.diagnostics.consumer,
-            InteractionRouteRequest {
-                policy: routing.preview_policy,
-                browser_source: Some(SourceIncarnation::browser_child(self.publication_id.get())),
-            },
-            &self.interaction_sources,
-            InteractionRouteContext {
-                config_generation: routing.config_generation,
-                source_graph_generation: graph.generation(),
-                browser_registry_generation: browser.generation(),
-                now_ms: input_mono_ms(),
-            },
+            routing.preview_request(self.publication_id),
+            routing.config_generation,
+            input_mono_ms(),
             &mut self.routed,
         );
-    }
-
-    fn rebuild_interaction_sources(
-        &mut self,
-        graph: &InputGraphSnapshot,
-        browser: &hypercolor_core::input::BrowserInputRegistrySnapshot,
-    ) {
-        self.interaction_sources.clear();
-        self.interaction_statuses.clear();
-        for slot in graph.slots() {
-            let status = slot.status();
-            let descriptor = Arc::clone(&status.snapshot().source_id);
-            if let Some(source) = InteractionRouteSource::manager_slot(descriptor, 1, slot.clone())
-            {
-                self.interaction_statuses
-                    .insert(source.incarnation, status.clone());
-                self.interaction_sources.push(source);
-            }
-        }
-        for child in browser.children() {
-            let source = InteractionRouteSource::new(
-                SourceIncarnation::browser_child(child.publication_id().get()),
-                Arc::<str>::from(child.source_id()),
-                InteractionRouteSourceClass::Browser,
-                1,
-                Arc::new(child.clone()),
-            );
-            self.interaction_statuses
-                .insert(source.incarnation, child.status().clone());
-            self.interaction_sources.push(source);
-        }
-        self.availability
-            .retain(|incarnation, _| self.interaction_statuses.contains_key(incarnation));
-        self.graph_generation = Some(graph.generation());
-        self.browser_generation = Some(browser.generation());
-        self.refresh_availability();
-    }
-
-    fn refresh_availability(&mut self) {
-        for source in &mut self.interaction_sources {
-            let Some(status) = self.interaction_statuses.get(&source.incarnation) else {
-                continue;
-            };
-            let fingerprint = availability_fingerprint(status);
-            let cached =
-                self.availability
-                    .entry(source.incarnation)
-                    .or_insert(CachedAvailability {
-                        fingerprint,
-                        revision: 1,
-                    });
-            if cached.fingerprint != fingerprint {
-                cached.fingerprint = fingerprint;
-                cached.revision = cached
-                    .revision
-                    .checked_add(1)
-                    .expect("preview availability revision exhausted");
-            }
-            source.availability_revision = cached.revision;
-        }
     }
 
     fn read_typed(&mut self, graph: &InputGraphSnapshot) {
@@ -1394,12 +1285,13 @@ impl PreviewLaneInput {
     }
 
     fn interaction_availability(&self) -> InputSourceAvailability {
-        aggregate_interaction_availability(
+        selected_input_availability(
             self.routed
                 .diagnostics
                 .selected
                 .iter()
                 .filter_map(|source| source.status.as_ref()),
+            Instant::now(),
         )
     }
 }
@@ -1561,14 +1453,24 @@ fn preview_input_demand(scene: &ResolvedPreviewScene, requested_hz: u32) -> Inpu
         .expect("resolved preview canvas dimensions are non-empty");
     let mut media = false;
     let mut network = false;
+    let mut sensors = false;
     for group in scene.groups.iter().filter(|group| group.enabled) {
         for layer in group
             .effective_layers()
             .into_iter()
             .filter(|layer| layer.enabled)
         {
+            sensors |= layer
+                .bindings
+                .iter()
+                .any(|binding| matches!(&binding.source, BindingSource::Sensor { .. }));
             match &layer.source {
-                LayerSource::Effect { effect_id, .. } => {
+                LayerSource::Effect {
+                    effect_id,
+                    control_bindings,
+                    ..
+                } => {
+                    sensors |= !control_bindings.is_empty();
                     if let Some(entry) = scene.registry.get(effect_id) {
                         if entry.metadata.audio_reactive {
                             demand = demand.with_source(SourceKind::Audio, requested_hz);
@@ -1589,6 +1491,7 @@ fn preview_input_demand(scene: &ResolvedPreviewScene, requested_hz: u32) -> Inpu
                             .tags
                             .iter()
                             .any(|tag| tag.eq_ignore_ascii_case("net"));
+                        sensors |= entry.metadata.requires_sensors();
                     }
                 }
                 LayerSource::ScreenRegion { .. } => {
@@ -1600,10 +1503,13 @@ fn preview_input_demand(scene: &ResolvedPreviewScene, requested_hz: u32) -> Inpu
         }
     }
     if media {
-        demand = demand.with_source(SourceKind::Media, 1);
+        demand = demand.with_source(SourceKind::Media, BACKGROUND_INPUT_HZ);
     }
     if network {
-        demand = demand.with_source(SourceKind::Network, 1);
+        demand = demand.with_source(SourceKind::Network, BACKGROUND_INPUT_HZ);
+    }
+    if sensors {
+        demand = demand.with_source(SourceKind::Sensors, BACKGROUND_INPUT_HZ);
     }
     demand
 }
@@ -1659,45 +1565,6 @@ fn preview_surface(
         }
         #[cfg(feature = "servo-gpu-import")]
         ProducerFrame::Gpu(_) => None,
-    }
-}
-
-fn aggregate_interaction_availability<'a>(
-    statuses: impl IntoIterator<Item = &'a SourceStatusHandle>,
-) -> InputSourceAvailability {
-    let now = Instant::now();
-    let mut result = InputSourceAvailability::default();
-    for status in statuses {
-        let source = status.availability_at(now);
-        if source.retired
-            || source.kind != SourceKind::Interaction
-            || !(source.configured && source.consented && source.demanded)
-        {
-            continue;
-        }
-        result.routed = true;
-        let healthy = matches!(source.state, SourceState::Live | SourceState::Degraded);
-        result.healthy |= healthy;
-        result.degraded |= source.state == SourceState::Degraded;
-        result.fresh |= healthy
-            && matches!(
-                source.freshness,
-                SourceFreshness::Fresh | SourceFreshness::NotApplicable
-            );
-    }
-    result
-}
-
-fn availability_fingerprint(status: &SourceStatusHandle) -> AvailabilityFingerprint {
-    let status = status.snapshot();
-    AvailabilityFingerprint {
-        configured: status.configured,
-        consented: status.consented,
-        demanded: status.demanded,
-        state: status.state,
-        freshness: status.freshness,
-        session_generation: status.session_generation,
-        retired: status.retired,
     }
 }
 

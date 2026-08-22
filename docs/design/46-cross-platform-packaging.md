@@ -111,7 +111,7 @@ New work, scoped to the v1 unified-app vision.
 |---|---|---|
 | `crates/hypercolor-app/` | 🆕 | Renamed from `hypercolor-desktop`. Adds tray, supervisor, plugins |
 | Daemon supervisor module | 🆕 | Spawns `hypercolor-daemon` as child + Job Object reaping (Windows) / process group (Unix) |
-| Tray menu module | 🆕 | Ports `hypercolor-tray`'s menu logic onto Tauri 2's tray API |
+| Tray menu module | 🆕 | Ported `hypercolor-tray` menu logic onto Tauri 2's tray API |
 | Single-instance integration | 🆕 | `tauri-plugin-single-instance` + named-mutex daemon lock |
 | Autostart integration | 🆕 | `tauri-plugin-autostart` with capability permissions |
 | Window-visibility preview hook | 🆕 | Leptos UI listens for `visibilitychange`; Tauri emits to webview on hide |
@@ -122,9 +122,9 @@ New work, scoped to the v1 unified-app vision.
 | Notarization workflow | 🆕 | Proprietary release step using `xcrun notarytool` |
 | AppImage build (deferred to v1.1) | 🆕 | Bundle WebKit2GTK 4.1 for old-distro reach |
 
-**Retired**: `crates/hypercolor-tray/` — its menu logic moves into `hypercolor-app`'s tray
-module. Source stays in git history. Crate is removed from the workspace once the new
-app is shipping. See [§13](#13-migration-plan).
+**Retired**: `crates/hypercolor-tray/` supplied the original menu and daemon-client logic.
+That logic now lives in `hypercolor-app`, and the retired source remains in git history.
+See [§13](#13-migration-plan).
 
 ---
 
@@ -926,15 +926,21 @@ Privacy purpose strings belong in `Info.plist`, not the entitlement profile:
 <dict>
     <key>NSMicrophoneUsageDescription</key>
     <string>Hypercolor uses your microphone for audio-reactive lighting effects.</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Hypercolor reads playback metadata from supported media apps for media-reactive lighting effects.</string>
     <key>NSScreenCaptureUsageDescription</key>
     <string>Hypercolor captures your screen to create screen-reactive lighting effects.</string>
 </dict>
 </plist>
 ```
 
-The bundle must not declare `NSAppleEventsUsageDescription`. Native keyboard
-and pointer capture uses Input Monitoring rather than Apple Events. Walk users
-through the TCC permissions in [§12.3](#123-macos-permissions).
+The signed daemon sidecar alone declares
+`com.apple.security.automation.apple-events`. Native keyboard and pointer
+capture still use Input Monitoring rather than Apple Events. The Automation
+purpose string belongs to the app bundle because the nested sidecar reads
+playback metadata from supported, already-running media apps. Standalone and
+unbundled daemon topologies remain ineligible. Walk users through the TCC
+permissions in [§12.3](#123-macos-permissions).
 
 **Output**: `Hypercolor-0.1.0-arm64.dmg` (Apple Silicon) and
 `Hypercolor-0.1.0-x86_64.dmg` (Intel). Both architectures are first-class
@@ -1188,15 +1194,13 @@ Default checked. Toggle is also available later in Settings → Startup.
 | `crates/hypercolor-tray/src/daemon.rs` | `crates/hypercolor-app/src/daemon_client.rs` | Move verbatim |
 | `crates/hypercolor-tray/src/state.rs` | `crates/hypercolor-app/src/state.rs` | Move verbatim |
 | `crates/hypercolor-tray/tests/state_tests.rs` | `crates/hypercolor-app/tests/state_tests.rs` | Move verbatim |
-| `crates/hypercolor-tray/` | (deleted) | After `hypercolor-app` ships and one release cycle of overlap |
+| `crates/hypercolor-tray/` | (deleted) | Retired after the unified app shipped |
 
-**Workspace edits:**
+**Workspace result:**
 
-- `Cargo.toml` — replace `crates/hypercolor-tray` with `crates/hypercolor-app` once ready.
-  Until then, both coexist (`hypercolor-app` as a new member, `hypercolor-tray` still
-  building).
-- Workspace excludes (`exclude = ["crates/hypercolor-ui"]`) stays. `hypercolor-app` joins
-  default workspace CI.
+- `hypercolor-app` is the sole workspace member that owns a system tray.
+- The workspace exclusion for `crates/hypercolor-ui` remains, and `hypercolor-app` runs in
+  native app CI.
 
 ### 13.2 Workspace CI
 

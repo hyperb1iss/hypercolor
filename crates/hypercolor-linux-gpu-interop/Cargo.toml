@@ -19,6 +19,7 @@ dpi = { workspace = true, optional = true }
 euclid = { version = "0.22", optional = true }
 gleam = { version = "0.15", optional = true }
 glow = { workspace = true }
+hypercolor-gpu-frame = { workspace = true }
 libc = { workspace = true }
 servo = { workspace = true, features = ["baked-in-resources", "js_jit"], optional = true }
 surfman = { workspace = true, features = ["sm-x11"], optional = true }

@@ -11,12 +11,12 @@ use objc2_metal::{MTLPixelFormat, MTLTexture};
 use thiserror::Error;
 
 use crate::macos::{
-    ImportedEffectFrame, ImportedFrameFormat, MacosCaptureCacheOwner, MacosGpuInteropError,
-    MacosIosurfaceImportDescriptor, MacosIosurfaceImporter, MacosMetalStorageMode,
-    create_core_video_texture_cache, import_core_video_metal_texture_plane,
-    import_core_video_pixel_buffer_plane, import_iosurface_metal_texture_plane,
-    metal_device_import_contract,
+    MacosCaptureCacheOwner, MacosGpuInteropError, MacosIosurfaceImportDescriptor,
+    MacosIosurfaceImporter, MacosMetalStorageMode, create_core_video_texture_cache,
+    import_core_video_metal_texture_plane, import_core_video_pixel_buffer_plane,
+    import_iosurface_metal_texture_plane, metal_device_import_contract,
 };
+use crate::{FrameOrigin, ImportedEffectFrame, ImportedFrameFormat};
 
 const MAX_CAPTURE_DESCRIPTORS: usize = 8;
 const MAX_CORE_VIDEO_WRAPPERS: usize = 64;
@@ -586,6 +586,7 @@ impl MacosScreenBridge {
                         device,
                         iosurface,
                         frame.sequence,
+                        FrameOrigin::TopLeft,
                         frame.epoch,
                         resource_generation,
                         plane_index,

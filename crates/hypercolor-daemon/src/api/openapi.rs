@@ -9,7 +9,9 @@ use utoipa::openapi::{Content, HttpMethod, Ref, Required, Response, Tag};
 use utoipa::{Modify, OpenApi};
 use utoipa_swagger_ui::SwaggerUi;
 
-use crate::api::{capture, config, controls, devices, drivers, effects, envelope, output, system};
+use crate::api::{
+    capture, config, controls, devices, drivers, effects, envelope, media, output, system,
+};
 
 #[derive(OpenApi)]
 #[openapi(
@@ -18,6 +20,7 @@ use crate::api::{capture, config, controls, devices, drivers, effects, envelope,
         system::get_system,
         capture::authorize_input_monitoring,
         capture::authorize_screen_recording,
+        media::authorize_media,
         capture::set_capture_source,
         capture::list_capture_monitors,
         drivers::list_drivers,
@@ -38,6 +41,7 @@ use crate::api::{capture, config, controls, devices, drivers, effects, envelope,
             envelope::ApiResponse<system::SystemResource>,
             envelope::ApiResponse<hypercolor_types::api::capture::CaptureAuthorizationResponse>,
             envelope::ApiResponse<hypercolor_types::api::capture::CapturePickerResponse>,
+            envelope::ApiResponse<media::MediaAuthorizationResponse>,
             envelope::ApiResponse<Vec<hypercolor_types::api::capture::CaptureMonitor>>,
             envelope::ApiResponse<drivers::DriverListResponse>,
             envelope::ApiResponse<drivers::DriverConfigResponse>,
@@ -81,6 +85,9 @@ use crate::api::{capture, config, controls, devices, drivers, effects, envelope,
             hypercolor_types::api::capture::CaptureAuthorizationResponse,
             hypercolor_types::api::capture::CapturePickerResponse,
             hypercolor_types::api::capture::CaptureMonitor,
+            media::MediaAuthorizationAdapter,
+            media::MediaAuthorizationRequest,
+            media::MediaAuthorizationResponse,
             drivers::DriverListResponse,
             drivers::DriverSummary,
             drivers::DriverConfigResponse,
@@ -346,11 +353,17 @@ pub const ROUTES: &[RouteSpec] = &[
         "capture",
         "Request screen-capture authorization",
     ),
+    RouteSpec::post(
+        "/api/v1/media/authorize",
+        "authorize_media",
+        "media",
+        "Request media Automation authorization",
+    ),
     RouteSpec::put(
         "/api/v1/capture/source",
         "set_capture_source",
         "capture",
-        "Open the screen-capture source picker",
+        "Set the screen-capture source",
     ),
     RouteSpec::get(
         "/api/v1/capture/monitors",

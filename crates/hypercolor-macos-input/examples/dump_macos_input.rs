@@ -12,9 +12,10 @@ use std::{
 
 #[cfg(target_os = "macos")]
 use hypercolor_macos_input::{
-    MacosInputBatch, MacosInputConfig, MacosInputEvent, MacosInputSession,
-    input_monitoring_granted, request_input_monitoring,
+    MacosInputConfig, MacosInputSession, input_monitoring_granted, request_input_monitoring,
 };
+#[cfg(target_os = "macos")]
+use hypercolor_types::host_input::{HostInputBatch, HostInputEvent, HostPointerSnapshot};
 
 const DEFAULT_EVENTS: usize = 25;
 const DEFAULT_SECONDS: u64 = 10;
@@ -47,14 +48,9 @@ impl Default for Args {
 #[derive(Debug)]
 #[cfg(target_os = "macos")]
 struct DiagnosticBatch {
-    epoch: u64,
     at_ms: u64,
-    events: Vec<MacosInputEvent>,
-    origin_x: f64,
-    origin_y: f64,
-    width: f64,
-    height: f64,
-    topology_generation: u64,
+    events: Vec<HostInputEvent>,
+    pointer: Option<HostPointerSnapshot>,
 }
 
 fn main() -> ExitCode {
@@ -112,7 +108,6 @@ fn run() -> Result<(), String> {
             MacosInputConfig {
                 keyboard: args.keyboard,
                 pointer: args.pointer,
-                epoch: 1,
                 clock,
             },
             move |batch| match sender.try_send(owned_batch(batch)) {
@@ -177,79 +172,19 @@ fn run() -> Result<(), String> {
 }
 
 #[cfg(target_os = "macos")]
-fn owned_batch(batch: MacosInputBatch<'_>) -> DiagnosticBatch {
+fn owned_batch(batch: HostInputBatch<'_>) -> DiagnosticBatch {
     DiagnosticBatch {
-        epoch: batch.epoch,
         at_ms: batch.at_ms,
         events: batch.events.to_vec(),
-        origin_x: batch.virtual_desktop.origin_x,
-        origin_y: batch.virtual_desktop.origin_y,
-        width: batch.virtual_desktop.width,
-        height: batch.virtual_desktop.height,
-        topology_generation: batch.virtual_desktop.topology_generation,
+        pointer: batch.pointer,
     }
 }
 
 #[cfg(target_os = "macos")]
 fn print_batch(batch: &DiagnosticBatch, remaining: usize) {
-    println!(
-        "batch epoch={} at_ms={} topology_generation={} desktop=({:.3},{:.3}) {:.3}x{:.3}",
-        batch.epoch,
-        batch.at_ms,
-        batch.topology_generation,
-        batch.origin_x,
-        batch.origin_y,
-        batch.width,
-        batch.height,
-    );
+    println!("batch at_ms={} pointer={:?}", batch.at_ms, batch.pointer,);
     for event in batch.events.iter().take(remaining) {
-        match event {
-            MacosInputEvent::Key {
-                virtual_keycode,
-                pressed,
-                autorepeat,
-            } => println!(
-                "event key physical_code={} pressed={} repeat={}",
-                virtual_keycode, pressed, autorepeat
-            ),
-            MacosInputEvent::ModifierFlags {
-                virtual_keycode,
-                flags,
-            } => println!(
-                "event modifiers physical_code={} flags=0x{:x}",
-                virtual_keycode,
-                flags.bits()
-            ),
-            MacosInputEvent::Button { button, pressed } => {
-                println!("event button kind={button:?} pressed={pressed}");
-            }
-            MacosInputEvent::Motion {
-                x,
-                y,
-                delta_x,
-                delta_y,
-            } => println!("event motion global=({x:.3},{y:.3}) delta=({delta_x:.3},{delta_y:.3})"),
-            MacosInputEvent::Wheel {
-                fixed_delta_x,
-                fixed_delta_y,
-                unit,
-                phase,
-                momentum_phase,
-            } => println!(
-                "event wheel fixed=({fixed_delta_x},{fixed_delta_y}) unit={unit:?} phase={phase:?} momentum={momentum_phase:?}"
-            ),
-            MacosInputEvent::MediaKey {
-                nx_key_type,
-                pressed,
-                repeat,
-            } => println!(
-                "event media physical_type={} pressed={} repeat={}",
-                nx_key_type, pressed, repeat
-            ),
-            MacosInputEvent::StateGap { reason } => {
-                println!("event state_gap reason={reason:?}");
-            }
-        }
+        println!("event {event:?}");
     }
 }
 

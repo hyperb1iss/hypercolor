@@ -245,7 +245,8 @@ fn raw_gl_pipelined_importer_reuses_latest_completed_frame_when_slots_are_held()
             GlFramebufferSource::Framebuffer(raw_gl.framebuffer),
         )
         .expect("held slots should reuse the latest completed frame");
-    assert_eq!(reused.storage_id, first.storage_id);
+    assert_eq!(reused.allocation_id, first.allocation_id);
+    assert_eq!(reused.content_generation, first.content_generation);
     let reused_pixels =
         read_texture_pixels(&wgpu.device, &wgpu.queue, &reused.texture, WIDTH, HEIGHT);
     for pixel in reused_pixels.chunks_exact(4) {
@@ -291,7 +292,8 @@ fn raw_gl_pipelined_importer_replaces_completed_identity_when_slot_is_reused() {
             GlFramebufferSource::Framebuffer(raw_gl.framebuffer),
         )
         .expect("first pipelined import should complete");
-    let first_storage_id = first.storage_id;
+    let first_allocation_id = first.allocation_id;
+    let first_content_generation = first.content_generation;
     drop(first);
 
     let second_color = [0, 192, 255, 255];
@@ -302,7 +304,8 @@ fn raw_gl_pipelined_importer_replaces_completed_identity_when_slot_is_reused() {
             GlFramebufferSource::Framebuffer(raw_gl.framebuffer),
         )
         .expect("reused slot should wait for the new completed frame");
-    assert_ne!(second.storage_id, first_storage_id);
+    assert_eq!(second.allocation_id, first_allocation_id);
+    assert_ne!(second.content_generation, first_content_generation);
     let pixels = read_texture_pixels(&wgpu.device, &wgpu.queue, &second.texture, WIDTH, HEIGHT);
     for pixel in pixels.chunks_exact(4) {
         assert_eq!(pixel, second_color);

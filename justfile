@@ -29,7 +29,7 @@ alias py := python-verify
 # ─── Core ─────────────────────────────────────────────────
 
 # Run all checks (boundary, format, lint, test)
-verify: oss-boundary-check-strict api-doc-route-check build-wrapper-test cargo-gc-test fmt-check lint test alloc-contracts
+verify: oss-boundary-check-strict api-doc-route-check macos-gpu-only-check build-wrapper-test cargo-gc-test fmt-check lint test alloc-contracts
     @echo '✅ All checks passed'
 
 # Verify target isolation and Cargo argument normalization
@@ -65,6 +65,10 @@ oss-boundary-check-strict:
 # Keep current documentation free of retired public API routes
 api-doc-route-check:
     ./scripts/check-retired-api-docs.sh
+
+# Keep production macOS capture native-only while retaining fixture oracles
+macos-gpu-only-check:
+    ./scripts/check-macos-gpu-only.sh
 
 # Build the workspace with the daemon's full feature set
 [unix]
@@ -419,15 +423,6 @@ cli *args='':
 [windows]
 cli *args='':
     powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo run -p hypercolor-cli --bin hypercolor -- {{ args }}
-
-# Run the system tray applet
-[unix]
-tray *args='':
-    ./scripts/cargo-cache-build.sh cargo run -p hypercolor-tray -- {{ args }}
-
-[windows]
-tray *args='':
-    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo run -p hypercolor-tray -- {{ args }}
 
 # Build UI + effects so tauri.conf.json's workspace-relative resource paths exist.
 # Both targets are incremental, so no-op rebuilds are cheap and we never bundle stale artifacts.

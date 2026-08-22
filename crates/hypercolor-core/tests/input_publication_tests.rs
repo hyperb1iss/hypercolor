@@ -1,12 +1,21 @@
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Barrier};
 use std::thread;
 
 use hypercolor_core::input::{
-    INPUT_EVENT_RING_CAPACITY, InputData, InputManager, InputSource, InteractionBatch,
-    InteractionData, MotionAggregate,
+    DataSource, DataSourceKind, DataSourceRole, INPUT_EVENT_RING_CAPACITY, InputData, InputManager,
+    InputSource, InteractionBatch, InteractionData, InteractionSource, InteractionSourceRole,
+    ManagedSourceRole, MotionAggregate, SourceRoleBinding,
 };
 use hypercolor_core::types::event::{InputButtonState, InputEvent, TimedInputEvent};
+use hypercolor_types::sensor::SystemSnapshot;
+
+fn register_test_source(manager: &mut InputManager, source: ManagedSourceRole) {
+    manager
+        .add_source(source)
+        .expect("publication fixture source should match its declared role");
+}
 
 struct SequencedInteractionSource {
     running: bool,
@@ -62,10 +71,63 @@ impl InputSource for SequencedInteractionSource {
     fn is_running(&self) -> bool {
         self.running
     }
+}
 
-    fn is_interaction_source(&self) -> bool {
+impl SourceRoleBinding for SequencedInteractionSource {
+    type Role = InteractionSourceRole;
+}
+
+impl InteractionSource for SequencedInteractionSource {}
+
+enum SensorStep {
+    Sample(Arc<SystemSnapshot>),
+    None,
+    Error,
+}
+
+struct SequencedSensorSource {
+    steps: VecDeque<SensorStep>,
+}
+
+impl InputSource for SequencedSensorSource {
+    fn name(&self) -> &'static str {
+        "sequenced-sensors"
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn stop(&mut self) {}
+
+    fn sample(&mut self) -> anyhow::Result<InputData> {
+        match self.steps.pop_front().expect("sensor fixture step") {
+            SensorStep::Sample(snapshot) => Ok(InputData::Sensors(snapshot)),
+            SensorStep::None => Ok(InputData::None),
+            SensorStep::Error => anyhow::bail!("sensor fixture failure"),
+        }
+    }
+
+    fn is_running(&self) -> bool {
         true
     }
+}
+
+impl SourceRoleBinding for SequencedSensorSource {
+    type Role = DataSourceRole;
+}
+
+impl DataSource for SequencedSensorSource {
+    fn data_source_kind(&self) -> DataSourceKind {
+        DataSourceKind::Sensors
+    }
+}
+
+fn sensor_snapshot(polled_at_ms: u64) -> Arc<SystemSnapshot> {
+    Arc::new(SystemSnapshot {
+        polled_at_ms,
+        ..SystemSnapshot::empty()
+    })
 }
 
 fn key_event(seq: u64) -> TimedInputEvent {
@@ -83,13 +145,105 @@ fn key_event(seq: u64) -> TimedInputEvent {
 }
 
 #[test]
+fn sensor_none_retains_latest_without_advancing_publication() {
+    let first = sensor_snapshot(1);
+    let mut manager = InputManager::new();
+    register_test_source(
+        &mut manager,
+        ManagedSourceRole::data(Box::new(SequencedSensorSource {
+            steps: VecDeque::from([SensorStep::Sample(Arc::clone(&first)), SensorStep::None]),
+        })),
+    );
+    let slot = manager.input_graph_handle().snapshot().slots()[0].clone();
+
+    manager.sample_sources(0.0);
+    let publication = slot.latest().expect("initial sensor publication");
+    let InputData::Sensors(initial) = publication.as_ref() else {
+        panic!("expected sensor sample");
+    };
+    assert!(Arc::ptr_eq(initial, &first));
+    let receiver = slot.subscribe_publication();
+    let publication_revision = *receiver.borrow();
+
+    manager.sample_sources(0.0);
+
+    let publication = slot.latest().expect("retained sensor publication");
+    let InputData::Sensors(retained) = publication.as_ref() else {
+        panic!("expected retained sensor sample");
+    };
+    assert!(Arc::ptr_eq(retained, &first));
+    assert_eq!(*receiver.borrow(), publication_revision);
+    assert!(!receiver.has_changed().expect("publication channel open"));
+}
+
+#[test]
+fn changed_sensor_sample_advances_publication() {
+    let first = sensor_snapshot(1);
+    let second = sensor_snapshot(2);
+    let mut manager = InputManager::new();
+    register_test_source(
+        &mut manager,
+        ManagedSourceRole::data(Box::new(SequencedSensorSource {
+            steps: VecDeque::from([
+                SensorStep::Sample(first),
+                SensorStep::Sample(Arc::clone(&second)),
+            ]),
+        })),
+    );
+    let slot = manager.input_graph_handle().snapshot().slots()[0].clone();
+
+    manager.sample_sources(0.0);
+    let receiver = slot.subscribe_publication();
+    manager.sample_sources(0.0);
+
+    assert!(receiver.has_changed().expect("publication channel open"));
+    let publication = slot.latest().expect("updated sensor publication");
+    let InputData::Sensors(updated) = publication.as_ref() else {
+        panic!("expected updated sensor sample");
+    };
+    assert!(Arc::ptr_eq(updated, &second));
+}
+
+#[test]
+fn sensor_sample_error_clears_latest_and_advances_once() {
+    let mut manager = InputManager::new();
+    register_test_source(
+        &mut manager,
+        ManagedSourceRole::data(Box::new(SequencedSensorSource {
+            steps: VecDeque::from([
+                SensorStep::Sample(sensor_snapshot(1)),
+                SensorStep::Error,
+                SensorStep::Error,
+            ]),
+        })),
+    );
+    let slot = manager.input_graph_handle().snapshot().slots()[0].clone();
+
+    manager.sample_sources(0.0);
+    let mut receiver = slot.subscribe_publication();
+    manager.sample_sources(0.0);
+
+    assert!(slot.latest().is_none());
+    assert!(receiver.has_changed().expect("publication channel open"));
+    receiver.borrow_and_update();
+
+    manager.sample_sources(0.0);
+
+    assert!(slot.latest().is_none());
+    assert!(!receiver.has_changed().expect("publication channel open"));
+}
+
+#[test]
 fn concurrent_publication_never_tears_sample_from_event_tail() {
     const PUBLICATIONS: u64 = (INPUT_EVENT_RING_CAPACITY as u64) * 8;
     let mut manager = InputManager::new();
-    manager.add_source(Box::new(SequencedInteractionSource {
-        running: false,
-        generation: 0,
-    }));
+    register_test_source(
+        &mut manager,
+        ManagedSourceRole::interaction(Box::new(SequencedInteractionSource {
+            running: false,
+            generation: 0,
+        })),
+    );
     manager.start_all().expect("source should start");
     let graph = manager.input_graph_handle().snapshot();
     let slot = graph.slots()[0].clone();

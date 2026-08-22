@@ -15,6 +15,7 @@
 use std::alloc::Layout;
 use std::collections::HashMap;
 use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
+use std::ops::Deref;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::thread;
@@ -35,7 +36,6 @@ use hypercolor_windows_capture::{
     PreparedCpuDesktopReadback, PreparedGpuReductionPlan, PreparedGpuSurfacePlan,
     ReductionTelemetry,
 };
-use tokio::sync::oneshot;
 use tracing::{debug, info, warn};
 
 use crate::input::screen::{
@@ -53,25 +53,39 @@ use crate::input::screen::{
     ScreenAnalysisWorkPlan, ScreenBackendResourceIdentity, ScreenBranchPayload,
     ScreenBranchPublisher, ScreenByteAdmissionCoordinator, ScreenByteLease, ScreenByteReservation,
     ScreenCaptureBackend, ScreenCaptureDemand, ScreenCaptureInput,
-    ScreenColorTransformCapabilities, ScreenComputeCapacityPolicy, ScreenCursorCapabilities,
-    ScreenCursorPolicy, ScreenExecutorColorCapabilities, ScreenGpuSurfacePayload,
-    ScreenNativePreparationPayload, ScreenPhysicalGpuDeviceIdentity,
+    ScreenColorTransformCapabilities, ScreenCommittedState, ScreenComputeCapacityPolicy,
+    ScreenCursorCapabilities, ScreenCursorPolicy, ScreenExecutorColorCapabilities,
+    ScreenGpuSurfacePayload, ScreenNativePreparationPayload, ScreenPhysicalGpuDeviceIdentity,
     ScreenPhysicalReductionDescriptor, ScreenPreparedWorkerToken, ScreenPublicationColorimetry,
     ScreenPublicationExecutor, ScreenPublicationExecutorRequest, ScreenPublicationHealth,
     ScreenPublicationHub, ScreenPublicationKind, ScreenPublicationMetadata, ScreenReductionFilter,
     ScreenRequiredResourceMinimum, ScreenResourceApi, ScreenResourceKind, ScreenResourceLifetime,
-    ScreenSourceReflection, ScreenSourceSelector, ScreenWorkerBinding, ScreenWorkerBindingState,
+    ScreenSourceReflection, ScreenSourceSelector, ScreenWorkerBinding,
     ScreenWorkerExactLedgerBuilder, ScreenWorkerPreparation, ScreenWorkerPreparationTicket,
     ScreenWorkerRetirement, SourceScale, analyze_screen_frame,
 };
 use crate::input::status::{
     ScreenCaptureDiagnostics, ScreenCaptureReductionPath, SourceDiagnostics,
 };
-use crate::input::traits::{InputData, InputSource};
-use crate::input::worker_retention::{retain_input_worker, spawn_input_worker};
+use crate::input::traits::{
+    InputData, InputSource, ScreenSource, ScreenSourceRole, SourceRoleBinding,
+};
 use crate::input::{
     SourceIssue, SourceKind, SourceSessionSlot, SourceSessionWriter, SourceStatusHandle,
     SourceStatusReporter,
+};
+use hypercolor_worker_retention::{retain_worker, spawn_worker as spawn_retained_worker};
+
+use super::adapter::{
+    CaptureBackend, CaptureBackendHandles, CaptureExactCommand, CaptureExactCommandEndpoint,
+    CaptureExactCommandRejected, CaptureExactPublicationShared, CaptureExactRuntimeOwner,
+    CaptureExactState, CaptureOwnedSource, CapturePublication as AdapterCapturePublication,
+    CapturePublicationFence, CapturePublicationSource, CaptureSession, CaptureSessionAuthority,
+    CaptureSessionDeadline, CaptureSessionReadiness, CaptureSessionTransaction,
+    CaptureSuccessorPolicy, ReservedCaptureSessionAuthority, ScreenCaptureAdapter,
+    ScreenCaptureAdapterAssembly, VersionedCaptureSettings, begin_capture_exact_preparation,
+    begin_capture_exact_retirement, bind_current_capture_exact_runtime,
+    execute_capture_exact_command,
 };
 
 /// How long a worker waits on DXGI before checking its command channel.
@@ -107,12 +121,9 @@ pub struct ResolvedCaptureSource {
 
 /// Settings shared between the input source handle and the capture worker.
 struct SharedSettings {
-    config: Mutex<VersionedCaptureConfig>,
+    values: VersionedCaptureSettings<VersionedCaptureConfig>,
     compute_capacity_policy: ScreenComputeCapacityPolicy,
-    demand: Mutex<ScreenCaptureDemand>,
     admission_coordinator: ScreenByteAdmissionCoordinator,
-    generation: AtomicU64,
-    session_generation: AtomicU64,
     activity_generation: AtomicU64,
 }
 
@@ -210,6 +221,7 @@ const fn capture_resource_operation(kind: CaptureResourceKind) -> &'static str {
     }
 }
 
+#[derive(Clone)]
 struct VersionedCaptureConfig {
     value: CaptureConfig,
     source_generation: u64,
@@ -270,6 +282,40 @@ struct ActiveCaptureEpoch {
     source_generation: u64,
     activity_generation: u64,
     duplication_generation: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct CaptureAuthorityFence {
+    source_generation: u64,
+    activity_generation: u64,
+}
+
+type CapturePublication<T> =
+    AdapterCapturePublication<CaptureAuthorityFence, ActiveCaptureEpoch, T>;
+
+impl CapturePublicationFence<ActiveCaptureEpoch> for CaptureAuthorityFence {
+    fn admits(&self, epoch: &ActiveCaptureEpoch) -> bool {
+        epoch.source_generation == self.source_generation
+            && epoch.activity_generation == self.activity_generation
+    }
+}
+
+impl<T> CapturePublication<T> {
+    fn fence_source(&mut self, source_generation: u64) -> Option<T> {
+        self.replace_fence(CaptureAuthorityFence {
+            source_generation,
+            ..*self.fence()
+        })
+        .latest
+    }
+
+    fn fence_activity(&mut self, activity_generation: u64) -> Option<T> {
+        self.replace_fence(CaptureAuthorityFence {
+            activity_generation,
+            ..*self.fence()
+        })
+        .latest
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -380,88 +426,67 @@ impl WindowsPublicationSource {
     }
 }
 
+impl CapturePublicationSource for WindowsPublicationSource {
+    fn source_id(&self) -> &CaptureSourceId {
+        &self.epoch.source_id
+    }
+}
+
 struct WindowsOwnedSource {
     source_id: CaptureSourceId,
     binding: ScreenWorkerBinding,
     _runtime_lifetime: ScreenResourceLifetime,
 }
 
+impl CaptureOwnedSource for WindowsOwnedSource {
+    fn source_id(&self) -> &CaptureSourceId {
+        &self.source_id
+    }
+
+    fn belongs_to_authority(&self, authority: &ScreenCommittedState) -> bool {
+        authority.owns_runtime_binding(&self.binding)
+    }
+}
+
 #[derive(Default)]
 struct ExactPublicationShared {
-    source: Mutex<Option<WindowsPublicationSource>>,
-    owned_sources: Mutex<ExactBoxList<WindowsOwnedSource>>,
-    hub: Mutex<Option<Arc<ScreenPublicationHub>>>,
+    common: CaptureExactPublicationShared<WindowsPublicationSource, WindowsOwnedSource>,
     cpu_executor: Mutex<Option<Arc<CpuReductionExecutor>>>,
-    resolution_revision: AtomicU64,
     next_descriptor_id: AtomicU64,
 }
 
+impl Deref for ExactPublicationShared {
+    type Target = CaptureExactPublicationShared<WindowsPublicationSource, WindowsOwnedSource>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.common
+    }
+}
+
+impl CaptureExactState for ExactPublicationShared {
+    type Source = WindowsPublicationSource;
+    type OwnedSource = WindowsOwnedSource;
+
+    fn common(&self) -> &CaptureExactPublicationShared<Self::Source, Self::OwnedSource> {
+        &self.common
+    }
+}
+
 impl ExactPublicationShared {
-    fn replace_source(&self, next: Option<WindowsPublicationSource>) {
-        let mut source = self
-            .source
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if *source == next {
-            return;
-        }
-        *source = next;
-        self.resolution_revision
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |revision| {
-                revision.checked_add(1)
-            })
-            .expect("Windows screen publication resolution revision exhausted");
-    }
-
-    fn source(&self) -> Option<WindowsPublicationSource> {
-        self.source
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-    }
-
-    fn hub(&self) -> Option<Arc<ScreenPublicationHub>> {
-        self.hub
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-    }
-
-    fn owns_source(&self, source_id: &CaptureSourceId) -> bool {
-        self.source()
-            .is_some_and(|source| &source.epoch.source_id == source_id)
-            || self
-                .owned_sources
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .iter()
-                .any(|owned| &owned.source_id == source_id)
-    }
-
-    fn register_owned_source(&self, source: Box<ExactBoxNode<WindowsOwnedSource>>) {
-        self.owned_sources
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push_boxed(source);
-    }
-
-    fn reap_owned_sources(&self) {
-        let authority = self.hub().map(|hub| hub.committed_state());
-        self.owned_sources
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .retain(|source| {
-                authority
-                    .as_ref()
-                    .is_some_and(|authority| authority.owns_runtime_binding(&source.binding))
-            });
-    }
-
-    fn clear_owned_sources(&self) {
-        self.owned_sources
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clear();
+    #[cfg(test)]
+    fn install_test_source(&self, next: Option<WindowsPublicationSource>) -> bool {
+        let authority = if let Some(authority) = self.current_authority() {
+            authority
+        } else {
+            let reservation = self.reserve_authority().expect("test authority reserves");
+            let authority = reservation.authority();
+            drop(
+                self.activate_reserved_authority(reservation)
+                    .expect("test authority activates"),
+            );
+            authority
+        };
+        self.replace_source_if_current(authority, next)
     }
 
     fn cpu_executor(&self) -> anyhow::Result<Arc<CpuReductionExecutor>> {
@@ -504,75 +529,13 @@ impl ExactPublicationShared {
     }
 }
 
-struct CapturePublication<T> {
-    source_generation: u64,
-    activity_generation: u64,
-    active: Option<ActiveCaptureEpoch>,
-    latest: Option<T>,
-}
-
-impl<T> Default for CapturePublication<T> {
-    fn default() -> Self {
-        Self {
-            source_generation: 0,
-            activity_generation: 0,
-            active: None,
-            latest: None,
-        }
-    }
-}
-
-impl<T> CapturePublication<T> {
-    fn activate(&mut self, active: ActiveCaptureEpoch) -> bool {
-        if active.source_generation != self.source_generation
-            || active.activity_generation != self.activity_generation
-        {
-            return false;
-        }
-        if self.active.as_ref() != Some(&active) {
-            self.latest = None;
-            self.active = Some(active);
-        }
-        true
-    }
-
-    fn fence_source(&mut self, source_generation: u64) {
-        self.source_generation = source_generation;
-        self.clear();
-    }
-
-    fn fence_activity(&mut self, activity_generation: u64) {
-        self.activity_generation = activity_generation;
-        self.clear();
-    }
-
-    fn clear(&mut self) {
-        self.active = None;
-        self.latest = None;
-    }
-
-    fn publish(&mut self, active: &ActiveCaptureEpoch, value: T) -> bool {
-        if self.active.as_ref() != Some(active) {
-            return false;
-        }
-        self.latest = Some(value);
-        true
-    }
-}
-
 impl SharedSettings {
     fn snapshot(&self) -> CaptureSettingsSnapshot {
-        let config = self
-            .config
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let snapshot = self.values.snapshot();
         CaptureSettingsSnapshot {
-            config: config.value.clone(),
-            source_generation: config.source_generation,
-            demand: *self
-                .demand
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            config: snapshot.config.value,
+            source_generation: snapshot.config.source_generation,
+            demand: snapshot.demand,
         }
     }
 
@@ -590,21 +553,11 @@ impl SharedSettings {
         source_generation: u64,
         demand: ScreenCaptureDemand,
     ) -> u64 {
-        {
-            let mut config = self
-                .config
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            config.value.clone_from(next_config);
-            config.source_generation = source_generation;
-        }
-        *self
-            .demand
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = demand;
-        self.generation
-            .fetch_add(1, Ordering::AcqRel)
-            .wrapping_add(1)
+        let mut values = self.values.lock();
+        values.config_mut().value.clone_from(next_config);
+        values.config_mut().source_generation = source_generation;
+        *values.demand_mut() = demand;
+        values.commit()
     }
 }
 
@@ -613,9 +566,7 @@ pub struct WindowsScreenCaptureInput {
     settings: Arc<SharedSettings>,
     running: bool,
     capture_demand: ScreenCaptureDemand,
-    publication: Arc<Mutex<CapturePublication<AnalyzedScreenSnapshot>>>,
-    exact: Arc<ExactPublicationShared>,
-    worker: Option<CaptureWorker>,
+    adapter: ScreenCaptureAdapter<WindowsCaptureBackend>,
     status: SourceStatusReporter,
     status_session: SourceSessionSlot,
     source_sink: Option<CaptureSourceSink>,
@@ -692,11 +643,13 @@ impl WindowsScreenCaptureFixture {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             analyze_capture_frame(&mut analyzer, &active, frame)?
         };
-        let published = self
-            .publication
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .publish(&active, snapshot);
+        let publication = {
+            self.publication
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .publish(&active, snapshot)
+        };
+        let published = publication.is_ok();
         if published && let Some(status) = self.status_session.load() {
             status.record_sample(captured_at, fresh_until, 1)?;
         }
@@ -705,12 +658,178 @@ impl WindowsScreenCaptureFixture {
 }
 
 struct CaptureWorker {
+    authority: CaptureSessionAuthority,
     command_tx: mpsc::Sender<WorkerCommand>,
     exit_rx: mpsc::Receiver<()>,
     join_handle: Option<thread::JoinHandle<()>>,
     cancel: Arc<AtomicBool>,
     #[cfg(test)]
     processed_activity_generation: Arc<AtomicU64>,
+}
+
+struct WindowsCaptureBackend {
+    settings: Arc<SharedSettings>,
+    status_session: SourceSessionSlot,
+}
+
+struct WindowsWorkerSpawn {
+    source_sink: Option<CaptureSourceSink>,
+}
+
+impl CaptureBackend for WindowsCaptureBackend {
+    type Worker = CaptureWorker;
+    type Readiness = WindowsSessionReadiness;
+    type SpawnRequest = WindowsWorkerSpawn;
+    type ExactState = ExactPublicationShared;
+    type CompatibilityFence = CaptureAuthorityFence;
+    type CompatibilityEpoch = ActiveCaptureEpoch;
+    type CompatibilityValue = AnalyzedScreenSnapshot;
+
+    const READINESS_TIMEOUT: Duration = WORKER_READY_TIMEOUT;
+
+    fn spawn_worker(
+        &self,
+        request: Self::SpawnRequest,
+        handles: CaptureBackendHandles<'_, Self>,
+        reservation: ReservedCaptureSessionAuthority,
+    ) -> anyhow::Result<CaptureSessionTransaction<Self::Worker, Self::Readiness>> {
+        let WindowsWorkerSpawn { source_sink } = request;
+        let settings = Arc::clone(&self.settings);
+        let publication = handles.compatibility_publication_handle();
+        let exact = handles.exact_state_handle();
+        let status_session = self.status_session.clone();
+        let authority = reservation.authority();
+        let session_generation = authority.generation();
+        let (command_tx, command_rx) = mpsc::channel();
+        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+        let (exit_tx, exit_rx) = mpsc::sync_channel(1);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let worker_cancel = Arc::clone(&cancel);
+        let worker_processed_activity_generation = Arc::new(AtomicU64::new(0));
+        #[cfg(test)]
+        let processed_activity_generation = Arc::clone(&worker_processed_activity_generation);
+        let join_handle = spawn_retained_worker(
+            thread::Builder::new().name("hypercolor-screen-capture".to_owned()),
+            move || {
+                run_worker(
+                    &settings,
+                    &publication,
+                    &exact,
+                    &command_rx,
+                    &worker_cancel,
+                    &worker_processed_activity_generation,
+                    status_session,
+                    session_generation,
+                    source_sink,
+                    ready_tx,
+                );
+                let _ = exit_tx.send(());
+            },
+        )
+        .map_err(|error| anyhow!("failed to spawn screen capture worker: {error}"))?;
+
+        Ok(CaptureSessionTransaction::new(
+            CaptureWorker {
+                authority,
+                command_tx,
+                exit_rx,
+                join_handle: Some(join_handle),
+                cancel,
+                #[cfg(test)]
+                processed_activity_generation,
+            },
+            WindowsSessionReadiness(ready_rx),
+            reservation,
+        ))
+    }
+}
+
+#[derive(Clone)]
+struct WindowsExactCommandEndpoint {
+    authority: CaptureSessionAuthority,
+    command_tx: mpsc::Sender<WorkerCommand>,
+}
+
+impl CaptureExactCommandEndpoint for WindowsExactCommandEndpoint {
+    const SOURCE_NAME: &'static str = "Windows capture";
+
+    fn authority(&self) -> CaptureSessionAuthority {
+        self.authority
+    }
+
+    fn send_exact(&self, command: CaptureExactCommand) -> Result<(), CaptureExactCommandRejected> {
+        self.command_tx
+            .send(WorkerCommand::Exact(command))
+            .map_err(|_| CaptureExactCommandRejected)
+    }
+}
+
+impl CaptureWorker {
+    fn exact_command_endpoint(&self) -> WindowsExactCommandEndpoint {
+        WindowsExactCommandEndpoint {
+            authority: self.authority,
+            command_tx: self.command_tx.clone(),
+        }
+    }
+}
+
+struct WindowsSessionReadiness(mpsc::Receiver<Result<(), String>>);
+
+impl CaptureSessionReadiness for WindowsSessionReadiness {
+    fn wait(self, deadline: CaptureSessionDeadline) -> anyhow::Result<()> {
+        match self.0.recv_timeout(deadline.remaining()) {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(error)) => {
+                anyhow::bail!("Windows screen capture worker initialization failed: {error}")
+            }
+            Err(error) => {
+                anyhow::bail!("Windows screen capture worker readiness timed out: {error}")
+            }
+        }
+    }
+}
+
+impl CaptureSession for CaptureWorker {
+    type Exit = thread::Result<()>;
+    type ExactEndpoint = WindowsExactCommandEndpoint;
+
+    const SUCCESSOR_POLICY: CaptureSuccessorPolicy = CaptureSuccessorPolicy::WaitForRetirement;
+
+    fn authority(&self) -> CaptureSessionAuthority {
+        self.authority
+    }
+
+    fn exact_endpoint(&self) -> Self::ExactEndpoint {
+        self.exact_command_endpoint()
+    }
+
+    fn abort(&self) {
+        self.cancel.store(true, Ordering::Release);
+        let _ = self.command_tx.send(WorkerCommand::Stop);
+    }
+
+    fn wake(&self) {}
+
+    fn start(&self) {}
+
+    fn is_finished(&self) -> bool {
+        self.join_handle
+            .as_ref()
+            .is_none_or(thread::JoinHandle::is_finished)
+    }
+
+    fn finish(mut self) -> Self::Exit {
+        self.join_handle
+            .take()
+            .expect("finished Windows worker retains its thread handle")
+            .join()
+    }
+
+    fn detach(mut self) {
+        if let Some(join_handle) = self.join_handle.take() {
+            retain_worker(join_handle, "Windows screen capture worker");
+        }
+    }
 }
 
 struct WindowsGpuRoute {
@@ -777,19 +896,23 @@ struct WindowsExactRuntime {
 
 type WindowsExactRuntimes = ExactBoxList<WindowsExactRuntime>;
 
-impl WindowsExactRuntime {
-    fn bind_if_current(&mut self, hub: &ScreenPublicationHub) -> anyhow::Result<()> {
-        let authority = hub.committed_state();
-        if !authority.owns_runtime_binding(&self.binding) {
-            return Ok(());
-        }
-        match self.binding.state() {
-            ScreenWorkerBindingState::Active | ScreenWorkerBindingState::Retired => {}
-            ScreenWorkerBindingState::Prepared | ScreenWorkerBindingState::Armed => return Ok(()),
-            ScreenWorkerBindingState::Aborted => {
-                anyhow::bail!("Windows exact runtime binding was aborted after commit")
-            }
-        }
+impl CaptureExactRuntimeOwner for WindowsExactRuntime {
+    type Source = WindowsPublicationSource;
+
+    const BACKEND_NAME: &'static str = "Windows";
+    const ABORTED_BINDING_ERROR: &'static str =
+        "Windows exact runtime binding was aborted after commit";
+
+    fn source(&self) -> &Self::Source {
+        &self.source
+    }
+
+    fn binding(&self) -> &ScreenWorkerBinding {
+        &self.binding
+    }
+
+    fn bind_routes(&mut self, authority: &ScreenCommittedState) -> anyhow::Result<bool> {
+        let was_bound = self.is_bound();
         if let Some(gpu) = &mut self.gpu {
             for route in &mut gpu.routes {
                 if route.publisher.is_none() {
@@ -805,9 +928,9 @@ impl WindowsExactRuntime {
                 .fanout_candidate
                 .take()
                 .ok_or_else(|| anyhow!("Windows CPU fanout candidate was already consumed"))?;
-            cpu.fanout = Some(candidate.bind(&authority, &self.binding)?);
+            cpu.fanout = Some(candidate.bind(authority, &self.binding)?);
         }
-        Ok(())
+        Ok(!was_bound && self.is_bound())
     }
 
     fn is_bound(&self) -> bool {
@@ -825,12 +948,7 @@ impl Drop for CaptureWorker {
         };
         self.cancel.store(true, Ordering::Release);
         let _ = self.command_tx.send(WorkerCommand::Stop);
-        let _ = self.exit_rx.recv_timeout(WORKER_STOP_TIMEOUT);
-        if join_handle.is_finished() {
-            let _ = join_handle.join();
-            return;
-        }
-        retain_input_worker(join_handle, "Windows screen capture worker");
+        retain_worker(join_handle, "Windows screen capture worker");
     }
 }
 
@@ -845,14 +963,7 @@ enum WorkerCommand {
         decision: mpsc::Receiver<SettingsDecision>,
         done: mpsc::SyncSender<()>,
     },
-    PrepareExact {
-        ticket: ScreenWorkerPreparationTicket,
-        cancelled: Arc<AtomicBool>,
-        completion: oneshot::Sender<anyhow::Result<ScreenPreparedWorkerToken>>,
-    },
-    ReapExact {
-        completion: Option<oneshot::Sender<anyhow::Result<()>>>,
-    },
+    Exact(CaptureExactCommand),
     Stop,
 }
 
@@ -912,24 +1023,30 @@ impl WindowsScreenCaptureInput {
         admission_coordinator: ScreenByteAdmissionCoordinator,
         compute_capacity_policy: ScreenComputeCapacityPolicy,
     ) -> Self {
-        Self {
-            settings: Arc::new(SharedSettings {
-                config: Mutex::new(VersionedCaptureConfig {
+        let exact = Arc::new(ExactPublicationShared::default());
+        let assembly = ScreenCaptureAdapterAssembly::<WindowsCaptureBackend>::new(exact);
+        let settings = Arc::new(SharedSettings {
+            values: VersionedCaptureSettings::new(
+                VersionedCaptureConfig {
                     value: config,
                     source_generation: 0,
-                }),
-                compute_capacity_policy,
-                demand: Mutex::new(ScreenCaptureDemand::Inactive),
-                admission_coordinator,
-                generation: AtomicU64::new(0),
-                session_generation: AtomicU64::new(0),
-                activity_generation: AtomicU64::new(0),
-            }),
+                },
+                ScreenCaptureDemand::Inactive,
+            ),
+            compute_capacity_policy,
+            admission_coordinator,
+            activity_generation: AtomicU64::new(0),
+        });
+        let status_session = SourceSessionSlot::new();
+        let adapter = assembly.finish(WindowsCaptureBackend {
+            settings: Arc::clone(&settings),
+            status_session: status_session.clone(),
+        });
+        Self {
+            settings,
             running: false,
             capture_demand: ScreenCaptureDemand::Inactive,
-            publication: Arc::new(Mutex::new(CapturePublication::default())),
-            exact: Arc::new(ExactPublicationShared::default()),
-            worker: None,
+            adapter,
             status: SourceStatusReporter::new(
                 "windows_screen_capture",
                 SourceKind::Screen,
@@ -938,7 +1055,7 @@ impl WindowsScreenCaptureInput {
                 true,
                 false,
             ),
-            status_session: SourceSessionSlot::new(),
+            status_session,
             source_sink: None,
             #[cfg(feature = "windows-capture-fixtures")]
             fixture: None,
@@ -981,7 +1098,7 @@ impl WindowsScreenCaptureInput {
         source.fixture = Some(Arc::clone(&state));
         let fixture = WindowsScreenCaptureFixture {
             state,
-            publication: Arc::clone(&source.publication),
+            publication: source.adapter.compatibility_publication_handle(),
             status_session: source.status_session.clone(),
         };
         Ok((source, fixture))
@@ -996,68 +1113,35 @@ impl WindowsScreenCaptureInput {
 
     fn spawn_worker(&mut self) -> anyhow::Result<()> {
         self.observe_worker_exit(false);
-        if self.worker.is_some() {
+        if !self.adapter.can_prepare_successor() {
             anyhow::bail!("previous Windows screen capture worker is still stopping");
         }
 
-        let (command_tx, command_rx) = mpsc::channel();
-        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
-        let (exit_tx, exit_rx) = mpsc::sync_channel(1);
-        let settings = Arc::clone(&self.settings);
-        let publication = Arc::clone(&self.publication);
-        let exact = Arc::clone(&self.exact);
-        let cancel = Arc::new(AtomicBool::new(false));
-        let worker_cancel = Arc::clone(&cancel);
-        let worker_processed_activity_generation = Arc::new(AtomicU64::new(0));
-        #[cfg(test)]
-        let processed_activity_generation = Arc::clone(&worker_processed_activity_generation);
-        let status_session = self.status_session.clone();
-        let source_sink = self.source_sink.clone();
-        let session_generation = self
-            .settings
-            .session_generation
-            .fetch_add(1, Ordering::AcqRel)
-            .wrapping_add(1);
-
-        let join_handle = spawn_input_worker(
-            thread::Builder::new().name("hypercolor-screen-capture".to_owned()),
-            move || {
-                run_worker(
-                    &settings,
-                    &publication,
-                    &exact,
-                    &command_rx,
-                    &worker_cancel,
-                    &worker_processed_activity_generation,
-                    status_session,
-                    session_generation,
-                    source_sink,
-                    ready_tx,
-                );
-                let _ = exit_tx.send(());
+        let reservation = self
+            .adapter
+            .reserve_exact_authority()
+            .map_err(|error| anyhow!("Windows capture session generation exhausted: {error}"))?;
+        let authority = reservation.authority();
+        let prepared = self.adapter.prepare_worker(
+            WindowsWorkerSpawn {
+                source_sink: self.source_sink.clone(),
             },
-        )
-        .map_err(|error| anyhow!("failed to spawn screen capture worker: {error}"))?;
-
-        self.worker = Some(CaptureWorker {
-            command_tx,
-            exit_rx,
-            join_handle: Some(join_handle),
-            cancel,
-            #[cfg(test)]
-            processed_activity_generation,
-        });
-        match ready_rx.recv_timeout(WORKER_READY_TIMEOUT) {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) => {
-                self.shutdown_worker();
-                anyhow::bail!("Windows screen capture worker initialization failed: {error}");
-            }
-            Err(error) => {
-                self.shutdown_worker();
-                anyhow::bail!("Windows screen capture worker readiness timed out: {error}");
-            }
-        }
+            reservation,
+        )?;
+        let exact = self.adapter.exact_state_handle();
+        let committed_authority = self
+            .adapter
+            .commit_worker(
+                prepared,
+                |_| Some(()),
+                move |reservation, ()| {
+                    exact
+                        .activate_reserved_authority(reservation)
+                        .expect("reserved Windows capture authority remains current")
+                },
+            )
+            .map_err(|_| anyhow!("Windows capture successor admission changed before commit"))?;
+        assert_eq!(committed_authority, authority);
         if self.observe_worker_exit(true) {
             anyhow::bail!("Windows screen capture worker exited during startup");
         }
@@ -1065,55 +1149,70 @@ impl WindowsScreenCaptureInput {
     }
 
     fn shutdown_worker(&mut self) {
-        let Some(worker) = self.worker.as_mut() else {
-            return;
-        };
+        if let Some(authority) = self.adapter.retire_active_worker() {
+            self.retire_exact_authority(authority);
+            let activity_generation = self
+                .settings
+                .activity_generation
+                .fetch_add(1, Ordering::AcqRel)
+                .wrapping_add(1);
+            let displaced_publication = self
+                .adapter
+                .compatibility_publication()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .fence_activity(activity_generation);
+            drop(displaced_publication);
+        }
+        self.adapter.reap_finished_workers(|_, result| {
+            if let Err(panic) = result {
+                warn!(message = ?panic, "screen capture worker panicked during shutdown");
+            }
+        });
+    }
 
-        worker.cancel.store(true, Ordering::Release);
-        let _ = worker.command_tx.send(WorkerCommand::Stop);
-        let exit_observed = worker.exit_rx.recv_timeout(WORKER_STOP_TIMEOUT).is_ok();
-        let Some(join_handle) = worker.join_handle.as_ref() else {
-            self.worker = None;
+    fn shutdown_worker_for_replacement(&mut self) {
+        let Some(worker) = self.adapter.active_worker() else {
+            self.adapter.reap_finished_workers(|_, result| {
+                if let Err(panic) = result {
+                    warn!(message = ?panic, "retired Windows capture worker panicked");
+                }
+            });
             return;
         };
-        if !exit_observed && !join_handle.is_finished() {
-            warn!(
-                "screen capture worker did not stop before the deadline; retaining its join handle"
-            );
+        worker.abort();
+        if worker.exit_rx.recv_timeout(WORKER_STOP_TIMEOUT).is_err() {
+            warn!("screen capture worker did not stop before the replacement deadline");
+            self.shutdown_worker();
             return;
         }
-        let mut worker = self.worker.take().expect("finished worker remains owned");
-        if worker
-            .join_handle
-            .take()
-            .expect("finished screen worker retains its join handle")
-            .join()
-            .is_err()
-        {
-            warn!("screen capture worker panicked during shutdown");
+        let worker = self
+            .adapter
+            .take_active_worker_for_settlement()
+            .expect("observed Windows worker remains active");
+        let authority = worker.authority();
+        if let Err(panic) = worker.finish() {
+            warn!(message = ?panic, "screen capture worker panicked during replacement");
         }
+        self.retire_exact_authority(authority);
+        self.adapter.reap_finished_workers(|_, result| {
+            if let Err(panic) = result {
+                warn!(message = ?panic, "retired Windows capture worker panicked");
+            }
+        });
     }
 
     fn observe_worker_exit(&mut self, publish_failure: bool) -> bool {
-        let Some(worker) = self.worker.as_ref() else {
+        let Some((authority, failure)) = self.adapter.take_finished_active_worker() else {
+            self.adapter.reap_finished_workers(|_, result| {
+                if let Err(panic) = result {
+                    warn!(message = ?panic, "retired Windows capture worker panicked");
+                }
+            });
             return false;
         };
-        if !worker
-            .join_handle
-            .as_ref()
-            .is_some_and(thread::JoinHandle::is_finished)
-        {
-            return false;
-        }
-        let mut worker = self.worker.take().expect("finished worker remains owned");
-        let failure = worker
-            .join_handle
-            .take()
-            .expect("finished screen worker retains its join handle")
-            .join()
-            .err();
         if publish_failure && let Some(status) = self.status.session() {
-            let reason = failure.map_or_else(
+            let reason = failure.err().map_or_else(
                 || "Windows screen capture worker exited unexpectedly".to_owned(),
                 |panic| format!("Windows screen capture worker panicked: {panic:?}"),
             );
@@ -1123,13 +1222,27 @@ impl WindowsScreenCaptureInput {
                 true,
             ));
         }
-        clear_capture_publication(&self.publication);
-        self.exact.replace_source(None);
+        clear_capture_publication(self.adapter.compatibility_publication());
+        self.retire_exact_authority(authority);
+        self.adapter.reap_finished_workers(|_, result| {
+            if let Err(panic) = result {
+                warn!(message = ?panic, "retired Windows capture worker panicked");
+            }
+        });
         true
     }
 
+    fn retire_exact_authority(&self, authority: CaptureSessionAuthority) {
+        let retirement = self
+            .adapter
+            .exact_state()
+            .retire_authority_if_current(authority)
+            .expect("Windows capture session generation exhausted during retirement");
+        drop(retirement);
+    }
+
     fn send_activity_command(&self, active: bool, activity_generation: u64) -> bool {
-        self.worker.as_ref().is_some_and(|worker| {
+        self.adapter.active_worker().is_some_and(|worker| {
             worker
                 .command_tx
                 .send(WorkerCommand::SetActive {
@@ -1142,15 +1255,15 @@ impl WindowsScreenCaptureInput {
 
     fn activate_worker(&mut self, activity_generation: u64) -> anyhow::Result<()> {
         self.observe_worker_exit(false);
-        if self.worker.is_none() {
+        if self.adapter.active_worker().is_none() {
             self.spawn_worker()?;
         }
         if self.send_activity_command(true, activity_generation) {
             return Ok(());
         }
 
-        self.shutdown_worker();
-        if self.worker.is_some() {
+        self.shutdown_worker_for_replacement();
+        if !self.adapter.can_install_successor() {
             anyhow::bail!("disconnected Windows screen capture worker could not be reaped");
         }
         self.spawn_worker()?;
@@ -1158,7 +1271,7 @@ impl WindowsScreenCaptureInput {
             return Ok(());
         }
 
-        self.shutdown_worker();
+        self.shutdown_worker_for_replacement();
         anyhow::bail!("replacement Windows screen capture worker rejected activation")
     }
 
@@ -1172,7 +1285,8 @@ impl WindowsScreenCaptureInput {
                 activity_generation,
                 duplication_generation: 1,
             };
-            let activated = activate_capture_epoch(&self.publication, active.clone());
+            let activated =
+                activate_capture_epoch(self.adapter.compatibility_publication(), active.clone());
             if !activated {
                 anyhow::bail!("deterministic Windows capture epoch was fenced before activation");
             }
@@ -1186,7 +1300,11 @@ impl WindowsScreenCaptureInput {
     }
 
     fn deactivate_backend(&mut self, activity_generation: u64) {
-        self.exact.replace_source(None);
+        if let Some(worker) = self.adapter.active_worker() {
+            self.adapter
+                .exact_state()
+                .replace_source_if_current(worker.authority, None);
+        }
         #[cfg(feature = "windows-capture-fixtures")]
         if let Some(fixture) = self.fixture.as_ref() {
             *fixture
@@ -1211,7 +1329,7 @@ impl WindowsScreenCaptureInput {
             .expect("active Windows capture settings carry an extent");
         let cadence = CaptureCadence::new(config.target_fps)?;
         let source_is_known = source_generation == self.settings.snapshot().source_generation
-            && self.exact.source().is_some();
+            && self.adapter.exact_source().is_some();
         if source_is_known && let Some(capacity) = self.settings.compute_capacity_policy.analysis()
         {
             ScreenAnalysisWorkPlan::try_new(requested_extent, requested_extent, &config)?
@@ -1237,8 +1355,8 @@ impl WindowsScreenCaptureInput {
 
     fn adopt_worker_settings(&self, prepared: PreparedWorkerSettings) -> anyhow::Result<()> {
         let worker = self
-            .worker
-            .as_ref()
+            .adapter
+            .active_worker()
             .ok_or_else(|| anyhow!("Windows capture worker is unavailable for live adoption"))?;
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         let (decision_tx, decision_rx) = mpsc::sync_channel(1);
@@ -1279,10 +1397,14 @@ impl WindowsScreenCaptureInput {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = prepared.analyzer;
         if snapshot.source_generation != prepared.source_generation {
-            self.publication
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .fence_source(prepared.source_generation);
+            let displaced = {
+                self.adapter
+                    .compatibility_publication()
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .fence_source(prepared.source_generation)
+            };
+            drop(displaced);
         }
     }
 
@@ -1327,12 +1449,12 @@ impl WindowsScreenCaptureInput {
         };
         #[cfg(not(feature = "windows-capture-fixtures"))]
         drop(admission);
-        let previous_latest = self
-            .publication
+        let previous_publication = self
+            .adapter
+            .compatibility_publication()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .latest
-            .clone();
+            .checkpoint();
         let activity_changed = previous.is_active() != demand.is_active();
         let activity_generation = if activity_changed {
             let generation = self
@@ -1340,20 +1462,20 @@ impl WindowsScreenCaptureInput {
                 .activity_generation
                 .fetch_add(1, Ordering::AcqRel)
                 .wrapping_add(1);
-            self.publication
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .fence_activity(generation);
+            let displaced = {
+                self.adapter
+                    .compatibility_publication()
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .fence_activity(generation)
+            };
+            drop(displaced);
             generation
         } else {
             self.settings.activity_generation.load(Ordering::Acquire)
         };
-        *self
-            .settings
-            .demand
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = demand;
-        self.settings.generation.fetch_add(1, Ordering::Release);
+        *self.settings.values.lock_demand() = demand;
+        self.settings.values.bump_revision();
 
         if !self.running {
             self.capture_demand = demand;
@@ -1369,38 +1491,60 @@ impl WindowsScreenCaptureInput {
             Ok(())
         };
         if let Err(error) = transition {
-            *self
-                .settings
-                .demand
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = previous;
-            self.settings.generation.fetch_add(1, Ordering::Release);
+            *self.settings.values.lock_demand() = previous;
+            self.settings.values.bump_revision();
             if previous.is_active() {
                 let rollback_generation = self
                     .settings
                     .activity_generation
                     .fetch_add(1, Ordering::AcqRel)
                     .wrapping_add(1);
-                self.publication
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .fence_activity(rollback_generation);
+                let displaced = {
+                    self.adapter
+                        .compatibility_publication()
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .fence_activity(rollback_generation)
+                };
+                drop(displaced);
                 if let Err(rollback_error) = self.activate_backend(rollback_generation) {
                     return Err(error.context(format!(
                         "failed to restore previous Windows capture demand: {rollback_error}"
                     )));
                 }
-                self.publication
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .latest = previous_latest;
+                let displaced = {
+                    let mut publication = self
+                        .adapter
+                        .compatibility_publication()
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let active = publication
+                        .active()
+                        .cloned()
+                        .expect("reactivated Windows capture installs an active epoch");
+                    let Ok(displaced) =
+                        publication.restore_checkpoint(Some(&active), previous_publication)
+                    else {
+                        unreachable!("reactivated Windows capture retains its publication epoch");
+                    };
+                    displaced
+                };
+                drop(displaced);
             } else {
-                let mut publication = self
-                    .publication
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                publication.active = None;
-                publication.latest = previous_latest;
+                let (cleared, displaced) = {
+                    let mut publication = self
+                        .adapter
+                        .compatibility_publication()
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let cleared = publication.clear();
+                    let Ok(displaced) = publication.restore_checkpoint(None, previous_publication)
+                    else {
+                        unreachable!("inactive Windows capture has no active publication epoch");
+                    };
+                    (cleared, displaced)
+                };
+                drop((cleared, displaced));
             }
             return Err(error);
         }
@@ -1444,7 +1588,11 @@ impl WindowsScreenCaptureInput {
                 self.settings.commit(&prepared);
             }
             if snapshot.source_generation != source_generation {
-                self.exact.replace_source(None);
+                if let Some(worker) = self.adapter.active_worker() {
+                    self.adapter
+                        .exact_state()
+                        .replace_source_if_current(worker.authority, None);
+                }
             }
             return Ok(());
         }
@@ -1489,12 +1637,8 @@ impl InputSource for WindowsScreenCaptureInput {
         self.status.stop();
         self.running = false;
         self.capture_demand = ScreenCaptureDemand::Inactive;
-        *self
-            .settings
-            .demand
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = ScreenCaptureDemand::Inactive;
-        self.settings.generation.fetch_add(1, Ordering::Release);
+        *self.settings.values.lock_demand() = ScreenCaptureDemand::Inactive;
+        self.settings.values.bump_revision();
         self.shutdown_worker();
 
         #[cfg(feature = "windows-capture-fixtures")]
@@ -1505,8 +1649,7 @@ impl InputSource for WindowsScreenCaptureInput {
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         }
 
-        clear_capture_publication(&self.publication);
-        self.exact.replace_source(None);
+        clear_capture_publication(self.adapter.compatibility_publication());
     }
 
     fn sample(&mut self) -> anyhow::Result<InputData> {
@@ -1516,23 +1659,22 @@ impl InputSource for WindowsScreenCaptureInput {
         }
 
         let publication = self
-            .publication
+            .adapter
+            .compatibility_publication()
             .lock()
             .map_err(|_| anyhow!("windows screen capture publication mutex poisoned"))?;
-        let Some(active) = publication.active.as_ref() else {
-            return Ok(InputData::None);
-        };
-        let Some(snapshot) = publication.latest.as_ref() else {
+        let Some(snapshot) = publication.snapshot() else {
             return Ok(InputData::None);
         };
         if snapshot
+            .value
             .geometry_frame()
-            .validate_epoch(&active.epoch)
+            .validate_epoch(&snapshot.epoch.epoch)
             .is_err()
         {
             return Ok(InputData::None);
         }
-        Ok(InputData::Screen(snapshot.data().clone()))
+        Ok(InputData::Screen(snapshot.value.data().clone()))
     }
 
     fn is_running(&self) -> bool {
@@ -1546,11 +1688,9 @@ impl InputSource for WindowsScreenCaptureInput {
     fn source_status_reporter(&mut self) -> Option<&mut SourceStatusReporter> {
         Some(&mut self.status)
     }
+}
 
-    fn is_screen_source(&self) -> bool {
-        true
-    }
-
+impl ScreenSource for WindowsScreenCaptureInput {
     fn screen_capture_demand(&self) -> ScreenCaptureDemand {
         self.capture_demand
     }
@@ -1623,90 +1763,49 @@ impl InputSource for WindowsScreenCaptureInput {
     }
 
     fn set_screen_publication_hub(&mut self, hub: Arc<ScreenPublicationHub>) {
-        *self
-            .exact
-            .hub
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(hub);
+        self.adapter.install_publication_hub(hub);
     }
 
     fn screen_publication_resolution_revision(&self) -> u64 {
-        self.exact.resolution_revision.load(Ordering::Acquire)
+        self.adapter.exact_resolution_revision()
     }
 
     fn resolve_screen_publication_branch(
         &self,
         demand: &RegisteredScreenBranchDemand,
     ) -> anyhow::Result<Option<ResolvedScreenBranchDemand>> {
-        let Some(source) = self.exact.source() else {
+        let Some(source) = self.adapter.exact_source() else {
             return Ok(None);
         };
         resolve_windows_publication_branch(&source, demand)
     }
 
     fn owns_screen_publication_source(&self, source_id: &CaptureSourceId) -> bool {
-        self.exact.owns_source(source_id)
+        self.adapter.owns_exact_source(source_id)
     }
 
     fn begin_screen_publication_preparation(
         &mut self,
         ticket: ScreenWorkerPreparationTicket,
     ) -> anyhow::Result<ScreenWorkerPreparation> {
-        let worker = self.worker.as_ref().ok_or_else(|| {
+        let endpoint = self.adapter.active_exact_endpoint().ok_or_else(|| {
             anyhow!("Windows capture worker is unavailable for exact publication preparation")
         })?;
-        let cancelled = Arc::new(AtomicBool::new(false));
-        let (completion_tx, completion_rx) = oneshot::channel();
-        worker
-            .command_tx
-            .send(WorkerCommand::PrepareExact {
-                ticket,
-                cancelled: Arc::clone(&cancelled),
-                completion: completion_tx,
-            })
-            .map_err(|_| {
-                anyhow!("Windows capture worker rejected exact publication preparation")
-            })?;
-        let abort_tx = worker.command_tx.clone();
-        Ok(ScreenWorkerPreparation::with_abort(
-            async move {
-                completion_rx.await.map_err(|_| {
-                    anyhow!("Windows capture worker exited during exact publication preparation")
-                })?
-            },
-            move || {
-                cancelled.store(true, Ordering::Release);
-                let _ = abort_tx.send(WorkerCommand::ReapExact { completion: None });
-            },
-        ))
+        begin_capture_exact_preparation(&endpoint, ticket)
     }
 
     fn begin_screen_publication_retirement(&mut self) -> Option<ScreenWorkerRetirement> {
-        let worker = self.worker.as_ref()?;
-        let (completion_tx, completion_rx) = oneshot::channel();
-        if worker
-            .command_tx
-            .send(WorkerCommand::ReapExact {
-                completion: Some(completion_tx),
-            })
-            .is_err()
-        {
-            return Some(ScreenWorkerRetirement::new(async {
-                Err(anyhow!(
-                    "Windows capture worker rejected exact publication retirement"
-                ))
-            }));
-        }
-        Some(ScreenWorkerRetirement::new(async move {
-            completion_rx.await.map_err(|_| {
-                anyhow!("Windows capture worker exited during exact publication retirement")
-            })?
-        }))
+        let endpoint = self.adapter.active_exact_endpoint()?;
+        Some(begin_capture_exact_retirement(&endpoint))
     }
 
     fn reconfigure_screen_capture(&mut self, config: &CaptureConfig) -> anyhow::Result<()> {
         self.reconfigure(config.clone())
     }
+}
+
+impl SourceRoleBinding for WindowsScreenCaptureInput {
+    type Role = ScreenSourceRole;
 }
 
 fn resolve_windows_publication_branch(
@@ -1806,7 +1905,7 @@ fn capture_gpu_descriptor(
         id,
         source_region: region,
         coordinate_space: GpuSurfaceCoordinateSpace::LogicalDisplay,
-        source_rotation: display_rotation(source.rotation),
+        source_rotation: display_rotation(source.rotation)?,
         source_color_space: source.source_color_space,
         output_extent: NativeCaptureExtent::try_new(output.width(), output.height())?,
         filter,
@@ -1875,7 +1974,7 @@ fn capture_gpu_reduction_descriptor(
         id,
         source_region: region,
         coordinate_space: GpuSurfaceCoordinateSpace::LogicalDisplay,
-        source_rotation: display_rotation(source.rotation),
+        source_rotation: display_rotation(source.rotation)?,
         source_color_space: source.source_color_space,
         output_extent: NativeCaptureExtent::try_new(output.width(), output.height())?,
         filter,
@@ -1990,13 +2089,19 @@ fn windows_gpu_preparation_gate(adapter_luid: GpuAdapterLuid) -> Arc<Mutex<()>> 
     )
 }
 
-const fn display_rotation(rotation: CaptureRotation) -> DisplayRotation {
-    match rotation {
+fn display_rotation(rotation: CaptureRotation) -> anyhow::Result<DisplayRotation> {
+    Ok(match rotation {
         CaptureRotation::Identity => DisplayRotation::Identity,
         CaptureRotation::Clockwise90 => DisplayRotation::Clockwise90,
         CaptureRotation::Clockwise180 => DisplayRotation::Clockwise180,
         CaptureRotation::Clockwise270 => DisplayRotation::Clockwise270,
-    }
+        CaptureRotation::Flipped
+        | CaptureRotation::Flipped90
+        | CaptureRotation::Flipped180
+        | CaptureRotation::Flipped270 => {
+            anyhow::bail!("reflected capture transforms are not DXGI display rotations")
+        }
+    })
 }
 
 impl Drop for WindowsScreenCaptureInput {
@@ -2027,17 +2132,23 @@ fn activate_capture_epoch(
     publication: &Mutex<CapturePublication<AnalyzedScreenSnapshot>>,
     active: ActiveCaptureEpoch,
 ) -> bool {
-    publication
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .activate(active)
+    let activation = {
+        publication
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .activate(active)
+    };
+    activation.is_ok()
 }
 
 fn clear_capture_publication(publication: &Mutex<CapturePublication<AnalyzedScreenSnapshot>>) {
-    publication
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clear();
+    let displaced = {
+        publication
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear()
+    };
+    drop(displaced);
 }
 
 fn settle_inactive_capture<T>(
@@ -2796,82 +2907,28 @@ fn windows_gpu_candidate_admission(
     ))
 }
 
-fn prepare_exact_command(
-    ticket: ScreenWorkerPreparationTicket,
-    cancelled: Arc<AtomicBool>,
-    completion: oneshot::Sender<anyhow::Result<ScreenPreparedWorkerToken>>,
+fn execute_windows_exact_command(
+    command: CaptureExactCommand,
     duplicator: Option<&DesktopDuplicator>,
     exact: &ExactPublicationShared,
     compute_capacity_policy: ScreenComputeCapacityPolicy,
     runtimes: &mut WindowsExactRuntimes,
 ) {
-    let result = exact
-        .hub
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone()
-        .ok_or_else(|| anyhow!("Windows exact publication hub is unavailable"))
-        .and_then(|hub| {
-            let source = exact.source();
-            prepare_windows_exact_runtime(
-                ticket,
-                duplicator,
-                source.as_ref(),
-                exact,
-                hub.as_ref(),
-                compute_capacity_policy,
-            )
-        });
-    match result {
-        Ok((token, runtime)) if !cancelled.load(Ordering::Acquire) => {
-            if let Some((runtime, owned_source)) = runtime {
-                let runtime = WindowsExactRuntimes::boxed_node(runtime);
-                let owned_source = ExactBoxList::boxed_node(owned_source);
-                exact.register_owned_source(owned_source);
-                runtimes.push_boxed(runtime);
-            }
-            if completion.send(Ok(token)).is_err() {
-                reap_exact_runtimes(runtimes, exact);
-            }
-        }
-        Ok((_token, _runtime)) => {
-            let _ = completion.send(Err(anyhow!(
-                "Windows exact publication preparation was cancelled"
-            )));
-        }
-        Err(error) => {
-            let _ = completion.send(Err(error));
-        }
-    }
-}
-
-fn reap_exact_runtimes(runtimes: &mut WindowsExactRuntimes, exact: &ExactPublicationShared) {
-    exact.reap_owned_sources();
-    let authority = exact.hub().map(|hub| hub.committed_state());
-    runtimes.retain(|runtime| {
-        authority
-            .as_ref()
-            .is_some_and(|authority| authority.owns_runtime_binding(&runtime.binding))
+    execute_capture_exact_command(command, exact, runtimes, |ticket, source| {
+        exact
+            .hub()
+            .ok_or_else(|| anyhow!("Windows exact publication hub is unavailable"))
+            .and_then(|hub| {
+                prepare_windows_exact_runtime(
+                    ticket,
+                    duplicator,
+                    source,
+                    exact,
+                    hub.as_ref(),
+                    compute_capacity_policy,
+                )
+            })
     });
-}
-
-fn bind_current_exact_runtime<'a>(
-    runtimes: &'a mut WindowsExactRuntimes,
-    source: &WindowsPublicationSource,
-    hub: &ScreenPublicationHub,
-) -> anyhow::Result<Option<&'a mut WindowsExactRuntime>> {
-    let authority = hub.committed_state();
-    let Some(current_binding) = authority.runtime_binding(&source.epoch.source_id) else {
-        return Ok(None);
-    };
-    let runtime = runtimes
-        .iter_mut()
-        .find(|runtime| runtime.source == *source && runtime.binding.is_same(current_binding));
-    let Some(runtime) = runtime else {
-        return Ok(None);
-    };
-    runtime.bind_if_current(hub)?;
-    Ok(runtime.is_bound().then_some(runtime))
 }
 
 fn publish_windows_gpu_outcome(
@@ -3002,7 +3059,7 @@ fn publish_windows_reduction_outcome(
         && provenance.logical_source_extent.width() == source.logical_extent.width()
         && provenance.logical_source_extent.height() == source.logical_extent.height()
         && provenance.source_color_space == source.source_color_space
-        && provenance.source_rotation == display_rotation(source.rotation)
+        && provenance.source_rotation == display_rotation(source.rotation)?
         && provenance.descriptor.output_extent().width() == output.width()
         && provenance.descriptor.output_extent().height() == output.height()
         && (!provenance.cursor_composed || physical.cursor() == ScreenCursorPolicy::Include);
@@ -3352,7 +3409,8 @@ fn pump_current_windows_exact_runtime(
     let Some(hub) = exact.hub() else {
         return Ok(None);
     };
-    let Some(runtime) = bind_current_exact_runtime(runtimes, source, &hub)? else {
+    let Some(runtime) = bind_current_capture_exact_runtime(runtimes, source, &hub, |_, _| Ok(()))?
+    else {
         return Ok(None);
     };
     pump_windows_exact_runtime(session, runtime, &hub).map(Some)
@@ -3371,6 +3429,7 @@ fn run_worker(
     source_sink: Option<CaptureSourceSink>,
     ready: mpsc::SyncSender<std::result::Result<(), String>>,
 ) {
+    let authority = CaptureSessionAuthority::new(session_generation);
     let initial_settings = settings.snapshot();
     let mut config = initial_settings.config;
     let mut schedule = match CaptureCadence::new(config.target_fps) {
@@ -3389,7 +3448,7 @@ fn run_worker(
     };
     let mut source_generation = initial_settings.source_generation;
     let mut demand = initial_settings.demand;
-    let mut generation = settings.generation.load(Ordering::Acquire);
+    let mut generation = settings.values.revision();
     let mut analyzer = match build_worker_analyzer(
         &config,
         demand,
@@ -3453,7 +3512,7 @@ fn run_worker(
                 activity_generation,
             );
             clear_capture_publication(publication);
-            exact.replace_source(None);
+            exact.replace_source_if_current(authority, None);
             open_failure_logged = false;
             match command_rx.recv_timeout(FRAME_WAIT) {
                 Ok(WorkerCommand::SetActive {
@@ -3483,25 +3542,13 @@ fn run_worker(
                     decision,
                     done,
                 ),
-                Ok(WorkerCommand::PrepareExact {
-                    ticket,
-                    cancelled,
-                    completion,
-                }) => prepare_exact_command(
-                    ticket,
-                    cancelled,
-                    completion,
+                Ok(WorkerCommand::Exact(command)) => execute_windows_exact_command(
+                    command,
                     duplicator.as_ref(),
                     exact,
                     settings.compute_capacity_policy,
                     &mut exact_runtimes,
                 ),
-                Ok(WorkerCommand::ReapExact { completion }) => {
-                    reap_exact_runtimes(&mut exact_runtimes, exact);
-                    if let Some(completion) = completion {
-                        let _ = completion.send(Ok(()));
-                    }
-                }
                 Ok(WorkerCommand::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
             }
@@ -3510,7 +3557,7 @@ fn run_worker(
 
         processed_activity_generation.store(activity_generation, Ordering::Release);
 
-        let latest_generation = settings.generation.load(Ordering::Acquire);
+        let latest_generation = settings.values.revision();
         if latest_generation != generation
             && (failed_settings_generation != Some(latest_generation)
                 || Instant::now() >= settings_retry_at)
@@ -3552,7 +3599,7 @@ fn run_worker(
                     if previous_source != config.source {
                         duplicator = None;
                         clear_capture_publication(publication);
-                        exact.replace_source(None);
+                        exact.replace_source_if_current(authority, None);
                     } else if let Some(duplicator) = duplicator.as_mut() {
                         let requested_extent = demand
                             .requested_extent()
@@ -3609,7 +3656,7 @@ fn run_worker(
                 }
                 Err(error) => {
                     clear_capture_publication(publication);
-                    exact.replace_source(None);
+                    exact.replace_source_if_current(authority, None);
                     if !open_failure_logged {
                         log_open_failure(&error);
                         open_failure_logged = true;
@@ -3645,25 +3692,13 @@ fn run_worker(
                             decision,
                             done,
                         ),
-                        Ok(WorkerCommand::PrepareExact {
-                            ticket,
-                            cancelled,
-                            completion,
-                        }) => prepare_exact_command(
-                            ticket,
-                            cancelled,
-                            completion,
+                        Ok(WorkerCommand::Exact(command)) => execute_windows_exact_command(
+                            command,
                             duplicator.as_ref(),
                             exact,
                             settings.compute_capacity_policy,
                             &mut exact_runtimes,
                         ),
-                        Ok(WorkerCommand::ReapExact { completion }) => {
-                            reap_exact_runtimes(&mut exact_runtimes, exact);
-                            if let Some(completion) = completion {
-                                let _ = completion.send(Ok(()));
-                            }
-                        }
                         Ok(WorkerCommand::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => {
                             break;
                         }
@@ -3680,12 +3715,12 @@ fn run_worker(
             Err(error) => {
                 warn!(%error, "Windows screen capture source metadata is invalid; reopening session");
                 clear_capture_publication(publication);
-                exact.replace_source(None);
+                exact.replace_source_if_current(authority, None);
                 duplicator = None;
                 continue;
             }
         };
-        exact.replace_source(Some(exact_source.clone()));
+        exact.replace_source_if_current(authority, Some(exact_source.clone()));
 
         match pump_current_windows_exact_runtime(session, &mut exact_runtimes, &exact_source, exact)
         {
@@ -3718,7 +3753,7 @@ fn run_worker(
                 }
                 if capture_error.is_some_and(capture_frame_failure_invalidates_session) {
                     clear_capture_publication(publication);
-                    exact.replace_source(None);
+                    exact.replace_source_if_current(authority, None);
                     duplicator = None;
                 } else {
                     thread::sleep(FRAME_WAIT);
@@ -3765,7 +3800,7 @@ fn run_worker(
             Err(error) => {
                 warn!(%error, "Windows screen capture identity is invalid; reopening session");
                 clear_capture_publication(publication);
-                exact.replace_source(None);
+                exact.replace_source_if_current(authority, None);
                 duplicator = None;
                 continue;
             }
@@ -3797,7 +3832,7 @@ fn run_worker(
                 Err(error) => {
                     warn!(%error, "Windows screen capture identity became invalid");
                     clear_capture_publication(publication);
-                    exact.replace_source(None);
+                    exact.replace_source_if_current(authority, None);
                     duplicator = None;
                     continue;
                 }
@@ -3831,10 +3866,13 @@ fn run_worker(
                 let raw_frame = build_capture_frame(frame, session_generation, freshness_deadline);
                 let published = raw_frame.and_then(|frame| {
                     let snapshot = analyze_capture_frame(&mut analyzer, &current_epoch, frame)?;
-                    Ok(publication
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .publish(&current_epoch, snapshot))
+                    let publication = {
+                        publication
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .publish(&current_epoch, snapshot)
+                    };
+                    Ok(publication.is_ok())
                 });
                 let published = match published {
                     Ok(published) => published,
@@ -3882,7 +3920,7 @@ fn run_worker(
                     status.degraded(capture_issue(&error));
                 }
                 clear_capture_publication(publication);
-                exact.replace_source(None);
+                exact.replace_source_if_current(authority, None);
                 warn!(%error, "Windows screen capture frame failed; reopening session");
                 duplicator = None;
                 match command_rx.recv_timeout(REOPEN_BACKOFF) {
@@ -3913,25 +3951,13 @@ fn run_worker(
                         decision,
                         done,
                     ),
-                    Ok(WorkerCommand::PrepareExact {
-                        ticket,
-                        cancelled,
-                        completion,
-                    }) => prepare_exact_command(
-                        ticket,
-                        cancelled,
-                        completion,
+                    Ok(WorkerCommand::Exact(command)) => execute_windows_exact_command(
+                        command,
                         duplicator.as_ref(),
                         exact,
                         settings.compute_capacity_policy,
                         &mut exact_runtimes,
                     ),
-                    Ok(WorkerCommand::ReapExact { completion }) => {
-                        reap_exact_runtimes(&mut exact_runtimes, exact);
-                        if let Some(completion) = completion {
-                            let _ = completion.send(Ok(()));
-                        }
-                    }
                     Ok(WorkerCommand::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
                     Err(mpsc::RecvTimeoutError::Timeout) => {}
                 }
@@ -3940,8 +3966,8 @@ fn run_worker(
     }
 
     clear_capture_publication(publication);
-    exact.replace_source(None);
-    exact.clear_owned_sources();
+    exact.replace_source_if_current(authority, None);
+    exact.clear_owned_sources_if_current(authority);
     exact_runtimes.clear();
     debug!("Windows screen capture worker stopped");
 }
@@ -4133,25 +4159,13 @@ fn drain_commands(
                 decision,
                 done,
             ),
-            Ok(WorkerCommand::PrepareExact {
-                ticket,
-                cancelled,
-                completion,
-            }) => prepare_exact_command(
-                ticket,
-                cancelled,
-                completion,
+            Ok(WorkerCommand::Exact(command)) => execute_windows_exact_command(
+                command,
                 duplicator.as_ref(),
                 exact,
                 settings.compute_capacity_policy,
                 exact_runtimes,
             ),
-            Ok(WorkerCommand::ReapExact { completion }) => {
-                reap_exact_runtimes(exact_runtimes, exact);
-                if let Some(completion) = completion {
-                    let _ = completion.send(Ok(()));
-                }
-            }
             Ok(WorkerCommand::Stop) | Err(mpsc::TryRecvError::Disconnected) => {
                 return ControlFlow::Stop;
             }
@@ -4200,10 +4214,13 @@ fn adopt_prepared_worker_settings(
     );
     *analyzer = prepared.analyzer;
     if source_changed {
-        publication
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .fence_source(*source_generation);
+        let displaced = {
+            publication
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .fence_source(*source_generation)
+        };
+        drop(displaced);
     }
     let _ = done.send(());
 }

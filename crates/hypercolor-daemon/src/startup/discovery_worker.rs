@@ -228,7 +228,9 @@ impl DiscoveryWorkerContext {
             .into_iter()
             .filter_map(|driver| {
                 let descriptor = driver.module_descriptor();
-                crate::network::module_enabled(config, &descriptor).then_some(descriptor.id)
+                (crate::network::module_enabled(config, &descriptor)
+                    && crate::network::module_has_available_transport(&descriptor))
+                .then_some(descriptor.id)
             })
             .collect::<Vec<_>>();
 

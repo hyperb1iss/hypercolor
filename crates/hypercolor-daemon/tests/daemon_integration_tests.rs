@@ -10,7 +10,7 @@ use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use hypercolor_core::config::{BootConfig, ConfigManager};
-use hypercolor_core::input::InputManager;
+use hypercolor_core::input::{InputManager, ManagedSourceRole, SensorSource};
 use hypercolor_daemon::extensions::DaemonLifecycleExtension;
 use hypercolor_daemon::startup::{DaemonState, config_sources, default_config};
 use hypercolor_types::canvas::{DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH};
@@ -22,9 +22,8 @@ use hypercolor_types::device::{
     DeviceInfo, DeviceOrigin, DeviceTopologyHint, SegmentInfo,
 };
 use hypercolor_types::scene::SceneId;
-use hypercolor_types::sensor::SystemSnapshot;
 use tempfile::NamedTempFile;
-use tokio::sync::{Mutex, watch};
+use tokio::sync::Mutex;
 
 /// Minimal TOML that parses into a valid `HypercolorConfig`.
 const MINIMAL_TOML: &str = "schema_version = 5\n";
@@ -114,9 +113,10 @@ fn temp_config_file() -> NamedTempFile {
 }
 
 fn test_input_manager() -> InputManager {
-    let (_tx, rx) = watch::channel(Arc::new(SystemSnapshot::empty()));
-    let mut input_manager = InputManager::new();
-    input_manager.set_sensor_snapshot_receiver(rx);
+    let input_manager = InputManager::new();
+    input_manager
+        .add_source(ManagedSourceRole::data(Box::new(SensorSource::new())))
+        .expect("sensor source should register");
     input_manager
 }
 
@@ -184,7 +184,7 @@ async fn daemon_lifecycle_initialize_start_shutdown() {
         config_manager_for(&config, temp.path()),
     )
     .expect("initialization should succeed");
-    *state.input_manager.lock().await = test_input_manager();
+    state.input_manager = test_input_manager();
 
     // Verify initial state — all subsystems created but not started
     assert!(state.device_registry.is_empty().await);
@@ -235,7 +235,7 @@ async fn daemon_shutdown_publishes_events() {
         config_manager_for(&config, temp.path()),
     )
     .expect("initialization should succeed");
-    *state.input_manager.lock().await = test_input_manager();
+    state.input_manager = test_input_manager();
 
     let mut rx = state.event_bus.subscribe_all();
 
@@ -292,7 +292,7 @@ async fn daemon_double_shutdown_is_safe() {
         config_manager_for(&config, temp.path()),
     )
     .expect("initialization should succeed");
-    *state.input_manager.lock().await = test_input_manager();
+    state.input_manager = test_input_manager();
 
     state.start().await.expect("start");
     state.shutdown().await.expect("first shutdown");
@@ -323,7 +323,7 @@ async fn daemon_start_rolls_back_partial_startup() {
         config_manager_for(&config, temp.path()),
     )
     .expect("initialization should succeed");
-    *state.input_manager.lock().await = test_input_manager();
+    state.input_manager = test_input_manager();
 
     let shutdowns = Arc::new(AtomicUsize::new(0));
     state.register_lifecycle_extension(Arc::new(FailingStartupExtension {
@@ -352,7 +352,7 @@ async fn removed_runtime_effect_fields_are_rejected_on_startup() {
         config_manager_for(&config, temp.path()),
     )
     .expect("initialization should succeed");
-    *state.input_manager.lock().await = test_input_manager();
+    state.input_manager = test_input_manager();
 
     let effect_id = {
         let registry = state.effect_registry.read().await;

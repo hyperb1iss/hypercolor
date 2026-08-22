@@ -1,10 +1,8 @@
 use std::collections::BTreeSet;
 
 use hypercolor_hal::database::ProtocolDatabase;
-#[cfg(windows)]
-use hypercolor_hal::drivers::asus::AURA_REPORT_PAYLOAD_LEN;
 use hypercolor_hal::drivers::asus::{
-    ASUS_VID, AURA_REPORT_ID, PID_AURA_MOTHERBOARD_GEN3, PID_AURA_TERMINAL,
+    ASUS_VID, AURA_REPORT_ID, AURA_REPORT_PAYLOAD_LEN, PID_AURA_MOTHERBOARD_GEN3, PID_AURA_TERMINAL,
 };
 use hypercolor_hal::drivers::corsair::framing::{
     LCD_REPORT_SIZE, LINK_WRITE_BUF_SIZE, LN_WRITE_BUF_SIZE,
@@ -40,9 +38,10 @@ use hypercolor_hal::drivers::razer::{
     PID_SEIREN_EMOTE, PID_SEIREN_V3_CHROMA, PID_TARTARUS_CHROMA, RAZER_REPORT_LEN, RAZER_VENDOR_ID,
 };
 use hypercolor_hal::registry::{HidRawReportMode, TransportType};
+use hypercolor_hal::transport::TransportPlatform;
 use hypercolor_types::device::{
     DRIVER_MODULE_API_SCHEMA_VERSION, DeviceFamily, DeviceTopologyHint, DriverModuleKind,
-    DriverTransportKind,
+    DriverTransportAvailability, DriverTransportDescriptor, DriverTransportKind,
 };
 
 const PID_BLADE_14_2022: u16 = 0x028C;
@@ -68,7 +67,7 @@ fn expected_razer_shared_hid_transport(
 }
 
 fn expected_report_id_payload_hid_transport(interface: u8, max_report_len: usize) -> TransportType {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     {
         TransportType::UsbHidApi {
             interface: Some(interface),
@@ -91,16 +90,10 @@ fn expected_report_id_payload_hid_transport(interface: u8, max_report_len: usize
             usage: None,
         }
     }
-
-    #[cfg(all(not(windows), not(target_os = "linux")))]
-    {
-        let _ = max_report_len;
-        TransportType::UsbHid { interface }
-    }
 }
 
 fn expected_asus_hid_transport(interface: u8) -> TransportType {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     {
         TransportType::UsbHidApi {
             interface: Some(interface),
@@ -112,7 +105,7 @@ fn expected_asus_hid_transport(interface: u8) -> TransportType {
         }
     }
 
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
     {
         TransportType::UsbHidRaw {
             interface,
@@ -129,7 +122,7 @@ fn expected_windows_hidapi_or_usb_hid(
     report_id: u8,
     max_report_len: usize,
 ) -> TransportType {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     {
         TransportType::UsbHidApi {
             interface: Some(interface),
@@ -141,7 +134,7 @@ fn expected_windows_hidapi_or_usb_hid(
         }
     }
 
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
     {
         let _ = report_id;
         let _ = max_report_len;
@@ -1116,7 +1109,10 @@ fn module_descriptors_group_hal_protocols_by_family() {
     assert_eq!(nollie.module_kind, DriverModuleKind::Hal);
     assert_eq!(
         nollie.transports,
-        vec![DriverTransportKind::Usb, DriverTransportKind::Serial]
+        vec![
+            DriverTransportDescriptor::available(DriverTransportKind::Usb),
+            DriverTransportDescriptor::available(DriverTransportKind::Serial),
+        ]
     );
     assert!(nollie.capabilities.protocol_catalog);
     assert!(!nollie.capabilities.output_backend);
@@ -1127,22 +1123,41 @@ fn module_descriptors_group_hal_protocols_by_family() {
         .iter()
         .find(|module| module.id == "asus")
         .expect("ASUS module descriptor should exist");
-    assert_eq!(
-        asus.transports,
-        vec![DriverTransportKind::Usb, DriverTransportKind::Smbus]
-    );
+    assert_eq!(asus.transports[0].kind, DriverTransportKind::Usb);
+    assert!(asus.transports[0].is_available());
+    assert_eq!(asus.transports[1].kind, DriverTransportKind::Smbus);
+    if cfg!(any(target_os = "linux", target_os = "windows")) {
+        assert!(asus.transports[1].is_available());
+    } else {
+        assert_eq!(
+            asus.transports[1].availability,
+            DriverTransportAvailability::UnsupportedPlatform {
+                platform: TransportPlatform::CURRENT.to_string(),
+            }
+        );
+    }
 
     let push2 = modules
         .iter()
         .find(|module| module.id == "push2")
         .expect("Push 2 module descriptor should exist");
-    assert_eq!(push2.transports, vec![DriverTransportKind::Midi]);
+    assert_eq!(
+        push2.transports,
+        vec![DriverTransportDescriptor::available(
+            DriverTransportKind::Midi
+        )]
+    );
 
     let dygma = modules
         .iter()
         .find(|module| module.id == "dygma")
         .expect("Dygma module descriptor should exist");
-    assert_eq!(dygma.transports, vec![DriverTransportKind::Serial]);
+    assert_eq!(
+        dygma.transports,
+        vec![DriverTransportDescriptor::available(
+            DriverTransportKind::Serial
+        )]
+    );
 }
 
 #[test]

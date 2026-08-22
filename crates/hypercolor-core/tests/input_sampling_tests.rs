@@ -1,27 +1,37 @@
+use std::marker::PhantomData;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
-use hypercolor_core::input::{InputData, InputManager, InputSource, SourceKind};
+use hypercolor_core::input::{
+    AudioSource, AudioSourceRole, InputData, InputManager, InputSource, InteractionSource,
+    InteractionSourceRole, ManagedSourceRole, SourceKind, SourceRoleBinding,
+};
 
-struct CountingSource {
-    kind: SourceKind,
+fn register_test_source(manager: &mut InputManager, source: ManagedSourceRole) {
+    manager
+        .add_source(source)
+        .expect("sampling fixture source should match its declared role");
+}
+
+struct CountingSource<R> {
     samples: Arc<AtomicUsize>,
     delta_bits: Arc<AtomicU32>,
     running: bool,
+    role: PhantomData<R>,
 }
 
-impl CountingSource {
-    fn new(kind: SourceKind, samples: Arc<AtomicUsize>, delta_bits: Arc<AtomicU32>) -> Self {
+impl<R> CountingSource<R> {
+    fn new(samples: Arc<AtomicUsize>, delta_bits: Arc<AtomicU32>) -> Self {
         Self {
-            kind,
             samples,
             delta_bits,
             running: false,
+            role: PhantomData,
         }
     }
 }
 
-impl InputSource for CountingSource {
+impl<R: Send> InputSource for CountingSource<R> {
     fn name(&self) -> &'static str {
         "counting-source"
     }
@@ -49,19 +59,19 @@ impl InputSource for CountingSource {
     fn is_running(&self) -> bool {
         self.running
     }
-
-    fn is_audio_source(&self) -> bool {
-        self.kind == SourceKind::Audio
-    }
-
-    fn is_screen_source(&self) -> bool {
-        self.kind == SourceKind::Screen
-    }
-
-    fn is_interaction_source(&self) -> bool {
-        self.kind == SourceKind::Interaction
-    }
 }
+
+impl SourceRoleBinding for CountingSource<AudioSourceRole> {
+    type Role = AudioSourceRole;
+}
+
+impl AudioSource for CountingSource<AudioSourceRole> {}
+
+impl SourceRoleBinding for CountingSource<InteractionSourceRole> {
+    type Role = InteractionSourceRole;
+}
+
+impl InteractionSource for CountingSource<InteractionSourceRole> {}
 
 #[test]
 fn typed_sampling_only_publishes_due_source_kinds() {
@@ -70,16 +80,20 @@ fn typed_sampling_only_publishes_due_source_kinds() {
     let interaction_samples = Arc::new(AtomicUsize::new(0));
     let interaction_delta = Arc::new(AtomicU32::new(0));
     let mut manager = InputManager::new();
-    manager.add_source(Box::new(CountingSource::new(
-        SourceKind::Audio,
-        Arc::clone(&audio_samples),
-        Arc::clone(&audio_delta),
-    )));
-    manager.add_source(Box::new(CountingSource::new(
-        SourceKind::Interaction,
-        Arc::clone(&interaction_samples),
-        Arc::clone(&interaction_delta),
-    )));
+    register_test_source(
+        &mut manager,
+        ManagedSourceRole::audio(Box::new(CountingSource::<AudioSourceRole>::new(
+            Arc::clone(&audio_samples),
+            Arc::clone(&audio_delta),
+        ))),
+    );
+    register_test_source(
+        &mut manager,
+        ManagedSourceRole::interaction(Box::new(CountingSource::<InteractionSourceRole>::new(
+            Arc::clone(&interaction_samples),
+            Arc::clone(&interaction_delta),
+        ))),
+    );
     manager.start_all().expect("counting sources should start");
 
     manager.sample_source_kinds(&[(SourceKind::Interaction, 1.0 / 120.0)]);

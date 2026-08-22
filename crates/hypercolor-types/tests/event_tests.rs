@@ -340,6 +340,8 @@ fn system_events_have_system_category() {
         HypercolorEvent::Paused,
         HypercolorEvent::Resumed,
         HypercolorEvent::SessionChanged(SessionEvent::ScreenLocked),
+        HypercolorEvent::SessionChanged(SessionEvent::SessionInactive),
+        HypercolorEvent::SessionChanged(SessionEvent::SessionActive),
         HypercolorEvent::Error {
             code: "E001".into(),
             message: "out of memory".into(),
@@ -815,6 +817,24 @@ fn serialize_session_changed_roundtrip() {
         deserialized,
         HypercolorEvent::SessionChanged(SessionEvent::IdleEntered { .. })
     ));
+}
+
+#[test]
+fn serialize_session_activity_roundtrip() {
+    for (event, expected_json) in [
+        (
+            SessionEvent::SessionInactive,
+            r#"{"event":"session_inactive"}"#,
+        ),
+        (SessionEvent::SessionActive, r#"{"event":"session_active"}"#),
+    ] {
+        let json = serde_json::to_string(&event).expect("serialize session activity");
+        let deserialized: SessionEvent =
+            serde_json::from_str(&json).expect("deserialize session activity");
+
+        assert_eq!(json, expected_json);
+        assert_eq!(deserialized, event);
+    }
 }
 
 #[test]

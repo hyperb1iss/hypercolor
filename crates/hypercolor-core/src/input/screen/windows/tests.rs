@@ -14,12 +14,15 @@ use super::{
     ActiveCaptureEpoch, CapturePublication, CaptureWorker, ExactBoxList, ExactPublicationShared,
     WindowsCaptureResourceAdmission, WindowsExactRuntime, WindowsExactRuntimes,
     WindowsPhysicalReductionRoute, WindowsPublicationSource, WindowsScreenCaptureInput,
-    WorkerCaptureSchedule, WorkerCommand, bind_current_exact_runtime, capture_epoch,
-    capture_freshness, capture_geometry, capture_gpu_descriptor, capture_gpu_reduction_descriptor,
-    capture_issue, classify_windows_physical_reduction, native_capture_extent, reap_exact_runtimes,
+    WorkerCaptureSchedule, WorkerCommand, capture_epoch, capture_freshness, capture_geometry,
+    capture_gpu_descriptor, capture_gpu_reduction_descriptor, capture_issue,
+    classify_windows_physical_reduction, display_rotation, native_capture_extent,
     record_capture_health, resolve_windows_publication_branch, settle_inactive_capture,
     windows_gpu_attempt_at, windows_gpu_candidate_admission, windows_gpu_preparation_gate,
     windows_gpu_retry_at,
+};
+use crate::input::screen::adapter::{
+    CaptureSessionAuthority, bind_current_capture_exact_runtime, reap_capture_exact_runtimes,
 };
 
 #[test]
@@ -567,11 +570,8 @@ fn exact_runtime_identity_survives_retention_mixed_publication_and_removal() {
     let mut builder = ScreenPlanBuilder::new();
     let hub = builder.publication_hub();
     let exact = ExactPublicationShared::default();
-    *exact
-        .hub
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&hub));
-    exact.replace_source(Some(source.clone()));
+    exact.install_hub(Arc::clone(&hub));
+    exact.install_test_source(Some(source.clone()));
     let mut runtimes = WindowsExactRuntimes::default();
 
     let initial_revision = builder
@@ -648,8 +648,8 @@ fn exact_runtime_identity_survives_retention_mixed_publication_and_removal() {
         .1
         .try_reclaim()
         .expect("initial plan retires no exact runtime resources");
-    reap_exact_runtimes(&mut runtimes, &exact);
-    let selected = bind_current_exact_runtime(&mut runtimes, &source, &hub)
+    reap_capture_exact_runtimes(CaptureSessionAuthority::new(1), &mut runtimes, &exact);
+    let selected = bind_current_capture_exact_runtime(&mut runtimes, &source, &hub, |_, _| Ok(()))
         .expect("initial runtime binds")
         .expect("initial committed runtime is selected");
     assert!(selected.binding.is_same(&initial_binding));
@@ -709,9 +709,9 @@ fn exact_runtime_identity_survives_retention_mixed_publication_and_removal() {
         .commit(armed, retained_revision, graph_generation)
         .unwrap_or_else(|failure| panic!("retained-only plan commits: {}", failure.error()));
     let (_, retained_retirement) = committed.into_parts();
-    reap_exact_runtimes(&mut runtimes, &exact);
+    reap_capture_exact_runtimes(CaptureSessionAuthority::new(1), &mut runtimes, &exact);
     assert_eq!(runtimes.iter().count(), 1);
-    let selected = bind_current_exact_runtime(&mut runtimes, &source, &hub)
+    let selected = bind_current_capture_exact_runtime(&mut runtimes, &source, &hub, |_, _| Ok(()))
         .expect("retained-only runtime binds")
         .expect("retained-only committed runtime is selected");
     assert!(selected.binding.is_same(&retained_binding));
@@ -788,9 +788,9 @@ fn exact_runtime_identity_survives_retention_mixed_publication_and_removal() {
         .commit(armed, mixed_revision, graph_generation)
         .unwrap_or_else(|failure| panic!("mixed plan commits: {}", failure.error()));
     let (_, mixed_retirement) = committed.into_parts();
-    reap_exact_runtimes(&mut runtimes, &exact);
+    reap_capture_exact_runtimes(CaptureSessionAuthority::new(1), &mut runtimes, &exact);
     assert_eq!(runtimes.iter().count(), 1);
-    let selected = bind_current_exact_runtime(&mut runtimes, &source, &hub)
+    let selected = bind_current_capture_exact_runtime(&mut runtimes, &source, &hub, |_, _| Ok(()))
         .expect("mixed runtime binds")
         .expect("mixed committed runtime is selected");
     assert!(selected.binding.is_same(&mixed_binding));
@@ -886,7 +886,7 @@ fn exact_runtime_identity_survives_retention_mixed_publication_and_removal() {
         .commit(armed, removal_revision, graph_generation)
         .unwrap_or_else(|failure| panic!("removal plan commits: {}", failure.error()));
     let (_, retirement) = committed.into_parts();
-    reap_exact_runtimes(&mut runtimes, &exact);
+    reap_capture_exact_runtimes(CaptureSessionAuthority::new(1), &mut runtimes, &exact);
     assert_eq!(runtimes.iter().count(), 0);
     assert!(
         builder
@@ -993,7 +993,10 @@ fn large_native_source_admits_the_gpu_reduced_analysis_plane() {
     source.logical_extent = source.native_extent;
     source.rotation = CaptureRotation::Identity;
     let input = WindowsScreenCaptureInput::new(CaptureConfig::default());
-    input.exact.replace_source(Some(source));
+    input
+        .adapter
+        .exact_state()
+        .install_test_source(Some(source));
 
     let prepared = input
         .prepare_active_settings(CaptureConfig::default(), 0, active_demand())
@@ -1019,7 +1022,10 @@ fn calibrated_analysis_capacity_rejects_known_work_before_preparation() {
     source.logical_extent = source.native_extent;
     let input =
         WindowsScreenCaptureInput::with_compute_capacity_policy(CaptureConfig::default(), policy);
-    input.exact.replace_source(Some(source));
+    input
+        .adapter
+        .exact_state()
+        .install_test_source(Some(source));
 
     let Err(error) = input.prepare_active_settings(CaptureConfig::default(), 0, active_demand())
     else {
@@ -1192,8 +1198,8 @@ fn wait_for_activity(input: &WindowsScreenCaptureInput, expected: u64) {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let processed = input
-            .worker
-            .as_ref()
+            .adapter
+            .active_worker()
             .expect("capture owns a worker while activity is changing")
             .processed_activity_generation
             .load(Ordering::Acquire);
@@ -1238,24 +1244,32 @@ fn activity_fence_rejects_a_pre_deactivation_frame_after_reactivation() {
     let mut publication = CapturePublication::default();
 
     publication.fence_activity(1);
-    assert!(publication.activate(old_activity.clone()));
-    assert!(publication.publish(&old_activity, "old frame"));
+    assert!(publication.activate(old_activity.clone()).is_ok());
+    assert!(publication.publish(&old_activity, "old frame").is_ok());
     publication.fence_activity(2);
     publication.fence_activity(3);
 
-    assert!(!publication.activate(old_activity.clone()));
-    assert!(!publication.publish(&old_activity, "in-flight old frame"));
-    assert!(publication.active.is_none());
-    assert!(publication.latest.is_none());
-    assert!(publication.activate(reactivated.clone()));
-    assert!(publication.publish(&reactivated, "reactivated frame"));
+    assert!(publication.activate(old_activity.clone()).is_err());
+    assert!(
+        publication
+            .publish(&old_activity, "in-flight old frame")
+            .is_err()
+    );
+    assert!(publication.active().is_none());
+    assert!(publication.latest().is_none());
+    assert!(publication.activate(reactivated.clone()).is_ok());
+    assert!(
+        publication
+            .publish(&reactivated, "reactivated frame")
+            .is_ok()
+    );
 }
 
 #[test]
 fn deactivated_worker_is_reused_when_capture_reactivates() {
     let mut input = WindowsScreenCaptureInput::new(CaptureConfig::default());
     input.start().expect("idle capture source starts");
-    assert!(input.worker.is_none());
+    assert!(input.adapter.active_worker().is_none());
 
     input
         .set_capture_demand_state(active_demand())
@@ -1263,13 +1277,18 @@ fn deactivated_worker_is_reused_when_capture_reactivates() {
     let first_activity = input.settings.activity_generation.load(Ordering::Acquire);
     wait_for_activity(&input, first_activity);
     let first_thread = input
-        .worker
-        .as_ref()
+        .adapter
+        .active_worker()
         .and_then(|worker| worker.join_handle.as_ref())
         .expect("active capture owns a worker thread")
         .thread()
         .id();
-    let first_generation = input.settings.session_generation.load(Ordering::Acquire);
+    let first_generation = input
+        .adapter
+        .exact_state()
+        .current_authority()
+        .expect("active worker owns exact authority")
+        .generation();
 
     input
         .set_capture_demand_state(ScreenCaptureDemand::Inactive)
@@ -1277,7 +1296,7 @@ fn deactivated_worker_is_reused_when_capture_reactivates() {
     let inactive_activity = input.settings.activity_generation.load(Ordering::Acquire);
     wait_for_activity(&input, inactive_activity);
     assert!(
-        input.worker.is_some(),
+        input.adapter.active_worker().is_some(),
         "acknowledged idle capture retains worker ownership"
     );
 
@@ -1287,8 +1306,8 @@ fn deactivated_worker_is_reused_when_capture_reactivates() {
     let reactivated_activity = input.settings.activity_generation.load(Ordering::Acquire);
     wait_for_activity(&input, reactivated_activity);
     let reactivated_thread = input
-        .worker
-        .as_ref()
+        .adapter
+        .active_worker()
         .and_then(|worker| worker.join_handle.as_ref())
         .expect("reactivated capture still owns a worker thread")
         .thread()
@@ -1296,7 +1315,12 @@ fn deactivated_worker_is_reused_when_capture_reactivates() {
 
     assert_eq!(reactivated_thread, first_thread);
     assert_eq!(
-        input.settings.session_generation.load(Ordering::Acquire),
+        input
+            .adapter
+            .exact_state()
+            .current_authority()
+            .expect("reactivated worker retains exact authority")
+            .generation(),
         first_generation,
         "reactivation must not spawn a replacement worker"
     );
@@ -1329,13 +1353,19 @@ fn disconnected_worker_is_reaped_before_activation_retries_once() {
     });
     ready_rx.recv().expect("fake worker is running");
     let disconnected_thread = join_handle.thread().id();
-    input.worker = Some(CaptureWorker {
-        command_tx,
-        exit_rx,
-        join_handle: Some(join_handle),
-        cancel,
-        processed_activity_generation: Arc::new(AtomicU64::new(0)),
-    });
+    assert!(
+        input
+            .adapter
+            .install_worker_for_test(CaptureWorker {
+                authority: CaptureSessionAuthority::new(1),
+                command_tx,
+                exit_rx,
+                join_handle: Some(join_handle),
+                cancel,
+                processed_activity_generation: Arc::new(AtomicU64::new(0)),
+            })
+            .is_ok()
+    );
 
     input
         .set_capture_demand_state(active_demand())
@@ -1343,8 +1373,8 @@ fn disconnected_worker_is_reaped_before_activation_retries_once() {
     let activity_generation = input.settings.activity_generation.load(Ordering::Acquire);
     wait_for_activity(&input, activity_generation);
     let replacement_thread = input
-        .worker
-        .as_ref()
+        .adapter
+        .active_worker()
         .and_then(|worker| worker.join_handle.as_ref())
         .expect("activation owns the replacement worker")
         .thread()
@@ -1353,12 +1383,92 @@ fn disconnected_worker_is_reaped_before_activation_retries_once() {
     assert!(exited.load(Ordering::Acquire));
     assert_ne!(replacement_thread, disconnected_thread);
     assert_eq!(
-        input.settings.session_generation.load(Ordering::Acquire),
+        input
+            .adapter
+            .exact_state()
+            .current_authority()
+            .expect("replacement worker owns exact authority")
+            .generation(),
         1,
         "only the replacement worker allocates a capture session"
     );
 
     input.stop();
+}
+
+#[test]
+fn retired_worker_cannot_republish_after_stop_returns() {
+    let mut input = WindowsScreenCaptureInput::new(CaptureConfig::default());
+    let authority = CaptureSessionAuthority::new(1);
+    let reservation = input
+        .adapter
+        .reserve_exact_authority()
+        .expect("authority reserves");
+    assert_eq!(reservation.authority(), authority);
+    drop(
+        input
+            .adapter
+            .exact_state()
+            .activate_reserved_authority(reservation)
+            .expect("authority activates"),
+    );
+
+    let epoch = active_epoch("display:main", 3, 1, 1);
+    {
+        let mut publication = input
+            .adapter
+            .compatibility_publication()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(publication.activate(epoch.clone()).is_ok());
+        assert!(publication.publish(&epoch, "active frame").is_ok());
+    }
+
+    let (command_tx, command_rx) = mpsc::channel::<WorkerCommand>();
+    let (_exit_tx, exit_rx) = mpsc::sync_channel(1);
+    let release = Arc::new(AtomicBool::new(false));
+    let worker_release = Arc::clone(&release);
+    let join_handle = thread::spawn(move || {
+        let _command_rx = command_rx;
+        while !worker_release.load(Ordering::Acquire) {
+            thread::yield_now();
+        }
+    });
+    assert!(
+        input
+            .adapter
+            .install_worker_for_test(CaptureWorker {
+                authority,
+                command_tx,
+                exit_rx,
+                join_handle: Some(join_handle),
+                cancel: Arc::new(AtomicBool::new(false)),
+                processed_activity_generation: Arc::new(AtomicU64::new(0)),
+            })
+            .is_ok()
+    );
+
+    input.stop();
+
+    assert!(!input.adapter.exact_state().is_current_authority(authority));
+    let mut publication = input
+        .adapter
+        .compatibility_publication()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    assert!(publication.activate(epoch.clone()).is_err());
+    assert!(publication.publish(&epoch, "retired frame").is_err());
+    drop(publication);
+
+    release.store(true, Ordering::Release);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while input.adapter.retiring_worker_count() != 0 {
+        input.adapter.reap_finished_workers(|_, result| {
+            result.expect("retired worker exits cleanly");
+        });
+        assert!(Instant::now() < deadline, "retired worker did not exit");
+        thread::yield_now();
+    }
 }
 
 #[test]
@@ -1368,16 +1478,16 @@ fn source_fence_prevents_an_in_flight_worker_from_reactivating_old_frames() {
     new_source.source_generation = 1;
     let mut publication = CapturePublication::default();
 
-    assert!(publication.activate(old_source.clone()));
-    assert!(publication.publish(&old_source, "old frame"));
+    assert!(publication.activate(old_source.clone()).is_ok());
+    assert!(publication.publish(&old_source, "old frame").is_ok());
     publication.fence_source(1);
 
-    assert!(!publication.activate(old_source.clone()));
-    assert!(!publication.publish(&old_source, "late old frame"));
-    assert!(publication.active.is_none());
-    assert!(publication.latest.is_none());
-    assert!(publication.activate(new_source.clone()));
-    assert!(publication.publish(&new_source, "new frame"));
+    assert!(publication.activate(old_source.clone()).is_err());
+    assert!(publication.publish(&old_source, "late old frame").is_err());
+    assert!(publication.active().is_none());
+    assert!(publication.latest().is_none());
+    assert!(publication.activate(new_source.clone()).is_ok());
+    assert!(publication.publish(&new_source, "new frame").is_ok());
 }
 
 #[test]
@@ -1386,15 +1496,19 @@ fn publication_rejects_frames_from_a_replaced_source() {
     let replacement = active_epoch("display:replacement", 3, 7, 1);
     let mut publication = CapturePublication::default();
 
-    assert!(publication.activate(first.clone()));
-    assert!(publication.publish(&first, "first frame"));
-    assert_eq!(publication.latest, Some("first frame"));
+    assert!(publication.activate(first.clone()).is_ok());
+    assert!(publication.publish(&first, "first frame").is_ok());
+    assert_eq!(publication.latest(), Some(&"first frame"));
 
-    assert!(publication.activate(replacement.clone()));
-    assert!(publication.latest.is_none());
-    assert!(!publication.publish(&first, "stale frame"));
-    assert!(publication.publish(&replacement, "replacement frame"));
-    assert_eq!(publication.latest, Some("replacement frame"));
+    assert!(publication.activate(replacement.clone()).is_ok());
+    assert!(publication.latest().is_none());
+    assert!(publication.publish(&first, "stale frame").is_err());
+    assert!(
+        publication
+            .publish(&replacement, "replacement frame")
+            .is_ok()
+    );
+    assert_eq!(publication.latest(), Some(&"replacement frame"));
 }
 
 #[test]
@@ -1403,13 +1517,17 @@ fn publication_rejects_frames_from_a_replaced_topology() {
     let replacement = active_epoch("display:main", 4, 7, 1);
     let mut publication = CapturePublication::default();
 
-    assert!(publication.activate(first.clone()));
-    assert!(publication.publish(&first, "first frame"));
-    assert!(publication.activate(replacement.clone()));
+    assert!(publication.activate(first.clone()).is_ok());
+    assert!(publication.publish(&first, "first frame").is_ok());
+    assert!(publication.activate(replacement.clone()).is_ok());
 
-    assert!(publication.latest.is_none());
-    assert!(!publication.publish(&first, "stale topology frame"));
-    assert!(publication.publish(&replacement, "replacement frame"));
+    assert!(publication.latest().is_none());
+    assert!(publication.publish(&first, "stale topology frame").is_err());
+    assert!(
+        publication
+            .publish(&replacement, "replacement frame")
+            .is_ok()
+    );
 }
 
 #[test]
@@ -1418,13 +1536,13 @@ fn publication_rejects_frames_from_a_replaced_worker_session() {
     let restarted = active_epoch("display:main", 3, 8, 1);
     let mut publication = CapturePublication::default();
 
-    assert!(publication.activate(first.clone()));
-    assert!(publication.publish(&first, "first frame"));
-    assert!(publication.activate(restarted.clone()));
+    assert!(publication.activate(first.clone()).is_ok());
+    assert!(publication.publish(&first, "first frame").is_ok());
+    assert!(publication.activate(restarted.clone()).is_ok());
 
-    assert!(publication.latest.is_none());
-    assert!(!publication.publish(&first, "stale worker frame"));
-    assert!(publication.publish(&restarted, "restarted frame"));
+    assert!(publication.latest().is_none());
+    assert!(publication.publish(&first, "stale worker frame").is_err());
+    assert!(publication.publish(&restarted, "restarted frame").is_ok());
 }
 
 #[test]
@@ -1433,13 +1551,13 @@ fn publication_rejects_frames_from_a_rebuilt_duplication_interface() {
     let rebuilt = active_epoch("display:main", 3, 7, 2);
     let mut publication = CapturePublication::default();
 
-    assert!(publication.activate(first.clone()));
-    assert!(publication.publish(&first, "first frame"));
-    assert!(publication.activate(rebuilt.clone()));
+    assert!(publication.activate(first.clone()).is_ok());
+    assert!(publication.publish(&first, "first frame").is_ok());
+    assert!(publication.activate(rebuilt.clone()).is_ok());
 
-    assert!(publication.latest.is_none());
-    assert!(!publication.publish(&first, "access-lost frame"));
-    assert!(publication.publish(&rebuilt, "rebuilt frame"));
+    assert!(publication.latest().is_none());
+    assert!(publication.publish(&first, "access-lost frame").is_err());
+    assert!(publication.publish(&rebuilt, "rebuilt frame").is_ok());
 }
 
 #[test]
@@ -1447,13 +1565,13 @@ fn cleared_publication_fails_closed_until_a_new_epoch_is_activated() {
     let active = active_epoch("display:main", 3, 7, 1);
     let mut publication = CapturePublication::default();
 
-    assert!(publication.activate(active.clone()));
-    assert!(publication.publish(&active, "frame"));
+    assert!(publication.activate(active.clone()).is_ok());
+    assert!(publication.publish(&active, "frame").is_ok());
     publication.clear();
 
-    assert!(publication.active.is_none());
-    assert!(publication.latest.is_none());
-    assert!(!publication.publish(&active, "late frame"));
+    assert!(publication.active().is_none());
+    assert!(publication.latest().is_none());
+    assert!(publication.publish(&active, "late frame").is_err());
 }
 
 #[test]
@@ -1476,6 +1594,18 @@ fn adapter_preserves_native_and_stored_geometry_for_every_dxgi_rotation() {
         assert_eq!(geometry.storage_extent(), extent(1280, 720));
         assert_eq!(geometry.origin(), PhysicalOrigin { x: -3840, y: 120 });
         assert_eq!(geometry.rotation(), expected_rotation);
+    }
+}
+
+#[test]
+fn reflected_capture_transforms_cannot_cross_the_dxgi_rotation_boundary() {
+    for transform in [
+        CaptureRotation::Flipped,
+        CaptureRotation::Flipped90,
+        CaptureRotation::Flipped180,
+        CaptureRotation::Flipped270,
+    ] {
+        assert!(display_rotation(transform).is_err());
     }
 }
 

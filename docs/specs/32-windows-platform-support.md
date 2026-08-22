@@ -1,6 +1,6 @@
 # 32 — Windows Platform Support
 
-> Full Windows support for Hypercolor: USB peripherals, SMBus motherboard/GPU/DRAM RGB, audio-reactive input, session awareness, and native service lifecycle — shipping as both a tray applet and an optional Windows Service.
+> Full Windows support for Hypercolor: USB peripherals, SMBus motherboard/GPU/DRAM RGB, audio-reactive input, session awareness, and native service lifecycle, shipping through the unified desktop app or an optional Windows Service.
 
 **Status:** Active implementation
 **Author:** Nova
@@ -48,7 +48,7 @@ Hypercolor's architecture is already well-factored for multi-platform support. T
 | Keyboard input     | `evdev`                         | `device_query` (already in deps) | **Small**   |
 | SMBus / I2C        | `i2cdev` (`/dev/i2c-*`)         | PawnIO + NvAPI + ADL             | **Hard**    |
 | Session monitoring | D-Bus logind + screensaver      | Win32 power/session events       | **Medium**  |
-| Service lifecycle  | systemd + launchd               | Windows Service API or tray-only | **Medium**  |
+| Service lifecycle  | systemd + launchd               | Windows Service API or desktop app | **Medium**  |
 
 **~65% of the codebase compiles on Windows today** with no changes. The work is filling in platform-conditional branches that already have `#[cfg]` gates.
 
@@ -64,16 +64,16 @@ Hypercolor's architecture is already well-factored for multi-platform support. T
 - **REST + WebSocket API** — Tokio + axum, fully cross-platform
 - **Leptos UI** — WASM, runs in any browser
 - **HIDAPI transport** — `hidapi` crate wraps platform backends
-- **Tray applet** — `hypercolor-tray` already has `#[cfg(target_os = "windows")]` arms using `windows-sys`
+- **Desktop tray**: `hypercolor-app` owns the native Windows tray and daemon supervision
 - **Protocol layer** — All protocol impls (Razer, Corsair, ASUS USB, etc.) are transport-agnostic
 - **Wire-format structs** — `zerocopy` is pure Rust, no platform deps
 
-### Linux-Only (Needs Windows Impl)
+### Platform-Specific Implementations
 
 - `hypercolor-core/src/input/audio/linux.rs` — PulseAudio capture + source enumeration
 - `hypercolor-core/src/input/evdev.rs` — Keyboard reactive input
-- `hypercolor-core/src/session/logind.rs` — systemd-logind sleep/lock events
-- `hypercolor-core/src/session/screensaver.rs` — D-Bus screensaver signals
+- `hypercolor-linux-session/src/logind.rs`: systemd-logind sleep/lock events behind `SessionMonitor`
+- `hypercolor-linux-session/src/screensaver.rs`: D-Bus screensaver signals behind `SessionMonitor`
 - `hypercolor-hal/src/transport/hidraw.rs` — Linux HIDRAW (not needed on Windows)
 - `hypercolor-hal/src/transport/smbus.rs` — Linux I2C userspace
 - `hypercolor-core/src/device/smbus_scanner.rs` — Linux I2C bus enumeration
@@ -128,7 +128,8 @@ Every `#[cfg(target_os = "linux")]` block needs a corresponding `#[cfg(target_os
 - `hypercolor-daemon/src/startup.rs` — Gate evdev import
 - `hypercolor-hal/src/transport/mod.rs` — Gate HIDRAW and SMBus module inclusion
 - `hypercolor-core/src/input/mod.rs` — Gate evdev module
-- `hypercolor-core/src/session/mod.rs` — Gate logind and screensaver modules
+- `hypercolor-linux-session` and `hypercolor-windows-session` — Keep platform
+  acquisition behind crate boundaries; core consumes only neutral monitors
 - `hypercolor-core/src/device/smbus_scanner.rs` — Already gated, verify stub returns empty
 
 ### 4.2 HIDAPI on Windows
@@ -166,7 +167,7 @@ Verify this is already gated or add the gate.
 
 ### 4.5 CLI
 
-- Service commands: add `#[cfg(target_os = "windows")]` arm that errors with "use tray applet or install as Windows Service" (full service support in Phase 4)
+- Service commands: add a `#[cfg(target_os = "windows")]` arm that directs users to the desktop app or Windows Service installation (full service support in Phase 4)
 - All other CLI commands are API clients — work unchanged
 
 ### Deliverable
@@ -356,21 +357,24 @@ ASUS Aura motherboard LEDs, GPU LEDs, and DRAM LEDs controllable on Windows. The
 
 ### 7.1 Session Monitoring
 
-**New file:** `hypercolor-core/src/session/windows.rs`
+**Platform crate:** `hypercolor-windows-session`
 
-Implement `SessionMonitor` for:
+The crate implements `SessionMonitor` for both Windows host modes:
 
-- **Sleep/wake** — `WM_POWERBROADCAST` with `PBT_APMQUERYSUSPEND` / `PBT_APMRESUMEAUTOMATIC`
-- **Lock/unlock** — `WTSRegisterSessionNotification` → `WM_WTSSESSION_CHANGE` with `WTS_SESSION_LOCK` / `WTS_SESSION_UNLOCK`
-- **Lid close** (laptops) — `RegisterPowerSettingNotification` with `GUID_LIDSWITCH_STATE_CHANGE`
+- **Desktop app mode** receives sleep/wake through a message-only window
+  registered with `RegisterSuspendResumeNotification`, plus lock/unlock through
+  `WTSRegisterSessionNotification`.
+- **Windows Service mode** translates `POWER_EVENT` and `SESSION_CHANGE`
+  callbacks from the Service Control Manager into the same neutral event stream.
 
-Uses the `windows` crate for Win32 API access. Spawns a hidden message-only window for receiving system messages.
+The daemon chooses the host adapter at composition time. Core owns only event
+merging, duplicate suppression, and session policy.
 
 ### 7.2 Service Lifecycle
 
 **Two modes on Windows:**
 
-1. **Tray applet mode** (default) — Hypercolor runs as a tray application started at login. Uses `hypercolor-tray` (already has Windows support). Registered via `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
+1. **Desktop app mode** (default): `hypercolor-app` starts at login, owns the tray, and supervises the daemon. It is registered through `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
 
 2. **Windows Service mode** (optional) — For headless/server setups. Uses the `windows-service` crate. Registered via `sc.exe` or the installer.
 
@@ -379,13 +383,13 @@ Uses the `windows` crate for Win32 API access. Spawns a hidden message-only wind
 ```rust
 #[cfg(target_os = "windows")]
 ServiceCommand::Start => {
-    // Check if running as service or start tray app
+    // Check if running as a service or start the desktop app
 }
 ```
 
 ### 7.3 Autostart
 
-- Tray mode: Registry key `HKCU\...\Run\Hypercolor`
+- Desktop app mode: Registry key `HKCU\...\Run\Hypercolor`
 - Service mode: `sc.exe create hypercolor` with auto-start
 
 ### Deliverable
@@ -403,7 +407,7 @@ Hypercolor survives sleep/wake cycles, pauses effects on lock, and starts automa
 1. Install binaries to `%PROGRAMFILES%\Hypercolor\`
 2. Include pinned PawnIO payloads and install them only after explicit user consent
 3. Install web UI assets to `%LOCALAPPDATA%\Hypercolor\ui\`
-4. Register tray applet autostart
+4. Register desktop app autostart
 5. Create Start Menu shortcuts
 6. Optional: register as Windows Service
 
@@ -581,7 +585,7 @@ trait SmBusBackend: Send + Sync {
 | Crate             | Purpose                                           | Conditional                                   |
 | ----------------- | ------------------------------------------------- | --------------------------------------------- |
 | `cpal`            | WASAPI audio capture                              | `cfg(target_os = "windows")` in core          |
-| `windows`         | Win32 session/power events, named mutex, registry | `cfg(target_os = "windows")` in core + daemon |
+| `windows`         | Win32 session/power events, named mutex, registry | Platform crates plus target-specific app and daemon code |
 | `windows-service` | Optional Windows Service mode                     | `cfg(target_os = "windows")` in daemon        |
 | `libloading`      | PawnIO DLL + NvAPI + ADL runtime loading          | `cfg(target_os = "windows")`; PawnIO wrapper lives in `hypercolor-windows-pawnio` |
 

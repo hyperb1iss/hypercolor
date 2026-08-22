@@ -6,8 +6,6 @@ from typing import Any, TypeVar
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
-from ..models.protected_source_grant_owner import ProtectedSourceGrantOwner
-
 T = TypeVar("T", bound="ApiResponseCaptureAuthorizationResponseData")
 
 
@@ -16,17 +14,17 @@ class ApiResponseCaptureAuthorizationResponseData:
     """
     Attributes:
         authorized (bool):
-        grant_owner (ProtectedSourceGrantOwner):
+        grant_owner (str):
     """
 
     authorized: bool
-    grant_owner: ProtectedSourceGrantOwner
+    grant_owner: str
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         authorized = self.authorized
 
-        grant_owner = self.grant_owner.value
+        grant_owner = self.grant_owner
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -44,7 +42,7 @@ class ApiResponseCaptureAuthorizationResponseData:
         d = dict(src_dict)
         authorized = d.pop("authorized")
 
-        grant_owner = ProtectedSourceGrantOwner(d.pop("grant_owner"))
+        grant_owner = d.pop("grant_owner")
 
         api_response_capture_authorization_response_data = cls(
             authorized=authorized,

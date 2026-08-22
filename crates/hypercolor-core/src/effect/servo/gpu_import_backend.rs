@@ -3,12 +3,13 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Error, Result, anyhow};
+use hypercolor_gpu_frame::{GpuFrameImportError, GpuFrameImportFallbackReason};
 use servo::RenderingContext;
 use tracing::debug;
 
+use super::telemetry::record_servo_gpu_import_frame;
 #[cfg(target_os = "linux")]
 use super::telemetry::record_servo_gpu_import_slot_state;
-use super::telemetry::{ServoGpuImportFallbackReason, record_servo_gpu_import_frame};
 use super::worker_client::ServoSessionId;
 use crate::effect::servo_bootstrap::ServoRenderingContextHandle;
 use crate::effect::traits::ImportedEffectFrame;
@@ -379,6 +380,7 @@ impl ServoGpuImportBackend {
             device,
             &native_frame.iosurface,
             native_frame.content_generation,
+            native_frame.origin,
         )?)
     }
 
@@ -528,269 +530,68 @@ fn record_linux_gpu_importer_state(
 }
 
 pub(super) fn record_imported_frame(frame: &ImportedEffectFrame) {
-    #[cfg(target_os = "linux")]
-    {
-        record_servo_gpu_import_frame(
-            frame.timings.blit_us,
-            frame.timings.sync_us,
-            frame.timings.total_us,
-        );
-    }
-    #[cfg(target_os = "macos")]
-    {
-        record_servo_gpu_import_frame(frame.timings.wrap_us, 0, frame.timings.total_us);
-    }
-    #[cfg(target_os = "windows")]
-    {
-        record_servo_gpu_import_frame(
-            frame.timings.wrap_us,
-            frame.timings.sync_us,
-            frame.timings.total_us,
-        );
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
-    {
-        record_servo_gpu_import_frame(0, 0, frame.timings.total_us);
-    }
+    record_servo_gpu_import_frame(
+        frame
+            .timings
+            .blit_us
+            .or(frame.timings.wrap_us)
+            .unwrap_or_default(),
+        frame.timings.sync_us.unwrap_or_default(),
+        frame.timings.total_us,
+    );
 }
 
 fn duration_millis_u64(duration: Duration) -> u64 {
     duration.as_millis().try_into().unwrap_or(u64::MAX)
 }
 
-pub(super) fn failure_is_transient(reason: ServoGpuImportFallbackReason) -> bool {
+pub(super) fn failure_is_transient(reason: GpuFrameImportFallbackReason) -> bool {
     matches!(
         reason,
-        ServoGpuImportFallbackReason::GlOperation
-            | ServoGpuImportFallbackReason::GlFramebufferIncomplete
-            | ServoGpuImportFallbackReason::ImportSlotsExhausted
-            | ServoGpuImportFallbackReason::MissingMacosServoSurface
-            | ServoGpuImportFallbackReason::WindowsImportStaleFrame
+        GpuFrameImportFallbackReason::GlOperation
+            | GpuFrameImportFallbackReason::GlFramebufferIncomplete
+            | GpuFrameImportFallbackReason::ImportSlotsExhausted
+            | GpuFrameImportFallbackReason::MissingMacosServoSurface
+            | GpuFrameImportFallbackReason::WindowsImportStaleFrame
     )
 }
 
-pub(super) fn failure_should_clear_importer(reason: ServoGpuImportFallbackReason) -> bool {
+pub(super) fn failure_should_clear_importer(reason: GpuFrameImportFallbackReason) -> bool {
     !failure_is_transient(reason)
 }
 
 pub(super) fn failure_detail(error: &Error) -> String {
-    for cause in error.chain() {
-        #[cfg(target_os = "linux")]
-        if let Some(error) =
-            cause.downcast_ref::<hypercolor_linux_gpu_interop::LinuxGpuInteropError>()
-        {
-            return match error {
-                hypercolor_linux_gpu_interop::LinuxGpuInteropError::GlOperation {
-                    operation,
-                    code,
-                } => format!("gl_operation={operation} gl_error=0x{code:04x}"),
-                hypercolor_linux_gpu_interop::LinuxGpuInteropError::GlFramebufferIncomplete {
-                    status,
-                } => format!("gl_framebuffer_status=0x{status:04x}"),
-                hypercolor_linux_gpu_interop::LinuxGpuInteropError::ImportSlotsExhausted {
-                    slot_count,
-                } => format!("import_slots_exhausted={slot_count}"),
-                _ => error.to_string(),
-            };
-        }
-
-        #[cfg(target_os = "macos")]
-        if let Some(error) =
-            cause.downcast_ref::<hypercolor_macos_gpu_interop::MacosGpuInteropError>()
-        {
-            return match error {
-                hypercolor_macos_gpu_interop::MacosGpuInteropError::GlCreateResource {
-                    resource,
-                    message,
-                } => format!("gl_resource={resource} message={message}"),
-                hypercolor_macos_gpu_interop::MacosGpuInteropError::GlOperation {
-                    operation,
-                    code,
-                } => format!("gl_operation={operation} gl_error=0x{code:04x}"),
-                hypercolor_macos_gpu_interop::MacosGpuInteropError::GlFramebufferIncomplete {
-                    status,
-                } => format!("gl_framebuffer_status=0x{status:04x}"),
-                _ => error.to_string(),
-            };
-        }
-
-        #[cfg(target_os = "windows")]
-        if let Some(error) =
-            cause.downcast_ref::<hypercolor_windows_gpu_interop::WindowsGpuInteropError>()
-        {
-            return error.to_string();
-        }
-    }
-
     error.to_string()
 }
 
-pub(super) fn classify_failure(error: &Error) -> ServoGpuImportFallbackReason {
+pub(super) fn classify_failure(error: &Error) -> GpuFrameImportFallbackReason {
     for cause in error.chain() {
         #[cfg(target_os = "macos")]
         if let Some(error) =
             cause.downcast_ref::<hypercolor_macos_gpu_interop::MacosGpuInteropError>()
         {
-            return match error {
-                hypercolor_macos_gpu_interop::MacosGpuInteropError::MissingWgpuMetalDevice => {
-                    ServoGpuImportFallbackReason::MissingWgpuMetalDevice
-                }
-                hypercolor_macos_gpu_interop::MacosGpuInteropError::InvalidDimensions { .. }
-                | hypercolor_macos_gpu_interop::MacosGpuInteropError::IosurfaceShapeMismatch {
-                    ..
-                }
-                | hypercolor_macos_gpu_interop::MacosGpuInteropError::PixelBufferSizeMismatch {
-                    ..
-                } => ServoGpuImportFallbackReason::InvalidDimensions,
-                hypercolor_macos_gpu_interop::MacosGpuInteropError::ServoContext { .. }
-                | hypercolor_macos_gpu_interop::MacosGpuInteropError::MissingServoSurface
-                | hypercolor_macos_gpu_interop::MacosGpuInteropError::IosurfaceFenceTimeout => {
-                    ServoGpuImportFallbackReason::MissingMacosServoSurface
-                }
-                hypercolor_macos_gpu_interop::MacosGpuInteropError::GlCreateResource {
-                    ..
-                } => ServoGpuImportFallbackReason::GlResource,
-                hypercolor_macos_gpu_interop::MacosGpuInteropError::GlOperation { .. } => {
-                    ServoGpuImportFallbackReason::GlOperation
-                }
-                hypercolor_macos_gpu_interop::MacosGpuInteropError::GlFramebufferIncomplete {
-                    ..
-                } => ServoGpuImportFallbackReason::GlFramebufferIncomplete,
-                hypercolor_macos_gpu_interop::MacosGpuInteropError::IosurfacePixelFormatMismatch {
-                    ..
-                } => ServoGpuImportFallbackReason::IosurfacePixelFormatMismatch,
-                hypercolor_macos_gpu_interop::MacosGpuInteropError::MetalTextureCreateFailed => {
-                    ServoGpuImportFallbackReason::MetalTextureCreateFailed
-                }
-                _ => ServoGpuImportFallbackReason::Other,
-            };
+            return error.fallback_reason();
         }
 
         #[cfg(target_os = "windows")]
         if let Some(error) =
             cause.downcast_ref::<hypercolor_windows_gpu_interop::WindowsGpuInteropError>()
         {
-            use hypercolor_windows_gpu_interop::WINDOWS_ANGLE_CLIENT_BUFFER_SURFACE_OPERATION;
-
-            return match error {
-                hypercolor_windows_gpu_interop::WindowsGpuInteropError::MissingWgpuVulkanDevice => {
-                    ServoGpuImportFallbackReason::MissingWgpuVulkanDevice
-                }
-                hypercolor_windows_gpu_interop::WindowsGpuInteropError::MissingVulkanExternalMemoryWin32 => {
-                    ServoGpuImportFallbackReason::MissingVulkanExternalMemoryWin32
-                }
-                hypercolor_windows_gpu_interop::WindowsGpuInteropError::MissingWindowsAngleContext => {
-                    ServoGpuImportFallbackReason::MissingWindowsAngleContext
-                }
-                hypercolor_windows_gpu_interop::WindowsGpuInteropError::WindowsImportStaleFrame => {
-                    ServoGpuImportFallbackReason::WindowsImportStaleFrame
-                }
-                hypercolor_windows_gpu_interop::WindowsGpuInteropError::DxgiAdapterNotFound {
-                    ..
-                } => ServoGpuImportFallbackReason::AdapterLuidMismatch,
-                hypercolor_windows_gpu_interop::WindowsGpuInteropError::D3d11DeviceCreateFailed {
-                    ..
-                }
-                | hypercolor_windows_gpu_interop::WindowsGpuInteropError::D3d11ImmediateContextUnavailable => {
-                    ServoGpuImportFallbackReason::D3d11DeviceCreateFailed
-                }
-                hypercolor_windows_gpu_interop::WindowsGpuInteropError::D3d11SharedTextureCreateFailed {
-                    ..
-                }
-                | hypercolor_windows_gpu_interop::WindowsGpuInteropError::D3d11TextureInterfaceQueryFailed {
-                    ..
-                } => ServoGpuImportFallbackReason::D3d11SharedTextureCreateFailed,
-                hypercolor_windows_gpu_interop::WindowsGpuInteropError::D3d11SharedHandleCreateFailed {
-                    ..
-                } => ServoGpuImportFallbackReason::D3d11SharedHandleCreateFailed,
-                hypercolor_windows_gpu_interop::WindowsGpuInteropError::InvalidDimensions {
-                    ..
-                } => ServoGpuImportFallbackReason::InvalidDimensions,
-                hypercolor_windows_gpu_interop::WindowsGpuInteropError::VulkanD3d11ImportFailed => {
-                    ServoGpuImportFallbackReason::VulkanD3d11ImportFailed
-                }
-                hypercolor_windows_gpu_interop::WindowsGpuInteropError::GlCreateResource {
-                    ..
-                } => ServoGpuImportFallbackReason::GlResource,
-                hypercolor_windows_gpu_interop::WindowsGpuInteropError::GlOperation { .. } => {
-                    ServoGpuImportFallbackReason::GlOperation
-                }
-                hypercolor_windows_gpu_interop::WindowsGpuInteropError::GlFramebufferIncomplete {
-                    ..
-                } => ServoGpuImportFallbackReason::GlFramebufferIncomplete,
-                hypercolor_windows_gpu_interop::WindowsGpuInteropError::PublishFenceTimeout => {
-                    ServoGpuImportFallbackReason::WindowsImportStaleFrame
-                }
-                hypercolor_windows_gpu_interop::WindowsGpuInteropError::ServoContext {
-                    operation,
-                    ..
-                } if *operation == WINDOWS_ANGLE_CLIENT_BUFFER_SURFACE_OPERATION => {
-                    ServoGpuImportFallbackReason::AngleClientBufferSurfaceFailed
-                }
-                _ => ServoGpuImportFallbackReason::Other,
-            };
+            return error.fallback_reason();
         }
 
         if let Some(error) =
             cause.downcast_ref::<hypercolor_linux_gpu_interop::LinuxGpuInteropError>()
         {
-            #[cfg(target_os = "linux")]
-            return match error {
-                hypercolor_linux_gpu_interop::LinuxGpuInteropError::MissingWgpuVulkanDevice => {
-                    ServoGpuImportFallbackReason::MissingWgpuVulkanDevice
-                }
-                hypercolor_linux_gpu_interop::LinuxGpuInteropError::MissingVulkanDeviceExtension(
-                    _,
-                ) => ServoGpuImportFallbackReason::MissingVulkanExternalMemoryFd,
-                hypercolor_linux_gpu_interop::LinuxGpuInteropError::MissingGlFunction(_) => {
-                    ServoGpuImportFallbackReason::MissingGlFunction
-                }
-                hypercolor_linux_gpu_interop::LinuxGpuInteropError::GlProcLoaderUnavailable => {
-                    ServoGpuImportFallbackReason::GlProcLoaderUnavailable
-                }
-                hypercolor_linux_gpu_interop::LinuxGpuInteropError::InvalidDimensions { .. } => {
-                    ServoGpuImportFallbackReason::InvalidDimensions
-                }
-                hypercolor_linux_gpu_interop::LinuxGpuInteropError::Vulkan { .. }
-                | hypercolor_linux_gpu_interop::LinuxGpuInteropError::MemoryTypeUnavailable
-                | hypercolor_linux_gpu_interop::LinuxGpuInteropError::DuplicateFdFailed {
-                    ..
-                } => ServoGpuImportFallbackReason::Vulkan,
-                hypercolor_linux_gpu_interop::LinuxGpuInteropError::GlCreateResource {
-                    ..
-                } => ServoGpuImportFallbackReason::GlResource,
-                hypercolor_linux_gpu_interop::LinuxGpuInteropError::GlOperation { .. } => {
-                    ServoGpuImportFallbackReason::GlOperation
-                }
-                hypercolor_linux_gpu_interop::LinuxGpuInteropError::GlFramebufferIncomplete {
-                    ..
-                } => ServoGpuImportFallbackReason::GlFramebufferIncomplete,
-                hypercolor_linux_gpu_interop::LinuxGpuInteropError::ImportSlotsExhausted {
-                    ..
-                } => ServoGpuImportFallbackReason::ImportSlotsExhausted,
-                _ => ServoGpuImportFallbackReason::Other,
-            };
-            #[cfg(not(target_os = "linux"))]
-            return match error {
-                hypercolor_linux_gpu_interop::LinuxGpuInteropError::UnsupportedPlatform => {
-                    ServoGpuImportFallbackReason::UnsupportedPlatform
-                }
-                hypercolor_linux_gpu_interop::LinuxGpuInteropError::InvalidDimensions {
-                    ..
-                } => ServoGpuImportFallbackReason::InvalidDimensions,
-                hypercolor_linux_gpu_interop::LinuxGpuInteropError::ImportSlotsExhausted {
-                    ..
-                } => ServoGpuImportFallbackReason::ImportSlotsExhausted,
-                _ => ServoGpuImportFallbackReason::Other,
-            };
+            return error.fallback_reason();
         }
     }
 
     let message = error.to_string().to_ascii_lowercase();
     if message.contains("not installed") || message.contains("device is not installed") {
-        ServoGpuImportFallbackReason::DeviceUnavailable
+        GpuFrameImportFallbackReason::DeviceUnavailable
     } else {
-        ServoGpuImportFallbackReason::Other
+        GpuFrameImportFallbackReason::Other
     }
 }
 
@@ -808,42 +609,42 @@ mod tests {
 
         assert_eq!(
             classify_failure(&error),
-            ServoGpuImportFallbackReason::ImportSlotsExhausted
+            GpuFrameImportFallbackReason::ImportSlotsExhausted
         );
     }
 
     #[test]
     fn transient_gpu_import_failures_skip_global_auto_backoff() {
         assert!(failure_is_transient(
-            ServoGpuImportFallbackReason::GlOperation
+            GpuFrameImportFallbackReason::GlOperation
         ));
         assert!(failure_is_transient(
-            ServoGpuImportFallbackReason::GlFramebufferIncomplete
+            GpuFrameImportFallbackReason::GlFramebufferIncomplete
         ));
         assert!(failure_is_transient(
-            ServoGpuImportFallbackReason::ImportSlotsExhausted
+            GpuFrameImportFallbackReason::ImportSlotsExhausted
         ));
         assert!(!failure_is_transient(
-            ServoGpuImportFallbackReason::MissingWgpuVulkanDevice
+            GpuFrameImportFallbackReason::MissingWgpuVulkanDevice
         ));
     }
 
     #[test]
     fn transient_gpu_import_failures_preserve_importer_state() {
         assert!(!failure_should_clear_importer(
-            ServoGpuImportFallbackReason::GlOperation
+            GpuFrameImportFallbackReason::GlOperation
         ));
         assert!(!failure_should_clear_importer(
-            ServoGpuImportFallbackReason::GlFramebufferIncomplete
+            GpuFrameImportFallbackReason::GlFramebufferIncomplete
         ));
         assert!(!failure_should_clear_importer(
-            ServoGpuImportFallbackReason::ImportSlotsExhausted
+            GpuFrameImportFallbackReason::ImportSlotsExhausted
         ));
         assert!(failure_should_clear_importer(
-            ServoGpuImportFallbackReason::GlResource
+            GpuFrameImportFallbackReason::GlResource
         ));
         assert!(failure_should_clear_importer(
-            ServoGpuImportFallbackReason::MissingWgpuVulkanDevice
+            GpuFrameImportFallbackReason::MissingWgpuVulkanDevice
         ));
     }
 }

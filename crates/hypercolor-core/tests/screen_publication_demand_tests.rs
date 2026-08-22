@@ -15,8 +15,17 @@ use hypercolor_core::input::screen::{
     ScreenWorkerExactLedgerBuilder, ScreenWorkerPreparation, ScreenWorkerPreparationTicket,
     ScreenWorkerRetirement, SourceScale,
 };
-use hypercolor_core::input::{InputData, InputManager, InputSource};
+use hypercolor_core::input::{
+    InputData, InputManager, InputSource, InteractionSource, InteractionSourceRole,
+    ManagedSourceRole, ScreenSource, ScreenSourceRole, SourceRoleBinding,
+};
 use tokio::sync::{Barrier, Notify};
+
+fn register_test_source(manager: &mut InputManager, source: ManagedSourceRole) {
+    manager
+        .add_source(source)
+        .expect("publication fixture source should match its declared role");
+}
 
 fn branch(kind: ScreenPublicationKind) -> RegisteredScreenBranchDemand {
     branch_for(ScreenSourceSelector::Configured, kind)
@@ -251,11 +260,9 @@ impl InputSource for ExactDemandProbe {
     fn is_running(&self) -> bool {
         true
     }
+}
 
-    fn is_screen_source(&self) -> bool {
-        true
-    }
-
+impl ScreenSource for ExactDemandProbe {
     fn set_screen_publication_hub(&mut self, hub: Arc<ScreenPublicationHub>) {
         *self.hub.lock().expect("probe hub mutex is healthy") = Some(hub);
     }
@@ -355,6 +362,10 @@ impl InputSource for ExactDemandProbe {
     }
 }
 
+impl SourceRoleBinding for ExactDemandProbe {
+    type Role = ScreenSourceRole;
+}
+
 struct PassiveSource;
 
 impl InputSource for PassiveSource {
@@ -376,6 +387,12 @@ impl InputSource for PassiveSource {
         true
     }
 }
+
+impl SourceRoleBinding for PassiveSource {
+    type Role = InteractionSourceRole;
+}
+
+impl InteractionSource for PassiveSource {}
 
 fn demand(
     manager: &InputManager,
@@ -419,10 +436,13 @@ fn manager_fixture() -> (
     let worker = Arc::new(ExactWorkerState::default());
     let mut manager = InputManager::new();
     let stable_hub = manager.screen_publication_hub();
-    manager.add_source(Box::new(ExactDemandProbe::new(
-        Arc::clone(&attached_hub),
-        Arc::clone(&worker),
-    )));
+    register_test_source(
+        &mut manager,
+        ManagedSourceRole::screen(Box::new(ExactDemandProbe::new(
+            Arc::clone(&attached_hub),
+            Arc::clone(&worker),
+        ))),
+    );
     let source_hub = attached_hub
         .lock()
         .expect("probe hub mutex is healthy")
@@ -435,7 +455,7 @@ fn manager_fixture() -> (
 
 #[tokio::test]
 async fn manager_commits_exact_plan_once_through_detached_worker_preparation() {
-    let (mut manager, hub, worker) = manager_fixture();
+    let (manager, hub, worker) = manager_fixture();
     let demand = demand(
         &manager,
         5,
@@ -488,7 +508,7 @@ async fn manager_commits_exact_plan_once_through_detached_worker_preparation() {
 
 #[tokio::test]
 async fn unchanged_demand_replans_once_after_source_revision_advances() {
-    let (mut manager, _, worker) = manager_fixture();
+    let (manager, _, worker) = manager_fixture();
     let demand = demand(&manager, 5, [branch(ScreenPublicationKind::Surface)]);
     let prepared = manager
         .begin_screen_publication_transition(demand.clone())
@@ -546,24 +566,30 @@ async fn independent_source_workers_prepare_concurrently() {
     let second_worker = Arc::new(ExactWorkerState::default());
     let barrier = Arc::new(Barrier::new(2));
     let mut manager = InputManager::new();
-    manager.add_source(Box::new(
-        ExactDemandProbe::for_source(
-            Arc::new(Mutex::new(None)),
-            Arc::clone(&first_worker),
-            ScreenSourceSelector::Exact(first_id.clone()),
-            first_id.clone(),
-        )
-        .with_preparation_barrier(Arc::clone(&barrier)),
-    ));
-    manager.add_source(Box::new(
-        ExactDemandProbe::for_source(
-            Arc::new(Mutex::new(None)),
-            Arc::clone(&second_worker),
-            ScreenSourceSelector::Exact(second_id.clone()),
-            second_id.clone(),
-        )
-        .with_preparation_barrier(barrier),
-    ));
+    register_test_source(
+        &mut manager,
+        ManagedSourceRole::screen(Box::new(
+            ExactDemandProbe::for_source(
+                Arc::new(Mutex::new(None)),
+                Arc::clone(&first_worker),
+                ScreenSourceSelector::Exact(first_id.clone()),
+                first_id.clone(),
+            )
+            .with_preparation_barrier(Arc::clone(&barrier)),
+        )),
+    );
+    register_test_source(
+        &mut manager,
+        ManagedSourceRole::screen(Box::new(
+            ExactDemandProbe::for_source(
+                Arc::new(Mutex::new(None)),
+                Arc::clone(&second_worker),
+                ScreenSourceSelector::Exact(second_id.clone()),
+                second_id.clone(),
+            )
+            .with_preparation_barrier(barrier),
+        )),
+    );
     let exact = demand(
         &manager,
         9,
@@ -614,15 +640,18 @@ async fn one_adapter_sums_consumers_across_owned_capture_source_ids() {
         CaptureSourceId::new("synthetic:alias:second").expect("test source id is non-empty");
     let worker = Arc::new(ExactWorkerState::default());
     let mut manager = InputManager::new();
-    manager.add_source(Box::new(
-        ExactDemandProbe::for_source(
-            Arc::new(Mutex::new(None)),
-            Arc::clone(&worker),
-            ScreenSourceSelector::Exact(first_id.clone()),
-            first_id.clone(),
-        )
-        .with_alias_source(second_id.clone()),
-    ));
+    register_test_source(
+        &mut manager,
+        ManagedSourceRole::screen(Box::new(
+            ExactDemandProbe::for_source(
+                Arc::new(Mutex::new(None)),
+                Arc::clone(&worker),
+                ScreenSourceSelector::Exact(first_id.clone()),
+                first_id.clone(),
+            )
+            .with_alias_source(second_id.clone()),
+        )),
+    );
     let exact = demand(
         &manager,
         11,
@@ -655,10 +684,17 @@ async fn one_adapter_sums_consumers_across_owned_capture_source_ids() {
         2
     );
     let retired_handle = manager.source_status_registry().snapshot().handles()[0].clone();
-    let plan = manager.plan_screen_runtime_config(false);
+    let plan = manager
+        .plan_screen_source_swap(false, None)
+        .expect("unique screen removal should plan");
     let mut replacement = None;
+    let mut prepared = plan
+        .prepare(&mut replacement)
+        .expect("screen removal should prepare");
     let retirement = manager
-        .commit_screen_runtime_config(&plan, &mut replacement)
+        .commit_screen_source_swap(&mut prepared, |commit| {
+            Ok::<_, std::convert::Infallible>(commit.commit(|| {}))
+        })
         .expect("screen runtime removal commits");
     retirement.retire();
     let retired = retired_handle.snapshot();
@@ -668,7 +704,7 @@ async fn one_adapter_sums_consumers_across_owned_capture_source_ids() {
 
 #[tokio::test]
 async fn demand_race_aborts_candidate_and_preserves_committed_authority() {
-    let (mut manager, hub, worker) = manager_fixture();
+    let (manager, hub, worker) = manager_fixture();
     let active = demand(&manager, 4, [branch(ScreenPublicationKind::Surface)]);
     let prepared = manager
         .begin_screen_publication_transition(active.clone())
@@ -739,7 +775,10 @@ async fn graph_race_aborts_candidate_and_preserves_committed_authority() {
         .await_workers()
         .await
         .expect("worker acknowledges exact resources");
-    manager.add_source(Box::new(PassiveSource));
+    register_test_source(
+        &mut manager,
+        ManagedSourceRole::interaction(Box::new(PassiveSource)),
+    );
     let failure = manager
         .commit_screen_publication_transition(prepared, demand.revision())
         .expect_err("new graph generation rejects stale preparation");
@@ -765,10 +804,13 @@ async fn source_revision_race_aborts_detached_preparation() {
     };
     let mut manager = InputManager::new();
     let hub = manager.screen_publication_hub();
-    manager.add_source(Box::new(
-        ExactDemandProbe::new(Arc::clone(&attached_hub), Arc::clone(&worker))
-            .with_completion_pause(pause.clone()),
-    ));
+    register_test_source(
+        &mut manager,
+        ManagedSourceRole::screen(Box::new(
+            ExactDemandProbe::new(Arc::clone(&attached_hub), Arc::clone(&worker))
+                .with_completion_pause(pause.clone()),
+        )),
+    );
     let demand = demand(&manager, 5, [branch(ScreenPublicationKind::Surface)]);
     let before = hub.committed_state();
     let preparation = manager
@@ -807,7 +849,7 @@ async fn source_revision_race_aborts_detached_preparation() {
 
 #[tokio::test]
 async fn worker_failure_aborts_candidate_before_manager_commit() {
-    let (mut manager, hub, worker) = manager_fixture();
+    let (manager, hub, worker) = manager_fixture();
     worker.fail_preparation.store(true, Ordering::Release);
     let demand = demand(&manager, 5, [branch(ScreenPublicationKind::Surface)]);
     let before = hub.committed_state();
@@ -836,7 +878,7 @@ async fn worker_failure_aborts_candidate_before_manager_commit() {
 
 #[test]
 fn explicit_abort_cancels_unpolled_workers_and_preserves_active_plan() {
-    let (mut manager, hub, worker) = manager_fixture();
+    let (manager, hub, worker) = manager_fixture();
     let demand = demand(&manager, 5, [branch(ScreenPublicationKind::Surface)]);
     let before = hub.committed_state();
     let abort = manager
@@ -861,10 +903,13 @@ async fn cancelling_worker_await_aborts_activation_before_cleanup() {
     };
     let mut manager = InputManager::new();
     let hub = manager.screen_publication_hub();
-    manager.add_source(Box::new(
-        ExactDemandProbe::new(Arc::clone(&attached_hub), Arc::clone(&worker))
-            .with_completion_pause(pause.clone()),
-    ));
+    register_test_source(
+        &mut manager,
+        ManagedSourceRole::screen(Box::new(
+            ExactDemandProbe::new(Arc::clone(&attached_hub), Arc::clone(&worker))
+                .with_completion_pause(pause.clone()),
+        )),
+    );
     let exact = demand(&manager, 5, [branch(ScreenPublicationKind::Surface)]);
     let before = hub.committed_state();
     let preparation = manager
@@ -905,7 +950,7 @@ async fn cancelling_worker_await_aborts_activation_before_cleanup() {
 
 #[tokio::test]
 async fn empty_demand_retires_worker_and_reclaims_after_reader_release() {
-    let (mut manager, hub, worker) = manager_fixture();
+    let (manager, hub, worker) = manager_fixture();
     let active = demand(&manager, 5, [branch(ScreenPublicationKind::Surface)]);
     let prepared = manager
         .begin_screen_publication_transition(active.clone())

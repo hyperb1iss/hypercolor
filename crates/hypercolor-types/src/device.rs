@@ -393,7 +393,7 @@ pub enum DriverModuleKind {
 }
 
 /// Current schema version for value-shaped driver module descriptors.
-pub const DRIVER_MODULE_API_SCHEMA_VERSION: u32 = 2;
+pub const DRIVER_MODULE_API_SCHEMA_VERSION: u32 = 3;
 
 /// API-facing transport category for a driver module.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
@@ -470,6 +470,58 @@ impl From<ConnectionType> for DriverTransportKind {
             ConnectionType::Bluetooth => Self::Custom("bluetooth".to_owned()),
             ConnectionType::Bridge => Self::Bridge,
         }
+    }
+}
+
+/// Whether a driver transport can run on the current platform.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum DriverTransportAvailability {
+    /// A runtime backend exists on the current platform.
+    Available,
+
+    /// No runtime backend exists on the current platform.
+    UnsupportedPlatform {
+        /// Human-readable operating-system name.
+        platform: String,
+    },
+}
+
+/// One transport category advertised by a driver module.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct DriverTransportDescriptor {
+    /// Transport category used for routing and presentation.
+    pub kind: DriverTransportKind,
+
+    /// Runtime availability on the current platform.
+    pub availability: DriverTransportAvailability,
+}
+
+impl DriverTransportDescriptor {
+    /// Describe a transport with a runtime backend on the current platform.
+    #[must_use]
+    pub const fn available(kind: DriverTransportKind) -> Self {
+        Self {
+            kind,
+            availability: DriverTransportAvailability::Available,
+        }
+    }
+
+    /// Describe a transport without a runtime backend on the current platform.
+    #[must_use]
+    pub fn unsupported_platform(kind: DriverTransportKind, platform: impl Into<String>) -> Self {
+        Self {
+            kind,
+            availability: DriverTransportAvailability::UnsupportedPlatform {
+                platform: platform.into(),
+            },
+        }
+    }
+
+    /// Whether a runtime backend exists on the current platform.
+    #[must_use]
+    pub const fn is_available(&self) -> bool {
+        matches!(self.availability, DriverTransportAvailability::Available)
     }
 }
 
@@ -595,8 +647,8 @@ pub struct DriverModuleDescriptor {
     /// High-level module category.
     pub module_kind: DriverModuleKind,
 
-    /// Transport categories used by this driver.
-    pub transports: Vec<DriverTransportKind>,
+    /// Transport categories used by this driver and their platform support.
+    pub transports: Vec<DriverTransportDescriptor>,
 
     /// Driver capabilities.
     pub capabilities: DriverCapabilitySet,

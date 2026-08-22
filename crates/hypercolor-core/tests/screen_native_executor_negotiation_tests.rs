@@ -935,6 +935,61 @@ fn native_negotiation_reports_source_api_and_device_fallbacks() {
 }
 
 #[test]
+fn required_native_negotiation_rejects_every_structural_fallback() {
+    let device = gpu_device(43);
+    let matching_source = source(
+        extent(1920, 1080),
+        ScreenResourceApi::PlatformGpu(PlatformGpuApi::Direct3d11),
+        Some(device.clone()),
+    );
+    let cases = [
+        (
+            source(extent(1920, 1080), ScreenResourceApi::Cpu, None),
+            target(1, PlatformGpuApi::Direct3d11, device.clone(), 16_384),
+            ScreenPublicationExecutorFallbackReason::CpuSource,
+        ),
+        (
+            matching_source.clone(),
+            target(2, PlatformGpuApi::Vulkan, device.clone(), 16_384),
+            ScreenPublicationExecutorFallbackReason::PlatformApiMismatch,
+        ),
+        (
+            source(
+                extent(1920, 1080),
+                ScreenResourceApi::PlatformGpu(PlatformGpuApi::Direct3d11),
+                None,
+            ),
+            target(3, PlatformGpuApi::Direct3d11, device.clone(), 16_384),
+            ScreenPublicationExecutorFallbackReason::MissingPhysicalGpuDevice,
+        ),
+        (
+            matching_source.clone(),
+            target(4, PlatformGpuApi::Direct3d11, gpu_device(44), 16_384),
+            ScreenPublicationExecutorFallbackReason::PhysicalGpuDeviceMismatch,
+        ),
+        (
+            matching_source,
+            target(5, PlatformGpuApi::Direct3d11, device, 1_024),
+            ScreenPublicationExecutorFallbackReason::TargetDimensionLimitExceeded,
+        ),
+    ];
+
+    for (source, target, reason) in cases {
+        let error = request(
+            ScreenPublicationExecutorRequest::SourceNativeRequired(target),
+            exact_profile(),
+            60,
+        )
+        .resolve_with_executor_capabilities(&source, ScreenExecutorColorCapabilities::NONE)
+        .expect_err("required native demand must not fall back to CPU");
+        assert_eq!(
+            error,
+            ScreenPublicationError::RequiredNativeUnavailable(reason)
+        );
+    }
+}
+
+#[test]
 fn native_target_limit_falls_back_without_changing_odd_geometry() {
     let device = gpu_device(51);
     let source = source(
@@ -1067,6 +1122,24 @@ fn lane_specific_color_capabilities_choose_native_or_exact_cpu() {
     assert_cpu_fallback(
         &cpu_fallback,
         ScreenPublicationExecutorFallbackReason::NativeColorContractUnsupported,
+    );
+
+    let required = request(
+        ScreenPublicationExecutorRequest::SourceNativeRequired(native_target.clone()),
+        Arc::clone(&profile),
+        60,
+    );
+    assert_eq!(
+        required.resolve_with_executor_capabilities(
+            &source,
+            ScreenExecutorColorCapabilities::new(
+                linear_light,
+                ScreenColorTransformCapabilities::NONE,
+            ),
+        ),
+        Err(ScreenPublicationError::RequiredNativeUnavailable(
+            ScreenPublicationExecutorFallbackReason::NativeColorContractUnsupported,
+        ))
     );
 
     let native = registered

@@ -11,14 +11,19 @@ mod shared;
 
 pub use decode::{
     NX_SUBTYPE_AUX_CONTROL_BUTTONS, decode_button_event, decode_media_key, decode_momentum_phase,
-    decode_scroll_phase, event_masks,
+    decode_scroll_phase, event_masks, normalize_button_event, normalize_key_event,
+    normalize_media_key_event, normalize_modifier_event, normalize_motion_event,
+    normalize_scroll_event,
 };
+#[doc(hidden)]
+pub use hypercolor_worker_retention::retention_service_identity as worker_retention_service_identity;
 pub use process::current_process_audit_token_identity;
 pub use shared::{
-    EffectiveEventMasks, MacosInputBatch, MacosInputConfig, MacosInputDiagnostics, MacosInputError,
-    MacosInputEvent, MacosInputGapReason, MacosInputPublicationOutcome, MacosInputResult,
-    MacosMediaKey, MacosModifierFlags, MacosPointerButton, MacosScrollPhase, MacosScrollUnit,
-    MacosVirtualDesktop, MacosWorkerDegradation, MacosWorkerState,
+    EffectiveEventMasks, MacosArchitecture, MacosAuthorizationState, MacosCapabilityOwner,
+    MacosDaemonOwnerConflict, MacosInputConfig, MacosInputDiagnostics, MacosInputError,
+    MacosInputGapReason, MacosInputPublicationOutcome, MacosInputResult, MacosInputStatusSnapshot,
+    MacosModifierFlags, MacosProtectedSourceState, MacosVirtualDesktop, MacosWorkerDegradation,
+    MacosWorkerState, input_diagnostics_envelope,
 };
 
 #[cfg(target_os = "macos")]

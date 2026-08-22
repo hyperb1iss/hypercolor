@@ -45,7 +45,10 @@ use hypercolor_core::input::screen::{
 };
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", test))]
 use hypercolor_core::input::screen::{ScreenAdmissionCapacity, ScreenAnalysisResourcePlan};
-use hypercolor_core::input::{InputManager, SensorPoller, SourceStatusHandle};
+use hypercolor_core::input::{
+    InputManager, InteractionSource, ManagedSourceRole, ScreenSource, SensorSource,
+    SourceStatusHandle,
+};
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_driver_api::CredentialStore;
@@ -388,12 +391,10 @@ impl DaemonState {
             };
         let (built_input_manager, browser_input) = build_input_manager(config, &config_manager)?;
         #[cfg(target_os = "macos")]
-        let mut built_input_manager = built_input_manager;
-        #[cfg(target_os = "macos")]
         if let Some(publication) = macos_owner_publication {
             super::macos_owner_watch::publish_owner_snapshot(
                 &macos_daemon_ownership,
-                &mut built_input_manager,
+                &built_input_manager,
                 &event_bus,
                 publication,
             )?;
@@ -406,10 +407,10 @@ impl DaemonState {
         );
         let input_status = built_input_manager.source_status_registry();
         let screen_capacity_status = built_input_manager.screen_capacity_status_handle();
-        let input_manager = Arc::new(Mutex::new(built_input_manager));
+        let input_manager = built_input_manager;
         #[cfg(target_os = "macos")]
         let macos_owner_watch = pending_macos_owner_watch
-            .map(|watch| watch.attach(Arc::clone(&input_manager)))
+            .map(|watch| watch.attach(input_manager.clone()))
             .transpose()?;
         info!(
             audio_enabled = config.audio.enabled,
@@ -691,6 +692,7 @@ impl DaemonState {
             device_metrics_collector_task: None,
             input_status_event_publisher: None,
             session_controller: None,
+            session_monitors: None,
             start_time: Instant::now(),
             server_identity,
         })
@@ -701,7 +703,7 @@ pub(crate) fn build_input_manager(
     config: &HypercolorConfig,
     config_manager: &Arc<ConfigManager>,
 ) -> Result<(InputManager, hypercolor_core::input::BrowserInputHandle)> {
-    let mut input_manager = InputManager::new();
+    let input_manager = InputManager::new();
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     let capacity_plan = screen_capacity_plan(&config.capture)?;
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
@@ -710,22 +712,26 @@ pub(crate) fn build_input_manager(
         capacity_plan.total_capacity(),
         capacity_plan.total_capacity(),
     )?;
-    input_manager.set_sensor_poller(SensorPoller::new());
+    input_manager.add_source(ManagedSourceRole::data(Box::new(SensorSource::new())))?;
     // Host input capture is consent-gated and platform-native: evdev on Linux,
     // Raw Input on Windows. Capture stays closed until an interactive effect
     // creates demand, so no window is created and no registration is taken
     // while nothing is listening.
     if let Some(source) = build_interaction_source(&config.input) {
-        input_manager.add_source(source);
+        input_manager.add_source(ManagedSourceRole::interaction(source))?;
     }
     // Browser-preview injection is always registered: it has no hardware and
     // no privacy surface (the user drives their own browser), and its edges
     // only reach effects that declare input reactivity.
     let browser_source = hypercolor_core::input::BrowserInputSource::new();
     let browser_input = browser_source.handle();
-    input_manager.add_source(Box::new(browser_source));
-    input_manager.add_source(Box::new(hypercolor_core::input::MediaSource::new()));
-    input_manager.add_source(Box::new(hypercolor_core::input::NetSource::new()));
+    input_manager.add_source(ManagedSourceRole::interaction(Box::new(browser_source)))?;
+    input_manager.add_source(ManagedSourceRole::data(Box::new(
+        hypercolor_core::input::MediaSource::new(),
+    )))?;
+    input_manager.add_source(ManagedSourceRole::data(Box::new(
+        hypercolor_core::input::NetSource::new(),
+    )))?;
 
     if config.audio.enabled {
         let audio_pipeline_config = AudioPipelineConfig {
@@ -738,25 +744,26 @@ pub(crate) fn build_input_manager(
         };
         let audio_input = AudioInput::new(&audio_pipeline_config)
             .with_name(format!("AudioInput({})", config.audio.device));
-        input_manager.add_source(Box::new(audio_input));
+        input_manager.add_source(ManagedSourceRole::audio(Box::new(audio_input)))?;
     }
 
     if config.capture.enabled {
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
         {
             let admission_coordinator = input_manager.screen_admission_coordinator();
-            input_manager.add_source(build_platform_screen_capture_source(
-                &config.capture,
-                Arc::clone(config_manager),
-                admission_coordinator,
-                capacity_plan.total_capacity(),
-            )?);
+            input_manager.add_source(ManagedSourceRole::screen(
+                build_platform_screen_capture_source(
+                    &config.capture,
+                    Arc::clone(config_manager),
+                    admission_coordinator,
+                    capacity_plan.total_capacity(),
+                )?,
+            ))?;
         }
         #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-        input_manager.add_source(build_platform_screen_capture_source(
-            &config.capture,
-            Arc::clone(config_manager),
-        )?);
+        input_manager.add_source(ManagedSourceRole::screen(
+            build_platform_screen_capture_source(&config.capture, Arc::clone(config_manager))?,
+        ))?;
     }
     config_manager.mark_capture_runtime_applied(&config.capture);
 
@@ -842,7 +849,7 @@ pub(crate) fn build_platform_screen_capture_source(
     config_manager: Arc<ConfigManager>,
     admission_coordinator: hypercolor_core::input::screen::ScreenByteAdmissionCoordinator,
     capacity: ScreenAdmissionCapacity,
-) -> Result<Box<dyn hypercolor_core::input::InputSource>> {
+) -> Result<Box<dyn ScreenSource>> {
     let expected = Arc::clone(&config_manager.get());
     let persistence = CaptureConfigPersistenceGate::new(config_manager, &expected, true)?;
     build_platform_screen_capture_source_with_persistence(
@@ -857,7 +864,7 @@ pub(crate) fn build_platform_screen_capture_source(
 pub(crate) fn build_platform_screen_capture_source(
     capture: &hypercolor_types::config::CaptureConfig,
     config_manager: Arc<ConfigManager>,
-) -> Result<Box<dyn hypercolor_core::input::InputSource>> {
+) -> Result<Box<dyn ScreenSource>> {
     let expected = Arc::clone(&config_manager.get());
     let persistence = CaptureConfigPersistenceGate::new(config_manager, &expected, true)?;
     build_platform_screen_capture_source_with_persistence(capture, persistence)
@@ -870,10 +877,7 @@ pub(crate) fn prepare_platform_screen_capture_source(
     expected: &Arc<HypercolorConfig>,
     admission_coordinator: hypercolor_core::input::screen::ScreenByteAdmissionCoordinator,
     capacity: ScreenAdmissionCapacity,
-) -> Result<(
-    Box<dyn hypercolor_core::input::InputSource>,
-    CaptureConfigPersistenceGate,
-)> {
+) -> Result<(Box<dyn ScreenSource>, CaptureConfigPersistenceGate)> {
     let persistence = CaptureConfigPersistenceGate::new(config_manager, expected, false)?;
     let source = build_platform_screen_capture_source_with_persistence(
         capture,
@@ -889,10 +893,7 @@ pub(crate) fn prepare_platform_screen_capture_source(
     capture: &hypercolor_types::config::CaptureConfig,
     config_manager: Arc<ConfigManager>,
     expected: &Arc<HypercolorConfig>,
-) -> Result<(
-    Box<dyn hypercolor_core::input::InputSource>,
-    CaptureConfigPersistenceGate,
-)> {
+) -> Result<(Box<dyn ScreenSource>, CaptureConfigPersistenceGate)> {
     let persistence = CaptureConfigPersistenceGate::new(config_manager, expected, false)?;
     let source =
         build_platform_screen_capture_source_with_persistence(capture, persistence.clone())?;
@@ -905,7 +906,7 @@ fn build_platform_screen_capture_source_with_persistence(
     persistence: CaptureConfigPersistenceGate,
     admission_coordinator: hypercolor_core::input::screen::ScreenByteAdmissionCoordinator,
     capacity: ScreenAdmissionCapacity,
-) -> Result<Box<dyn hypercolor_core::input::InputSource>> {
+) -> Result<Box<dyn ScreenSource>> {
     #[cfg(target_os = "windows")]
     let source = build_windows_screen_capture_source(
         capture,
@@ -933,7 +934,7 @@ fn build_platform_screen_capture_source_with_persistence(
 fn build_platform_screen_capture_source_with_persistence(
     capture: &hypercolor_types::config::CaptureConfig,
     persistence: CaptureConfigPersistenceGate,
-) -> Result<Box<dyn hypercolor_core::input::InputSource>> {
+) -> Result<Box<dyn ScreenSource>> {
     let _ = (capture, persistence);
     anyhow::bail!("screen capture is not supported on this platform")
 }
@@ -1277,7 +1278,7 @@ pub(crate) fn build_windows_screen_capture_source(
     persistence: CaptureConfigPersistenceGate,
     admission_coordinator: hypercolor_core::input::screen::ScreenByteAdmissionCoordinator,
     capacity: ScreenAdmissionCapacity,
-) -> Result<Box<dyn hypercolor_core::input::InputSource>> {
+) -> Result<Box<dyn ScreenSource>> {
     Ok(Box::new(
         WindowsScreenCaptureInput::with_admission_coordinator(
             windows_screen_capture_config_from(capture, capacity)?,
@@ -1292,7 +1293,7 @@ pub(crate) fn build_macos_screen_capture_source(
     capture: &hypercolor_types::config::CaptureConfig,
     admission_coordinator: hypercolor_core::input::screen::ScreenByteAdmissionCoordinator,
     capacity: ScreenAdmissionCapacity,
-) -> Result<Box<dyn hypercolor_core::input::InputSource>> {
+) -> Result<Box<dyn ScreenSource>> {
     Ok(Box::new(MacosScreenCaptureInput::new(
         screen_capture_config_with_capacity_from(capture, capacity)?,
         admission_coordinator,
@@ -1306,7 +1307,7 @@ pub(crate) fn build_macos_screen_capture_source(
 /// no source kind is enabled.
 pub(crate) fn build_interaction_source(
     input: &hypercolor_types::config::InputConfig,
-) -> Option<Box<dyn hypercolor_core::input::InputSource>> {
+) -> Option<Box<dyn InteractionSource>> {
     if !input.enabled {
         return None;
     }
@@ -1314,8 +1315,7 @@ pub(crate) fn build_interaction_source(
     #[cfg(target_os = "linux")]
     {
         (input.keyboard || input.mouse).then(|| {
-            Box::new(EvdevHostInput::new(input.keyboard, input.mouse))
-                as Box<dyn hypercolor_core::input::InputSource>
+            Box::new(EvdevHostInput::new(input.keyboard, input.mouse)) as Box<dyn InteractionSource>
         })
     }
 
@@ -1326,14 +1326,14 @@ pub(crate) fn build_interaction_source(
     {
         (input.keyboard || input.mouse).then(|| {
             Box::new(WindowsHostInput::new(input.keyboard, input.mouse))
-                as Box<dyn hypercolor_core::input::InputSource>
+                as Box<dyn InteractionSource>
         })
     }
 
     #[cfg(target_os = "macos")]
     {
         build_macos_host_input_source(input)
-            .map(|source| Box::new(source) as Box<dyn hypercolor_core::input::InputSource>)
+            .map(|source| Box::new(source) as Box<dyn InteractionSource>)
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
@@ -1359,7 +1359,7 @@ pub(crate) fn build_screen_capture_source(
     persistence: CaptureConfigPersistenceGate,
     admission_coordinator: hypercolor_core::input::screen::ScreenByteAdmissionCoordinator,
     capacity: ScreenAdmissionCapacity,
-) -> Result<Box<dyn hypercolor_core::input::InputSource>> {
+) -> Result<Box<dyn ScreenSource>> {
     let capture_config = screen_capture_config_with_capacity_from(capture, capacity)?;
     let configured = capture.restore_token.clone();
     let sink = Arc::new(move |token: Option<String>| {

@@ -8,11 +8,11 @@ use axum::extract::{Extension, State};
 use axum::response::{IntoResponse, Response};
 use tracing::{info, warn};
 
-use hypercolor_core::input::{
-    MacosCapabilityOwner, ProtectedSourceActionOwner, ResolvedProtectedSourceAction, SourceKind,
-};
 #[cfg(target_os = "macos")]
-use hypercolor_core::input::{MacosSelectionState, SourcePlatformStatus, SourceStatusHandle};
+use hypercolor_core::input::SourceStatusHandle;
+use hypercolor_core::input::{CapabilityActionIdentity, ResolvedProtectedSourceAction, SourceKind};
+#[cfg(target_os = "macos")]
+use hypercolor_macos_capture::{MacosCaptureSelection, screen_selection_snapshot};
 use hypercolor_types::api::capture::{
     CaptureAuthorizationResponse, CaptureMonitor, CapturePickerResponse, ProtectedSourceGrantOwner,
 };
@@ -46,53 +46,37 @@ pub(crate) fn protected_control_rejection(auth_context: RequestAuthContext) -> O
     })
 }
 
-const fn grant_owner(owner: MacosCapabilityOwner) -> ProtectedSourceGrantOwner {
-    match owner {
-        MacosCapabilityOwner::AppSidecar => ProtectedSourceGrantOwner::AppSidecar,
-        MacosCapabilityOwner::App => ProtectedSourceGrantOwner::App,
-        MacosCapabilityOwner::LaunchdService => ProtectedSourceGrantOwner::LaunchdService,
-        MacosCapabilityOwner::HomebrewService => ProtectedSourceGrantOwner::HomebrewService,
-        MacosCapabilityOwner::Broker => ProtectedSourceGrantOwner::Broker,
-        MacosCapabilityOwner::Standalone => ProtectedSourceGrantOwner::Standalone,
-    }
+fn grant_owner(identity: &CapabilityActionIdentity) -> ProtectedSourceGrantOwner {
+    ProtectedSourceGrantOwner::new(identity.owner())
 }
 
-const fn protected_action_owner(owner: ProtectedSourceActionOwner) -> ProtectedSourceGrantOwner {
-    match owner {
-        ProtectedSourceActionOwner::Macos(owner) => grant_owner(owner),
-        ProtectedSourceActionOwner::PlatformBackend => ProtectedSourceGrantOwner::PlatformBackend,
-    }
-}
-
-fn requires_app_ui_details(active_owner: MacosCapabilityOwner) -> serde_json::Value {
+fn requires_ui_details(identity: &CapabilityActionIdentity) -> serde_json::Value {
     serde_json::json!({
-        "active_owner": grant_owner(active_owner),
-        "remedy": { "kind": "requires_app_ui" },
+        "active_owner": grant_owner(identity),
+        "remedy": { "kind": "requires_ui" },
     })
 }
 
-fn requires_app_ui(action: &str, active_owner: MacosCapabilityOwner) -> Response {
+fn requires_ui(action: &str, identity: &CapabilityActionIdentity) -> Response {
     domain_validation_details(
-        format!("{action} must run in Hypercolor.app for the active process topology"),
-        requires_app_ui_details(active_owner),
+        format!("{action} must run in a UI-capable Hypercolor process"),
+        requires_ui_details(identity),
     )
 }
 
 #[cfg(target_os = "macos")]
-fn macos_selection(status: &SourceStatusHandle) -> Option<(u64, MacosSelectionState)> {
+fn macos_selection(status: &SourceStatusHandle) -> Option<(u64, MacosCaptureSelection)> {
     let status = status.snapshot();
-    let SourcePlatformStatus::MacosScreen(platform) = status.platform.as_deref()? else {
-        return None;
-    };
-    Some((platform.selection_revision, platform.selection.clone()))
+    let snapshot = screen_selection_snapshot(status.diagnostics.as_deref()?).ok()??;
+    Some((snapshot.revision, snapshot.selection))
 }
 
 #[cfg(target_os = "macos")]
-fn persisted_macos_selection(selection: &MacosSelectionState) -> Option<String> {
+fn persisted_macos_selection(selection: &MacosCaptureSelection) -> Option<String> {
     match selection {
-        MacosSelectionState::None => None,
-        MacosSelectionState::Display { source_id } => Some(source_id.to_string()),
-        MacosSelectionState::SessionScoped { .. } => Some("session_scoped".to_owned()),
+        MacosCaptureSelection::None => None,
+        MacosCaptureSelection::Display { source_id } => Some(source_id.to_string()),
+        MacosCaptureSelection::SessionScoped { .. } => Some("session_scoped".to_owned()),
     }
 }
 
@@ -108,7 +92,7 @@ enum MacosPickerPersistenceDecision {
 fn macos_picker_persistence_decision(
     baseline_revision: u64,
     selection_revision: u64,
-    selection: &MacosSelectionState,
+    selection: &MacosCaptureSelection,
 ) -> MacosPickerPersistenceDecision {
     if selection_revision <= baseline_revision {
         return MacosPickerPersistenceDecision::Wait;
@@ -200,18 +184,15 @@ pub(crate) async fn authorize_input_monitoring(
             "Keyboard input is disabled; enable input.enabled and input.keyboard before authorizing",
         );
     }
-    let action = {
-        let input_manager = state.input_manager.lock().await;
-        input_manager.resolved_input_authorization_action()
-    };
+    let action = state.input_manager.resolved_input_authorization_action();
     let Some(action) = action else {
         return DomainError::validation("No Input Monitoring authorization action is available")
             .into_response();
     };
-    let (action, grant_owner) = match action {
-        ResolvedProtectedSourceAction::Local { action, owner } => (action, owner),
-        ResolvedProtectedSourceAction::RequiresAppUi { active_owner } => {
-            return requires_app_ui("Input Monitoring authorization", active_owner);
+    let (action, identity) = match action {
+        ResolvedProtectedSourceAction::Local { action, identity } => (action, identity),
+        ResolvedProtectedSourceAction::RequiresUi { identity } => {
+            return requires_ui("Input Monitoring authorization", &identity);
         }
     };
     match tokio::task::spawn_blocking(move || action.execute()).await {
@@ -219,7 +200,7 @@ pub(crate) async fn authorize_input_monitoring(
             info!(authorized, "Input Monitoring authorization requested");
             ApiResponse::ok(CaptureAuthorizationResponse {
                 authorized,
-                grant_owner: protected_action_owner(grant_owner),
+                grant_owner: grant_owner(&identity),
             })
         }
         Ok(Err(error)) => {
@@ -268,18 +249,15 @@ pub(crate) async fn authorize_screen_recording(
             "Screen capture is disabled; enable capture.enabled before authorizing",
         );
     }
-    let action = {
-        let input_manager = state.input_manager.lock().await;
-        input_manager.resolved_screen_authorization_action()
-    };
+    let action = state.input_manager.resolved_screen_authorization_action();
     let Some(action) = action else {
         return DomainError::validation("No Screen Recording authorization action is available")
             .into_response();
     };
-    let (action, grant_owner) = match action {
-        ResolvedProtectedSourceAction::Local { action, owner } => (action, owner),
-        ResolvedProtectedSourceAction::RequiresAppUi { active_owner } => {
-            return requires_app_ui("Screen Recording authorization", active_owner);
+    let (action, identity) = match action {
+        ResolvedProtectedSourceAction::Local { action, identity } => (action, identity),
+        ResolvedProtectedSourceAction::RequiresUi { identity } => {
+            return requires_ui("Screen Recording authorization", &identity);
         }
     };
     match tokio::task::spawn_blocking(move || action.execute()).await {
@@ -287,7 +265,7 @@ pub(crate) async fn authorize_screen_recording(
             info!(authorized, "Screen Recording authorization requested");
             ApiResponse::ok(CaptureAuthorizationResponse {
                 authorized,
-                grant_owner: protected_action_owner(grant_owner),
+                grant_owner: grant_owner(&identity),
             })
         }
         Ok(Err(error)) => {
@@ -343,7 +321,7 @@ pub(crate) async fn set_capture_source(
     }
 
     let (action, screen_status) = {
-        let input_manager = state.input_manager.lock().await;
+        let input_manager = &state.input_manager;
         if !input_manager.has_screen_source() {
             return domain_validation(
                 "No screen capture source is registered; restart the daemon or re-enable capture",
@@ -362,10 +340,10 @@ pub(crate) async fn set_capture_source(
         return DomainError::validation("No detached screen source picker action is available")
             .into_response();
     };
-    let (action, grant_owner) = match action {
-        ResolvedProtectedSourceAction::Local { action, owner } => (action, owner),
-        ResolvedProtectedSourceAction::RequiresAppUi { active_owner } => {
-            return requires_app_ui("Screen source picker", active_owner);
+    let (action, identity) = match action {
+        ResolvedProtectedSourceAction::Local { action, identity } => (action, identity),
+        ResolvedProtectedSourceAction::RequiresUi { identity } => {
+            return requires_ui("Screen source picker", &identity);
         }
     };
     #[cfg(target_os = "macos")]
@@ -433,7 +411,7 @@ pub(crate) async fn set_capture_source(
     info!("Screen capture source picker requested");
     ApiResponse::ok(CapturePickerResponse {
         picking: true,
-        grant_owner: protected_action_owner(grant_owner),
+        grant_owner: grant_owner(&identity),
     })
 }
 
@@ -488,9 +466,9 @@ mod tests {
     #[cfg(target_os = "macos")]
     use std::sync::Arc;
 
+    use hypercolor_core::input::{CapabilityActionDisposition, CapabilityActionIdentity};
     #[cfg(target_os = "macos")]
-    use hypercolor_core::input::MacosSelectionState;
-    use hypercolor_core::input::{MacosCapabilityOwner, ProtectedSourceActionOwner};
+    use hypercolor_macos_capture::{MacosCaptureContentStyle, MacosCaptureSelection};
     use hypercolor_types::api::capture::ProtectedSourceGrantOwner;
 
     #[cfg(target_os = "macos")]
@@ -498,38 +476,23 @@ mod tests {
         MacosPickerPersistenceDecision, install_macos_picker_persistence_task,
         macos_picker_persistence_decision,
     };
-    use super::{grant_owner, protected_action_owner, requires_app_ui_details};
+    use super::{grant_owner, requires_ui_details};
 
     #[test]
-    fn protected_grant_owner_names_are_stable_and_process_specific() {
-        assert_eq!(
-            [
-                MacosCapabilityOwner::AppSidecar,
-                MacosCapabilityOwner::App,
-                MacosCapabilityOwner::LaunchdService,
-                MacosCapabilityOwner::HomebrewService,
-                MacosCapabilityOwner::Broker,
-                MacosCapabilityOwner::Standalone,
-            ]
-            .map(grant_owner),
-            [
-                ProtectedSourceGrantOwner::AppSidecar,
-                ProtectedSourceGrantOwner::App,
-                ProtectedSourceGrantOwner::LaunchdService,
-                ProtectedSourceGrantOwner::HomebrewService,
-                ProtectedSourceGrantOwner::Broker,
-                ProtectedSourceGrantOwner::Standalone,
-            ]
+    fn protected_grant_owner_preserves_backend_identity() {
+        let identity = CapabilityActionIdentity::new(
+            "future_ui_host",
+            CapabilityActionDisposition::RequiresUi,
         );
         assert_eq!(
-            protected_action_owner(ProtectedSourceActionOwner::PlatformBackend),
-            ProtectedSourceGrantOwner::PlatformBackend
+            grant_owner(&identity),
+            ProtectedSourceGrantOwner::new("future_ui_host")
         );
         assert_eq!(
-            requires_app_ui_details(MacosCapabilityOwner::LaunchdService),
+            requires_ui_details(&identity),
             serde_json::json!({
-                "active_owner": "launchd_service",
-                "remedy": { "kind": "requires_app_ui" },
+                "active_owner": "future_ui_host",
+                "remedy": { "kind": "requires_ui" },
             })
         );
     }
@@ -537,11 +500,11 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn picker_persistence_requires_a_strictly_newer_accepted_selection() {
-        let display = MacosSelectionState::Display {
+        let display = MacosCaptureSelection::Display {
             source_id: Arc::from("display:7a3f4954-3d72-47a6-a914-16ef68d02122"),
         };
-        let session = MacosSelectionState::SessionScoped {
-            content_style: Arc::from("application"),
+        let session = MacosCaptureSelection::SessionScoped {
+            content_style: MacosCaptureContentStyle::Application,
         };
 
         assert_eq!(
@@ -559,7 +522,7 @@ mod tests {
             MacosPickerPersistenceDecision::Persist("session_scoped".to_owned())
         );
         assert_eq!(
-            macos_picker_persistence_decision(7, 8, &MacosSelectionState::None),
+            macos_picker_persistence_decision(7, 8, &MacosCaptureSelection::None),
             MacosPickerPersistenceDecision::Cancel
         );
     }

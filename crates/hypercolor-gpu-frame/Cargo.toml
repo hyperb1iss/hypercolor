@@ -1,0 +1,15 @@
+[package]
+name = "hypercolor-gpu-frame"
+description = "Neutral GPU frame vocabulary for Hypercolor interop boundaries"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+wgpu = { workspace = true }
+
+[lints]
+workspace = true

@@ -794,7 +794,9 @@ impl SparkleFlinger {
         changed
     }
 
-    pub(crate) fn screen_native_execution_target(&self) -> Option<&ScreenNativeExecutionTarget> {
+    pub(crate) fn screen_native_execution_target(
+        &mut self,
+    ) -> Option<&ScreenNativeExecutionTarget> {
         #[cfg(all(
             feature = "wgpu",
             any(
@@ -802,7 +804,7 @@ impl SparkleFlinger {
                 all(target_os = "macos", feature = "screen-capture")
             )
         ))]
-        if let SparkleFlingerBackend::Gpu { gpu, .. } = &self.backend {
+        if let SparkleFlingerBackend::Gpu { gpu, .. } = &mut self.backend {
             return gpu.screen_native_execution_target();
         }
         None
@@ -821,13 +823,7 @@ impl SparkleFlinger {
         }
     }
 
-    #[cfg(all(
-        feature = "wgpu",
-        any(
-            target_os = "windows",
-            all(target_os = "macos", feature = "screen-capture")
-        )
-    ))]
+    #[cfg(all(feature = "wgpu", target_os = "windows"))]
     pub(crate) fn copy_screen_publication(
         &mut self,
         publication: &std::sync::Arc<ScreenBranchPublication>,
@@ -835,6 +831,26 @@ impl SparkleFlinger {
         match &mut self.backend {
             SparkleFlingerBackend::Gpu { gpu, .. } => gpu.copy_screen_publication(publication),
             SparkleFlingerBackend::Cpu(_) => Ok(None),
+        }
+    }
+
+    #[cfg(all(feature = "wgpu", target_os = "macos", feature = "screen-capture"))]
+    pub(crate) fn copy_screen_publication(
+        &mut self,
+        publication: &std::sync::Arc<ScreenBranchPublication>,
+    ) -> Result<Option<GpuTextureFrame>> {
+        self.copy_screen_publication_outcome(publication)
+            .into_result()
+    }
+
+    #[cfg(all(feature = "wgpu", target_os = "macos", feature = "screen-capture"))]
+    pub(crate) fn copy_screen_publication_outcome(
+        &mut self,
+        publication: &std::sync::Arc<ScreenBranchPublication>,
+    ) -> gpu::MacosScreenCopyOutcome {
+        match &mut self.backend {
+            SparkleFlingerBackend::Gpu { gpu, .. } => gpu.copy_screen_publication(publication),
+            SparkleFlingerBackend::Cpu(_) => gpu::MacosScreenCopyOutcome::Ignored,
         }
     }
 

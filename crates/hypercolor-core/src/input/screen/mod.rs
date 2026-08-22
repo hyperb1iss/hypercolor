@@ -15,6 +15,7 @@
 //! The capture backend feeds raw pixel buffers. Everything downstream is
 //! backend-agnostic and testable with synthetic data.
 
+mod adapter;
 mod admission;
 mod cadence;
 mod compute;
@@ -30,7 +31,6 @@ mod plan;
 mod process;
 mod publication;
 mod reducer;
-#[cfg(any(target_os = "linux", target_os = "windows"))]
 mod retained;
 mod sampling;
 pub mod sector;
@@ -122,25 +122,24 @@ pub use publication::{
     ScreenCursorCapabilities, ScreenCursorPolicy, ScreenExecutorColorCapabilities,
     ScreenExtentRequest, ScreenGamutMapPolicy, ScreenGridPolicy, ScreenHdrPolicy,
     ScreenLetterboxFill, ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId,
-    ScreenNativePreparationPayload, ScreenNativeRetentionQuote, ScreenNativeTargetAllocation,
-    ScreenNativeTargetBindingError, ScreenNativeTargetPreparation,
-    ScreenNativeTargetPreparationError, ScreenNativeTargetPreparer,
+    ScreenNativeExecutionUnavailableReason, ScreenNativePreparationPayload,
+    ScreenNativeRetentionQuote, ScreenNativeTargetAllocation, ScreenNativeTargetBindingError,
+    ScreenNativeTargetPreparation, ScreenNativeTargetPreparationError, ScreenNativeTargetPreparer,
     ScreenNativeTargetResourceError, ScreenPhysicalGpuDeviceIdentity,
     ScreenPhysicalReductionDescriptor, ScreenPhysicalReductionKey, ScreenProcessingProfile,
     ScreenProcessingProfileConfig, ScreenProfileScalar, ScreenPublicationError,
     ScreenPublicationExecutor, ScreenPublicationExecutorFallbackReason,
     ScreenPublicationExecutorRequest, ScreenPublicationKind, ScreenPublicationRequest,
-    ScreenPublicationResidency, ScreenRational, ScreenReductionFilter, ScreenResourceApi,
-    ScreenSceneCutPolicy, ScreenSmoothingPolicy, ScreenSourceReflection, ScreenSourceSelector,
-    ScreenSubpixelRect, ScreenTargetColorimetry, ScreenToneMapOperator, ScreenToneMapPolicy,
-    ScreenUnknownColorPolicy, ScreenUpscalePolicy,
+    ScreenPublicationResidency, ScreenRational, ScreenReductionFilter,
+    ScreenRendererExecutionState, ScreenResourceApi, ScreenSceneCutPolicy, ScreenSmoothingPolicy,
+    ScreenSourceReflection, ScreenSourceSelector, ScreenSubpixelRect, ScreenTargetColorimetry,
+    ScreenToneMapOperator, ScreenToneMapPolicy, ScreenUnknownColorPolicy, ScreenUpscalePolicy,
 };
 pub use reducer::{
     CpuFallbackNeed, CpuReductionBatchJob, CpuReductionBatchReport, CpuReductionError,
     CpuReductionExecutor, CpuReductionLayout, CpuReductionRequest, CpuSurfaceReductionJob,
     PreparedCpuMaterializationWorkspace, PreparedCpuReductionBatch,
 };
-#[cfg(any(target_os = "linux", target_os = "windows"))]
 pub(crate) use retained::{ExactBoxList, ExactBoxNode};
 pub use sampling::{
     CpuMappedSamplingPoint, CpuSamplingError, CpuSamplingPoint, CpuSamplingView,
@@ -162,7 +161,10 @@ pub use windows::WindowsScreenCaptureFixture;
 #[cfg(target_os = "windows")]
 pub use windows::{CaptureSourceSink, ResolvedCaptureSource, WindowsScreenCaptureInput};
 
-use crate::input::traits::{InputData, InputSource, ScreenData, ScreenZoneColors};
+use crate::input::traits::{
+    InputData, InputSource, ScreenData, ScreenSource, ScreenSourceRole, ScreenZoneColors,
+    SourceRoleBinding,
+};
 use crate::input::{SourceKind, SourceStatusHandle, SourceStatusReporter};
 use crate::types::canvas::{
     DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, PublishedSurface, RenderSurfacePool,
@@ -352,11 +354,13 @@ impl ScreenCaptureDemand {
 }
 
 #[derive(Clone)]
+#[cfg(any(not(target_os = "macos"), feature = "macos-capture-fixtures"))]
 pub(crate) struct AnalyzedScreenSnapshot {
     geometry_frame: CaptureFrame<GeometryNormalizedCaptureSurface>,
     data: ScreenData,
 }
 
+#[cfg(any(not(target_os = "macos"), feature = "macos-capture-fixtures"))]
 impl AnalyzedScreenSnapshot {
     pub(crate) const fn geometry_frame(&self) -> &CaptureFrame<GeometryNormalizedCaptureSurface> {
         &self.geometry_frame
@@ -367,6 +371,7 @@ impl AnalyzedScreenSnapshot {
     }
 }
 
+#[cfg(any(not(target_os = "macos"), feature = "macos-capture-fixtures"))]
 pub(crate) fn analyze_screen_frame(
     analyzer: &mut ScreenCaptureInput,
     frame: CaptureFrame<RawCaptureSurface>,
@@ -394,6 +399,7 @@ pub(crate) fn analyze_screen_frame(
     })
 }
 
+#[cfg(any(not(target_os = "macos"), feature = "macos-capture-fixtures"))]
 pub(crate) fn validate_legacy_screen_colorimetry(
     colorimetry: CaptureColorimetry,
 ) -> Result<(), CaptureFrameError> {
@@ -827,6 +833,7 @@ pub struct ScreenCaptureInput {
     /// Temporal smoother for flicker reduction.
     smoother: TemporalSmoother,
 
+    #[cfg(any(not(target_os = "macos"), feature = "macos-capture-fixtures"))]
     capture_processor: CaptureFrameProcessor,
 
     analysis_grid: SectorGrid,
@@ -989,6 +996,7 @@ impl ScreenCaptureInput {
         Ok(Self {
             config,
             smoother,
+            #[cfg(any(not(target_os = "macos"), feature = "macos-capture-fixtures"))]
             capture_processor: CaptureFrameProcessor::default(),
             analysis_grid,
             policy_grid,
@@ -1179,6 +1187,7 @@ impl ScreenCaptureInput {
         &self.config
     }
 
+    #[cfg(any(not(target_os = "macos"), feature = "macos-capture-fixtures"))]
     pub(crate) fn set_led_tone_map_calibration(&mut self, calibration: LedToneMapCalibration) {
         self.config.target_led_white_x = calibration.target_white_x();
         self.config.target_led_white_y = calibration.target_white_y();
@@ -1409,10 +1418,6 @@ impl InputSource for ScreenCaptureInput {
         self.running
     }
 
-    fn is_screen_source(&self) -> bool {
-        true
-    }
-
     fn source_status_handle(&self) -> Option<SourceStatusHandle> {
         Some(self.status.handle())
     }
@@ -1421,6 +1426,12 @@ impl InputSource for ScreenCaptureInput {
         Some(&mut self.status)
     }
 }
+
+impl SourceRoleBinding for ScreenCaptureInput {
+    type Role = ScreenSourceRole;
+}
+
+impl ScreenSource for ScreenCaptureInput {}
 
 fn admit_analysis_work(
     plan: ScreenAnalysisWorkPlan,

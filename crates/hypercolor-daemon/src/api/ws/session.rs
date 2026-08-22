@@ -32,9 +32,12 @@ use tracing::{debug, warn};
 use uuid::Uuid;
 
 use hypercolor_core::input::screen::{
-    PixelExtent, RegisteredScreenBranchDemand, ScreenAspectPolicy, ScreenExtentRequest,
-    ScreenProcessingProfile, ScreenPublicationExecutorRequest, ScreenPublicationKind,
-    ScreenPublicationRequest, ScreenSourceSelector, ScreenUpscalePolicy,
+    PixelExtent, ScreenAspectPolicy, ScreenExtentRequest, ScreenProcessingProfile,
+    ScreenPublicationKind, ScreenSourceSelector, ScreenUpscalePolicy,
+};
+#[cfg(not(target_os = "macos"))]
+use hypercolor_core::input::screen::{
+    RegisteredScreenBranchDemand, ScreenPublicationExecutorRequest, ScreenPublicationRequest,
 };
 use hypercolor_core::input::{
     BrowserConnectionIncarnation, BrowserInputAttachment, BrowserInputChildKey, BrowserInputHandle,
@@ -76,15 +79,20 @@ use crate::interactive_preview::{
     InteractivePreviewTarget as RuntimeInteractivePreviewTarget,
 };
 use crate::preview_runtime::PreviewPixelFormat;
+#[cfg(not(target_os = "macos"))]
+use crate::render_thread::InputScreenBranchDemand;
+#[cfg(target_os = "macos")]
+use crate::render_thread::InputScreenBranchRequest;
 use crate::render_thread::{
     InputPublicationConsumer, InputPublicationDemand, InputPublicationDemandHandle,
-    InputPublicationDemandRegistration, InputScreenBranchDemand,
+    InputPublicationDemandRegistration,
 };
 use crate::session::current_global_brightness;
 use crate::zone_layout_preview::ZoneLayoutPreviewOwner;
 
 const WS_PING_INTERVAL: Duration = Duration::from_secs(30);
 const WS_PONG_TIMEOUT: Duration = Duration::from_secs(10);
+const SENSOR_STREAM_HZ: u32 = 1;
 
 /// `GET /api/v1/ws` — Upgrade to WebSocket.
 pub(crate) async fn ws_handler(
@@ -556,6 +564,7 @@ pub(super) struct WsInputDemandLeases {
     spectrum: Option<InputPublicationDemandRegistration>,
     screen: Option<InputPublicationDemandRegistration>,
     interaction: Option<InputPublicationDemandRegistration>,
+    sensors: Option<InputPublicationDemandRegistration>,
     #[cfg(test)]
     screen_requested_extent: Option<PixelExtent>,
 }
@@ -579,6 +588,7 @@ impl WsInputDemandLeases {
             spectrum: None,
             screen: None,
             interaction: None,
+            sensors: None,
             #[cfg(test)]
             screen_requested_extent: None,
         }
@@ -670,10 +680,12 @@ impl WsInputDemandLeases {
             }
             let requested_extent =
                 requested_extent.expect("an active screen subscription has an extent");
-            (
-                Some(InputPublicationDemand::default().with_screen_branches(branches)),
-                Some(requested_extent),
-            )
+            #[cfg(target_os = "macos")]
+            let demand =
+                InputPublicationDemand::default().with_macos_renderer_screen_requests(branches);
+            #[cfg(not(target_os = "macos"))]
+            let demand = InputPublicationDemand::default().with_screen_branches(branches);
+            (Some(demand), Some(requested_extent))
         } else {
             (None, None)
         };
@@ -699,6 +711,12 @@ impl WsInputDemandLeases {
                     self.interaction_hz,
                 )
             }),
+            sensors: subscriptions.contains(TopicId::Sensors).then(|| {
+                InputPublicationDemand::default().with_source(
+                    hypercolor_core::input::SourceKind::Sensors,
+                    SENSOR_STREAM_HZ,
+                )
+            }),
             #[cfg(test)]
             screen_requested_extent,
         })
@@ -710,6 +728,7 @@ impl WsInputDemandLeases {
         Self::synchronize_domain(&self.demands, &mut self.spectrum, projected.spectrum);
         Self::synchronize_domain(&self.demands, &mut self.screen, projected.screen);
         Self::synchronize_domain(&self.demands, &mut self.interaction, projected.interaction);
+        Self::synchronize_domain(&self.demands, &mut self.sensors, projected.sensors);
         #[cfg(test)]
         {
             self.screen_requested_extent = projected.screen_requested_extent;
@@ -756,10 +775,30 @@ pub(super) struct ProjectedInputDemand {
     spectrum: Option<InputPublicationDemand>,
     screen: Option<InputPublicationDemand>,
     interaction: Option<InputPublicationDemand>,
+    sensors: Option<InputPublicationDemand>,
     #[cfg(test)]
     screen_requested_extent: Option<PixelExtent>,
 }
 
+#[cfg(target_os = "macos")]
+fn screen_branch_demand(
+    kind: ScreenPublicationKind,
+    extent: ScreenExtentRequest,
+    requested_hz: NonZeroU32,
+    legacy_extent: PixelExtent,
+) -> InputScreenBranchRequest {
+    InputScreenBranchRequest::new(
+        ScreenSourceSelector::Configured,
+        kind,
+        extent,
+        ScreenAspectPolicy::Contain,
+        Arc::new(ScreenProcessingProfile::default()),
+        requested_hz,
+        legacy_extent,
+    )
+}
+
+#[cfg(not(target_os = "macos"))]
 fn screen_branch_demand(
     kind: ScreenPublicationKind,
     extent: ScreenExtentRequest,

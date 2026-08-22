@@ -4,10 +4,9 @@ use serde_json::{Value, json};
 
 use super::{ToolDefinition, ToolError, default_output_schema};
 use crate::api::AppState;
+use crate::api::system::latest_sensor_snapshot;
 use crate::domain::output;
 use hypercolor_types::api::output::{OutputPatchRequest, OutputPowerMode};
-use hypercolor_types::sensor::SystemSnapshot;
-use std::sync::Arc;
 
 // ── Tool Definitions ──────────────────────────────────────────────────────
 
@@ -202,13 +201,6 @@ pub(super) fn handle_get_audio_state_with_state(state: &AppState) -> Value {
         },
         "spectrum_bins": spectrum.bins.len()
     })
-}
-
-async fn latest_sensor_snapshot(state: &AppState) -> Arc<SystemSnapshot> {
-    let input_manager = state.input_manager.lock().await;
-    input_manager
-        .latest_sensor_snapshot()
-        .unwrap_or_else(|| Arc::new(SystemSnapshot::empty()))
 }
 
 pub(super) async fn handle_get_layout_with_state(state: &AppState) -> Result<Value, ToolError> {

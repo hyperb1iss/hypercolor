@@ -7,8 +7,8 @@
 > **Roadmap document — not yet implemented.**
 > The D-Bus service (`tech.hyperbliss.hypercolor1`), Unix socket IPC, and tray-over-D-Bus
 > architecture described here are the **planned** desktop integration design.
-> What ships today: the daemon exposes only REST + WebSocket + MCP on `:9420`, and the
-> system tray applet (`hypercolor-tray`) communicates with the daemon over REST HTTP.
+> What ships today: the daemon exposes REST + WebSocket + MCP on `:9420`, and the
+> system tray owned by `hypercolor-app` communicates with the daemon over REST HTTP.
 > The design below is preserved as the specification for the future DE integration layer.
 
 ---
@@ -627,7 +627,7 @@ Icon=hypercolor
 Type=Application
 Name=Hypercolor Tray
 Comment=Hypercolor system tray indicator
-Exec=hypercolor-tray
+Exec=hypercolor-app --minimized
 Icon=hypercolor
 X-GNOME-Autostart-enabled=true
 X-KDE-autostart-phase=2
@@ -635,7 +635,7 @@ OnlyShowIn=GNOME;KDE;XFCE;Cinnamon;MATE;
 # WM users (i3/sway/Hyprland) manage autostart themselves
 ```
 
-Note: The autostart entry launches the tray indicator, not the daemon. The daemon starts via systemd (either socket activation or `default.target`). The tray connects to the running daemon over D-Bus.
+Note: The autostart entry launches the desktop app minimized, not the daemon. The daemon starts via systemd (either socket activation or `default.target`). The app-owned tray connects to the running daemon over D-Bus.
 
 ### 3.3 XDG Directory Compliance
 
@@ -994,12 +994,12 @@ impl Tray for HypercolorTray {
 | Idle          | `hypercolor-idle` (outline only)    | "No devices connected"        | Monochrome outline |
 | Battery Saver | `hypercolor-active` + battery badge | "Battery saver: 15fps"        | Modified tooltip   |
 
-### 4.3 Tray Binary
+### 4.3 App-Owned Tray
 
-The tray runs as a separate lightweight binary (`hypercolor-tray`), not embedded in the daemon. It connects via D-Bus and subscribes to signals. This keeps the daemon headless and avoids pulling in GUI dependencies.
+The tray belongs to the unified desktop app, not the daemon. It connects via D-Bus and subscribes to signals. The process boundary keeps the daemon headless and avoids pulling GUI dependencies into it.
 
 ```
-hypercolor-tray (ksni + zbus)
+hypercolor-app (Tauri tray + zbus)
     |
     | D-Bus session bus
     |
@@ -1409,7 +1409,7 @@ KDE Plasma is the second most popular Linux desktop. It has the richest integrat
 
 ### 6.1 System Tray
 
-KDE Plasma natively supports StatusNotifierItem. The `hypercolor-tray` binary (section 4) works out of the box -- no extension or plugin required.
+KDE Plasma natively supports StatusNotifierItem. The app-owned tray described in section 4 works out of the box without an extension or plugin.
 
 ### 6.2 Plasma Widget (QML)
 
@@ -2841,7 +2841,7 @@ These scenarios validate the design against real usage patterns.
 | `hypercolor-daemon` | `hypercolor`                       | Yes       | Core daemon binary (`hypercolor-daemon`)                         |
 | `hypercolor-cli`    | `hypercolor`                       | Yes       | CLI binary (`hypercolor`, hosts the `hypercolor tui` subcommand) |
 | `hypercolor-tui`    | `hypercolor`                       | Yes       | TUI library (launched via `hypercolor tui`)                      |
-| `hypercolor-tray`   | `hypercolor-tray`                  | Optional  | System tray indicator (ksni)                                     |
+| `hypercolor-app`    | `hypercolor-app`                   | Optional  | Unified desktop app with system tray                             |
 | GNOME extension     | `gnome-shell-extension-hypercolor` | Optional  | GNOME Shell extension                                            |
 | KDE widget          | `plasma-widget-hypercolor`         | Optional  | Plasma plasmoid                                                  |
 | COSMIC applet       | `cosmic-applet-hypercolor`         | Optional  | COSMIC panel applet                                              |
@@ -2912,7 +2912,7 @@ hypercolor status
 
 ### Phase 2: Desktop Integrations
 
-1. `hypercolor-tray` (StatusNotifierItem via ksni)
+1. App-owned tray (StatusNotifierItem through Tauri)
 2. Hyprland IPC watcher
 3. sway/i3 IPC watcher
 4. UPower battery integration

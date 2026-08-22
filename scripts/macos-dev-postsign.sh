@@ -26,7 +26,8 @@ fi
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${script_dir}/.." && pwd)"
 app_path="${1:-${repo_root}/target/release/bundle/macos/Hypercolor.app}"
-entitlements="${repo_root}/crates/hypercolor-app/entitlements.plist"
+app_entitlements="${repo_root}/crates/hypercolor-app/entitlements.plist"
+sidecar_entitlements="${repo_root}/packaging/macos/daemon-sidecar.entitlements.plist"
 
 identity="$("${script_dir}/macos-dev-signing-identity.sh")"
 if [[ "${identity}" == "-" ]]; then
@@ -36,12 +37,12 @@ fi
 
 codesign --force --options runtime --timestamp=none \
   --identifier tech.hyperbliss.hypercolor.sidecar \
-  --entitlements "${entitlements}" \
+  --entitlements "${sidecar_entitlements}" \
   --sign "${identity}" \
   "${app_path}/Contents/MacOS/hypercolor-daemon"
 
 codesign --force --options runtime --timestamp=none \
-  --entitlements "${entitlements}" \
+  --entitlements "${app_entitlements}" \
   --sign "${identity}" \
   "${app_path}"
 

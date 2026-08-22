@@ -388,7 +388,6 @@ mod tests {
                 asset_library: Some(Arc::clone(&state.asset_library)),
                 event_bus: Arc::clone(&state.event_bus),
                 input_graph: InputGraphHandle::default(),
-                sensor_snapshots: None,
                 interaction_routing: state.interaction_routing.clone(),
                 input_demands: InputPublicationDemandHandle::new(),
                 canvas_width: 64,

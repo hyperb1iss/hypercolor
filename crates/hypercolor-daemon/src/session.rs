@@ -10,7 +10,7 @@ use tracing::{debug, warn};
 
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::config::ConfigManager;
-use hypercolor_core::session::{SessionWatcher, SleepPolicy};
+use hypercolor_core::session::{SessionMonitor, SessionWatcher, SleepPolicy};
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::event::HypercolorEvent;
 use hypercolor_types::session::{OffOutputBehavior, SessionEvent, SleepAction, WakeAction};
@@ -172,9 +172,10 @@ impl SessionController {
         discovery_runtime: DiscoveryRuntime,
         driver_host: Arc<DaemonDriverHost>,
         driver_registry: Arc<DriverModuleRegistry>,
+        monitors: Vec<Box<dyn SessionMonitor>>,
     ) -> Self {
         let session_config = config_manager.get().session.clone();
-        let watcher = SessionWatcher::start(&session_config);
+        let watcher = SessionWatcher::start(&session_config, monitors);
         let event_rx = watcher.subscribe();
         let runtime = SessionRuntime {
             config_manager,
@@ -195,6 +196,33 @@ impl SessionController {
         self.task.abort();
         let _ = self.task.await;
         self.watcher.shutdown().await;
+    }
+}
+
+pub(crate) fn platform_session_monitors(
+    config: &hypercolor_types::session::SessionConfig,
+) -> Vec<Box<dyn SessionMonitor>> {
+    #[cfg(target_os = "linux")]
+    {
+        return hypercolor_linux_session::monitors(config);
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let _ = config;
+        return hypercolor_windows_session::standalone_monitors();
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let _ = config;
+        return hypercolor_macos_session::monitors();
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        let _ = config;
+        Vec::new()
     }
 }
 
@@ -349,12 +377,22 @@ async fn clear_session_sleep(runtime: &SessionRuntime, generation: u64) -> bool 
 async fn run_host_resume_scan(runtime: &SessionRuntime) {
     let config_guard = runtime.config_manager.get();
     let config = Arc::clone(&*config_guard);
+    let targets = match DiscoveryTarget::session_resume_targets(
+        config.as_ref(),
+        runtime.driver_registry.as_ref(),
+    ) {
+        Ok(targets) => targets,
+        Err(error) => {
+            warn!(%error, "Failed to resolve host resume discovery targets");
+            return;
+        }
+    };
     let Some(result) = discovery::execute_discovery_scan_or_enqueue(
         runtime.discovery_runtime.clone(),
         Arc::clone(&runtime.driver_registry),
         Arc::clone(&runtime.driver_host),
         config,
-        DiscoveryTarget::session_resume_targets(),
+        targets,
         discovery::default_timeout(),
     )
     .await
@@ -648,6 +686,21 @@ mod tests {
         clear_output_override, fade_session_to, set_manual_pause, set_output_stopped,
         update_power_state, update_power_state_with_observer,
     };
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_platform_composition_installs_the_native_session_monitor() {
+        let monitors =
+            super::platform_session_monitors(&hypercolor_types::session::SessionConfig::default());
+
+        assert_eq!(
+            monitors
+                .iter()
+                .map(|monitor| monitor.name())
+                .collect::<Vec<_>>(),
+            ["macos-workspace-iokit"]
+        );
+    }
 
     #[test]
     fn session_wake_does_not_clear_manual_pause() {

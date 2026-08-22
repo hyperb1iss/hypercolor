@@ -23,7 +23,10 @@ use crate::input::routing::{
     InteractionRouteRead, InteractionRouteSlot, InteractionRouteSnapshot,
     ReusedInteractionRouteRead,
 };
-use crate::input::traits::{InputData, InputSource, InteractionData, MotionAggregate, PointerMode};
+use crate::input::traits::{
+    InputData, InputSource, InteractionData, InteractionSource, InteractionSourceRole,
+    MotionAggregate, PointerMode, SourceRoleBinding,
+};
 use crate::input::{
     InteractionSourceOrigin, LegacyWheelProjector, SourceKind, SourceStatusHandle,
     SourceStatusReporter,
@@ -1193,10 +1196,20 @@ impl InputSource for BrowserInputSource {
         Some(&mut self.status)
     }
 
-    fn is_interaction_source(&self) -> bool {
-        true
+    fn drain_events(&mut self) -> Vec<TimedInputEvent> {
+        if self.running {
+            self.drain_aggregate_events()
+        } else {
+            Vec::new()
+        }
     }
+}
 
+impl SourceRoleBinding for BrowserInputSource {
+    type Role = InteractionSourceRole;
+}
+
+impl InteractionSource for BrowserInputSource {
     fn interaction_source_origin(&self) -> InteractionSourceOrigin {
         InteractionSourceOrigin::BrowserCompatibilityAggregate
     }
@@ -1210,14 +1223,6 @@ impl InputSource for BrowserInputSource {
             devices_denied: 0,
             degraded: None,
         })
-    }
-
-    fn drain_events(&mut self) -> Vec<TimedInputEvent> {
-        if self.running {
-            self.drain_aggregate_events()
-        } else {
-            Vec::new()
-        }
     }
 }
 

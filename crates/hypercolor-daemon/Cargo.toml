@@ -38,7 +38,6 @@ wgpu = [
 ]
 screen-capture = [
     "wgpu",
-    "dep:hypercolor-macos-capture",
     "dep:hypercolor-macos-gpu-interop",
     "hypercolor-macos-gpu-interop/screen-capture",
 ]
@@ -54,6 +53,7 @@ servo = ["hypercolor-core/servo"]
 
 [dependencies]
 hypercolor-color = { workspace = true }
+hypercolor-gpu-frame = { workspace = true }
 hypercolor-types = { workspace = true }
 hypercolor-core = { path = "../hypercolor-core", default-features = false }
 hypercolor-platform-fs = { workspace = true }
@@ -104,15 +104,18 @@ wgpu = { workspace = true, optional = true }
 pollster = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+hypercolor-linux-session = { workspace = true }
 sd-notify = "0.4"
 sysinfo = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10.1"
 dispatch2 = "0.3.1"
-hypercolor-macos-capture = { workspace = true, optional = true }
+hypercolor-macos-capture = { workspace = true }
 hypercolor-macos-gpu-interop = { workspace = true, optional = true }
 hypercolor-macos-input = { workspace = true }
+hypercolor-macos-media = { path = "../hypercolor-macos-media" }
+hypercolor-macos-session = { path = "../hypercolor-macos-session" }
 objc2 = { workspace = true }
 objc2-app-kit = { workspace = true, features = ["NSApplication", "NSResponder", "NSRunningApplication"] }
 objc2-core-foundation = { workspace = true, features = ["std", "CFRunLoop"] }
@@ -125,6 +128,7 @@ hypercolor-macos-capture = { workspace = true, features = ["capture-fixtures"] }
 [target.'cfg(target_os = "windows")'.dependencies]
 hypercolor-windows-capture = { workspace = true, optional = true }
 hypercolor-windows-gpu-interop = { workspace = true, features = ["screen-capture"], optional = true }
+hypercolor-windows-session = { workspace = true }
 sysinfo = { workspace = true }
 thread-priority = "3.0.0"
 windows-service = "0.8.0"

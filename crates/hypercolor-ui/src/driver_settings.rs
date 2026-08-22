@@ -1,4 +1,6 @@
-use hypercolor_types::device::DriverTransportKind;
+use hypercolor_types::device::{
+    DriverTransportAvailability, DriverTransportDescriptor, DriverTransportKind,
+};
 
 use crate::api::DriverSummary;
 use crate::label_utils::humanize_identifier_label;
@@ -37,7 +39,7 @@ fn discovery_driver_setting(driver: &DriverSummary) -> DiscoveryDriverSetting {
     }
 }
 
-fn transport_labels(transports: &[DriverTransportKind]) -> Vec<String> {
+fn transport_labels(transports: &[DriverTransportDescriptor]) -> Vec<String> {
     let labels = transports.iter().map(transport_label).collect::<Vec<_>>();
     if labels.is_empty() {
         vec!["Configured".to_owned()]
@@ -46,8 +48,8 @@ fn transport_labels(transports: &[DriverTransportKind]) -> Vec<String> {
     }
 }
 
-fn transport_label(transport: &DriverTransportKind) -> String {
-    match transport {
+fn transport_label(transport: &DriverTransportDescriptor) -> String {
+    let label = match &transport.kind {
         DriverTransportKind::Network => "Network".to_owned(),
         DriverTransportKind::Usb => "USB".to_owned(),
         DriverTransportKind::Smbus => "SMBus".to_owned(),
@@ -56,5 +58,12 @@ fn transport_label(transport: &DriverTransportKind) -> String {
         DriverTransportKind::Bridge => "Bridge".to_owned(),
         DriverTransportKind::Virtual => "Virtual".to_owned(),
         DriverTransportKind::Custom(label) => humanize_identifier_label(label),
+    };
+
+    match &transport.availability {
+        DriverTransportAvailability::Available => label,
+        DriverTransportAvailability::UnsupportedPlatform { platform } => {
+            format!("{label} (not available on {platform})")
+        }
     }
 }

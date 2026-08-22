@@ -1,6 +1,7 @@
-use std::sync::Arc;
-
+use hypercolor_gpu_frame::{GpuFrameImportError, GpuFrameImportFallbackReason};
 use thiserror::Error;
+
+use crate::{ImportedEffectFrame, ImportedFrameFormat};
 
 /// Result type for macOS GPU interop operations.
 pub type Result<T> = std::result::Result<T, MacosGpuInteropError>;
@@ -114,6 +115,13 @@ pub enum MacosGpuInteropError {
         height: u32,
     },
 
+    /// The neutral frame format is not supported by the macOS import path.
+    #[error("unsupported macOS import frame format {format:?}")]
+    UnsupportedFrameFormat {
+        /// Requested frame format.
+        format: ImportedFrameFormat,
+    },
+
     /// The supplied pixel buffer does not match the IOSurface dimensions.
     #[error("pixel buffer length mismatch: expected {expected_len} bytes, got {actual_len}")]
     PixelBufferSizeMismatch {
@@ -124,6 +132,19 @@ pub enum MacosGpuInteropError {
     },
 }
 
+impl GpuFrameImportError for MacosGpuInteropError {
+    fn fallback_reason(&self) -> GpuFrameImportFallbackReason {
+        match self {
+            Self::UnsupportedPlatform | Self::UnsupportedFrameFormat { .. } => {
+                GpuFrameImportFallbackReason::Other
+            }
+            Self::InvalidDimensions { .. } | Self::PixelBufferSizeMismatch { .. } => {
+                GpuFrameImportFallbackReason::InvalidDimensions
+            }
+        }
+    }
+}
+
 /// Family-selected Metal storage mode for imported IOSurfaces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MacosMetalStorageMode {
@@ -131,49 +152,6 @@ pub enum MacosMetalStorageMode {
     Shared,
     /// Managed storage required by non-Apple-family GPUs.
     Managed,
-}
-
-/// Pixel format shared by the IOSurface and imported wgpu texture.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[non_exhaustive]
-pub enum ImportedFrameFormat {
-    /// 8-bit normalized BGRA.
-    Bgra8Unorm,
-    /// 16-bit floating-point RGBA.
-    Rgba16Float,
-    /// One 8-bit normalized component.
-    R8Unorm,
-    /// Two 8-bit normalized components.
-    Rg8Unorm,
-    /// One 16-bit normalized component.
-    R16Unorm,
-    /// Two 16-bit normalized components.
-    Rg16Unorm,
-}
-
-impl ImportedFrameFormat {
-    /// Returns the matching wgpu texture format.
-    #[must_use]
-    pub const fn wgpu_format(self) -> wgpu::TextureFormat {
-        match self {
-            Self::Bgra8Unorm => wgpu::TextureFormat::Bgra8Unorm,
-            Self::Rgba16Float => wgpu::TextureFormat::Rgba16Float,
-            Self::R8Unorm => wgpu::TextureFormat::R8Unorm,
-            Self::Rg8Unorm => wgpu::TextureFormat::Rg8Unorm,
-            Self::R16Unorm => wgpu::TextureFormat::R16Unorm,
-            Self::Rg16Unorm => wgpu::TextureFormat::Rg16Unorm,
-        }
-    }
-
-    const fn bytes_per_texel(self) -> u32 {
-        match self {
-            Self::Bgra8Unorm => 4,
-            Self::Rgba16Float => 8,
-            Self::R8Unorm => 1,
-            Self::Rg8Unorm | Self::R16Unorm => 2,
-            Self::Rg16Unorm => 4,
-        }
-    }
 }
 
 /// Description of a macOS IOSurface import.
@@ -196,6 +174,16 @@ impl MacosIosurfaceImportDescriptor {
             || height > i32::MAX as u32
         {
             Err(MacosGpuInteropError::InvalidDimensions { width, height })
+        } else if !matches!(
+            format,
+            ImportedFrameFormat::Bgra8Unorm
+                | ImportedFrameFormat::Rgba16Float
+                | ImportedFrameFormat::R8Unorm
+                | ImportedFrameFormat::Rg8Unorm
+                | ImportedFrameFormat::R16Unorm
+                | ImportedFrameFormat::Rg16Unorm
+        ) {
+            Err(MacosGpuInteropError::UnsupportedFrameFormat { format })
         } else {
             Ok(Self {
                 width,
@@ -204,36 +192,6 @@ impl MacosIosurfaceImportDescriptor {
             })
         }
     }
-}
-
-/// GPU-resident Servo effect frame imported into Hypercolor's wgpu device.
-#[derive(Debug, Clone)]
-pub struct ImportedEffectFrame {
-    /// Frame width in pixels.
-    pub width: u32,
-    /// Frame height in pixels.
-    pub height: u32,
-    /// Frame pixel format.
-    pub format: ImportedFrameFormat,
-    /// Monotonically increasing content version; contents changed iff this
-    /// changed. Does NOT imply distinct GPU storage — the same IOSurface (and
-    /// cached wgpu texture) can carry many successive versions.
-    pub storage_id: u64,
-    /// Imported wgpu texture.
-    pub texture: Arc<wgpu::Texture>,
-    /// Default view over `texture`.
-    pub view: Arc<wgpu::TextureView>,
-    /// Import timing counters for observability.
-    pub timings: ImportedFrameTimings,
-}
-
-/// Timing counters captured while importing an IOSurface.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct ImportedFrameTimings {
-    /// Time spent creating the Metal texture wrapper.
-    pub wrap_us: u64,
-    /// Total import time, including wgpu wrapping.
-    pub total_us: u64,
 }
 
 /// Reusable importer for wrapping IOSurfaces as wgpu textures.

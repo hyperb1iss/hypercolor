@@ -20,6 +20,8 @@ default = []
 capture-fixtures = []
 
 [dependencies]
+hypercolor-types = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
@@ -102,4 +104,9 @@ objc2-screen-capture-kit = { workspace = true, features = [
 [[test]]
 name = "capture_contract_tests"
 path = "tests/capture_contract_tests.rs"
+required-features = ["capture-fixtures"]
+
+[[example]]
+name = "dump_macos_frame"
+path = "examples/dump_macos_frame.rs"
 required-features = ["capture-fixtures"]

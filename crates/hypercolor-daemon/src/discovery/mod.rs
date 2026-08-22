@@ -364,13 +364,24 @@ impl DiscoveryTarget {
     }
 
     /// Host discovery targets used after the host resumes from sleep.
-    #[must_use]
-    pub fn session_resume_targets() -> Vec<Self> {
-        HOST_DISCOVERY_TARGETS
-            .iter()
-            .filter(|descriptor| descriptor.scan_on_session_resume)
-            .map(Self::from_host_descriptor)
-            .collect()
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the compiled discovery inventory cannot be
+    /// resolved against the active driver registry.
+    pub fn session_resume_targets(
+        config: &HypercolorConfig,
+        driver_registry: &DriverModuleRegistry,
+    ) -> Result<Vec<Self>, String> {
+        let available = resolve_targets(None, config, driver_registry)?;
+        Ok(available
+            .into_iter()
+            .filter(|target| {
+                HOST_DISCOVERY_TARGETS.iter().any(|descriptor| {
+                    descriptor.scan_on_session_resume && descriptor.id == target.as_str()
+                })
+            })
+            .collect())
     }
 }
 
@@ -445,14 +456,23 @@ pub fn resolve_targets(
         match target.availability() {
             DiscoveryTargetAvailability::DriverModule => {
                 let driver_id = target.as_str();
-                let enabled = driver_registry.get(driver_id).is_some_and(|driver| {
-                    crate::network::module_enabled(config, &driver.module_descriptor())
-                });
-                if !enabled {
+                let Some(driver) = driver_registry.get(driver_id) else {
+                    continue;
+                };
+                let descriptor = driver.module_descriptor();
+                if !crate::network::module_enabled(config, &descriptor) {
                     if explicit_request {
                         let config_flag = crate::network::driver_config_flag(driver_id);
                         return Err(format!(
                             "Discovery target '{driver_id}' is disabled by config ({config_flag}=false)"
+                        ));
+                    }
+                    continue;
+                }
+                if !crate::network::module_has_available_transport(&descriptor) {
+                    if explicit_request {
+                        return Err(format!(
+                            "Discovery target '{driver_id}' has no transport available on this platform"
                         ));
                     }
                     continue;
@@ -528,6 +548,11 @@ pub fn rescan_targets_for_driver(
             "Driver module '{normalized}' is disabled by config ({config_flag}=false)"
         ));
     }
+    if !crate::network::module_has_available_transport(&descriptor) {
+        return Err(format!(
+            "Driver module '{normalized}' has no transport available on this platform"
+        ));
+    }
 
     if driver.discovery().is_some() {
         return Ok(vec![DiscoveryTarget::driver(normalized)]);
@@ -536,7 +561,10 @@ pub fn rescan_targets_for_driver(
     let target_ids = descriptor
         .transports
         .iter()
-        .filter_map(crate::network::host_transport_target_for_driver_transport)
+        .filter(|transport| transport.is_available())
+        .filter_map(|transport| {
+            crate::network::host_transport_target_for_driver_transport(&transport.kind)
+        })
         .map(str::to_owned)
         .collect::<Vec<_>>();
 
@@ -564,7 +592,8 @@ mod tests {
     use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
     use hypercolor_types::device::{
         ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceId, DeviceInfo,
-        DeviceOrigin, DeviceTopologyHint, DriverModuleDescriptor, DriverTransportKind, SegmentInfo,
+        DeviceOrigin, DeviceTopologyHint, DriverModuleDescriptor, DriverModuleKind,
+        DriverTransportDescriptor, DriverTransportKind, SegmentInfo,
     };
     use std::sync::Arc;
     use std::time::Duration;
@@ -576,6 +605,7 @@ mod tests {
     struct TestDriverModule {
         descriptor: &'static DriverDescriptor,
         default_enabled: bool,
+        transport_available: bool,
     }
 
     impl TestDriverModule {
@@ -583,6 +613,15 @@ mod tests {
             Self {
                 descriptor,
                 default_enabled: true,
+                transport_available: true,
+            }
+        }
+
+        const fn unavailable(descriptor: &'static DriverDescriptor) -> Self {
+            Self {
+                descriptor,
+                default_enabled: true,
+                transport_available: false,
             }
         }
 
@@ -590,6 +629,7 @@ mod tests {
             Self {
                 descriptor,
                 default_enabled: false,
+                transport_available: true,
             }
         }
     }
@@ -634,6 +674,12 @@ mod tests {
         fn module_descriptor(&self) -> DriverModuleDescriptor {
             let mut descriptor = self.descriptor().module_descriptor();
             descriptor.default_enabled = self.default_enabled;
+            if !self.transport_available {
+                descriptor.transports = vec![DriverTransportDescriptor::unsupported_platform(
+                    self.descriptor.transport.clone(),
+                    "macOS",
+                )];
+            }
             descriptor
         }
 
@@ -681,12 +727,30 @@ mod tests {
             .filter(|driver| crate::network::module_enabled(config, &driver.module_descriptor()))
             .map(|driver| DiscoveryTarget::driver(driver.descriptor().id))
             .collect::<Vec<_>>();
-        targets.extend([
-            DiscoveryTarget::usb(),
-            DiscoveryTarget::smbus(),
-            #[cfg(unix)]
-            DiscoveryTarget::blocks(),
-        ]);
+        if !crate::network::enabled_module_ids_for_transports(
+            state.driver_registry.as_ref(),
+            config,
+            DriverModuleKind::Hal,
+            crate::network::USB_HOST_DRIVER_TRANSPORTS,
+        )
+        .is_empty()
+        {
+            targets.push(DiscoveryTarget::usb());
+        }
+        if !crate::network::enabled_module_ids_for_transports(
+            state.driver_registry.as_ref(),
+            config,
+            DriverModuleKind::Hal,
+            crate::network::SMBUS_HOST_DRIVER_TRANSPORTS,
+        )
+        .is_empty()
+        {
+            targets.push(DiscoveryTarget::smbus());
+        }
+        #[cfg(unix)]
+        if config.discovery.blocks_scan {
+            targets.push(DiscoveryTarget::blocks());
+        }
         targets
     }
 
@@ -834,6 +898,24 @@ mod tests {
     }
 
     #[test]
+    fn resolve_targets_exclude_unavailable_driver_module() {
+        let mut registry = DriverModuleRegistry::new();
+        registry
+            .register(TestDriverModule::unavailable(&ENABLED_DESCRIPTOR))
+            .expect("unavailable driver should register");
+        let cfg = HypercolorConfig::default();
+
+        let defaults = resolve_targets(None, &cfg, &registry)
+            .expect("default targets should skip unavailable modules");
+        assert!(defaults.is_empty());
+
+        let requested = vec!["enabled-driver".to_owned()];
+        let error = resolve_targets(Some(&requested), &cfg, &registry)
+            .expect_err("explicit unavailable module should fail");
+        assert!(error.contains("no transport available on this platform"));
+    }
+
+    #[test]
     fn resolve_targets_rejects_disabled_smbus_hal_driver() {
         let mut registry = DriverModuleRegistry::new();
         registry
@@ -863,6 +945,33 @@ mod tests {
             .expect_err("usb must fail when no USB-family HAL modules are enabled");
 
         assert!(error.contains("no enabled USB/MIDI/serial HAL driver modules"));
+    }
+
+    #[test]
+    fn session_resume_targets_exclude_unavailable_transports() {
+        let mut registry = DriverModuleRegistry::new();
+        registry
+            .register(TestDriverModule::new(&USB_MODULE_DESCRIPTOR))
+            .expect("USB driver should register");
+        registry
+            .register(TestDriverModule::unavailable(&SMBUS_MODULE_DESCRIPTOR))
+            .expect("SMBus driver should register");
+
+        let targets =
+            DiscoveryTarget::session_resume_targets(&HypercolorConfig::default(), &registry)
+                .expect("resume targets should resolve");
+        let ids = targets
+            .iter()
+            .map(DiscoveryTarget::as_str)
+            .collect::<Vec<_>>();
+
+        assert_eq!(ids, vec!["usb"]);
+        assert!(
+            targets
+                .iter()
+                .all(|target| !target.preserves_renderable_on_discovery_miss()),
+            "a clean USB-only resume scan must retire vanished USB devices"
+        );
     }
 
     #[cfg(unix)]
@@ -975,6 +1084,20 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["usb"]
         );
+    }
+
+    #[test]
+    fn rescan_targets_reject_unavailable_hal_transport() {
+        let mut registry = DriverModuleRegistry::new();
+        registry
+            .register(TestDriverModule::unavailable(&SMBUS_MODULE_DESCRIPTOR))
+            .expect("driver should register");
+        let cfg = HypercolorConfig::default();
+
+        let error = rescan_targets_for_driver("smbus-driver", &cfg, &registry)
+            .expect_err("unavailable transport should not resolve to a host scanner");
+
+        assert!(error.contains("no transport available on this platform"));
     }
 
     #[test]

@@ -1,45 +1,11 @@
 use anyhow::Result;
 use hypercolor_core::types::canvas::{BYTES_PER_PIXEL, PublishedSurface, RenderSurfacePool};
 
-use super::super::CompositionMode;
-use super::CachedSourceUpload;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct CachedReadbackKey {
-    pub(super) width: u32,
-    pub(super) height: u32,
-    pub(super) layers: Vec<CachedReadbackLayer>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct CachedReadbackLayer {
-    pub(super) source: CachedSourceUpload,
-    pub(super) mode: CompositionMode,
-    pub(super) opacity_bits: u32,
-    pub(super) transform: Option<CachedReadbackTransform>,
-    pub(super) adjust: Option<CachedReadbackAdjust>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct CachedReadbackTransform {
-    pub(super) anchor_x_bits: u32,
-    pub(super) anchor_y_bits: u32,
-    pub(super) scale_x_bits: u32,
-    pub(super) scale_y_bits: u32,
-    pub(super) rotation_bits: u32,
-    pub(super) fit: hypercolor_types::viewport::FitMode,
-    pub(super) sample_target_space: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct CachedReadbackAdjust {
-    pub(super) brightness: u32,
-    pub(super) saturation: u32,
-    pub(super) hue_shift: u32,
-    pub(super) tint: [u32; 4],
-    pub(super) tint_strength: u32,
-    pub(super) contrast: u32,
-}
+pub(super) use super::source::CachedReadbackKey;
+#[allow(unused_imports)]
+pub(super) use super::source::{
+    CachedReadbackAdjust, CachedReadbackLayer, CachedReadbackTransform,
+};
 
 #[derive(Debug, Clone)]
 pub(super) struct CachedReadbackSurface {

@@ -6,8 +6,6 @@ from typing import Any, TypeVar
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
-from ..models.protected_source_grant_owner import ProtectedSourceGrantOwner
-
 T = TypeVar("T", bound="CapturePickerResponse")
 
 
@@ -15,16 +13,16 @@ T = TypeVar("T", bound="CapturePickerResponse")
 class CapturePickerResponse:
     """
     Attributes:
-        grant_owner (ProtectedSourceGrantOwner):
+        grant_owner (str):
         picking (bool):
     """
 
-    grant_owner: ProtectedSourceGrantOwner
+    grant_owner: str
     picking: bool
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        grant_owner = self.grant_owner.value
+        grant_owner = self.grant_owner
 
         picking = self.picking
 
@@ -42,7 +40,7 @@ class CapturePickerResponse:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        grant_owner = ProtectedSourceGrantOwner(d.pop("grant_owner"))
+        grant_owner = d.pop("grant_owner")
 
         picking = d.pop("picking")
 

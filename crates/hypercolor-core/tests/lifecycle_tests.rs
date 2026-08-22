@@ -15,8 +15,9 @@ use hypercolor_core::device::{
     LifecycleAction,
 };
 use hypercolor_core::input::{
-    InputData, InputManager, InputSource, SourceIssue, SourceKind, SourceState, SourceStatusHandle,
-    SourceStatusReporter,
+    InputData, InputManager, InputSource, InteractionSource, InteractionSourceOrigin,
+    InteractionSourceRole, ManagedSourceKey, ManagedSourceRole, SourceIssue, SourceKind,
+    SourceRoleBinding, SourceState, SourceStatusHandle, SourceStatusReporter, SourceSwapTarget,
 };
 use hypercolor_types::canvas::{linear_to_output_u8, srgb_to_linear};
 use hypercolor_types::device::{
@@ -29,6 +30,12 @@ use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
 };
 use tokio::sync::Mutex;
+
+fn register_test_source(manager: &mut InputManager, source: ManagedSourceRole) {
+    manager
+        .add_source(source)
+        .expect("lifecycle fixture source should match its declared role");
+}
 
 // ── LED color pipeline helpers (mirrors prepare_output_for_leds) ────────────
 
@@ -272,6 +279,16 @@ impl InputSource for FaultInputSource {
     }
 }
 
+impl SourceRoleBinding for FaultInputSource {
+    type Role = InteractionSourceRole;
+}
+
+impl InteractionSource for FaultInputSource {}
+
+fn managed_fault_source(source: FaultInputSource) -> ManagedSourceRole {
+    ManagedSourceRole::interaction(Box::new(source))
+}
+
 fn wait_for_worker_exit(probe: &InputLifecycleProbe) {
     probe.exit_now.store(true, Ordering::SeqCst);
     std::thread::sleep(Duration::from_millis(25));
@@ -287,7 +304,7 @@ fn readiness_timeout_self_rolls_back_and_late_ready_is_fenced() {
     );
     let status = source.status.handle();
     let mut manager = InputManager::new();
-    manager.add_source(Box::new(source));
+    register_test_source(&mut manager, managed_fault_source(source));
 
     assert!(manager.start_all().is_err());
     assert_eq!(probe.stops.load(Ordering::SeqCst), 0);
@@ -305,7 +322,7 @@ fn worker_exit_and_panic_transition_status_before_sampling_data() {
         let source = FaultInputSource::new("post_ready_exit", fault, Arc::clone(&probe));
         let status = source.status.handle();
         let mut manager = InputManager::new();
-        manager.add_source(Box::new(source));
+        register_test_source(&mut manager, managed_fault_source(source));
         manager.start_all().expect("fault worker reaches readiness");
 
         wait_for_worker_exit(&probe);
@@ -325,16 +342,22 @@ fn partial_graph_startup_stops_every_source_that_entered_starting() {
     let first = Arc::new(InputLifecycleProbe::default());
     let failing = Arc::new(InputLifecycleProbe::default());
     let mut manager = InputManager::new();
-    manager.add_source(Box::new(FaultInputSource::new(
-        "first",
-        InputWorkerFault::Stable,
-        Arc::clone(&first),
-    )));
-    manager.add_source(Box::new(FaultInputSource::new(
-        "failing",
-        InputWorkerFault::FailStart,
-        Arc::clone(&failing),
-    )));
+    register_test_source(
+        &mut manager,
+        managed_fault_source(FaultInputSource::new(
+            "first",
+            InputWorkerFault::Stable,
+            Arc::clone(&first),
+        )),
+    );
+    register_test_source(
+        &mut manager,
+        managed_fault_source(FaultInputSource::new(
+            "failing",
+            InputWorkerFault::FailStart,
+            Arc::clone(&failing),
+        )),
+    );
 
     assert!(manager.start_all().is_err());
     assert_eq!(first.stops.load(Ordering::SeqCst), 1);
@@ -345,11 +368,14 @@ fn partial_graph_startup_stops_every_source_that_entered_starting() {
 fn repeated_stop_is_idempotent_for_worker_ownership() {
     let probe = Arc::new(InputLifecycleProbe::default());
     let mut manager = InputManager::new();
-    manager.add_source(Box::new(FaultInputSource::new(
-        "repeat_stop",
-        InputWorkerFault::Stable,
-        Arc::clone(&probe),
-    )));
+    register_test_source(
+        &mut manager,
+        managed_fault_source(FaultInputSource::new(
+            "repeat_stop",
+            InputWorkerFault::Stable,
+            Arc::clone(&probe),
+        )),
+    );
     manager.start_all().expect("fault worker starts");
 
     manager.stop_all();
@@ -363,20 +389,28 @@ fn replacement_stops_worker_and_fences_every_late_publication() {
     let source = FaultInputSource::new("replaced", InputWorkerFault::Stable, Arc::clone(&probe));
     let status = source.status.handle();
     let mut manager = InputManager::new();
-    manager.add_source(Box::new(source));
+    register_test_source(&mut manager, managed_fault_source(source));
     manager.start_all().expect("source starts");
     let accepted_before = probe.accepted_publications.load(Ordering::SeqCst);
 
-    let Ok(retired) = manager.replace_source(
-        0,
-        Box::new(FaultInputSource::new(
-            "replacement",
-            InputWorkerFault::Stable,
-            Arc::new(InputLifecycleProbe::default()),
-        )),
-    ) else {
-        panic!("registered source is replaced");
-    };
+    let plan = manager
+        .plan_source_swap(
+            ManagedSourceKey::Interaction(InteractionSourceOrigin::Host),
+            SourceSwapTarget::Present { running: false },
+        )
+        .expect("registered source has one exact replacement target");
+    let mut replacement = Some(managed_fault_source(FaultInputSource::new(
+        "replacement",
+        InputWorkerFault::Stable,
+        Arc::new(InputLifecycleProbe::default()),
+    )));
+    let mut prepared = plan
+        .prepare(&mut replacement)
+        .expect("replacement binds to the planned role");
+    let retirement = manager
+        .commit_source_swap(&mut prepared)
+        .expect("replacement graph fences remain current");
+    retirement.retire();
     std::thread::sleep(Duration::from_millis(20));
 
     assert!(status.snapshot().retired);
@@ -385,7 +419,6 @@ fn replacement_stops_worker_and_fences_every_late_publication() {
         probe.accepted_publications.load(Ordering::SeqCst),
         accepted_before
     );
-    drop(retired);
 }
 
 #[allow(clippy::similar_names)]

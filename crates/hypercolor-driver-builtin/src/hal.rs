@@ -21,8 +21,10 @@ impl HalCatalogDriverModule {
     ) -> Self {
         let transport = module_descriptor
             .transports
-            .first()
-            .cloned()
+            .iter()
+            .find(|transport| transport.is_available())
+            .or_else(|| module_descriptor.transports.first())
+            .map(|transport| transport.kind.clone())
             .unwrap_or(DriverTransportKind::Usb);
         let descriptor = DriverDescriptor::new(
             leak_string(module_descriptor.id.clone()),

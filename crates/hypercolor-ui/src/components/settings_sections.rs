@@ -14,7 +14,7 @@ use crate::render_presets::{
     CANVAS_PRESETS, MAX_CUSTOM_CANVAS_HEIGHT, MAX_CUSTOM_CANVAS_WIDTH, canvas_preset_key,
 };
 use crate::{
-    api::{InputSourcePlatformStatus, InputStatus, SystemStatus},
+    api::{InputStatus, SystemStatus},
     app::WsContext,
 };
 
@@ -475,6 +475,13 @@ pub fn CaptureSection(
                     min=0.0 max=500.0 step=10.0
                     decimals=0
                 />
+                {move || {
+                    let status = capture_status.get().and_then(Result::ok)?;
+                    input::source_diagnostics_view(input::source_diagnostics_fields(
+                        &status.input,
+                        "screen",
+                    ))
+                }}
             </AdvancedDisclosure>
             <SectionReset section_label="Capture" on_reset=Callback::new(move |()| on_reset.run("capture".to_string())) />
         </section>
@@ -482,36 +489,19 @@ pub fn CaptureSection(
 }
 
 fn macos_screen_needs_authorization(status: &InputStatus) -> bool {
-    status.sources.iter().any(|source| {
-        if source.retired {
-            return false;
-        }
-        let Some(InputSourcePlatformStatus::MacosScreen { state, tcc, .. }) =
-            source.platform.as_ref()
-        else {
-            return false;
-        };
-        matches!(
-            state.as_deref(),
-            Some("needs_user_action" | "permission_denied" | "revoked")
-        ) || matches!(
-            tcc.as_deref(),
-            Some("not_determined" | "denied" | "revoked")
-        )
-    })
+    input::source_needs_action(
+        status,
+        "screen",
+        &[
+            "authorization_required",
+            "authorization_denied",
+            "authorization_revoked",
+        ],
+    )
 }
 
 fn macos_screen_needs_restart(status: &InputStatus) -> bool {
-    status.sources.iter().any(|source| {
-        if source.retired {
-            return false;
-        }
-        matches!(
-            source.platform.as_ref(),
-            Some(InputSourcePlatformStatus::MacosScreen { state, .. })
-                if state.as_deref() == Some("needs_process_restart")
-        )
-    })
+    input::source_needs_action(status, "screen", &["process_restart_required"])
 }
 
 fn macos_screen_restart_coordinates(status: &SystemStatus) -> Option<(String, u64)> {
@@ -622,11 +612,20 @@ pub(super) fn MacosCaptureOwnerRestartAction(
 #[cfg(test)]
 mod macos_capture_tests {
     use crate::api::{
-        InputSourcePlatformStatus, InputSourceStatus, InputStatus, MacosDaemonOwnershipStatus,
+        InputSourceIssueStatus, InputSourceStatus, InputStatus, MacosDaemonOwnershipStatus,
         SystemStatus,
     };
 
     use super::{macos_screen_restart_coordinates, validate_macos_restart_owner};
+
+    fn action_issue(code: &str) -> InputSourceIssueStatus {
+        InputSourceIssueStatus {
+            code: code.to_owned(),
+            message: "Action required".to_owned(),
+            remediation: None,
+            retryable: true,
+        }
+    }
 
     fn system_status(
         input: InputStatus,
@@ -657,15 +656,7 @@ mod macos_capture_tests {
             InputStatus {
                 sources: vec![InputSourceStatus {
                     kind: "screen".to_owned(),
-                    platform: Some(InputSourcePlatformStatus::MacosScreen {
-                        state: Some("needs_process_restart".to_owned()),
-                        tcc: Some("authorized".to_owned()),
-                        owner: Some("launchd_service".to_owned()),
-                        selection: None,
-                        tahoe: None,
-                        tahoe_selection: None,
-                        owner_conflict: None,
-                    }),
+                    action_issue: Some(action_issue("process_restart_required")),
                     ..InputSourceStatus::default()
                 }],
                 ..InputStatus::default()

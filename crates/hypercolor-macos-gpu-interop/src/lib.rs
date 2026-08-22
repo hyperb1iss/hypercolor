@@ -2,6 +2,11 @@
 
 //! macOS GPU interop helpers for IOSurface-backed frames.
 
+pub use hypercolor_gpu_frame::{
+    FrameOrigin, GpuFrameImportError, GpuFrameImportFallbackReason, ImportedEffectFrame,
+    ImportedFrameAllocationId, ImportedFrameFormat, ImportedFrameLease, ImportedFrameTimings,
+};
+
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(all(target_os = "macos", feature = "screen-capture"))]

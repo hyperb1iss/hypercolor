@@ -42,6 +42,7 @@ servo-gpu-import = [
 
 [dependencies]
 hypercolor-color = { workspace = true }
+hypercolor-gpu-frame = { workspace = true }
 hypercolor-types = { workspace = true }
 # Unconditional: the shared event vocabulary and the decoding arithmetic
 # compile everywhere, which is what lets Linux CI test the Windows key tables.
@@ -50,10 +51,12 @@ hypercolor-windows-input = { path = "../hypercolor-windows-input" }
 # the capture crate supplies stubs when DXGI is unavailable.
 hypercolor-windows-capture = { path = "../hypercolor-windows-capture" }
 hypercolor-macos-input = { workspace = true }
+hypercolor-linux-input = { workspace = true }
 hypercolor-macos-capture = { workspace = true }
 hypercolor-driver-api = { workspace = true }
 hypercolor-hal = { workspace = true }
 hypercolor-platform-fs = { workspace = true }
+hypercolor-worker-retention = { workspace = true }
 hypercolor-linux-gpu-interop = { workspace = true, optional = true }
 hypercolor-macos-gpu-interop = { workspace = true, optional = true }
 hypercolor-windows-gpu-interop = { workspace = true, optional = true }
@@ -104,10 +107,11 @@ rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] 
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libpulse-binding = { workspace = true }
-ashpd = { workspace = true }
-pipewire = { workspace = true }
-evdev = { workspace = true }
+hypercolor-pipewire-interop = { workspace = true }
 zbus = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+hypercolor-macos-media = { path = "../hypercolor-macos-media" }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.62", default-features = false, features = [
@@ -130,6 +134,7 @@ criterion = { workspace = true }
 gif = { workspace = true }
 pollster = { workspace = true }
 stats_alloc = { workspace = true }
+trybuild = "1.0.120"
 
 [[test]]
 name = "alloc_contract_tests"

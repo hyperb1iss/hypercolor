@@ -66,7 +66,6 @@ env:
     --workspace
     --exclude hypercolor-daemon
     --exclude hypercolor-app
-    --exclude hypercolor-tray
   # Windows scope additionally drops the CLI, which depends on the daemon and
   # so drags in Servo and mozangle. Those need a Visual Studio developer
   # environment a bare runner does not have, and building them would tell us
@@ -75,7 +74,6 @@ env:
     --workspace
     --exclude hypercolor-daemon
     --exclude hypercolor-app
-    --exclude hypercolor-tray
     --exclude hypercolor-cli
   HYPERCOLOR_CACHE_DIR: ${{ github.workspace }}/.cache/hypercolor
   # Tests resolve bundled effects next to the running executable unless this is
@@ -129,6 +127,7 @@ jobs:
               - 'scripts/cargo-cache-build.*'
               - 'scripts/cargo-cache-cargo-shim.sh'
               - 'scripts/cargo-target-gc.sh'
+              - 'scripts/check-macos-gpu-only.sh'
               - 'scripts/tests/cargo-cache-build-tests.sh'
               - 'scripts/tests/cargo-target-gc-tests.sh'
               - 'scripts/sign-macos-artifacts.sh'
@@ -236,6 +235,9 @@ jobs:
 
       - name: Check formatting
         run: cargo fmt --all --check
+
+      - name: Check macOS GPU-only architecture
+        run: ./scripts/check-macos-gpu-only.sh
 
       - name: Test local build fabric
         run: |
@@ -557,20 +559,20 @@ jobs:
         if: matrix.suite == 'native'
         run: >-
           ./scripts/cargo-cache-build.sh
-          cargo clippy --locked -p hypercolor-app -p hypercolor-tray --all-targets
+          cargo clippy --locked -p hypercolor-app --all-targets
           -- -D warnings
 
       - name: Run native app tests
         if: matrix.suite == 'native'
         run: >-
           ./scripts/cargo-cache-build.sh
-          cargo nextest run --locked -p hypercolor-app -p hypercolor-tray
+          cargo nextest run --locked -p hypercolor-app
 
       - name: Run native app doc tests
         if: matrix.suite == 'native'
         run: >-
           ./scripts/cargo-cache-build.sh
-          cargo test --doc --locked -p hypercolor-app -p hypercolor-tray
+          cargo test --doc --locked -p hypercolor-app
 
       - name: Seed effect cover fixture
         if: matrix.suite == 'daemon'

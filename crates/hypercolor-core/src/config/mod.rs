@@ -14,9 +14,9 @@ pub use sources::{
 };
 
 use std::collections::BTreeSet;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result, bail};
 use arc_swap::{ArcSwap, Guard};
@@ -83,8 +83,6 @@ enum ConfigPersistenceStage {
     WriteTemporary,
     SyncTemporary,
     Replace,
-    SyncDirectory,
-    AfterDurableWrite,
 }
 
 #[derive(Default)]
@@ -111,6 +109,40 @@ pub struct CapturePersistenceSource {
     source_id: Arc<str>,
     source_graph_generation: u64,
     session_generation: u64,
+}
+
+/// Serialized capture configuration staged durably beside its destination.
+#[must_use = "staged capture configuration must be committed or discarded"]
+pub struct StagedCaptureConfig {
+    candidate: Arc<HypercolorConfig>,
+    file: StagedConfigFile,
+}
+
+struct StagedConfigFile {
+    path: Option<PathBuf>,
+}
+
+impl StagedConfigFile {
+    fn path(&self) -> &Path {
+        self.path
+            .as_deref()
+            .expect("staged config file consumed once")
+    }
+
+    fn durable_replace(mut self, destination: &Path) -> Result<()> {
+        hypercolor_platform_fs::durable_replace(self.path(), destination)
+            .with_context(|| format!("failed to replace {}", destination.display()))?;
+        self.path = None;
+        Ok(())
+    }
+}
+
+impl Drop for StagedConfigFile {
+    fn drop(&mut self) {
+        if let Some(path) = self.path.take() {
+            drop(std::fs::remove_file(path));
+        }
+    }
 }
 
 impl CapturePersistenceSource {
@@ -318,8 +350,6 @@ impl ConfigManager {
         mutate(&mut candidate);
         let candidate = Arc::new(normalize_config(candidate));
         self.persist(&candidate)?;
-        #[cfg(test)]
-        self.persistence_checkpoint(ConfigPersistenceStage::AfterDurableWrite)?;
         self.publish_config(&mut writer, &current, Arc::clone(&candidate));
         Ok(Some(candidate))
     }
@@ -408,6 +438,84 @@ impl ConfigManager {
         writer.staged_capture_persistence_epochs.clear();
         self.config.store(Arc::clone(&candidate));
         Ok(Some(candidate))
+    }
+
+    /// Serialize and sync a capture candidate without holding the config writer lock.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if serialization or durable temporary-file creation fails.
+    pub fn stage_capture_config(
+        &self,
+        expected: &Arc<HypercolorConfig>,
+        capture: CaptureConfig,
+    ) -> Result<Option<StagedCaptureConfig>> {
+        if !self.is_current(expected) {
+            return Ok(None);
+        }
+        let mut candidate = (**expected).clone();
+        candidate.capture = capture;
+        let candidate = Arc::new(normalize_config(candidate));
+        let file = self.stage_config(&candidate)?;
+        Ok(Some(StagedCaptureConfig { candidate, file }))
+    }
+
+    /// Durably replace capture config, commit runtime, then install the live pointer.
+    ///
+    /// `durable_replace` is the sole fallible operation after every identity check.
+    /// Runtime mutation, authority installation, and live publication are infallible.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the atomic durable replacement fails.
+    pub fn commit_staged_capture_if_current<T>(
+        &self,
+        expected: &Arc<HypercolorConfig>,
+        mut persistence: Option<(CapturePersistenceEpoch, Option<CapturePersistenceSource>)>,
+        staged: StagedCaptureConfig,
+        commit_runtime: impl FnOnce(&mut dyn FnMut()) -> T,
+    ) -> Result<Option<(Arc<HypercolorConfig>, T)>> {
+        let mut writer = self
+            .write_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let current = self.config.load_full();
+        if !Arc::ptr_eq(expected, &current) {
+            return Ok(None);
+        }
+        if let Some((epoch, _)) = &persistence
+            && !writer.staged_capture_persistence_epochs.remove(&epoch.0)
+        {
+            return Ok(None);
+        }
+        #[cfg(test)]
+        self.persistence_checkpoint(ConfigPersistenceStage::Replace)?;
+        staged.file.durable_replace(&self.config_path)?;
+        let candidate = Arc::clone(&staged.candidate);
+        let mut installed = false;
+        let committed = {
+            let mut install_live = || {
+                assert!(!installed, "staged capture config installed more than once");
+                installed = true;
+                writer.capture_persistence_authority =
+                    persistence
+                        .take()
+                        .map(|(epoch, source)| CapturePersistenceAuthority {
+                            epoch,
+                            config: Arc::clone(&candidate),
+                            source,
+                        });
+                writer.staged_capture_persistence_epochs.clear();
+                writer.applied_capture = Some(candidate.capture.clone());
+                self.config.store(Arc::clone(&candidate));
+            };
+            commit_runtime(&mut install_live)
+        };
+        assert!(
+            installed,
+            "runtime commit did not install staged capture config"
+        );
+        Ok(Some((candidate, committed)))
     }
 
     /// Persist a source-resolved capture identity only for the active source epoch.
@@ -579,6 +687,15 @@ impl ConfigManager {
     }
 
     fn persist(&self, config: &HypercolorConfig) -> Result<()> {
+        let staged = self.stage_config(config)?;
+        #[cfg(test)]
+        self.persistence_checkpoint(ConfigPersistenceStage::Replace)?;
+        staged.durable_replace(&self.config_path)
+    }
+
+    fn stage_config(&self, config: &HypercolorConfig) -> Result<StagedConfigFile> {
+        static NEXT_TEMPORARY_ID: AtomicU64 = AtomicU64::new(0);
+
         #[cfg(test)]
         self.persistence_checkpoint(ConfigPersistenceStage::Serialize)?;
         let toml = toml::to_string_pretty(config).context("failed to serialize config")?;
@@ -588,33 +705,37 @@ impl ConfigManager {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("failed to create {}", parent.display()))?;
         }
-        let tmp_path = self.config_path.with_extension("toml.tmp");
+        let file_name = self
+            .config_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("hypercolor.toml");
         #[cfg(test)]
         self.persistence_checkpoint(ConfigPersistenceStage::CreateTemporary)?;
-        let mut temporary = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .open(&tmp_path)
-            .with_context(|| format!("failed to create {}", tmp_path.display()))?;
         #[cfg(test)]
         self.persistence_checkpoint(ConfigPersistenceStage::WriteTemporary)?;
-        temporary
-            .write_all(toml.as_bytes())
-            .with_context(|| format!("failed to write {}", tmp_path.display()))?;
         #[cfg(test)]
         self.persistence_checkpoint(ConfigPersistenceStage::SyncTemporary)?;
-        temporary
-            .sync_all()
-            .with_context(|| format!("failed to sync {}", tmp_path.display()))?;
-        drop(temporary);
-        #[cfg(test)]
-        self.persistence_checkpoint(ConfigPersistenceStage::Replace)?;
-        hypercolor_platform_fs::replace_file(&tmp_path, &self.config_path)
-            .with_context(|| format!("failed to replace {}", self.config_path.display()))?;
-        #[cfg(test)]
-        self.persistence_checkpoint(ConfigPersistenceStage::SyncDirectory)?;
-        sync_parent_directory(&self.config_path)
+        loop {
+            let temporary_id = NEXT_TEMPORARY_ID.fetch_add(1, Ordering::Relaxed);
+            let tmp_path = self.config_path.with_file_name(format!(
+                ".{file_name}.{}.{}.tmp",
+                std::process::id(),
+                temporary_id
+            ));
+            match hypercolor_platform_fs::write_secret(&tmp_path, toml.as_bytes()) {
+                Ok(()) => {
+                    return Ok(StagedConfigFile {
+                        path: Some(tmp_path),
+                    });
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => {
+                    return Err(error)
+                        .with_context(|| format!("failed to write {}", tmp_path.display()));
+                }
+            }
+        }
     }
 
     #[cfg(test)]
@@ -765,35 +886,6 @@ fn migrate_v4_to_v5(document: &mut toml::Value) -> Result<()> {
     Ok(())
 }
 
-#[cfg_attr(target_os = "windows", allow(clippy::unnecessary_wraps))]
-fn sync_parent_directory(path: &Path) -> Result<()> {
-    #[cfg(unix)]
-    {
-        let parent = parent_directory(path);
-        std::fs::File::open(parent)
-            .with_context(|| format!("failed to open {} for sync", parent.display()))?
-            .sync_all()
-            .with_context(|| format!("failed to sync {}", parent.display()))
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        // The Windows replacement primitive itself requests write-through.
-        let _ = path;
-        Ok(())
-    }
-
-    #[cfg(not(any(unix, target_os = "windows")))]
-    anyhow::bail!("durable config replacement is unsupported on this platform")
-}
-
-#[cfg(any(unix, test))]
-fn parent_directory(path: &Path) -> &Path {
-    path.parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."))
-}
-
 /// The refusal text for a config file this build cannot read.
 ///
 /// Old files get the exact hand-migration; new files get told to upgrade.
@@ -860,13 +952,26 @@ mod persistence_tests {
         (manager, path)
     }
 
-    #[test]
-    fn bare_config_path_syncs_the_current_directory() {
-        assert_eq!(parent_directory(Path::new("config.toml")), Path::new("."));
-        assert_eq!(
-            parent_directory(Path::new("nested/config.toml")),
-            Path::new("nested")
+    fn staged_temporary_files(path: &Path) -> Vec<PathBuf> {
+        let prefix = format!(
+            ".{}.",
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .expect("test config path should have a UTF-8 file name")
         );
+        std::fs::read_dir(
+            path.parent()
+                .expect("test config path should have a parent directory"),
+        )
+        .expect("test config parent should be readable")
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|candidate| {
+            candidate
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(&prefix) && name.ends_with(".tmp"))
+        })
+        .collect()
     }
 
     #[test]
@@ -915,45 +1020,113 @@ mod persistence_tests {
     }
 
     #[test]
-    fn post_replace_failures_keep_memory_unpublished_and_visible_file_parseable() {
+    fn general_replace_failure_removes_staged_temporary_file() {
         let dir = tempfile::TempDir::new().expect("tempdir");
-        let stages = [
-            ConfigPersistenceStage::SyncDirectory,
-            ConfigPersistenceStage::AfterDurableWrite,
-        ];
+        let (manager, path) = manager_with_persisted_default(dir.as_ref(), "general-cleanup");
+        let expected = manager.get().clone();
+        manager.fail_next_persistence_at(ConfigPersistenceStage::Replace);
 
-        for stage in stages {
-            let (manager, path) =
-                manager_with_persisted_default(dir.as_ref(), &format!("{stage:?}"));
-            let expected = manager.get().clone();
-            let original_port = expected.daemon.port;
-            manager.fail_next_persistence_at(stage);
+        assert!(
+            manager
+                .modify_and_save_if_current_snapshot(&expected, |config| {
+                    config.daemon.port = UPDATED_PORT;
+                })
+                .is_err()
+        );
+        assert!(staged_temporary_files(&path).is_empty());
+    }
 
-            let result = manager.modify_and_save_if_current_snapshot(&expected, |config| {
-                config.daemon.port = UPDATED_PORT;
-            });
+    #[test]
+    fn concurrent_capture_stages_use_distinct_owned_temporary_files() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let (manager, path) = manager_with_persisted_default(dir.as_ref(), "capture-stages");
+        let expected = manager.get().clone();
+        let mut first_capture = expected.capture.clone();
+        first_capture.capture_fps = first_capture.capture_fps.saturating_add(1);
+        let mut second_capture = expected.capture.clone();
+        second_capture.capture_fps = second_capture.capture_fps.saturating_add(2);
 
-            assert!(result.is_err(), "{stage:?} must fail");
-            assert_eq!(manager.get().daemon.port, original_port, "{stage:?} live");
-            assert_eq!(
-                ConfigManager::new(path.clone())
-                    .expect("reopen visible replacement")
-                    .get()
-                    .daemon
-                    .port,
-                UPDATED_PORT,
-                "{stage:?} reopened disk"
-            );
-            assert!(
+        let (first, second) = std::thread::scope(|scope| {
+            let first = scope.spawn(|| {
                 manager
-                    .modify_and_save_if_current_snapshot(&expected, |config| {
-                        config.daemon.port = UPDATED_PORT;
-                    })
-                    .expect("same-process retry")
-                    .is_some(),
-                "{stage:?} retry"
-            );
-            assert_eq!(manager.get().daemon.port, UPDATED_PORT, "{stage:?} live");
-        }
+                    .stage_capture_config(&expected, first_capture)
+                    .expect("first capture stage should succeed")
+                    .expect("expected pointer should remain current")
+            });
+            let second = scope.spawn(|| {
+                manager
+                    .stage_capture_config(&expected, second_capture)
+                    .expect("second capture stage should succeed")
+                    .expect("expected pointer should remain current")
+            });
+            (
+                first.join().expect("first capture stage should join"),
+                second.join().expect("second capture stage should join"),
+            )
+        });
+        let first_path = first.file.path().to_owned();
+        let second_path = second.file.path().to_owned();
+
+        assert_ne!(first_path, second_path);
+        assert!(first_path.exists());
+        assert!(second_path.exists());
+        assert_eq!(staged_temporary_files(&path).len(), 2);
+        drop((first, second));
+        assert!(staged_temporary_files(&path).is_empty());
+    }
+
+    #[test]
+    fn staged_capture_commit_orders_durability_runtime_and_live_publication() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let (manager, path) = manager_with_persisted_default(dir.as_ref(), "capture-ordering");
+        let expected = manager.get().clone();
+        let mut capture = expected.capture.clone();
+        capture.enabled = !capture.enabled;
+        let staged = manager
+            .stage_capture_config(&expected, capture.clone())
+            .expect("capture staging should succeed")
+            .expect("expected pointer should remain current");
+        let failed_temporary_path = staged.file.path().to_owned();
+        let runtime_committed = std::sync::atomic::AtomicBool::new(false);
+        manager.fail_next_persistence_at(ConfigPersistenceStage::Replace);
+
+        assert!(
+            manager
+                .commit_staged_capture_if_current(&expected, None, staged, |install_live| {
+                    runtime_committed.store(true, Ordering::Release);
+                    install_live();
+                })
+                .is_err()
+        );
+        assert!(!runtime_committed.load(Ordering::Acquire));
+        assert!(!failed_temporary_path.exists());
+        assert_eq!(manager.get().capture, expected.capture);
+        assert_eq!(
+            ConfigManager::load(&path)
+                .expect("persisted config should remain readable")
+                .capture,
+            expected.capture
+        );
+
+        let staged = manager
+            .stage_capture_config(&expected, capture.clone())
+            .expect("capture restaging should succeed")
+            .expect("expected pointer should remain current");
+        manager
+            .commit_staged_capture_if_current(&expected, None, staged, |install_live| {
+                assert_eq!(manager.get().capture, expected.capture);
+                runtime_committed.store(true, Ordering::Release);
+                install_live();
+            })
+            .expect("durable replacement should succeed")
+            .expect("expected pointer should commit");
+        assert!(runtime_committed.load(Ordering::Acquire));
+        assert_eq!(manager.get().capture, capture);
+        assert_eq!(
+            ConfigManager::load(&path)
+                .expect("committed config should reopen")
+                .capture,
+            capture
+        );
     }
 }

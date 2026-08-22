@@ -22,6 +22,10 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use axum::Router;
 use axum::extract::ws::Message;
+use hypercolor_core::input::{
+    DataSource, DataSourceKind, DataSourceRole, InputData, InputSource, ManagedSourceRole,
+    SourceRoleBinding,
+};
 use hypercolor_daemon::api::local::{TrustedLocalApi, TrustedLocalWebSocket};
 use hypercolor_daemon::api::{self, AppState};
 use hypercolor_daemon::device_metrics::{DeviceMetrics, DeviceMetricsSnapshot};
@@ -39,6 +43,48 @@ use uuid::Uuid;
 // ── Test Harness ─────────────────────────────────────────────────────────
 
 static TEST_DATA_DIR_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+struct FixedSensorSource {
+    snapshot: Arc<SystemSnapshot>,
+    running: bool,
+}
+
+impl InputSource for FixedSensorSource {
+    fn name(&self) -> &'static str {
+        "fixed-sensors"
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        self.running = true;
+        Ok(())
+    }
+
+    fn stop(&mut self) {
+        self.running = false;
+    }
+
+    fn sample(&mut self) -> anyhow::Result<InputData> {
+        Ok(if self.running {
+            InputData::Sensors(Arc::clone(&self.snapshot))
+        } else {
+            InputData::None
+        })
+    }
+
+    fn is_running(&self) -> bool {
+        self.running
+    }
+}
+
+impl SourceRoleBinding for FixedSensorSource {
+    type Role = DataSourceRole;
+}
+
+impl DataSource for FixedSensorSource {
+    fn data_source_kind(&self) -> DataSourceKind {
+        DataSourceKind::Sensors
+    }
+}
 
 fn test_data_dir() -> PathBuf {
     let counter = TEST_DATA_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -505,12 +551,19 @@ async fn sensors_subscription_streams_seeded_snapshot() {
     snapshot.cpu_load_percent = 37.5;
     snapshot.ram_used_percent = 64.0;
     snapshot.polled_at_ms = 8_901;
-    let (_sensor_tx, sensor_rx) = tokio::sync::watch::channel(Arc::new(snapshot));
-    state
-        .input_manager
-        .lock()
-        .await
-        .set_sensor_snapshot_receiver(sensor_rx);
+    {
+        let input_manager = &state.input_manager;
+        input_manager
+            .add_source(ManagedSourceRole::data(Box::new(FixedSensorSource {
+                snapshot: Arc::new(snapshot),
+                running: false,
+            })))
+            .expect("fixed sensor source should register");
+        input_manager
+            .start_all()
+            .expect("fixed sensor source starts");
+        input_manager.sample_sources(0.0);
+    }
 
     let addr = spawn_test_daemon_with_state(state).await;
     let mut stream = ws_connect(addr)

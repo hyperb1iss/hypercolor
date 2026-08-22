@@ -104,7 +104,9 @@ once the bundle is certificate-signed. And
 `tech.hyperbliss.hypercolor.sidecar` identifier after the Tauri build,
 because the daemon ownership handshake verifies that identity chain
 between the app and its sidecar; Tauri alone would sign it with a
-filename-derived identifier the handshake rejects.
+filename-derived identifier the handshake rejects. The sidecar profile also
+holds the Apple Events Automation entitlement used by opt-in media adapters;
+standalone binaries remain ineligible.
 
 Release DMGs use a real Developer ID plus notarization through
 `just mac-installer`; see [RELEASING.md](RELEASING.md). The dev

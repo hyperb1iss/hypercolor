@@ -70,7 +70,8 @@ fn route_requests_use_exact_preview_and_authoritative_publications() {
         InteractionRoutePolicy::Browser,
     );
 
-    let preview_request = control.preview_request(&preview);
+    let initial = control.snapshot();
+    let preview_request = initial.preview_request(preview.publication_id());
     assert_eq!(preview_request.policy, InteractionRoutePolicy::Browser);
     assert_eq!(
         preview_request.browser_source,
@@ -78,15 +79,18 @@ fn route_requests_use_exact_preview_and_authoritative_publications() {
             preview.publication_id().get()
         ))
     );
-    assert_eq!(control.daemon_request().browser_source, None);
+    assert_eq!(initial.daemon_request().browser_source, None);
+    assert_eq!(initial.config_generation, 1);
 
     control
         .claim_authoritative(&preview)
         .expect("claim should succeed");
+    let claimed = control.snapshot();
     assert_eq!(
-        control.daemon_request().browser_source,
+        claimed.daemon_request().browser_source,
         preview_request.browser_source
     );
+    assert_eq!(claimed.config_generation, 1);
 }
 
 #[test]

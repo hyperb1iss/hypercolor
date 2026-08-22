@@ -36,12 +36,13 @@ use cpal::{FromSample, Sample, SampleFormat, SizedSample, Stream};
 #[cfg(target_os = "linux")]
 use libpulse_binding as pulse;
 
-use crate::input::status::SourceStatusPolicy;
-use crate::input::traits::{InputData, InputSource};
-use crate::input::worker_retention::{retain_input_worker, spawn_input_worker};
+use crate::input::traits::{
+    AudioSource, AudioSourceRole, InputData, InputSource, SourceRoleBinding,
+};
 use crate::input::{SourceIssue, SourceKind, SourceStatusHandle, SourceStatusReporter};
 use crate::types::audio::{AudioData, AudioPipelineConfig, AudioSourceType};
 use crate::types::event::TimedInputEvent;
+use hypercolor_worker_retention::{retain_worker, spawn_worker};
 
 use beat::{BeatDetector, BeatFrame};
 use features::{
@@ -274,7 +275,7 @@ struct CapturedAudioSnapshot {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
-enum AudioFailureKind {
+pub(super) enum AudioFailureKind {
     None = 0,
     DeviceLost = 1,
     PermissionDenied = 2,
@@ -363,7 +364,7 @@ impl AnalysisWorker {
         let worker_stop = Arc::clone(&stop);
         let analyzer = AudioAnalyzer::with_sample_rate(config, sample_rate_hz);
         let samples = Vec::with_capacity(config.fft_size.saturating_mul(4).max(4_096));
-        let worker = spawn_input_worker(
+        let worker = spawn_worker(
             thread::Builder::new().name("hypercolor-audio-analysis".to_owned()),
             move || {
                 run_analysis_worker(
@@ -434,7 +435,7 @@ impl RecoveryWorker {
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = Arc::clone(&stop);
         let worker_config = config.clone();
-        let worker = spawn_input_worker(
+        let worker = spawn_worker(
             thread::Builder::new().name("hypercolor-audio-recovery".to_owned()),
             move || {
                 let mut attempt = 0_u32;
@@ -493,7 +494,7 @@ impl Drop for RecoveryWorker {
         if worker.is_finished() {
             let _ = worker.join();
         } else {
-            retain_input_worker(worker, "audio recovery worker");
+            retain_worker(worker, "audio recovery worker");
         }
     }
 }
@@ -575,15 +576,12 @@ pub enum AudioCaptureBackend {
 
 /// Native audio state prepared away from the render-owned input manager.
 ///
-/// Construction may enumerate devices and wait for a backend. Committing the
-/// prepared value only swaps in-memory state and retires the previous runtime
-/// asynchronously.
+/// Construction may enumerate devices and wait for a backend. The prepared
+/// value becomes a complete replacement source before the manager is locked.
 #[must_use = "prepared native audio state must be committed or explicitly dropped"]
-pub struct PreparedAudioReconfiguration {
-    pub(super) expected_graph_generation: u64,
-    pub(super) expected_source_present: bool,
-    pub(super) expected_source_running: bool,
-    pub(super) enabled: bool,
+pub(super) struct PreparedAudioReconfiguration {
+    running: bool,
+    source_graph_generation: u64,
     config: AudioPipelineConfig,
     pub(super) name: String,
     pub(super) capture_active: bool,
@@ -595,51 +593,10 @@ pub struct PreparedAudioReconfiguration {
     terminal_failure: Arc<AtomicU8>,
 }
 
-/// Previous audio workers detached by a successful in-memory commit.
-///
-/// Call [`Self::retire`] only after releasing the input manager lock.
-#[must_use = "detached audio workers must be retired outside the input manager lock"]
-pub struct AudioRuntimeRetirement {
-    capture: Option<CaptureRuntime>,
-    recovery: Option<RecoveryWorker>,
-}
-
-impl std::fmt::Debug for AudioRuntimeRetirement {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("AudioRuntimeRetirement")
-            .field("capture", &self.capture.is_some())
-            .field("recovery", &self.recovery.is_some())
-            .finish()
-    }
-}
-
-impl AudioRuntimeRetirement {
-    pub(super) fn empty() -> Self {
-        Self {
-            capture: None,
-            recovery: None,
-        }
-    }
-
-    fn new(capture: Option<CaptureRuntime>, recovery: Option<RecoveryWorker>) -> Self {
-        Self { capture, recovery }
-    }
-
-    /// Stop detached audio workers without blocking the caller.
-    pub fn retire(self) {
-        if self.capture.is_none() && self.recovery.is_none() {
-            return;
-        }
-        retire_audio_runtime(self);
-    }
-}
-
 pub(super) struct AudioPreparationRequest {
-    pub expected_graph_generation: u64,
-    pub expected_source_present: bool,
-    pub expected_source_running: bool,
-    pub enabled: bool,
+    pub running: bool,
+    pub source_graph_generation: u64,
+    pub predecessor_status: Option<SourceStatusHandle>,
     pub config: AudioPipelineConfig,
     pub name: String,
     pub capture_active: bool,
@@ -666,12 +623,7 @@ impl PreparedAudioReconfiguration {
         ) -> anyhow::Result<CaptureRuntime>,
     ) -> anyhow::Result<Self> {
         let terminal_failure = Arc::new(AtomicU8::new(AudioFailureKind::None as u8));
-        let should_start_capture = request.capture_active
-            && if request.expected_source_present {
-                request.expected_source_running
-            } else {
-                request.enabled
-            };
+        let should_start_capture = request.running && request.capture_active;
         let capture = if should_start_capture {
             Some(build_capture(
                 &request.config,
@@ -690,21 +642,30 @@ impl PreparedAudioReconfiguration {
             || Arc::new(ArcSwapOption::empty()),
             |capture| Arc::clone(&capture.latest_snapshot),
         ));
-        let status = (!request.expected_source_present).then(|| {
-            SourceStatusReporter::new(
-                "audio",
-                SourceKind::Audio,
-                capture_backend.status_id(),
-                !matches!(request.config.source, AudioSourceType::None),
-                true,
-                request.capture_active,
-            )
-        });
+        let status = Some(request.predecessor_status.as_ref().map_or_else(
+            || {
+                SourceStatusReporter::new(
+                    "audio",
+                    SourceKind::Audio,
+                    capture_backend.status_id(),
+                    !matches!(request.config.source, AudioSourceType::None),
+                    true,
+                    request.capture_active,
+                )
+            },
+            |predecessor| {
+                SourceStatusReporter::new_successor(
+                    predecessor,
+                    capture_backend.status_id(),
+                    !matches!(request.config.source, AudioSourceType::None),
+                    true,
+                    request.capture_active,
+                )
+            },
+        ));
         Ok(Self {
-            expected_graph_generation: request.expected_graph_generation,
-            expected_source_present: request.expected_source_present,
-            expected_source_running: request.expected_source_running,
-            enabled: request.enabled,
+            running: request.running,
+            source_graph_generation: request.source_graph_generation,
             config: request.config,
             name: request.name,
             capture_active: request.capture_active,
@@ -739,13 +700,8 @@ impl PreparedAudioReconfiguration {
         )
     }
 
-    /// Inject a terminal pre-commit failure for deterministic transaction tests.
-    #[doc(hidden)]
-    pub fn fail_before_commit_for_testing(&mut self) {
-        self.terminal_failure.store(
-            AudioFailureKind::BackendUnavailable as u8,
-            Ordering::Release,
-        );
+    pub(super) fn failure_signal(&self) -> Arc<AtomicU8> {
+        Arc::clone(&self.terminal_failure)
     }
 }
 
@@ -804,6 +760,7 @@ pub struct AudioInput {
     recovery: Option<RecoveryWorker>,
     degraded_to_silence: bool,
     last_failure: AudioFailureKind,
+    prepared_failure: Arc<AtomicU8>,
     status: SourceStatusReporter,
 }
 
@@ -825,6 +782,7 @@ impl AudioInput {
             recovery: None,
             degraded_to_silence: false,
             last_failure: AudioFailureKind::None,
+            prepared_failure: Arc::new(AtomicU8::new(AudioFailureKind::None as u8)),
             status: SourceStatusReporter::new(
                 "audio",
                 SourceKind::Audio,
@@ -1022,67 +980,8 @@ impl AudioInput {
             .map_or(InputData::None, |sample| sample.as_ref().clone()))
     }
 
-    pub(super) fn commit_prepared(
-        &mut self,
-        prepared: &mut PreparedAudioReconfiguration,
-    ) -> anyhow::Result<AudioRuntimeRetirement> {
-        prepared.ensure_ready()?;
-        let previous_source = self.config.source.clone();
-        let was_running = self.running;
-        let capture_backend = classify_audio_capture_backend(
-            &prepared.config.source,
-            prepared.capture.as_ref().map(CaptureRuntime::backend),
-        );
-        self.status.reconfigure(
-            capture_backend.status_id(),
-            SourceStatusPolicy::new(
-                !matches!(prepared.config.source, AudioSourceType::None),
-                true,
-                prepared.capture_active,
-            ),
-            was_running && prepared.capture_active,
-        )?;
-        let next_analyzer = prepared
-            .analyzer
-            .take()
-            .expect("prepared audio analyzer is committed exactly once");
-        let next_silence = prepared
-            .silence
-            .take()
-            .expect("prepared audio silence snapshot is committed exactly once");
-        let next_snapshot = prepared
-            .latest_snapshot
-            .take()
-            .expect("prepared audio snapshot slot is committed exactly once");
-        let previous_capture = self.capture.take();
-        let previous_recovery = self.recovery.take();
-        self.name = std::mem::take(&mut prepared.name);
-        self.config = std::mem::take(&mut prepared.config);
-        self.analyzer = next_analyzer;
-        self.silence = next_silence;
-        self.latest_snapshot = next_snapshot;
-        self.capture = prepared.capture.take();
-        self.capture_active = prepared.capture_active;
-        self.degraded_to_silence = false;
-        self.last_failure = AudioFailureKind::None;
-        self.last_status_snapshot = None;
-
-        tracing::info!(
-            input = %self.name,
-            previous_source = ?previous_source,
-            source = ?self.config.source,
-            capture_active = self.capture_active,
-            "Live audio capture configuration committed"
-        );
-        Ok(AudioRuntimeRetirement::new(
-            previous_capture,
-            previous_recovery,
-        ))
-    }
-
     pub(super) fn from_prepared(
         prepared: &mut PreparedAudioReconfiguration,
-        source_graph_generation: u64,
     ) -> anyhow::Result<Self> {
         prepared.ensure_ready()?;
         let capture_backend = classify_audio_capture_backend(
@@ -1097,9 +996,10 @@ impl AudioInput {
             prepared.status = Some(status);
             return Err(error.into());
         }
-        status.set_source_graph_generation(source_graph_generation);
-        let should_capture =
-            prepared.capture_active && !matches!(prepared.config.source, AudioSourceType::None);
+        status.set_source_graph_generation(prepared.source_graph_generation);
+        let should_capture = prepared.running
+            && prepared.capture_active
+            && !matches!(prepared.config.source, AudioSourceType::None);
         if should_capture && prepared.capture.is_none() {
             prepared.status = Some(status);
             anyhow::bail!("active prepared audio source is missing its capture runtime");
@@ -1115,7 +1015,7 @@ impl AudioInput {
             .expect("prepared audio snapshot slot is committed exactly once");
         Ok(Self {
             name: std::mem::take(&mut prepared.name),
-            running: true,
+            running: prepared.running,
             capture_active: prepared.capture_active,
             config: std::mem::take(&mut prepared.config),
             analyzer: prepared
@@ -1132,6 +1032,7 @@ impl AudioInput {
             recovery: None,
             degraded_to_silence: false,
             last_failure: AudioFailureKind::None,
+            prepared_failure: Arc::clone(&prepared.terminal_failure),
             status,
         })
     }
@@ -1258,39 +1159,6 @@ impl AudioInput {
             Ok(())
         }
     }
-
-    /// Apply a runtime audio config change without rebuilding the whole input manager.
-    ///
-    /// A replacement native stream and analysis worker become ready against a
-    /// private publication slot before any committed state changes. A failed
-    /// replacement therefore leaves the current stream live and retryable.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the new stream cannot be created or started.
-    pub fn reconfigure_live(
-        &mut self,
-        config: &AudioPipelineConfig,
-        name: impl Into<String>,
-        capture_active: bool,
-    ) -> anyhow::Result<()> {
-        let next_name = name.into();
-        let was_running = self.running;
-        let effective_capture_active =
-            capture_active && !matches!(config.source, AudioSourceType::None);
-        let prepared = PreparedAudioReconfiguration::prepare(AudioPreparationRequest {
-            expected_graph_generation: 0,
-            expected_source_present: true,
-            expected_source_running: was_running,
-            enabled: !matches!(config.source, AudioSourceType::None),
-            config: config.clone(),
-            name: next_name,
-            capture_active: effective_capture_active,
-        })?;
-        let mut prepared = prepared;
-        self.commit_prepared(&mut prepared)?.retire();
-        Ok(())
-    }
 }
 
 impl InputSource for AudioInput {
@@ -1382,34 +1250,35 @@ impl InputSource for AudioInput {
     fn source_status_reporter(&mut self) -> Option<&mut SourceStatusReporter> {
         Some(&mut self.status)
     }
+}
 
-    fn is_audio_source(&self) -> bool {
-        true
-    }
-
-    fn reconfigure_audio(
-        &mut self,
-        config: &AudioPipelineConfig,
-        name: &str,
-        capture_active: bool,
-    ) -> anyhow::Result<()> {
-        self.reconfigure_live(config, name, capture_active)
-    }
-
-    fn supports_prepared_audio_reconfiguration(&self) -> bool {
-        true
-    }
-
-    fn commit_prepared_audio_reconfiguration(
-        &mut self,
-        prepared: &mut PreparedAudioReconfiguration,
-    ) -> anyhow::Result<AudioRuntimeRetirement> {
-        self.commit_prepared(prepared)
+impl AudioSource for AudioInput {
+    fn ensure_prepared_source_ready(&mut self) -> Result<(), Arc<str>> {
+        let observed = self
+            .capture
+            .as_mut()
+            .and_then(CaptureRuntime::observe_failure);
+        let injected = AudioFailureKind::from_code(
+            self.prepared_failure
+                .swap(AudioFailureKind::None as u8, Ordering::AcqRel),
+        );
+        let failure = observed.unwrap_or(injected);
+        if failure == AudioFailureKind::None {
+            Ok(())
+        } else {
+            self.prepared_failure
+                .store(failure as u8, Ordering::Release);
+            Err(Arc::from(failure.message()))
+        }
     }
 
     fn set_audio_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
         self.set_capture_active_state(active)
     }
+}
+
+impl SourceRoleBinding for AudioInput {
+    type Role = AudioSourceRole;
 }
 
 impl Drop for AudioInput {
@@ -1896,7 +1765,7 @@ impl Drop for LinuxPulseCapture {
         let Some(worker) = self.worker.take() else {
             return;
         };
-        retain_input_worker(worker, "PulseAudio capture worker");
+        retain_worker(worker, "PulseAudio capture worker");
     }
 }
 
@@ -1982,15 +1851,11 @@ impl CaptureRuntime {
 }
 
 fn retire_capture_runtime(capture: CaptureRuntime) {
-    retire_audio_runtime(AudioRuntimeRetirement::new(Some(capture), None));
-}
-
-fn retire_audio_runtime(runtime: AudioRuntimeRetirement) {
-    match spawn_input_worker(
+    match spawn_worker(
         thread::Builder::new().name("hypercolor-audio-retire".to_owned()),
-        move || drop(runtime),
+        move || drop(capture),
     ) {
-        Ok(worker) => retain_input_worker(worker, "audio capture retirement"),
+        Ok(worker) => retain_worker(worker, "audio capture retirement"),
         Err(error) => tracing::warn!(%error, "Failed to spawn audio capture retirement worker"),
     }
 }
@@ -2010,7 +1875,7 @@ fn build_linux_pulse_capture_stream(
     let worker_failure = Arc::clone(&failure);
     let worker_source = source_name.to_owned();
     let worker_display = display_name.to_owned();
-    let worker = spawn_input_worker(
+    let worker = spawn_worker(
         thread::Builder::new().name("hypercolor-pulse-capture".to_owned()),
         move || {
             run_linux_pulse_capture(

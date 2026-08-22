@@ -6,10 +6,9 @@
 
 pub mod audio;
 pub mod browser;
-#[cfg(target_os = "linux")]
 pub mod evdev;
 mod graph;
-pub mod keymap;
+mod host_fold;
 pub mod macos;
 pub mod media;
 pub mod net;
@@ -20,7 +19,6 @@ pub mod sensor;
 mod status;
 mod traits;
 pub mod windows;
-mod worker_retention;
 
 pub use browser::{
     BROWSER_RETIRED_LEGACY_CAPACITY, BrowserConnectionIncarnation, BrowserInputAttachment,
@@ -28,12 +26,17 @@ pub use browser::{
     BrowserInputPublicationId, BrowserInputRegistryError, BrowserInputRegistryHandle,
     BrowserInputRegistrySnapshot, BrowserInputSource, BrowserPreviewId,
 };
-#[cfg(target_os = "linux")]
 pub use evdev::{DeviceOpenState, DeviceOpenStatus, EvdevHostInput};
 pub use graph::{
     INPUT_EVENT_RING_CAPACITY, InputEventRead, InputGraphHandle, InputGraphSnapshot,
     InputPublicationRead, InputSourceSlot, InteractionSourceOrigin, InteractionTransientTotals,
 };
+pub use host_fold::{
+    HostInputFold, HostInputFoldDiagnostics, HostInputPublishOutcome, HostInputSample,
+    HostInputSink,
+};
+#[doc(hidden)]
+pub use hypercolor_worker_retention::retention_service_identity as worker_retention_service_identity;
 pub use macos::{MacosHostInput, MacosInputFoldDiagnostics};
 #[cfg(feature = "macos-native-fixtures")]
 pub use macos::{MacosHostInputFixture, MacosInputFixtureBackend};
@@ -41,40 +44,35 @@ pub use media::MediaSource;
 pub use net::NetSource;
 pub use screen::{ScreenCaptureDemand, ScreenPublicationDemandSnapshot};
 pub use scroll::{LegacyWheelProjector, Q16_16_SCALE, q16_16_to_f64};
-pub use sensor::SensorPoller;
+pub use sensor::SensorSource;
 pub use status::{
-    MacosArchitecture, MacosAuthorizationState, MacosCapabilityOwner, MacosDaemonOwnerConflict,
-    MacosInputPlatformStatus, MacosProtectedSourceState, MacosScreenPlatformStatus,
-    MacosScreenTimingStatus, MacosSelectionState, MacosTahoeCapabilities,
-    MacosTahoeSelectionCapabilities, MacosTimingStatus, ScreenCaptureDiagnostics,
-    ScreenCaptureReductionPath, SourceDiagnostics, SourceFreshness, SourceIssue, SourceKind,
-    SourcePlatformStatus, SourceResourceScanHealth, SourceSessionSlot, SourceSessionWriter,
+    ScreenCaptureDiagnostics, ScreenCaptureReductionPath, SourceDiagnostics, SourceFreshness,
+    SourceIssue, SourceKind, SourceResourceScanHealth, SourceSessionSlot, SourceSessionWriter,
     SourceState, SourceStatus, SourceStatusAvailability, SourceStatusError, SourceStatusHandle,
     SourceStatusRegistry, SourceStatusRegistrySnapshot, SourceStatusReporter,
     SourceStatusSubscription, SourceStatusWriter, SourceTimestampField, TerminalFailureLatch,
     classify_source_resource_scan,
 };
-#[cfg(target_os = "macos")]
-pub use traits::MacosScreenshotReferenceAction;
 pub use traits::{
-    InputData, InputSource, InteractionBatch, InteractionData, InteractionDegradation,
-    InteractionDiagnostics, KeyboardData, MotionAggregate, MouseData, PointerMode,
-    ProtectedSourceActionExecutor, ProtectedSourceActionOwner, ProtectedSourceAuthorizationAction,
-    ResolvedProtectedSourceAction, ScreenData, ScreenSourcePickerAction, ScreenZoneColors,
-    ScrollAggregate,
+    AudioSource, AudioSourceRole, CapabilityActionDisposition, CapabilityActionIdentity,
+    DataSource, DataSourceKind, DataSourceRole, InputData, InputSource, InteractionBatch,
+    InteractionData, InteractionDegradation, InteractionDiagnostics, InteractionSource,
+    InteractionSourceRole, KeyboardData, ManagedSource, ManagedSourceKey, ManagedSourceRole,
+    MotionAggregate, MouseData, PointerMode, ProtectedSourceAuthorizationAction,
+    ResolvedProtectedSourceAction, ScreenData, ScreenSource, ScreenSourcePickerAction,
+    ScreenSourceRole, ScreenZoneColors, ScrollAggregate, SourceCapabilityConflict,
+    SourceCapabilityContext, SourceDiagnosticArtifact, SourceDiagnosticArtifactAction, SourceRole,
+    SourceRoleBinding,
 };
 pub use windows::WindowsHostInput;
 #[cfg(all(target_os = "windows", feature = "windows-capture-fixtures"))]
 pub use windows::WindowsHostInputFixture;
 
-use crate::input::audio::{
-    AudioInput, AudioPreparationRequest, AudioRuntimeRetirement, PreparedAudioReconfiguration,
-};
+use crate::input::audio::{AudioInput, AudioPreparationRequest, PreparedAudioReconfiguration};
 use crate::types::audio::AudioPipelineConfig;
 use crate::types::event::TimedInputEvent;
-use hypercolor_types::sensor::SystemSnapshot;
 use std::ops::{Deref, DerefMut};
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, LazyLock, Mutex, RwLock, TryLockError};
 use std::time::Instant;
 use thiserror::Error;
 use tokio::sync::watch;
@@ -101,46 +99,97 @@ pub fn input_mono_ms() -> u64 {
 /// input manager lock.
 #[must_use = "audio reconfiguration plans must be prepared and committed"]
 pub struct AudioRuntimeConfigPlan {
-    expected_graph_generation: u64,
-    expected_source_present: bool,
-    expected_source_running: bool,
-    enabled: bool,
-    config: AudioPipelineConfig,
-    display_name: String,
-    capture_active: bool,
+    source_swap: SourceSwapPlan,
+    preparation: Option<AudioPreparationRequest>,
 }
 
-/// A concurrent input-graph transition invalidated prepared audio state.
-#[derive(Debug, thiserror::Error)]
-pub enum AudioReconfigurationConflict {
-    /// The canonical source graph changed after preparation began.
-    #[error("input graph changed while audio reconfiguration was prepared")]
-    GraphChanged,
-    /// An audio source was added or removed after preparation began.
-    #[error("audio source topology changed while reconfiguration was prepared")]
-    SourceTopologyChanged,
-    /// The target audio source started or stopped after preparation began.
-    #[error("audio source lifecycle changed while reconfiguration was prepared")]
-    SourceLifecycleChanged,
+/// Complete audio candidate paired with its generic source-swap fence.
+#[must_use = "prepared audio source swaps must be committed or discarded"]
+pub struct PreparedAudioSourceSwap {
+    source_swap: PreparedSourceSwap,
+    failure_signal: Option<Arc<std::sync::atomic::AtomicU8>>,
 }
 
-/// Generation-fenced screen configuration captured while briefly holding the
-/// input manager lock.
-#[must_use = "screen reconfiguration plans must be prepared and committed"]
-pub struct ScreenRuntimeConfigPlan {
-    expected_graph_generation: u64,
-    expected_source_present: bool,
-    expected_source_running: bool,
+/// Result of a nonblocking input-manager intent.
+#[derive(Debug)]
+#[must_use = "nonblocking input-manager intents must handle busy and stale outcomes"]
+pub enum TryInputManagerIntent<T> {
+    /// Another lifecycle transaction currently owns the manager.
+    Busy,
+    /// The caller's lock-free freshness predicate rejected the intent.
+    Stale,
+    /// Lifecycle ownership was acquired and the intent ran.
+    Applied(T),
+}
+
+/// Desired capture state for every manager-owned capture domain.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InputCaptureDemand {
+    audio_active: bool,
+    screen: ScreenCaptureDemand,
+    interaction_active: bool,
+}
+
+impl InputCaptureDemand {
+    /// Construct one atomic capture-demand intent.
+    #[must_use]
+    pub const fn new(
+        audio_active: bool,
+        screen: ScreenCaptureDemand,
+        interaction_active: bool,
+    ) -> Self {
+        Self {
+            audio_active,
+            screen,
+            interaction_active,
+        }
+    }
+}
+
+/// Per-domain results and the exact graph generation after capture reconciliation.
+pub struct InputCaptureDemandApplication {
+    source_graph_generation: u64,
+    audio: InputCaptureDomainApplication,
+    screen: InputCaptureDomainApplication,
+    interaction: InputCaptureDomainApplication,
+}
+
+/// One capture domain's observed graph generation and application result.
+pub type InputCaptureDomainApplication = (u64, anyhow::Result<()>);
+
+impl InputCaptureDemandApplication {
+    /// Split the application into its final generation and domain results.
+    pub fn into_parts(
+        self,
+    ) -> (
+        u64,
+        InputCaptureDomainApplication,
+        InputCaptureDomainApplication,
+        InputCaptureDomainApplication,
+    ) {
+        (
+            self.source_graph_generation,
+            self.audio,
+            self.screen,
+            self.interaction,
+        )
+    }
+}
+
+/// Exact screen swap state captured while briefly holding the input manager lock.
+#[must_use = "screen source swap plans must be prepared and committed"]
+pub struct ScreenSourceSwapPlan {
+    source_swap: SourceSwapPlan,
     expected_capture_demand: ScreenCaptureDemand,
-    enabled: bool,
     capture_demand: ScreenCaptureDemand,
+    capacity: Option<ScreenCapacityPreparation>,
 }
 
-impl ScreenRuntimeConfigPlan {
+impl ScreenSourceSwapPlan {
     /// Whether the replacement source must be registered after commit.
     #[must_use]
     pub const fn enabled(&self) -> bool {
-        self.enabled
+        matches!(self.source_swap.target, SourceSwapTarget::Present { .. })
     }
 
     /// Demand state the prepared replacement must adopt before it starts.
@@ -152,10 +201,17 @@ impl ScreenRuntimeConfigPlan {
     /// Graph generation reserved for a staged replacement source.
     #[must_use]
     pub fn replacement_source_graph_generation(&self) -> u64 {
-        self.expected_graph_generation
-            .checked_add(1)
-            .expect("input source graph generation exhausted")
+        self.source_swap.replacement_source_graph_generation
     }
+}
+
+/// Fully managed screen candidate paired with demand and capacity fences.
+#[must_use = "prepared screen source swaps must be committed or discarded"]
+pub struct PreparedScreenSourceSwap {
+    source_swap: PreparedSourceSwap,
+    expected_capture_demand: ScreenCaptureDemand,
+    capture_demand: ScreenCaptureDemand,
+    capacity: Option<ScreenCapacityPreparation>,
 }
 
 /// Exact steady-state screen capacity prepared against one manager revision.
@@ -206,18 +262,26 @@ pub enum ScreenCapacityPreparationError {
     Publication(#[from] screen::ScreenPlanError),
 }
 
+/// Failure while atomically planning capacity and source state for screen capture.
+#[derive(Debug, thiserror::Error)]
+pub enum ScreenSourceSwapPlanningError {
+    /// The candidate analysis or publication plan exceeds available capacity.
+    #[error(transparent)]
+    Capacity(#[from] ScreenCapacityPreparationError),
+    /// Screen capacity admission is required but has not been installed.
+    #[error("screen capacity admission is not installed")]
+    CapacityUnavailable,
+    /// The typed screen source cannot be planned against the current graph.
+    #[error(transparent)]
+    Source(#[from] SourceSwapConflict),
+}
+
 /// A concurrent input-graph transition invalidated prepared screen state.
 #[derive(Debug, thiserror::Error)]
 pub enum ScreenReconfigurationConflict {
-    /// The canonical source graph changed after preparation began.
-    #[error("input graph changed while screen reconfiguration was prepared")]
-    GraphChanged,
-    /// A screen source was added or removed after preparation began.
-    #[error("screen source topology changed while reconfiguration was prepared")]
-    SourceTopologyChanged,
-    /// The target screen source started or stopped after preparation began.
-    #[error("screen source lifecycle changed while reconfiguration was prepared")]
-    SourceLifecycleChanged,
+    /// The generic source swap no longer describes the canonical graph.
+    #[error(transparent)]
+    Source(#[from] SourceSwapConflict),
     /// Screen demand changed after preparation began.
     #[error("screen capture demand changed while reconfiguration was prepared")]
     CaptureDemandChanged,
@@ -230,61 +294,358 @@ pub enum ScreenReconfigurationConflict {
     /// The configured analysis/publication split changed after preparation began.
     #[error("screen capacity policy changed while reconfiguration was prepared")]
     CapacityPolicyChanged,
-    /// The prepared replacement does not match the plan.
-    #[error("prepared screen source does not match the reconfiguration plan")]
-    InvalidReplacement,
+    /// The prepared replacement does not carry the planned exact demand.
+    #[error("prepared screen source demand does not match the reconfiguration plan")]
+    InvalidReplacementDemand,
 }
 
-/// Rejected host-input source swap.
+/// Failure before a screen source swap reaches its visibility fence.
+#[derive(Debug, thiserror::Error)]
+pub enum ScreenSourceSwapCommitError<E> {
+    /// A captured graph, demand, publication, resource, or capacity fence advanced.
+    #[error(transparent)]
+    Conflict(#[from] ScreenReconfigurationConflict),
+    /// Durable configuration persistence failed before graph mutation.
+    #[error(transparent)]
+    Persistence(E),
+}
+
+/// A typed source cannot enter the graph under ambiguous or conflicting metadata.
 #[derive(Debug, Error, Eq, PartialEq)]
-pub enum HostReconfigurationError {
-    /// More than one host source violates the manager's replacement invariant.
-    #[error("more than one host input source is registered")]
-    SourceTopologyChanged,
-    /// The candidate is not a running host interaction source.
-    #[error("prepared host input replacement is invalid")]
-    InvalidReplacement,
+pub enum SourceRegistrationError {
+    /// Source-authored status must agree with its immutable registered role.
+    #[error("input source key {key:?} declares status kind {observed:?}, expected {expected:?}")]
+    StatusKindMismatch {
+        /// Immutable registered role key.
+        key: ManagedSourceKey,
+        /// Role-derived scheduling and routing kind.
+        expected: SourceKind,
+        /// Kind published by the source-owned status handle.
+        observed: SourceKind,
+    },
 }
 
-/// Host sources detached by an atomic graph commit.
-#[must_use = "retired host sources must be stopped outside the input manager lock"]
-pub struct HostRuntimeRetirement {
+/// Desired source presence after one generation-fenced swap.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SourceSwapTarget {
+    /// Remove the source identified by the plan key.
+    Absent,
+    /// Install a replacement with the stated lifecycle state.
+    Present {
+        /// Whether the prepared replacement must already be running.
+        running: bool,
+    },
+}
+
+/// Immutable compare-and-swap plan for one typed source key.
+#[must_use = "source swap plans must be committed or discarded"]
+pub struct SourceSwapPlan {
+    key: ManagedSourceKey,
+    expected_graph_generation: u64,
+    expected_slot_id: Option<u64>,
+    expected_running: Option<bool>,
+    replacement_slot_id: u64,
+    replacement_source_graph_generation: u64,
+    source_capability_context: SourceCapabilityContext,
+    screen_publication_hub: Arc<screen::ScreenPublicationHub>,
+    target: SourceSwapTarget,
+}
+
+/// Opaque, fully managed candidate for one generic source swap.
+#[must_use = "prepared source swaps must be committed or discarded"]
+pub struct PreparedSourceSwap {
+    plan: SourceSwapPlan,
+    replacement: Option<ManagedInputSource>,
+}
+
+/// A concurrent graph change or invalid candidate rejected a typed swap.
+#[derive(Debug, Error, Eq, PartialEq)]
+pub enum SourceSwapConflict {
+    /// The canonical source graph changed after planning.
+    #[error("input graph changed while source swap was prepared")]
+    GraphChanged,
+    /// The role key does not uniquely identify one source.
+    #[error("input source key {key:?} is ambiguous")]
+    AmbiguousKey {
+        /// Ambiguous immutable role key.
+        key: ManagedSourceKey,
+    },
+    /// The source occupying the role key changed after planning.
+    #[error("input source key {key:?} changed while source swap was prepared")]
+    SourceChanged {
+        /// Immutable role key whose slot identity changed.
+        key: ManagedSourceKey,
+    },
+    /// The planned source started or stopped after planning.
+    #[error("input source key {key:?} changed lifecycle while source swap was prepared")]
+    SourceLifecycleChanged {
+        /// Immutable role key whose lifecycle changed.
+        key: ManagedSourceKey,
+    },
+    /// Candidate presence does not match the planned target.
+    #[error("prepared source presence does not match the swap target")]
+    InvalidReplacementPresence,
+    /// Candidate role identity does not match the planned key.
+    #[error("prepared source key {observed:?} does not match {expected:?}")]
+    InvalidReplacementKey {
+        /// Planned immutable role key.
+        expected: ManagedSourceKey,
+        /// Candidate immutable role key.
+        observed: ManagedSourceKey,
+    },
+    /// Candidate lifecycle does not match the planned target.
+    #[error("prepared source running state {observed_running} does not match {expected_running}")]
+    InvalidReplacementLifecycle {
+        /// Planned candidate lifecycle state.
+        expected_running: bool,
+        /// Observed candidate lifecycle state.
+        observed_running: bool,
+    },
+    /// Candidate status metadata conflicts with its immutable role.
+    #[error("prepared source status kind {observed:?} does not match {expected:?}")]
+    InvalidReplacementStatusKind {
+        /// Role-derived scheduling and routing kind.
+        expected: SourceKind,
+        /// Kind published by the candidate status handle.
+        observed: SourceKind,
+    },
+    /// A candidate runtime failed after construction but before commit.
+    #[error("prepared source {key:?} is not ready: {issue}")]
+    ReplacementNotReady {
+        /// Immutable role key of the rejected candidate.
+        key: ManagedSourceKey,
+        /// Stable backend failure description.
+        issue: Arc<str>,
+    },
+    /// Candidate manager state could not be staged from the captured plan.
+    #[error("prepared source {key:?} rejected manager context: {issue}")]
+    ReplacementPreparationFailed {
+        /// Immutable role key of the rejected candidate.
+        key: ManagedSourceKey,
+        /// Stable preparation failure description.
+        issue: Arc<str>,
+    },
+}
+
+fn validate_source_swap_role(
+    plan: &SourceSwapPlan,
+    replacement: Option<&ManagedSourceRole>,
+) -> Result<(), SourceSwapConflict> {
+    let expected_running = match plan.target {
+        SourceSwapTarget::Absent => {
+            return if replacement.is_none() {
+                Ok(())
+            } else {
+                Err(SourceSwapConflict::InvalidReplacementPresence)
+            };
+        }
+        SourceSwapTarget::Present { running } => running,
+    };
+    let Some(replacement) = replacement else {
+        return Err(SourceSwapConflict::InvalidReplacementPresence);
+    };
+    let observed = replacement.key();
+    if observed != plan.key {
+        return Err(SourceSwapConflict::InvalidReplacementKey {
+            expected: plan.key,
+            observed,
+        });
+    }
+    let observed_running = replacement.source().is_running();
+    if observed_running != expected_running {
+        return Err(SourceSwapConflict::InvalidReplacementLifecycle {
+            expected_running,
+            observed_running,
+        });
+    }
+    let expected = replacement.source_kind();
+    if let Some(observed) = replacement
+        .source()
+        .source_status_handle()
+        .map(|status| status.snapshot().kind)
+        .filter(|observed| *observed != expected)
+    {
+        return Err(SourceSwapConflict::InvalidReplacementStatusKind { expected, observed });
+    }
+    Ok(())
+}
+
+/// Source detached by one successful typed graph swap.
+#[must_use = "detached sources must be retired outside the input manager lock"]
+pub struct SourceRetirement {
     source: Option<ManagedInputSource>,
     source_graph_generation: u64,
 }
 
-impl HostRuntimeRetirement {
-    /// Stop the detached source and retire its status handle.
-    pub fn retire(mut self) {
-        let Some(source) = &mut self.source else {
-            return;
-        };
-        source.stop();
-        if let Err(error) = source.retire_source_status(self.source_graph_generation) {
-            error!(source = source.name(), %error, "Failed to retire host input source status");
-        }
-        info!(source = source.name(), "Retired host input source");
-    }
-}
-
-/// Screen sources detached by an atomic graph commit.
-#[must_use = "retired screen sources must be stopped outside the input manager lock"]
-pub struct ScreenRuntimeRetirement {
+/// Sources detached from the canonical graph for retirement without its lock.
+#[must_use = "detached sources must be retired outside the input manager lock"]
+pub struct SourceRetirementBatch {
     sources: Vec<ManagedInputSource>,
     source_graph_generation: u64,
 }
 
-impl ScreenRuntimeRetirement {
-    /// Stop detached workers and retire their status handles.
+impl SourceRetirementBatch {
+    /// Stop every detached source and permanently retire its status.
     pub fn retire(mut self) {
         for source in &mut self.sources {
             source.set_active_consumer_count(0);
             source.stop();
             if let Err(error) = source.retire_source_status(self.source_graph_generation) {
-                error!(source = source.name(), %error, "Failed to retire screen input source status");
+                error!(source = source.name(), %error, "Failed to retire input source status");
             }
-            info!(source = source.name(), "Retired screen capture source");
+            info!(source = source.name(), "Retired input source");
         }
+    }
+}
+
+impl SourceRetirement {
+    /// Stop the detached source and permanently retire its status.
+    pub fn retire(mut self) {
+        let Some(source) = &mut self.source else {
+            return;
+        };
+        source.set_active_consumer_count(0);
+        source.stop();
+        if let Err(error) = source.retire_source_status(self.source_graph_generation) {
+            error!(source = source.name(), %error, "Failed to retire input source status");
+        }
+        info!(source = source.name(), "Retired input source");
+    }
+}
+
+impl SourceSwapPlan {
+    /// Build slot, status, publication, and retained manager state away from commit.
+    ///
+    /// Candidate ownership remains in `replacement` when validation or retained
+    /// context preparation fails.
+    pub fn prepare(
+        self,
+        replacement: &mut Option<ManagedSourceRole>,
+    ) -> Result<PreparedSourceSwap, SourceSwapConflict> {
+        validate_source_swap_role(&self, replacement.as_ref())?;
+        if let Some(source) = replacement.as_mut() {
+            if let Some(screen) = source.as_screen_mut() {
+                screen
+                    .set_capability_context(&self.source_capability_context)
+                    .map_err(|error| SourceSwapConflict::ReplacementPreparationFailed {
+                        key: self.key,
+                        issue: Arc::from(error.to_string()),
+                    })?;
+            }
+            if let Some(interaction) = source.as_interaction_mut() {
+                interaction
+                    .set_capability_context(&self.source_capability_context)
+                    .map_err(|error| SourceSwapConflict::ReplacementPreparationFailed {
+                        key: self.key,
+                        issue: Arc::from(error.to_string()),
+                    })?;
+            }
+        }
+        let replacement = replacement.take().map(|source| {
+            let mut source = ManagedInputSource::new(
+                source,
+                self.replacement_slot_id,
+                self.replacement_source_graph_generation,
+                Arc::clone(&self.screen_publication_hub),
+            );
+            if source.is_running() {
+                source.mark_prestarted_compatibility_live();
+            }
+            source
+        });
+        Ok(PreparedSourceSwap {
+            plan: self,
+            replacement,
+        })
+    }
+}
+
+impl PreparedSourceSwap {
+    /// Whether the caller still owns a prepared replacement candidate.
+    #[must_use]
+    pub const fn has_replacement(&self) -> bool {
+        self.replacement.is_some()
+    }
+
+    /// Stop and discard an uncommitted candidate.
+    pub fn discard(mut self) {
+        if let Some(source) = &mut self.replacement {
+            source.stop();
+        }
+    }
+}
+
+impl ScreenSourceSwapPlan {
+    /// Bind a prepared screen backend to the generic source-swap lane.
+    ///
+    /// Candidate ownership remains in `replacement` on failure.
+    pub fn prepare(
+        self,
+        replacement: &mut Option<Box<dyn ScreenSource>>,
+    ) -> Result<PreparedScreenSourceSwap, SourceSwapConflict> {
+        let mut role = replacement.take().map(ManagedSourceRole::screen);
+        let source_swap = match self.source_swap.prepare(&mut role) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                *replacement = role.map(|role| match role {
+                    ManagedSourceRole::Screen(source) => source,
+                    ManagedSourceRole::Audio(_)
+                    | ManagedSourceRole::Interaction(_)
+                    | ManagedSourceRole::Data(_) => {
+                        unreachable!("screen swap preparation preserves the screen role")
+                    }
+                });
+                return Err(error);
+            }
+        };
+        Ok(PreparedScreenSourceSwap {
+            source_swap,
+            expected_capture_demand: self.expected_capture_demand,
+            capture_demand: self.capture_demand,
+            capacity: self.capacity,
+        })
+    }
+}
+
+impl PreparedScreenSourceSwap {
+    /// Whether the caller still owns a prepared replacement candidate.
+    #[must_use]
+    pub const fn has_replacement(&self) -> bool {
+        self.source_swap.has_replacement()
+    }
+
+    /// Stop and discard an uncommitted candidate.
+    pub fn discard(self) {
+        self.source_swap.discard();
+    }
+}
+
+/// One-shot infallible graph move issued only after every screen fence validates.
+#[must_use = "screen source swap commits must be installed exactly once"]
+pub struct ScreenSourceSwapCommit<'a> {
+    shared: Arc<InputManagerShared>,
+    prepared: &'a mut PreparedScreenSourceSwap,
+    current: Option<usize>,
+}
+
+impl ScreenSourceSwapCommit<'_> {
+    /// Move prepared state, install live config, then publish one visibility fence.
+    #[must_use = "detached sources must be retired outside the input manager lock"]
+    pub fn commit(self, install_live_config: impl FnOnce()) -> SourceRetirement {
+        let mut inner = lock_mutex(&self.shared.inner);
+        let state = inner
+            .state
+            .as_mut()
+            .expect("compound screen commit retains attached manager state");
+        if let Some(capacity) = self.prepared.capacity.take() {
+            state.commit_screen_capacity_unpublished(capacity);
+        }
+        let retirement =
+            state.commit_source_swap_unpublished(&mut self.prepared.source_swap, self.current);
+        state.screen_capture_demand = Some(self.prepared.capture_demand);
+        install_live_config();
+        state.publish_source_status_registry();
+        retirement
     }
 }
 
@@ -296,34 +657,57 @@ impl AudioRuntimeConfigPlan {
     /// # Errors
     ///
     /// Returns an error when the requested native stream cannot be staged.
-    pub fn prepare(self) -> anyhow::Result<PreparedAudioReconfiguration> {
-        PreparedAudioReconfiguration::prepare(self.into_request())
+    pub fn prepare(self) -> anyhow::Result<PreparedAudioSourceSwap> {
+        self.prepare_with(PreparedAudioReconfiguration::prepare)
     }
 
     /// Stage an in-memory capture runtime for deterministic transaction tests.
     #[doc(hidden)]
     pub fn prepare_with_synthetic_capture_for_testing(
         self,
-    ) -> anyhow::Result<PreparedAudioReconfiguration> {
-        PreparedAudioReconfiguration::prepare_with_synthetic_capture_for_testing(
-            self.into_request(),
-        )
+    ) -> anyhow::Result<PreparedAudioSourceSwap> {
+        self.prepare_with(PreparedAudioReconfiguration::prepare_with_synthetic_capture_for_testing)
     }
 
-    fn into_request(self) -> AudioPreparationRequest {
-        AudioPreparationRequest {
-            expected_graph_generation: self.expected_graph_generation,
-            expected_source_present: self.expected_source_present,
-            expected_source_running: self.expected_source_running,
-            enabled: self.enabled,
-            config: self.config,
-            name: self.display_name,
-            capture_active: self.capture_active,
+    fn prepare_with(
+        self,
+        prepare: impl FnOnce(AudioPreparationRequest) -> anyhow::Result<PreparedAudioReconfiguration>,
+    ) -> anyhow::Result<PreparedAudioSourceSwap> {
+        let prepared = self.preparation.map(prepare).transpose()?;
+        let failure_signal = prepared
+            .as_ref()
+            .map(PreparedAudioReconfiguration::failure_signal);
+        let mut replacement = prepared
+            .map(|mut prepared| AudioInput::from_prepared(&mut prepared))
+            .transpose()?
+            .map(|source| ManagedSourceRole::audio(Box::new(source)));
+        let source_swap = self.source_swap.prepare(&mut replacement)?;
+        Ok(PreparedAudioSourceSwap {
+            source_swap,
+            failure_signal,
+        })
+    }
+}
+
+impl PreparedAudioSourceSwap {
+    /// Unwrap the opaque generic source-swap candidate.
+    pub fn into_source_swap(self) -> PreparedSourceSwap {
+        self.source_swap
+    }
+
+    /// Inject a terminal failure after candidate construction.
+    #[doc(hidden)]
+    pub fn fail_before_commit_for_testing(&self) {
+        if let Some(failure) = &self.failure_signal {
+            failure.store(
+                audio::AudioFailureKind::BackendUnavailable as u8,
+                std::sync::atomic::Ordering::Release,
+            );
         }
     }
 }
 
-/// Orchestrates multiple [`InputSource`] instances.
+/// Orchestrates multiple [`ManagedSource`] instances.
 ///
 /// Owns a heterogeneous collection of input sources and provides batch
 /// lifecycle management. The render loop holds one `InputManager` and
@@ -333,8 +717,8 @@ impl AudioRuntimeConfigPlan {
 ///
 /// ```rust,ignore
 /// let mut mgr = InputManager::new();
-/// mgr.add_source(Box::new(audio_input));
-/// mgr.add_source(Box::new(screen_capture));
+/// mgr.add_source(ManagedSourceRole::audio(Box::new(audio_input)))?;
+/// mgr.add_source(ManagedSourceRole::screen(Box::new(screen_capture)))?;
 /// mgr.start_all()?;
 ///
 /// loop {
@@ -342,7 +726,27 @@ impl AudioRuntimeConfigPlan {
 ///     // route Audio / Screen data into the pipeline...
 /// }
 /// ```
+#[derive(Clone)]
 pub struct InputManager {
+    shared: Arc<InputManagerShared>,
+}
+
+struct InputManagerShared {
+    inner: Mutex<InputManagerInner>,
+    lifecycle: RwLock<()>,
+    lifecycle_release_revision: watch::Sender<u64>,
+    input_graph: InputGraphHandle,
+    source_status_registry: SourceStatusRegistry,
+    screen_publication_hub: Arc<screen::ScreenPublicationHub>,
+    screen_admission: screen::ScreenByteAdmissionCoordinator,
+    screen_capacity_status: screen::ScreenCapacityStatusHandle,
+}
+
+struct InputManagerInner {
+    state: Option<InputManagerState>,
+}
+
+struct InputManagerState {
     sources: Vec<ManagedInputSource>,
     source_graph_generation: u64,
     next_source_slot_id: u64,
@@ -350,10 +754,7 @@ pub struct InputManager {
     source_status_registry: SourceStatusRegistry,
     event_scratch: Vec<TimedInputEvent>,
     audio_capture_active: Option<bool>,
-    macos_capability_owner: MacosCapabilityOwner,
-    macos_owner_conflict: Option<MacosDaemonOwnerConflict>,
-    macos_owner_designated_requirement_hash: Option<Arc<str>>,
-    macos_metal4: bool,
+    source_capability_context: SourceCapabilityContext,
     screen_capture_demand: Option<ScreenCaptureDemand>,
     screen_publication_demand: Option<ScreenPublicationDemandSnapshot>,
     screen_publication_source_snapshot: Vec<(u64, u64)>,
@@ -367,35 +768,129 @@ pub struct InputManager {
     screen_capacity_enforced: bool,
     screen_capacity_generation: u64,
     interaction_capture_active: Option<bool>,
-    sensor_poller: Option<SensorPoller>,
-    sensor_snapshot_rx: Option<watch::Receiver<Arc<SystemSnapshot>>>,
+}
+
+fn lock_mutex<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn read_lock<T>(lock: &RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
+    lock.read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+struct LifecycleReadGuard<'a> {
+    guard: Option<std::sync::RwLockReadGuard<'a, ()>>,
+    release_revision: &'a watch::Sender<u64>,
+}
+
+impl Drop for LifecycleReadGuard<'_> {
+    fn drop(&mut self) {
+        drop(self.guard.take());
+        publish_lifecycle_release(self.release_revision);
+    }
+}
+
+struct LifecycleWriteGuard<'a> {
+    guard: Option<std::sync::RwLockWriteGuard<'a, ()>>,
+    release_revision: &'a watch::Sender<u64>,
+}
+
+impl Drop for LifecycleWriteGuard<'_> {
+    fn drop(&mut self) {
+        drop(self.guard.take());
+        publish_lifecycle_release(self.release_revision);
+    }
+}
+
+fn publish_lifecycle_release(release_revision: &watch::Sender<u64>) {
+    if release_revision.receiver_count() > 0 {
+        release_revision.send_modify(|revision| *revision = revision.wrapping_add(1));
+    }
+}
+
+impl InputManagerShared {
+    fn read_lifecycle(&self) -> LifecycleReadGuard<'_> {
+        LifecycleReadGuard {
+            guard: Some(read_lock(&self.lifecycle)),
+            release_revision: &self.lifecycle_release_revision,
+        }
+    }
+
+    fn write_lifecycle(&self) -> LifecycleWriteGuard<'_> {
+        LifecycleWriteGuard {
+            guard: Some(
+                self.lifecycle
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            ),
+            release_revision: &self.lifecycle_release_revision,
+        }
+    }
+
+    fn try_write_lifecycle(&self) -> Option<LifecycleWriteGuard<'_>> {
+        let guard = match self.lifecycle.try_write() {
+            Ok(guard) => guard,
+            Err(TryLockError::Poisoned(error)) => error.into_inner(),
+            Err(TryLockError::WouldBlock) => return None,
+        };
+        Some(LifecycleWriteGuard {
+            guard: Some(guard),
+            release_revision: &self.lifecycle_release_revision,
+        })
+    }
+}
+
+struct DetachedInputManager<'a> {
+    shared: &'a InputManagerShared,
+    state: Option<InputManagerState>,
+}
+
+impl DetachedInputManager<'_> {
+    fn state(&mut self) -> &mut InputManagerState {
+        self.state
+            .as_mut()
+            .expect("detached input manager retains inner state")
+    }
+}
+
+impl Drop for DetachedInputManager<'_> {
+    fn drop(&mut self) {
+        let state = self
+            .state
+            .take()
+            .expect("detached input manager restores inner state once");
+        let replaced = lock_mutex(&self.shared.inner).state.replace(state);
+        debug_assert!(replaced.is_none());
+    }
 }
 
 struct ManagedInputSource {
-    source: Box<dyn InputSource>,
+    source: ManagedSourceRole,
     slot: InputSourceSlot,
     compatibility_status: Option<SourceStatusReporter>,
 }
 
 impl ManagedInputSource {
     fn new(
-        mut source: Box<dyn InputSource>,
+        mut source: ManagedSourceRole,
         slot_id: u64,
         source_graph_generation: u64,
         screen_publication_hub: Arc<screen::ScreenPublicationHub>,
     ) -> Self {
-        let declared_kind = declared_source_kind(source.as_ref());
-        let interaction_origin = source
-            .is_interaction_source()
-            .then(|| source.interaction_source_origin());
-        source.set_source_graph_generation(source_graph_generation);
-        if source.is_screen_source() {
-            source.set_screen_publication_hub(screen_publication_hub);
+        let declared_kind = source.source_kind();
+        let interaction_origin = source.interaction_origin();
+        if let Some(screen) = source.as_screen_mut() {
+            screen.set_screen_publication_hub(screen_publication_hub);
         }
-        let mut compatibility_status = source.source_status_handle().is_none().then(|| {
+        let managed_source = source.source_mut();
+        managed_source.set_source_graph_generation(source_graph_generation);
+        let mut compatibility_status = managed_source.source_status_handle().is_none().then(|| {
             SourceStatusReporter::new(
-                format!("compatibility:{slot_id}:{}", source.name()),
-                declared_kind.unwrap_or(SourceKind::Interaction),
+                format!("compatibility:{slot_id}:{}", managed_source.name()),
+                declared_kind,
                 "compatibility",
                 true,
                 true,
@@ -405,7 +900,7 @@ impl ManagedInputSource {
         if let Some(status) = &mut compatibility_status {
             status.set_source_graph_generation(source_graph_generation);
         }
-        let status = source.source_status_handle().unwrap_or_else(|| {
+        let status = managed_source.source_status_handle().unwrap_or_else(|| {
             compatibility_status
                 .as_ref()
                 .expect("compatibility status exists for an uninstrumented source")
@@ -419,8 +914,42 @@ impl ManagedInputSource {
         }
     }
 
-    fn into_source(self) -> Box<dyn InputSource> {
-        self.source
+    fn key(&self) -> ManagedSourceKey {
+        self.source.key()
+    }
+
+    fn as_audio(&self) -> Option<&dyn AudioSource> {
+        self.source.as_audio()
+    }
+
+    fn as_audio_mut(&mut self) -> Option<&mut (dyn AudioSource + 'static)> {
+        self.source.as_audio_mut()
+    }
+
+    fn as_screen(&self) -> Option<&dyn ScreenSource> {
+        self.source.as_screen()
+    }
+
+    fn as_screen_mut(&mut self) -> Option<&mut (dyn ScreenSource + 'static)> {
+        self.source.as_screen_mut()
+    }
+
+    fn as_interaction(&self) -> Option<&dyn InteractionSource> {
+        self.source.as_interaction()
+    }
+
+    fn as_interaction_mut(&mut self) -> Option<&mut (dyn InteractionSource + 'static)> {
+        self.source.as_interaction_mut()
+    }
+
+    fn set_capability_context(&mut self, context: &SourceCapabilityContext) -> anyhow::Result<()> {
+        if let Some(source) = self.source.as_screen_mut() {
+            source.set_capability_context(context)?;
+        }
+        if let Some(source) = self.source.as_interaction_mut() {
+            source.set_capability_context(context)?;
+        }
+        Ok(())
     }
 
     fn source_status_handle(&self) -> SourceStatusHandle {
@@ -433,13 +962,14 @@ impl ManagedInputSource {
         };
         let session = status
             .begin_session()
-            .expect("validated compatibility host source can begin its session")
-            .expect("manager-bound compatibility host source creates a session");
+            .expect("validated compatibility source can begin its session")
+            .expect("manager-bound compatibility source creates a session");
         session.mark_event_driven_live_without_deadline(1);
     }
 
     fn set_source_graph_generation(&mut self, source_graph_generation: u64) {
         self.source
+            .source_mut()
             .set_source_graph_generation(source_graph_generation);
         if let Some(status) = &mut self.compatibility_status {
             status.set_source_graph_generation(source_graph_generation);
@@ -447,13 +977,17 @@ impl ManagedInputSource {
     }
 
     fn set_active_consumer_count(&mut self, active_consumer_count: usize) {
-        if let Err(error) = self.source.set_active_consumer_count(active_consumer_count) {
-            error!(source = self.source.name(), %error, "Failed to publish active consumer count");
+        if let Err(error) = self
+            .source
+            .source_mut()
+            .set_active_consumer_count(active_consumer_count)
+        {
+            error!(source = self.source.source().name(), %error, "Failed to publish active consumer count");
         }
         if let Some(status) = &mut self.compatibility_status
             && let Err(error) = status.set_active_consumer_count(active_consumer_count)
         {
-            error!(source = self.source.name(), %error, "Failed to publish compatibility consumer count");
+            error!(source = self.source.source().name(), %error, "Failed to publish compatibility consumer count");
         }
     }
 
@@ -461,7 +995,9 @@ impl ManagedInputSource {
         &mut self,
         source_graph_generation: u64,
     ) -> Result<(), SourceStatusError> {
-        self.source.retire_source_status(source_graph_generation)?;
+        self.source
+            .source_mut()
+            .retire_source_status(source_graph_generation)?;
         if let Some(status) = &mut self.compatibility_status {
             status.retire(source_graph_generation)?;
         }
@@ -475,7 +1011,7 @@ impl ManagedInputSource {
             .map(SourceStatusReporter::begin_session)
             .transpose()?
             .flatten();
-        match self.source.start() {
+        match self.source.source_mut().start() {
             Ok(()) => {
                 if let Some(session) = compatibility_session {
                     session.mark_event_driven_live_without_deadline(1);
@@ -496,7 +1032,7 @@ impl ManagedInputSource {
     }
 
     fn stop(&mut self) {
-        self.source.stop();
+        self.source.source_mut().stop();
         if let Some(status) = &mut self.compatibility_status {
             status.stop();
         }
@@ -508,7 +1044,7 @@ impl ManagedInputSource {
         };
         status.set_policy(true, true, demanded)?;
         if demanded
-            && self.source.is_running()
+            && self.source.source().is_running()
             && let Some(session) = status.begin_session()?
         {
             session.mark_event_driven_live_without_deadline(1);
@@ -521,7 +1057,10 @@ impl ManagedInputSource {
         delta_secs: f32,
         events: &mut Vec<TimedInputEvent>,
     ) -> anyhow::Result<Option<Arc<InputData>>> {
-        let sample = self.source.sample_shared_and_drain_into(delta_secs, events);
+        let sample = self
+            .source
+            .source_mut()
+            .sample_shared_and_drain_into(delta_secs, events);
         if let Some(session) = self
             .compatibility_status
             .as_ref()
@@ -545,54 +1084,714 @@ impl ManagedInputSource {
 }
 
 impl Deref for ManagedInputSource {
-    type Target = dyn InputSource;
+    type Target = dyn ManagedSource;
 
     fn deref(&self) -> &Self::Target {
-        self.source.as_ref()
+        self.source.source()
     }
 }
 
 impl DerefMut for ManagedInputSource {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        self.source.as_mut()
+        self.source.source_mut()
     }
 }
 
-impl AsRef<dyn InputSource> for ManagedInputSource {
-    fn as_ref(&self) -> &(dyn InputSource + 'static) {
-        self.source.as_ref()
+impl AsRef<dyn ManagedSource> for ManagedInputSource {
+    fn as_ref(&self) -> &(dyn ManagedSource + 'static) {
+        self.source.source()
     }
 }
 
-impl AsMut<dyn InputSource> for ManagedInputSource {
-    fn as_mut(&mut self) -> &mut (dyn InputSource + 'static) {
-        self.source.as_mut()
-    }
-}
-
-#[derive(Clone, Copy)]
-enum CaptureDomain {
-    Audio,
-    Interaction,
-}
-
-impl CaptureDomain {
-    fn matches(self, source: &dyn InputSource) -> bool {
-        match self {
-            Self::Audio => source.is_audio_source(),
-            Self::Interaction => source.is_interaction_source(),
-        }
-    }
-
-    fn transition(self, source: &mut dyn InputSource, active: bool) -> anyhow::Result<()> {
-        match self {
-            Self::Audio => source.set_audio_capture_active(active),
-            Self::Interaction => source.set_interaction_capture_active(active),
-        }
+impl AsMut<dyn ManagedSource> for ManagedInputSource {
+    fn as_mut(&mut self) -> &mut (dyn ManagedSource + 'static) {
+        self.source.source_mut()
     }
 }
 
 impl InputManager {
+    /// Create an empty cloneable input service.
+    #[must_use]
+    pub fn new() -> Self {
+        let state = InputManagerState::new();
+        let (lifecycle_release_revision, _) = watch::channel(0);
+        let shared = InputManagerShared {
+            input_graph: state.input_graph_handle(),
+            source_status_registry: state.source_status_registry(),
+            screen_publication_hub: state.screen_publication_hub(),
+            screen_admission: state.screen_admission_coordinator(),
+            screen_capacity_status: state.screen_capacity_status_handle(),
+            inner: Mutex::new(InputManagerInner { state: Some(state) }),
+            lifecycle: RwLock::new(()),
+            lifecycle_release_revision,
+        };
+        Self {
+            shared: Arc::new(shared),
+        }
+    }
+
+    fn with_inner<R>(&self, operation: impl FnOnce(&mut InputManagerState) -> R) -> R {
+        let _lifecycle = self.shared.read_lifecycle();
+        let mut inner = lock_mutex(&self.shared.inner);
+        operation(
+            inner
+                .state
+                .as_mut()
+                .expect("input manager state is attached under lifecycle read access"),
+        )
+    }
+
+    fn with_detached_inner<R>(&self, operation: impl FnOnce(&mut InputManagerState) -> R) -> R {
+        let _lifecycle = self.shared.write_lifecycle();
+        let state = lock_mutex(&self.shared.inner)
+            .state
+            .take()
+            .expect("input manager state is attached before lifecycle detachment");
+        let mut detached = DetachedInputManager {
+            shared: &self.shared,
+            state: Some(state),
+        };
+        operation(detached.state())
+    }
+
+    fn try_with_detached_inner_if<R>(
+        &self,
+        is_current: impl FnOnce() -> bool,
+        operation: impl FnOnce(&mut InputManagerState) -> R,
+    ) -> TryInputManagerIntent<R> {
+        let Some(_lifecycle) = self.shared.try_write_lifecycle() else {
+            return TryInputManagerIntent::Busy;
+        };
+        if !is_current() {
+            return TryInputManagerIntent::Stale;
+        }
+        let state = lock_mutex(&self.shared.inner)
+            .state
+            .take()
+            .expect("input manager state is attached after lifecycle acquisition");
+        let mut detached = DetachedInputManager {
+            shared: &self.shared,
+            state: Some(state),
+        };
+        TryInputManagerIntent::Applied(operation(detached.state()))
+    }
+
+    /// Wait for lifecycle availability after a nonblocking intent returns busy.
+    ///
+    /// The method subscribes before immediately probing write ownership. A
+    /// successful probe closes the release-before-subscribe race without an
+    /// await; a second busy result waits for the owning guard's release.
+    pub async fn wait_for_lifecycle_release_after_busy(&self) {
+        let mut revision = self.shared.lifecycle_release_revision.subscribe();
+        if let Some(guard) = self.shared.try_write_lifecycle() {
+            drop(guard);
+            return;
+        }
+        revision
+            .changed()
+            .await
+            .expect("input manager retains the lifecycle release publisher");
+    }
+
+    pub fn add_source(&self, source: ManagedSourceRole) -> Result<(), SourceRegistrationError> {
+        self.with_inner(|inner| inner.add_source(source))
+    }
+
+    pub fn plan_source_swap(
+        &self,
+        key: ManagedSourceKey,
+        target: SourceSwapTarget,
+    ) -> Result<SourceSwapPlan, SourceSwapConflict> {
+        self.with_inner(|inner| inner.plan_source_swap(key, target))
+    }
+
+    pub fn commit_source_swap(
+        &self,
+        prepared: &mut PreparedSourceSwap,
+    ) -> Result<SourceRetirement, SourceSwapConflict> {
+        self.with_inner(|inner| inner.commit_source_swap(prepared))
+    }
+
+    /// Try one generation-fenced source commit after a lock-free freshness check.
+    ///
+    /// `is_current` runs only after exclusive lifecycle ownership is acquired.
+    /// It must perform lock-free reads only and must not call back into this manager.
+    pub fn try_commit_source_swap_if(
+        &self,
+        prepared: &mut PreparedSourceSwap,
+        is_current: impl FnOnce() -> bool,
+    ) -> TryInputManagerIntent<Result<SourceRetirement, SourceSwapConflict>> {
+        self.try_with_detached_inner_if(is_current, |state| state.commit_source_swap(prepared))
+    }
+
+    #[must_use]
+    pub fn input_graph_handle(&self) -> InputGraphHandle {
+        self.shared.input_graph.clone()
+    }
+
+    #[must_use]
+    pub fn source_status_registry(&self) -> SourceStatusRegistry {
+        self.shared.source_status_registry.clone()
+    }
+
+    #[must_use]
+    pub fn source_graph_generation(&self) -> u64 {
+        self.with_inner(|inner| inner.source_graph_generation())
+    }
+
+    #[must_use]
+    pub fn source_count(&self) -> usize {
+        self.with_inner(|inner| inner.source_count())
+    }
+
+    #[must_use]
+    pub fn source_names(&self) -> Vec<String> {
+        self.with_inner(|inner| inner.source_names())
+    }
+
+    pub fn sample_sources(&self, delta_secs: f32) {
+        self.with_detached_inner(|inner| inner.sample_sources(delta_secs));
+    }
+
+    pub fn sample_source_kinds(&self, due_sources: &[(SourceKind, f32)]) {
+        self.with_detached_inner(|inner| inner.sample_source_kinds(due_sources));
+    }
+
+    /// Try sampling due sources after validating caller-owned lock-free state.
+    ///
+    /// `is_current` runs only after exclusive lifecycle ownership is acquired.
+    /// It must perform lock-free reads only and must not call back into this manager.
+    pub fn try_sample_source_kinds_if(
+        &self,
+        due_sources: &[(SourceKind, f32)],
+        is_current: impl FnOnce() -> bool,
+    ) -> TryInputManagerIntent<()> {
+        self.try_with_detached_inner_if(is_current, |state| {
+            state.sample_source_kinds(due_sources);
+        })
+    }
+
+    pub fn sample_all(&self) -> Vec<InputData> {
+        self.with_detached_inner(InputManagerState::sample_all)
+    }
+
+    pub fn sample_all_with_delta_secs(&self, delta_secs: f32) -> Vec<InputData> {
+        self.with_detached_inner(|inner| inner.sample_all_with_delta_secs(delta_secs))
+    }
+
+    #[must_use]
+    pub fn drain_events(&self) -> Vec<TimedInputEvent> {
+        self.with_detached_inner(InputManagerState::drain_events)
+    }
+
+    pub fn sample_and_drain_with_delta_secs(
+        &self,
+        delta_secs: f32,
+    ) -> (Vec<InputData>, Vec<TimedInputEvent>) {
+        self.with_detached_inner(|inner| inner.sample_and_drain_with_delta_secs(delta_secs))
+    }
+
+    pub fn set_interaction_capture_active(&self, active: bool) -> anyhow::Result<()> {
+        self.with_detached_inner(|inner| inner.set_interaction_capture_active(active))
+    }
+
+    pub fn start_all(&self) -> anyhow::Result<()> {
+        self.with_detached_inner(InputManagerState::start_all)
+    }
+
+    pub fn stop_all(&self) {
+        self.with_detached_inner(InputManagerState::stop_all);
+    }
+
+    /// Detach every source and publish the empty graph for shutdown.
+    pub fn detach_all_sources(&self) -> SourceRetirementBatch {
+        let _lifecycle = self.shared.write_lifecycle();
+        let mut inner = lock_mutex(&self.shared.inner);
+        let state = inner
+            .state
+            .as_mut()
+            .expect("input manager state is attached during shutdown detachment");
+        let source_graph_generation = state.bump_source_graph_generation();
+        let sources = std::mem::take(&mut state.sources);
+        state.invalidate_capture_domains((true, true, true));
+        state.publish_source_status_registry();
+        SourceRetirementBatch {
+            sources,
+            source_graph_generation,
+        }
+    }
+
+    pub fn plan_audio_runtime_config(
+        &self,
+        enabled: bool,
+        config: &AudioPipelineConfig,
+        display_name: &str,
+        capture_active: bool,
+    ) -> anyhow::Result<AudioRuntimeConfigPlan> {
+        self.with_inner(|inner| {
+            inner.plan_audio_runtime_config(enabled, config, display_name, capture_active)
+        })
+    }
+
+    /// Try planning an audio replacement after a lock-free freshness check.
+    pub fn try_plan_audio_runtime_config_if(
+        &self,
+        enabled: bool,
+        config: &AudioPipelineConfig,
+        display_name: &str,
+        capture_active: bool,
+        is_current: impl FnOnce() -> bool,
+    ) -> TryInputManagerIntent<anyhow::Result<AudioRuntimeConfigPlan>> {
+        self.try_with_detached_inner_if(is_current, |inner| {
+            inner.plan_audio_runtime_config(enabled, config, display_name, capture_active)
+        })
+    }
+
+    pub fn set_audio_capture_active(&self, active: bool) -> anyhow::Result<()> {
+        self.with_detached_inner(|inner| inner.set_audio_capture_active(active))
+    }
+
+    pub fn set_screen_capture_demand(&self, demand: ScreenCaptureDemand) -> anyhow::Result<()> {
+        self.with_detached_inner(|inner| inner.set_screen_capture_demand(demand))
+    }
+
+    /// Apply the hardware renderer's authoritative screen execution state.
+    pub fn set_screen_renderer_execution_state(&self, state: screen::ScreenRendererExecutionState) {
+        self.with_inner(|inner| inner.set_screen_renderer_execution_state(state));
+    }
+
+    /// Try applying every capture domain inside one lifecycle transaction.
+    ///
+    /// Domain failures do not prevent later domains from running. Each domain
+    /// retains its existing rollback behavior. `is_current` runs after exclusive
+    /// lifecycle ownership is acquired and must perform lock-free reads only.
+    pub fn try_apply_capture_demand_if(
+        &self,
+        demand: InputCaptureDemand,
+        is_current: impl FnOnce() -> bool,
+    ) -> TryInputManagerIntent<InputCaptureDemandApplication> {
+        self.try_with_detached_inner_if(is_current, |state| {
+            let audio_generation = state.source_graph_generation();
+            let audio = state.set_audio_capture_active(demand.audio_active);
+            let screen_generation = state.source_graph_generation();
+            let screen = state.set_screen_capture_demand(demand.screen);
+            let interaction_generation = state.source_graph_generation();
+            let interaction = state.set_interaction_capture_active(demand.interaction_active);
+            InputCaptureDemandApplication {
+                source_graph_generation: state.source_graph_generation(),
+                audio: (audio_generation, audio),
+                screen: (screen_generation, screen),
+                interaction: (interaction_generation, interaction),
+            }
+        })
+    }
+
+    #[must_use]
+    pub fn screen_publication_hub(&self) -> Arc<screen::ScreenPublicationHub> {
+        Arc::clone(&self.shared.screen_publication_hub)
+    }
+
+    #[must_use]
+    pub fn screen_admission_coordinator(&self) -> screen::ScreenByteAdmissionCoordinator {
+        self.shared.screen_admission.clone()
+    }
+
+    #[must_use]
+    pub fn screen_capacity_status_handle(&self) -> screen::ScreenCapacityStatusHandle {
+        self.shared.screen_capacity_status.clone()
+    }
+
+    pub fn prepare_screen_capture_input(
+        &self,
+        config: screen::CaptureConfig,
+        requested_extent: screen::PixelExtent,
+    ) -> Result<screen::ScreenCaptureInput, screen::ScreenAnalysisAdmissionError> {
+        screen::ScreenCaptureInput::with_requested_extent_and_admission(
+            config,
+            requested_extent,
+            self.screen_admission_coordinator(),
+        )
+    }
+
+    pub fn set_screen_resource_capacity(
+        &self,
+        capacity: screen::ScreenAdmissionCapacity,
+    ) -> Result<(), screen::ScreenByteAdmissionError> {
+        self.with_inner(|inner| inner.set_screen_resource_capacity(capacity))
+    }
+
+    pub fn set_screen_capacity_plan(
+        &self,
+        resource: screen::ScreenAdmissionCapacity,
+        total: screen::ScreenAdmissionCapacity,
+        publication: screen::ScreenAdmissionCapacity,
+    ) -> Result<(), screen::ScreenByteAdmissionError> {
+        self.with_inner(|inner| inner.set_screen_capacity_plan(resource, total, publication))
+    }
+
+    #[must_use]
+    pub fn screen_resource_capacity(&self) -> screen::ScreenAdmissionCapacity {
+        self.with_inner(|inner| inner.screen_resource_capacity())
+    }
+
+    #[must_use]
+    pub fn screen_total_capacity(&self) -> screen::ScreenAdmissionCapacity {
+        self.with_inner(|inner| inner.screen_total_capacity())
+    }
+
+    #[must_use]
+    pub fn screen_publication_capacity(&self) -> screen::ScreenAdmissionCapacity {
+        self.with_inner(|inner| inner.screen_publication_capacity())
+    }
+
+    pub fn screen_analysis_resource_plan(
+        &self,
+    ) -> anyhow::Result<Option<screen::ScreenAnalysisResourcePlan>> {
+        self.with_inner(|inner| inner.screen_analysis_resource_plan())
+    }
+
+    pub fn screen_analysis_work_plan(
+        &self,
+    ) -> anyhow::Result<Option<screen::ScreenAnalysisWorkPlan>> {
+        self.with_inner(|inner| inner.screen_analysis_work_plan())
+    }
+
+    #[must_use]
+    pub fn screen_analysis_compute_capacity(
+        &self,
+    ) -> Option<screen::ScreenAnalysisComputeCapacity> {
+        self.with_inner(|inner| inner.screen_analysis_compute_capacity())
+    }
+
+    #[must_use]
+    pub fn screen_capture_demand(&self) -> ScreenCaptureDemand {
+        self.with_inner(|inner| inner.screen_capture_demand())
+    }
+
+    pub fn prepare_screen_capacity(
+        &self,
+        analysis_peak_bytes: u64,
+    ) -> Result<Option<ScreenCapacityPreparation>, ScreenCapacityPreparationError> {
+        self.with_inner(|inner| inner.prepare_screen_capacity(analysis_peak_bytes))
+    }
+
+    pub fn prepare_screen_capacity_plan(
+        &self,
+        total_capacity: screen::ScreenAdmissionCapacity,
+        analysis_peak_bytes: u64,
+    ) -> Result<Option<ScreenCapacityPreparation>, ScreenCapacityPreparationError> {
+        self.with_inner(|inner| {
+            inner.prepare_screen_capacity_plan(total_capacity, analysis_peak_bytes)
+        })
+    }
+
+    pub fn validate_screen_capacity(
+        &self,
+        preparation: &ScreenCapacityPreparation,
+    ) -> Result<(), ScreenReconfigurationConflict> {
+        self.with_inner(|inner| inner.validate_screen_capacity(preparation))
+    }
+
+    pub fn commit_screen_capacity(
+        &self,
+        preparation: ScreenCapacityPreparation,
+    ) -> Result<(), ScreenReconfigurationConflict> {
+        self.with_inner(|inner| inner.commit_screen_capacity(preparation))
+    }
+
+    #[must_use]
+    pub fn screen_publication_resolution_revision(&self) -> u64 {
+        self.with_inner(InputManagerState::screen_publication_resolution_revision)
+    }
+
+    /// Try refreshing the exact-screen source revision without waiting for
+    /// another lifecycle transaction to release manager ownership.
+    pub fn try_screen_publication_resolution_revision_if(
+        &self,
+        is_current: impl FnOnce() -> bool,
+    ) -> TryInputManagerIntent<u64> {
+        self.try_with_detached_inner_if(is_current, |state| {
+            state.screen_publication_resolution_revision()
+        })
+    }
+
+    #[must_use]
+    pub fn screen_publication_commitment_is_current(&self) -> bool {
+        self.with_detached_inner(InputManagerState::screen_publication_commitment_is_current)
+    }
+
+    /// Try probing exact-screen commitment after a lock-free freshness check.
+    pub fn try_screen_publication_commitment_is_current_if(
+        &self,
+        is_current: impl FnOnce() -> bool,
+    ) -> TryInputManagerIntent<bool> {
+        self.try_with_detached_inner_if(is_current, |state| {
+            state.screen_publication_commitment_is_current()
+        })
+    }
+
+    pub fn begin_screen_publication_transition(
+        &self,
+        demand: ScreenPublicationDemandSnapshot,
+    ) -> Result<
+        Option<screen::ScreenPublicationPreparation>,
+        screen::ScreenPublicationTransitionError,
+    > {
+        self.with_detached_inner(|inner| inner.begin_screen_publication_transition(demand))
+    }
+
+    /// Try beginning an exact-screen transition after a lock-free freshness check.
+    pub fn try_begin_screen_publication_transition_if(
+        &self,
+        demand: &ScreenPublicationDemandSnapshot,
+        is_current: impl FnOnce() -> bool,
+    ) -> TryInputManagerIntent<
+        Result<
+            Option<screen::ScreenPublicationPreparation>,
+            screen::ScreenPublicationTransitionError,
+        >,
+    > {
+        self.try_with_detached_inner_if(is_current, |state| {
+            state.begin_screen_publication_transition(demand.clone())
+        })
+    }
+
+    pub fn commit_screen_publication_transition(
+        &self,
+        prepared: screen::PreparedScreenPublicationPlan,
+        observed_demand_revision: screen::InputPublicationDemandRevision,
+    ) -> Result<
+        screen::CommittedScreenPublicationTransition,
+        screen::ScreenPublicationTransitionFailure,
+    > {
+        self.with_detached_inner(|inner| {
+            inner.commit_screen_publication_transition(prepared, observed_demand_revision)
+        })
+    }
+
+    /// Try committing an exact-screen transition after a lock-free freshness check.
+    pub fn try_commit_screen_publication_transition_if(
+        &self,
+        prepared: &mut Option<screen::PreparedScreenPublicationPlan>,
+        observed_demand_revision: screen::InputPublicationDemandRevision,
+        is_current: impl FnOnce() -> bool,
+    ) -> TryInputManagerIntent<
+        Result<
+            screen::CommittedScreenPublicationTransition,
+            screen::ScreenPublicationTransitionFailure,
+        >,
+    > {
+        self.try_with_detached_inner_if(is_current, |state| {
+            state.commit_screen_publication_transition(
+                prepared
+                    .take()
+                    .expect("prepared screen publication plan is consumed once"),
+                observed_demand_revision,
+            )
+        })
+    }
+
+    #[must_use]
+    pub fn has_screen_source(&self) -> bool {
+        self.with_inner(|inner| inner.has_screen_source())
+    }
+
+    pub fn plan_screen_source_swap(
+        &self,
+        enabled: bool,
+        capacity: Option<ScreenCapacityPreparation>,
+    ) -> Result<ScreenSourceSwapPlan, SourceSwapConflict> {
+        self.with_inner(|inner| inner.plan_screen_source_swap(enabled, capacity))
+    }
+
+    /// Try planning a screen replacement after a lock-free freshness check.
+    pub fn try_plan_screen_source_swap_if(
+        &self,
+        enabled: bool,
+        capacity: Option<ScreenCapacityPreparation>,
+        is_current: impl FnOnce() -> bool,
+    ) -> TryInputManagerIntent<Result<ScreenSourceSwapPlan, SourceSwapConflict>> {
+        self.try_with_detached_inner_if(is_current, |inner| {
+            inner.plan_screen_source_swap(enabled, capacity)
+        })
+    }
+
+    /// Try planning screen capacity and source replacement in one lifecycle transaction.
+    pub fn try_plan_screen_source_swap_with_capacity_if(
+        &self,
+        enabled: bool,
+        total_capacity: screen::ScreenAdmissionCapacity,
+        analysis_peak_bytes: u64,
+        is_current: impl FnOnce() -> bool,
+    ) -> TryInputManagerIntent<Result<ScreenSourceSwapPlan, ScreenSourceSwapPlanningError>> {
+        self.try_with_detached_inner_if(is_current, |inner| {
+            let capacity =
+                inner.prepare_screen_capacity_plan(total_capacity, analysis_peak_bytes)?;
+            if enabled && capacity.is_none() {
+                return Err(ScreenSourceSwapPlanningError::CapacityUnavailable);
+            }
+            Ok(inner.plan_screen_source_swap(enabled, capacity)?)
+        })
+    }
+
+    pub fn commit_screen_source_swap<E>(
+        &self,
+        prepared: &mut PreparedScreenSourceSwap,
+        persist_and_install: impl FnOnce(ScreenSourceSwapCommit<'_>) -> Result<SourceRetirement, E>,
+    ) -> Result<SourceRetirement, ScreenSourceSwapCommitError<E>> {
+        let _lifecycle = self.shared.write_lifecycle();
+        let current = {
+            let mut inner = lock_mutex(&self.shared.inner);
+            let state = inner
+                .state
+                .as_mut()
+                .expect("compound screen validation retains attached manager state");
+            let current = state
+                .validate_prepared_source_swap(&mut prepared.source_swap)
+                .map_err(ScreenReconfigurationConflict::from)?;
+            if state.current_screen_capture_demand() != prepared.expected_capture_demand {
+                return Err(ScreenReconfigurationConflict::CaptureDemandChanged.into());
+            }
+            if prepared
+                .source_swap
+                .replacement
+                .as_ref()
+                .is_some_and(|source| {
+                    source.as_screen().is_none_or(|source| {
+                        source.screen_capture_demand() != prepared.capture_demand
+                    })
+                })
+            {
+                return Err(ScreenReconfigurationConflict::InvalidReplacementDemand.into());
+            }
+            if let Some(capacity) = &prepared.capacity {
+                state.validate_screen_capacity(capacity)?;
+            }
+            current
+        };
+        persist_and_install(ScreenSourceSwapCommit {
+            shared: Arc::clone(&self.shared),
+            prepared,
+            current,
+        })
+        .map_err(ScreenSourceSwapCommitError::Persistence)
+    }
+
+    #[must_use]
+    pub fn has_interaction_source(&self) -> bool {
+        self.with_inner(|inner| inner.has_interaction_source())
+    }
+
+    #[must_use]
+    pub fn interaction_diagnostics(&self) -> Vec<InteractionDiagnostics> {
+        self.with_inner(|inner| inner.interaction_diagnostics())
+    }
+
+    #[must_use]
+    pub fn has_host_capture_source(&self) -> bool {
+        self.with_inner(|inner| inner.has_host_capture_source())
+    }
+
+    pub fn reconfigure_screen_capture(&self, config: &screen::CaptureConfig) -> anyhow::Result<()> {
+        self.with_detached_inner(|inner| inner.reconfigure_screen_capture(config))
+    }
+
+    pub fn reconfigure_screen_processing(
+        &self,
+        config: &screen::CaptureConfig,
+    ) -> anyhow::Result<()> {
+        self.with_detached_inner(|inner| inner.reconfigure_screen_processing(config))
+    }
+
+    pub fn set_source_capability_context(
+        &self,
+        context: SourceCapabilityContext,
+    ) -> anyhow::Result<()> {
+        self.with_detached_inner(|inner| inner.set_source_capability_context(context))
+    }
+
+    pub fn set_source_capability_identity(
+        &self,
+        owner: impl Into<Arc<str>>,
+        conflict: Option<SourceCapabilityConflict>,
+        identity_hash: Option<Arc<str>>,
+    ) -> anyhow::Result<()> {
+        let owner = owner.into();
+        self.with_detached_inner(|inner| {
+            inner.set_source_capability_identity(owner, conflict, identity_hash)
+        })
+    }
+
+    /// Try publishing retained capability identity without waiting on lifecycle ownership.
+    pub fn try_set_source_capability_identity(
+        &self,
+        owner: impl Into<Arc<str>>,
+        conflict: Option<SourceCapabilityConflict>,
+        identity_hash: Option<Arc<str>>,
+    ) -> TryInputManagerIntent<anyhow::Result<()>> {
+        let owner = owner.into();
+        self.try_with_detached_inner_if(
+            || true,
+            |state| state.set_source_capability_identity(owner, conflict, identity_hash),
+        )
+    }
+
+    pub fn set_source_capability_feature(
+        &self,
+        name: impl Into<Arc<str>>,
+        enabled: bool,
+    ) -> anyhow::Result<()> {
+        let name = name.into();
+        self.with_detached_inner(|inner| inner.set_source_capability_feature(name, enabled))
+    }
+
+    #[must_use]
+    pub fn input_authorization_action(&self) -> Option<ProtectedSourceAuthorizationAction> {
+        self.with_inner(|inner| inner.input_authorization_action())
+    }
+
+    #[must_use]
+    pub fn resolved_input_authorization_action(
+        &self,
+    ) -> Option<ResolvedProtectedSourceAction<ProtectedSourceAuthorizationAction>> {
+        self.with_inner(|inner| inner.resolved_input_authorization_action())
+    }
+
+    #[must_use]
+    pub fn screen_authorization_action(&self) -> Option<ProtectedSourceAuthorizationAction> {
+        self.with_inner(|inner| inner.screen_authorization_action())
+    }
+
+    #[must_use]
+    pub fn resolved_screen_authorization_action(
+        &self,
+    ) -> Option<ResolvedProtectedSourceAction<ProtectedSourceAuthorizationAction>> {
+        self.with_inner(|inner| inner.resolved_screen_authorization_action())
+    }
+
+    #[must_use]
+    pub fn screen_source_picker_action(&self) -> Option<ScreenSourcePickerAction> {
+        self.with_inner(|inner| inner.screen_source_picker_action())
+    }
+
+    #[must_use]
+    pub fn resolved_screen_source_picker_action(
+        &self,
+    ) -> Option<ResolvedProtectedSourceAction<ScreenSourcePickerAction>> {
+        self.with_inner(|inner| inner.resolved_screen_source_picker_action())
+    }
+
+    #[must_use]
+    pub fn diagnostic_artifact_action(&self) -> Option<SourceDiagnosticArtifactAction> {
+        self.with_inner(|inner| inner.diagnostic_artifact_action())
+    }
+
+    pub fn reselect_screen_source(&self) -> anyhow::Result<()> {
+        self.with_detached_inner(InputManagerState::reselect_screen_source)
+    }
+}
+
+impl InputManagerState {
     /// Create an empty manager with no sources.
     #[must_use]
     pub fn new() -> Self {
@@ -620,10 +1819,10 @@ impl InputManager {
             source_status_registry: SourceStatusRegistry::new(),
             event_scratch: Vec::with_capacity(INPUT_EVENT_RING_CAPACITY),
             audio_capture_active: None,
-            macos_capability_owner: MacosCapabilityOwner::Standalone,
-            macos_owner_conflict: None,
-            macos_owner_designated_requirement_hash: None,
-            macos_metal4: false,
+            source_capability_context: SourceCapabilityContext {
+                owner: Arc::from("standalone"),
+                ..SourceCapabilityContext::default()
+            },
             screen_capture_demand: None,
             screen_publication_demand: None,
             screen_publication_source_snapshot: Vec::new(),
@@ -637,8 +1836,6 @@ impl InputManager {
             screen_capacity_enforced: false,
             screen_capacity_generation: 0,
             interaction_capture_active: None,
-            sensor_poller: None,
-            sensor_snapshot_rx: None,
         }
     }
 
@@ -646,59 +1843,197 @@ impl InputManager {
     ///
     /// Sources are sampled in registration order. Adding a source does not
     /// start it — call [`start_all`] or start sources individually.
-    pub fn add_source(&mut self, source: Box<dyn InputSource>) {
-        let domains = (
-            source.is_audio_source(),
-            source.is_screen_source(),
-            source.is_interaction_source(),
-        );
+    pub fn add_source(&mut self, source: ManagedSourceRole) -> Result<(), SourceRegistrationError> {
+        let key = source.key();
+        let expected = source.source_kind();
+        if let Some(observed) = source
+            .source()
+            .source_status_handle()
+            .map(|status| status.snapshot().kind)
+            .filter(|observed| *observed != expected)
+        {
+            return Err(SourceRegistrationError::StatusKindMismatch {
+                key,
+                expected,
+                observed,
+            });
+        }
+        let domains = managed_source_capture_domains(key);
         let source_graph_generation = self.bump_source_graph_generation();
-        info!(source = source.name(), "Registered input source");
+        info!(source = source.source().name(), "Registered input source");
         let managed = self.create_managed_source(source, source_graph_generation);
         self.sources.push(managed);
         self.invalidate_capture_domains(domains);
         self.publish_source_status_registry();
+        Ok(())
     }
 
-    /// Replace one source without changing registration order.
+    /// Capture one exact typed source state for a later compare-and-swap commit.
     ///
-    /// Returns the retired previous source, or the supplied source unchanged if
-    /// `index` is outside the current graph.
-    pub fn replace_source(
+    /// # Errors
+    ///
+    /// Returns an ambiguity error when more than one registered slot has the
+    /// requested role key.
+    pub fn plan_source_swap(
+        &self,
+        key: ManagedSourceKey,
+        target: SourceSwapTarget,
+    ) -> Result<SourceSwapPlan, SourceSwapConflict> {
+        let current = self.unique_source_index(key)?;
+        Ok(SourceSwapPlan {
+            key,
+            expected_graph_generation: self.source_graph_generation,
+            expected_slot_id: current.map(|index| self.sources[index].slot.id()),
+            expected_running: current.map(|index| self.sources[index].is_running()),
+            replacement_slot_id: self.next_source_slot_id,
+            replacement_source_graph_generation: self
+                .source_graph_generation
+                .checked_add(1)
+                .expect("input source graph generation exhausted"),
+            source_capability_context: self.source_capability_context.clone(),
+            screen_publication_hub: self.screen_plan_builder.publication_hub(),
+            target,
+        })
+    }
+
+    /// Commit one prepared typed source if every plan fence still matches.
+    ///
+    /// Every rejection leaves the candidate in the opaque prepared swap and
+    /// does not mutate the graph. The detached old source remains live until
+    /// the caller invokes [`SourceRetirement::retire`] outside the manager lock.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed conflict when the graph, source slot, lifecycle, or
+    /// replacement changed after planning.
+    pub fn commit_source_swap(
         &mut self,
-        index: usize,
-        source: Box<dyn InputSource>,
-    ) -> Result<Box<dyn InputSource>, Box<dyn InputSource>> {
-        if index >= self.sources.len() {
-            return Err(source);
-        }
-        let source_graph_generation = self.bump_source_graph_generation();
-        let previous_domains = (
-            self.sources[index].is_audio_source(),
-            self.sources[index].is_screen_source(),
-            self.sources[index].is_interaction_source(),
-        );
-        let replacement_domains = (
-            source.is_audio_source(),
-            source.is_screen_source(),
-            source.is_interaction_source(),
-        );
-        let replacement = self.create_managed_source(source, source_graph_generation);
-        let mut previous = std::mem::replace(&mut self.sources[index], replacement);
-        if previous_domains.1 {
-            previous.set_active_consumer_count(0);
-        }
-        previous.stop();
-        if let Err(error) = previous.retire_source_status(source_graph_generation) {
-            error!(source = previous.name(), %error, "Failed to retire replaced input source status");
-        }
-        self.invalidate_capture_domains((
-            previous_domains.0 || replacement_domains.0,
-            previous_domains.1 || replacement_domains.1,
-            previous_domains.2 || replacement_domains.2,
-        ));
+        prepared: &mut PreparedSourceSwap,
+    ) -> Result<SourceRetirement, SourceSwapConflict> {
+        let current = self.validate_prepared_source_swap(prepared)?;
+        let retirement = self.commit_source_swap_unpublished(prepared, current);
         self.publish_source_status_registry();
-        Ok(previous.into_source())
+        Ok(retirement)
+    }
+
+    fn validate_prepared_source_swap(
+        &self,
+        prepared: &mut PreparedSourceSwap,
+    ) -> Result<Option<usize>, SourceSwapConflict> {
+        let plan = &prepared.plan;
+        validate_source_swap_role(
+            plan,
+            prepared.replacement.as_ref().map(|source| &source.source),
+        )?;
+        let current = self.validate_source_swap(plan)?;
+        if prepared.replacement.is_some() && self.next_source_slot_id != plan.replacement_slot_id {
+            return Err(SourceSwapConflict::SourceChanged { key: plan.key });
+        }
+        if let Some(audio) = prepared
+            .replacement
+            .as_mut()
+            .and_then(ManagedInputSource::as_audio_mut)
+        {
+            audio.ensure_prepared_source_ready().map_err(|issue| {
+                SourceSwapConflict::ReplacementNotReady {
+                    key: plan.key,
+                    issue,
+                }
+            })?;
+        }
+        Ok(current)
+    }
+
+    fn commit_source_swap_unpublished(
+        &mut self,
+        prepared: &mut PreparedSourceSwap,
+        current: Option<usize>,
+    ) -> SourceRetirement {
+        let plan = &prepared.plan;
+        let prepared_audio_capture_active = (plan.key == ManagedSourceKey::Audio).then(|| {
+            prepared.replacement.as_ref().map_or(Some(false), |source| {
+                Some(
+                    source
+                        .source_status_handle()
+                        .availability_at(Instant::now())
+                        .demanded,
+                )
+            })
+        });
+        let source_graph_generation = self.bump_source_graph_generation();
+        if current.is_none() && plan.target == SourceSwapTarget::Absent {
+            if let Some(Some(active)) = prepared_audio_capture_active {
+                self.audio_capture_active = Some(active);
+            } else {
+                self.invalidate_capture_domains(managed_source_capture_domains(plan.key));
+            }
+            return SourceRetirement {
+                source: None,
+                source_graph_generation,
+            };
+        }
+
+        let replacement = prepared.replacement.take();
+        if replacement.is_some() {
+            self.next_source_slot_id = self
+                .next_source_slot_id
+                .checked_add(1)
+                .expect("input source slot identity exhausted");
+        }
+        let retired = match (current, replacement) {
+            (Some(index), Some(prepared)) => {
+                Some(std::mem::replace(&mut self.sources[index], prepared))
+            }
+            (Some(index), None) => Some(self.sources.remove(index)),
+            (None, Some(prepared)) => {
+                self.sources.push(prepared);
+                None
+            }
+            (None, None) => unreachable!("empty source swap returned before graph mutation"),
+        };
+        if let Some(Some(active)) = prepared_audio_capture_active {
+            self.audio_capture_active = Some(active);
+        } else {
+            self.invalidate_capture_domains(managed_source_capture_domains(plan.key));
+        }
+        SourceRetirement {
+            source: retired,
+            source_graph_generation,
+        }
+    }
+
+    fn validate_source_swap(
+        &self,
+        plan: &SourceSwapPlan,
+    ) -> Result<Option<usize>, SourceSwapConflict> {
+        if self.source_graph_generation != plan.expected_graph_generation {
+            return Err(SourceSwapConflict::GraphChanged);
+        }
+        let current = self.unique_source_index(plan.key)?;
+        if current.map(|index| self.sources[index].slot.id()) != plan.expected_slot_id {
+            return Err(SourceSwapConflict::SourceChanged { key: plan.key });
+        }
+        if current.map(|index| self.sources[index].is_running()) != plan.expected_running {
+            return Err(SourceSwapConflict::SourceLifecycleChanged { key: plan.key });
+        }
+
+        Ok(current)
+    }
+
+    fn unique_source_index(
+        &self,
+        key: ManagedSourceKey,
+    ) -> Result<Option<usize>, SourceSwapConflict> {
+        let mut matches = self
+            .sources
+            .iter()
+            .enumerate()
+            .filter_map(|(index, source)| (source.key() == key).then_some(index));
+        let first = matches.next();
+        if matches.next().is_some() {
+            return Err(SourceSwapConflict::AmbiguousKey { key });
+        }
+        Ok(first)
     }
 
     /// Clone the lock-free immutable input graph retained by render consumers.
@@ -717,23 +2052,6 @@ impl InputManager {
     #[must_use]
     pub fn source_graph_generation(&self) -> u64 {
         self.source_graph_generation
-    }
-
-    /// Attach a background system-sensor poller to this input graph.
-    pub fn set_sensor_poller(&mut self, poller: SensorPoller) {
-        self.set_sensor_snapshot_receiver(poller.receiver());
-        self.sensor_poller = Some(poller);
-    }
-
-    /// Attach a latest-value sensor stream to this input graph.
-    pub fn set_sensor_snapshot_receiver(&mut self, receiver: watch::Receiver<Arc<SystemSnapshot>>) {
-        self.sensor_snapshot_rx = Some(receiver);
-    }
-
-    /// Clone the configured latest-value sensor receiver, if one exists.
-    #[must_use]
-    pub fn sensor_snapshot_receiver(&self) -> Option<watch::Receiver<Arc<SystemSnapshot>>> {
-        self.sensor_snapshot_rx.as_ref().cloned()
     }
 
     /// Number of registered input sources.
@@ -772,7 +2090,7 @@ impl InputManager {
                 .any(|(previous, _)| previous == kind)
         }));
         for source in &mut self.sources {
-            let source_kind = source.slot.kind().unwrap_or(SourceKind::Interaction);
+            let source_kind = source.slot.kind();
             let Some((_, delta_secs)) = due_sources.iter().find(|(kind, _)| *kind == source_kind)
             else {
                 continue;
@@ -795,8 +2113,7 @@ impl InputManager {
     /// audio pipeline uses this to keep analysis state aligned with real frame
     /// timing when the render loop shifts tiers or misses budget.
     pub fn sample_all_with_delta_secs(&mut self, delta_secs: f32) -> Vec<InputData> {
-        let mut samples = self
-            .sources
+        self.sources
             .iter_mut()
             .map(|source| {
                 source
@@ -806,13 +2123,7 @@ impl InputManager {
                         InputData::None
                     })
             })
-            .collect::<Vec<_>>();
-
-        if let Some(snapshot) = self.latest_sensor_snapshot() {
-            samples.push(InputData::Sensors(snapshot));
-        }
-
-        samples
+            .collect()
     }
 
     /// Drain discrete input events from every registered source.
@@ -834,7 +2145,7 @@ impl InputManager {
         &mut self,
         delta_secs: f32,
     ) -> (Vec<InputData>, Vec<TimedInputEvent>) {
-        let mut samples = Vec::with_capacity(self.sources.len() + 1);
+        let mut samples = Vec::with_capacity(self.sources.len());
         let mut events = Vec::new();
         for source in &mut self.sources {
             let (sample, mut source_events) = source.sample_and_drain_with_delta_secs(delta_secs);
@@ -843,10 +2154,6 @@ impl InputManager {
                 InputData::None
             }));
             events.append(&mut source_events);
-        }
-
-        if let Some(snapshot) = self.latest_sensor_snapshot() {
-            samples.push(InputData::Sensors(snapshot));
         }
 
         (samples, events)
@@ -861,7 +2168,18 @@ impl InputManager {
     ///
     /// Returns an error if an interaction source cannot update its capture state.
     pub fn set_interaction_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
-        self.transition_capture_demand(CaptureDomain::Interaction, active)
+        self.transition_capture_demand(
+            active,
+            |manager| manager.interaction_capture_active,
+            |manager, demand| manager.interaction_capture_active = demand,
+            |source| source.as_interaction().is_some(),
+            |source, demand| {
+                source
+                    .as_interaction_mut()
+                    .expect("interaction route matches typed source")
+                    .set_interaction_capture_active(demand)
+            },
+        )
     }
 
     /// Start all registered sources.
@@ -877,11 +2195,6 @@ impl InputManager {
         let source_graph_generation = self.bump_source_graph_generation();
         for source in &mut self.sources {
             source.set_source_graph_generation(source_graph_generation);
-        }
-        self.publish_source_status_registry();
-
-        if let Some(sensor_poller) = self.sensor_poller.as_mut() {
-            sensor_poller.start()?;
         }
 
         for source_index in 0..self.sources.len() {
@@ -899,14 +2212,11 @@ impl InputManager {
                         true,
                     ));
                 }
-                for started in self.sources[..=source_index].iter_mut().rev() {
+                for started in self.sources[..source_index].iter_mut().rev() {
                     started.stop();
                 }
-                if let Some(sensor_poller) = self.sensor_poller.as_mut() {
-                    sensor_poller.stop();
-                }
                 self.invalidate_capture_domains((true, true, true));
-                self.publish_screen_capacity_status();
+                self.publish_source_status_registry();
                 return Err(err);
             }
             info!(
@@ -914,7 +2224,7 @@ impl InputManager {
                 "Started input source"
             );
         }
-        self.publish_screen_capacity_status();
+        self.publish_source_status_registry();
         Ok(())
     }
 
@@ -923,9 +2233,6 @@ impl InputManager {
         for source in &mut self.sources {
             info!(source = source.name(), "Stopping input source");
             source.stop();
-        }
-        if let Some(sensor_poller) = self.sensor_poller.as_mut() {
-            sensor_poller.stop();
         }
         self.invalidate_capture_domains((true, true, true));
         self.publish_screen_capacity_status();
@@ -938,8 +2245,7 @@ impl InputManager {
     ///
     /// # Errors
     ///
-    /// Returns an error if the registered audio source cannot accept a staged
-    /// native runtime.
+    /// Returns an error if the audio role is ambiguous.
     pub fn plan_audio_runtime_config(
         &self,
         enabled: bool,
@@ -947,10 +2253,8 @@ impl InputManager {
         display_name: &str,
         capture_active: bool,
     ) -> anyhow::Result<AudioRuntimeConfigPlan> {
-        let source = self.sources.iter().find(|source| source.is_audio_source());
-        if source.is_some_and(|source| !source.supports_prepared_audio_reconfiguration()) {
-            anyhow::bail!("registered audio source does not support prepared reconfiguration");
-        }
+        let source_index = self.unique_source_index(ManagedSourceKey::Audio)?;
+        let source = source_index.map(|index| &self.sources[index]);
         let mut effective_config = config.clone();
         if !enabled {
             effective_config.source = crate::types::audio::AudioSourceType::None;
@@ -961,149 +2265,29 @@ impl InputManager {
                 effective_config.source,
                 crate::types::audio::AudioSourceType::None
             );
-        Ok(AudioRuntimeConfigPlan {
-            expected_graph_generation: self.source_graph_generation,
-            expected_source_present: source.is_some(),
-            expected_source_running: source.is_some_and(|source| source.is_running()),
-            enabled,
-            config: effective_config,
-            display_name: display_name.to_owned(),
-            capture_active,
-        })
-    }
-
-    /// Commit a prepared audio runtime if the input graph is unchanged.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when a concurrent graph or lifecycle transition made
-    /// the prepared runtime stale, or when the source rejects the commit.
-    pub fn commit_audio_runtime_config(
-        &mut self,
-        prepared: &mut PreparedAudioReconfiguration,
-    ) -> anyhow::Result<AudioRuntimeRetirement> {
-        if self.source_graph_generation != prepared.expected_graph_generation {
-            return Err(AudioReconfigurationConflict::GraphChanged.into());
-        }
-        prepared.ensure_ready()?;
-        let source_index = self
-            .sources
-            .iter()
-            .position(|source| source.is_audio_source());
-        if source_index.is_some() != prepared.expected_source_present {
-            return Err(AudioReconfigurationConflict::SourceTopologyChanged.into());
-        }
-        if let Some(index) = source_index {
-            if self.sources[index].is_running() != prepared.expected_source_running {
-                return Err(AudioReconfigurationConflict::SourceLifecycleChanged.into());
-            }
-            let capture_active = prepared.capture_active;
-            let source_graph_generation = self.bump_source_graph_generation();
-            let result = {
-                let source = &mut self.sources[index];
-                source.set_source_graph_generation(source_graph_generation);
-                source.commit_prepared_audio_reconfiguration(prepared)
-            };
-            if result.is_ok() {
-                self.audio_capture_active = Some(capture_active);
-                info!(
-                    source = self.sources[index].name(),
-                    capture_active, "Committed prepared live audio input source"
-                );
-            }
-            self.publish_source_status_registry();
-            return result;
-        }
-
-        if !prepared.enabled {
-            self.bump_source_graph_generation();
-            self.audio_capture_active = Some(false);
-            return Ok(AudioRuntimeRetirement::empty());
-        }
-
-        let capture_active = prepared.capture_active;
-        let source_graph_generation = self
-            .source_graph_generation
-            .checked_add(1)
-            .expect("input source graph generation exhausted");
-        let audio_input = AudioInput::from_prepared(prepared, source_graph_generation)?;
-        self.source_graph_generation = source_graph_generation;
-        let managed = self.create_managed_source(Box::new(audio_input), source_graph_generation);
-        self.sources.push(managed);
-        self.audio_capture_active = Some(capture_active);
-        self.publish_source_status_registry();
-        info!(
-            source = self
-                .sources
-                .last()
-                .expect("audio source was just registered")
-                .name(),
-            capture_active, "Added prepared live audio input source"
-        );
-        Ok(AudioRuntimeRetirement::empty())
-    }
-
-    /// Apply a live audio config change without rebuilding unrelated sources.
-    ///
-    /// If an audio source already exists, it is reconfigured in place. If audio
-    /// is being enabled and no audio source exists yet, one is created and
-    /// started. Disabling audio reconfigures the existing source to silence.
-    /// Native preparation may enumerate devices and block. Callers that share
-    /// the manager across latency-sensitive work should use
-    /// [`Self::plan_audio_runtime_config`], prepare after releasing the manager,
-    /// then reacquire it for [`Self::commit_audio_runtime_config`].
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the live audio source switch fails.
-    pub fn apply_audio_runtime_config(
-        &mut self,
-        enabled: bool,
-        config: &AudioPipelineConfig,
-        display_name: &str,
-        capture_active: bool,
-    ) -> anyhow::Result<()> {
-        let audio_source = self.sources.iter().find(|source| source.is_audio_source());
-        if audio_source.is_none_or(|source| source.supports_prepared_audio_reconfiguration()) {
-            let mut prepared = self
-                .plan_audio_runtime_config(enabled, config, display_name, capture_active)?
-                .prepare()?;
-            let retirement = self.commit_audio_runtime_config(&mut prepared)?;
-            retirement.retire();
-            return Ok(());
-        }
-
-        let effective_capture_active = enabled && capture_active;
-        let effective_config = if enabled {
-            config.clone()
+        let running = source.is_none_or(|source| source.is_running());
+        let target = if enabled || source.is_some() {
+            SourceSwapTarget::Present { running }
         } else {
-            let mut disabled = config.clone();
-            disabled.source = crate::types::audio::AudioSourceType::None;
-            disabled
+            SourceSwapTarget::Absent
         };
-
-        let index = self
-            .sources
-            .iter()
-            .position(|source| source.is_audio_source())
-            .expect("unsupported prepared reconfiguration requires an audio source");
-        let source_graph_generation = self.bump_source_graph_generation();
-        let result = {
-            let source = &mut self.sources[index];
-            source.set_source_graph_generation(source_graph_generation);
-            source.reconfigure_audio(&effective_config, display_name, effective_capture_active)
-        };
-        if result.is_ok() {
-            info!(
-                source = display_name,
-                enabled,
-                capture_active = effective_capture_active,
-                "Reconfigured compatibility audio input source"
-            );
-            self.audio_capture_active = Some(effective_capture_active);
-        }
-        self.publish_source_status_registry();
-        result
+        let source_swap = self.plan_source_swap(ManagedSourceKey::Audio, target)?;
+        let preparation =
+            matches!(target, SourceSwapTarget::Present { .. }).then(|| AudioPreparationRequest {
+                running,
+                source_graph_generation: self
+                    .source_graph_generation
+                    .checked_add(1)
+                    .expect("input source graph generation exhausted"),
+                predecessor_status: source.map(ManagedInputSource::source_status_handle),
+                config: effective_config,
+                name: display_name.to_owned(),
+                capture_active,
+            });
+        Ok(AudioRuntimeConfigPlan {
+            source_swap,
+            preparation,
+        })
     }
 
     /// Toggle live audio capture for any registered audio sources.
@@ -1115,7 +2299,18 @@ impl InputManager {
     ///
     /// Returns an error if an audio source cannot update its capture state.
     pub fn set_audio_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
-        self.transition_capture_demand(CaptureDomain::Audio, active)
+        self.transition_capture_demand(
+            active,
+            |manager| manager.audio_capture_active,
+            |manager, demand| manager.audio_capture_active = demand,
+            |source| source.as_audio().is_some(),
+            |source, demand| {
+                source
+                    .as_audio_mut()
+                    .expect("audio route matches typed source")
+                    .set_audio_capture_active(demand)
+            },
+        )
     }
 
     /// Apply live screen publication demand to every registered screen source.
@@ -1128,6 +2323,19 @@ impl InputManager {
     /// Returns an error if a screen source cannot update its capture state.
     pub fn set_screen_capture_demand(&mut self, demand: ScreenCaptureDemand) -> anyhow::Result<()> {
         self.transition_screen_capture_demand(demand)
+    }
+
+    /// Apply the hardware renderer's authoritative screen execution state.
+    pub fn set_screen_renderer_execution_state(
+        &mut self,
+        state: screen::ScreenRendererExecutionState,
+    ) {
+        for source in &mut self.sources {
+            if let Some(screen) = source.as_screen_mut() {
+                screen.set_screen_renderer_execution_state(state);
+            }
+        }
+        self.publish_source_status_registry();
     }
 
     /// Stable lock-free publication authority shared across screen-source replacement.
@@ -1146,19 +2354,6 @@ impl InputManager {
     #[must_use]
     pub fn screen_capacity_status_handle(&self) -> screen::ScreenCapacityStatusHandle {
         self.screen_capacity_status.clone()
-    }
-
-    /// Construct compatibility screen analysis inside this manager's byte fence.
-    pub fn prepare_screen_capture_input(
-        &self,
-        config: screen::CaptureConfig,
-        requested_extent: screen::PixelExtent,
-    ) -> Result<screen::ScreenCaptureInput, screen::ScreenAnalysisAdmissionError> {
-        screen::ScreenCaptureInput::with_requested_extent_and_admission(
-            config,
-            requested_extent,
-            self.screen_admission_coordinator(),
-        )
     }
 
     /// Set the process and backend byte fences shared by all screen resources.
@@ -1232,7 +2427,7 @@ impl InputManager {
     pub fn screen_analysis_resource_plan(
         &self,
     ) -> anyhow::Result<Option<screen::ScreenAnalysisResourcePlan>> {
-        let Some(source) = self.sources.iter().find(|source| source.is_screen_source()) else {
+        let Some(source) = self.sources.iter().find_map(ManagedInputSource::as_screen) else {
             return Ok(None);
         };
         source.screen_analysis_resource_plan(self.current_screen_capture_demand())
@@ -1242,7 +2437,7 @@ impl InputManager {
     pub fn screen_analysis_work_plan(
         &self,
     ) -> anyhow::Result<Option<screen::ScreenAnalysisWorkPlan>> {
-        let Some(source) = self.sources.iter().find(|source| source.is_screen_source()) else {
+        let Some(source) = self.sources.iter().find_map(ManagedInputSource::as_screen) else {
             return Ok(None);
         };
         source.screen_analysis_work_plan(self.current_screen_capture_demand())
@@ -1255,8 +2450,8 @@ impl InputManager {
     ) -> Option<screen::ScreenAnalysisComputeCapacity> {
         self.sources
             .iter()
-            .find(|source| source.is_screen_source())
-            .and_then(|source| source.screen_analysis_compute_capacity())
+            .find_map(ManagedInputSource::as_screen)
+            .and_then(ScreenSource::screen_analysis_compute_capacity)
     }
 
     /// Return the manager's authoritative current screen-capture demand.
@@ -1341,7 +2536,7 @@ impl InputManager {
         preparation: &ScreenCapacityPreparation,
     ) -> Result<(), ScreenReconfigurationConflict> {
         if self.source_graph_generation != preparation.expected_graph_generation {
-            return Err(ScreenReconfigurationConflict::GraphChanged);
+            return Err(SourceSwapConflict::GraphChanged.into());
         }
         if self.screen_capture_demand != preparation.expected_capture_demand {
             return Err(ScreenReconfigurationConflict::CaptureDemandChanged);
@@ -1392,7 +2587,7 @@ impl InputManager {
         self.screen_capture_demand.unwrap_or_else(|| {
             self.sources
                 .iter()
-                .find(|source| source.is_screen_source())
+                .find_map(ManagedInputSource::as_screen)
                 .map_or(ScreenCaptureDemand::Inactive, |source| {
                     source.screen_capture_demand()
                 })
@@ -1410,20 +2605,16 @@ impl InputManager {
         let source_count = self
             .sources
             .iter()
-            .filter(|source| source.is_screen_source())
+            .filter_map(ManagedInputSource::as_screen)
             .count();
         let changed = source_count != self.screen_publication_source_snapshot.len()
             || self
                 .sources
                 .iter()
-                .filter(|source| source.is_screen_source())
+                .filter_map(|source| Some((source.slot.id(), source.as_screen()?)))
                 .zip(&self.screen_publication_source_snapshot)
-                .any(|(source, observed)| {
-                    *observed
-                        != (
-                            source.slot.id(),
-                            source.screen_publication_resolution_revision(),
-                        )
+                .any(|((slot_id, source), observed)| {
+                    *observed != (slot_id, source.screen_publication_resolution_revision())
                 });
         if changed {
             self.screen_publication_source_snapshot.clear();
@@ -1432,12 +2623,9 @@ impl InputManager {
             self.screen_publication_source_snapshot.extend(
                 self.sources
                     .iter()
-                    .filter(|source| source.is_screen_source())
-                    .map(|source| {
-                        (
-                            source.slot.id(),
-                            source.screen_publication_resolution_revision(),
-                        )
+                    .filter_map(|source| Some((source.slot.id(), source.as_screen()?)))
+                    .map(|(slot_id, source)| {
+                        (slot_id, source.screen_publication_resolution_revision())
                     }),
             );
             self.screen_publication_resolution_revision = self
@@ -1502,11 +2690,11 @@ impl InputManager {
         for (branch_index, branch) in demand.branches().iter().enumerate() {
             let mut resolution = None;
             for (source_index, source) in self.sources.iter().enumerate() {
-                if !source.is_screen_source() {
+                let Some(screen) = source.as_screen() else {
                     continue;
-                }
+                };
                 let candidate =
-                    source
+                    screen
                         .resolve_screen_publication_branch(branch)
                         .map_err(|error| {
                             screen::ScreenPublicationTransitionError::SourceResolutionFailed {
@@ -1599,12 +2787,17 @@ impl InputManager {
                 .map(|(_, source_index, _)| *source_index)
                 .or_else(|| {
                     self.sources.iter().position(|source| {
-                        source.is_screen_source()
-                            && source.owns_screen_publication_source(&source_id)
+                        source
+                            .as_screen()
+                            .is_some_and(|screen| screen.owns_screen_publication_source(&source_id))
                     })
                 });
             let preparation = if let Some(owner) = owner {
-                match self.sources[owner].begin_screen_publication_preparation(ticket) {
+                match self.sources[owner]
+                    .as_screen_mut()
+                    .expect("screen owner index binds typed screen source")
+                    .begin_screen_publication_preparation(ticket)
+                {
                     Ok(preparation) => preparation,
                     Err(error) => {
                         drop(preparing.abort());
@@ -1720,11 +2913,12 @@ impl InputManager {
         let worker_retirements = self
             .sources
             .iter_mut()
-            .filter(|source| source.is_screen_source())
             .filter_map(|source| {
+                let name = Arc::from(source.name());
                 source
+                    .as_screen_mut()?
                     .begin_screen_publication_retirement()
-                    .map(|retirement| (Arc::from(source.name()), retirement))
+                    .map(|retirement| (name, retirement))
             })
             .collect();
         Ok(screen::CommittedScreenPublicationTransition::new(
@@ -1736,143 +2930,39 @@ impl InputManager {
     /// Whether any registered source handles screen capture.
     #[must_use]
     pub fn has_screen_source(&self) -> bool {
-        self.sources.iter().any(|source| source.is_screen_source())
+        self.sources
+            .iter()
+            .any(|source| source.key() == ManagedSourceKey::Screen)
     }
 
-    /// Snapshot a generation-fenced screen-source replacement plan.
-    pub fn plan_screen_runtime_config(&self, enabled: bool) -> ScreenRuntimeConfigPlan {
-        let source = self.sources.iter().find(|source| source.is_screen_source());
+    /// Snapshot one exact screen swap on the generic source lane.
+    ///
+    /// # Errors
+    ///
+    /// Returns an ambiguity error when more than one screen source is registered.
+    pub fn plan_screen_source_swap(
+        &self,
+        enabled: bool,
+        capacity: Option<ScreenCapacityPreparation>,
+    ) -> Result<ScreenSourceSwapPlan, SourceSwapConflict> {
         let current_demand = self.current_screen_capture_demand();
-        ScreenRuntimeConfigPlan {
-            expected_graph_generation: self.source_graph_generation,
-            expected_source_present: source.is_some(),
-            expected_source_running: source.is_some_and(|source| source.is_running()),
+        Ok(ScreenSourceSwapPlan {
+            source_swap: self.plan_source_swap(
+                ManagedSourceKey::Screen,
+                if enabled {
+                    SourceSwapTarget::Present { running: true }
+                } else {
+                    SourceSwapTarget::Absent
+                },
+            )?,
             expected_capture_demand: current_demand,
-            enabled,
             capture_demand: if enabled {
                 current_demand
             } else {
                 ScreenCaptureDemand::Inactive
             },
-        }
-    }
-
-    /// Atomically install a prepared screen source if the input graph is unchanged.
-    ///
-    /// `replacement` remains owned by the caller on error so dropping or stopping
-    /// a prepared backend never occurs while the input manager lock is held.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed conflict when graph topology or lifecycle changed during
-    /// preparation, or the replacement does not match the plan.
-    pub fn commit_screen_runtime_config(
-        &mut self,
-        plan: &ScreenRuntimeConfigPlan,
-        replacement: &mut Option<Box<dyn InputSource>>,
-    ) -> Result<ScreenRuntimeRetirement, ScreenReconfigurationConflict> {
-        self.validate_screen_runtime_config(plan, replacement)?;
-        let retirement = self.commit_screen_runtime_config_unpublished(plan, replacement);
-        self.publish_source_status_registry();
-        Ok(retirement)
-    }
-
-    /// Atomically install a prepared screen capacity policy and source runtime.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed conflict before either prepared transaction mutates the
-    /// manager when a capacity or runtime fence has advanced.
-    pub fn commit_screen_capacity_and_runtime_config(
-        &mut self,
-        capacity: ScreenCapacityPreparation,
-        plan: &ScreenRuntimeConfigPlan,
-        replacement: &mut Option<Box<dyn InputSource>>,
-    ) -> Result<ScreenRuntimeRetirement, ScreenReconfigurationConflict> {
-        self.validate_screen_runtime_config(plan, replacement)?;
-        self.validate_screen_capacity(&capacity)?;
-        self.commit_screen_capacity_unpublished(capacity);
-        let retirement = self.commit_screen_runtime_config_unpublished(plan, replacement);
-        self.publish_source_status_registry();
-        Ok(retirement)
-    }
-
-    fn commit_screen_runtime_config_unpublished(
-        &mut self,
-        plan: &ScreenRuntimeConfigPlan,
-        replacement: &mut Option<Box<dyn InputSource>>,
-    ) -> ScreenRuntimeRetirement {
-        let source_index = self
-            .sources
-            .iter()
-            .position(|source| source.is_screen_source());
-        let topology_changed = source_index.is_some() || replacement.is_some();
-        let source_graph_generation = if topology_changed {
-            self.bump_source_graph_generation()
-        } else {
-            self.source_graph_generation
-        };
-        let mut retired = Vec::with_capacity(usize::from(source_index.is_some()));
-        match (source_index, replacement.take()) {
-            (Some(index), Some(source)) => {
-                let replacement = self.create_managed_source(source, source_graph_generation);
-                retired.push(std::mem::replace(&mut self.sources[index], replacement));
-            }
-            (Some(index), None) => retired.push(self.sources.remove(index)),
-            (None, Some(source)) => {
-                let replacement = self.create_managed_source(source, source_graph_generation);
-                self.sources.push(replacement);
-            }
-            (None, None) => {}
-        }
-        if topology_changed {
-            self.invalidate_capture_domains((false, true, false));
-        }
-        self.screen_capture_demand = Some(plan.capture_demand);
-        ScreenRuntimeRetirement {
-            sources: retired,
-            source_graph_generation,
-        }
-    }
-
-    /// Verify that a prepared screen replacement can still commit.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed conflict when the source graph changed during preparation.
-    pub fn validate_screen_runtime_config(
-        &self,
-        plan: &ScreenRuntimeConfigPlan,
-        replacement: &Option<Box<dyn InputSource>>,
-    ) -> Result<(), ScreenReconfigurationConflict> {
-        if self.source_graph_generation != plan.expected_graph_generation {
-            return Err(ScreenReconfigurationConflict::GraphChanged);
-        }
-        let source_index = self
-            .sources
-            .iter()
-            .position(|source| source.is_screen_source());
-        if source_index.is_some() != plan.expected_source_present {
-            return Err(ScreenReconfigurationConflict::SourceTopologyChanged);
-        }
-        if source_index
-            .is_some_and(|index| self.sources[index].is_running() != plan.expected_source_running)
-        {
-            return Err(ScreenReconfigurationConflict::SourceLifecycleChanged);
-        }
-        if self.current_screen_capture_demand() != plan.expected_capture_demand {
-            return Err(ScreenReconfigurationConflict::CaptureDemandChanged);
-        }
-        if replacement.as_ref().is_some() != plan.enabled
-            || replacement.as_ref().is_some_and(|source| {
-                !source.is_screen_source()
-                    || !source.is_running()
-                    || source.screen_capture_demand() != plan.capture_demand
-            })
-        {
-            return Err(ScreenReconfigurationConflict::InvalidReplacement);
-        }
-        Ok(())
+            capacity,
+        })
     }
 
     /// Whether any registered source captures host interaction.
@@ -1880,7 +2970,7 @@ impl InputManager {
     pub fn has_interaction_source(&self) -> bool {
         self.sources
             .iter()
-            .any(|source| source.is_interaction_source())
+            .any(|source| matches!(source.key(), ManagedSourceKey::Interaction(_)))
     }
 
     /// Collect health snapshots from every interaction source.
@@ -1888,7 +2978,8 @@ impl InputManager {
     pub fn interaction_diagnostics(&self) -> Vec<InteractionDiagnostics> {
         self.sources
             .iter()
-            .filter_map(|source| source.interaction_diagnostics())
+            .filter_map(ManagedInputSource::as_interaction)
+            .filter_map(InteractionSource::interaction_diagnostics)
             .collect()
     }
 
@@ -1898,124 +2989,9 @@ impl InputManager {
     /// config can tell whether host capture is actually wired up.
     #[must_use]
     pub fn has_host_capture_source(&self) -> bool {
-        self.sources
-            .iter()
-            .any(|source| source.is_host_capture_source())
-    }
-
-    /// Atomically replace the registered host source with one pre-started candidate.
-    ///
-    /// The detached source remains running in the returned retirement owner until
-    /// the caller releases it outside the input-manager lock. A rejected candidate
-    /// leaves the current source and graph generation unchanged.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the manager does not contain exactly zero or one host
-    /// source, or when the supplied candidate is not a running host interaction
-    /// source.
-    pub fn swap_host_capture_source(
-        &mut self,
-        replacement: &mut Option<Box<dyn InputSource>>,
-    ) -> Result<HostRuntimeRetirement, HostReconfigurationError> {
-        let mut host_indices = self
-            .sources
-            .iter()
-            .enumerate()
-            .filter_map(|(index, source)| source.is_host_capture_source().then_some(index));
-        let current_index = host_indices.next();
-        if host_indices.next().is_some() {
-            return Err(HostReconfigurationError::SourceTopologyChanged);
-        }
-        if replacement.as_ref().is_some_and(|source| {
-            !source.is_host_capture_source()
-                || !source.is_interaction_source()
-                || !source.is_running()
-        }) {
-            return Err(HostReconfigurationError::InvalidReplacement);
-        }
-        if current_index.is_none() && replacement.is_none() {
-            return Ok(HostRuntimeRetirement {
-                source: None,
-                source_graph_generation: self.source_graph_generation,
-            });
-        }
-
-        let source_graph_generation = self.bump_source_graph_generation();
-        let prepared = replacement.take().map(|source| {
-            let mut prepared = self.create_managed_source(source, source_graph_generation);
-            prepared.mark_prestarted_compatibility_live();
-            prepared
-        });
-        let retired = match (current_index, prepared) {
-            (Some(index), Some(prepared)) => {
-                Some(std::mem::replace(&mut self.sources[index], prepared))
-            }
-            (Some(index), None) => Some(self.sources.remove(index)),
-            (None, Some(prepared)) => {
-                self.sources.push(prepared);
-                None
-            }
-            (None, None) => unreachable!("empty host swap returned before graph mutation"),
-        };
-        self.interaction_capture_active = None;
-        self.publish_source_status_registry();
-        Ok(HostRuntimeRetirement {
-            source: retired,
-            source_graph_generation,
+        self.sources.iter().any(|source| {
+            source.key() == ManagedSourceKey::Interaction(InteractionSourceOrigin::Host)
         })
-    }
-
-    /// Stop and remove only host hardware capture sources.
-    ///
-    /// Leaves the browser injection source in place so disabling host
-    /// consent never breaks browser-preview input.
-    pub fn remove_host_capture_sources(&mut self) {
-        if !self
-            .sources
-            .iter()
-            .any(|source| source.is_host_capture_source())
-        {
-            return;
-        }
-        let source_graph_generation = self.bump_source_graph_generation();
-        self.sources.retain_mut(|source| {
-            if source.is_host_capture_source() {
-                source.stop();
-                if let Err(error) = source.retire_source_status(source_graph_generation) {
-                    error!(source = source.name(), %error, "Failed to retire host input source status");
-                }
-                info!(source = source.name(), "Removed host capture source");
-                false
-            } else {
-                true
-            }
-        });
-        self.interaction_capture_active = None;
-        self.publish_source_status_registry();
-    }
-
-    /// Stop and remove all registered screen sources.
-    pub fn remove_screen_sources(&mut self) {
-        if !self.sources.iter().any(|source| source.is_screen_source()) {
-            return;
-        }
-        let source_graph_generation = self.bump_source_graph_generation();
-        self.sources.retain_mut(|source| {
-            if source.is_screen_source() {
-                source.set_active_consumer_count(0);
-                source.stop();
-                if let Err(error) = source.retire_source_status(source_graph_generation) {
-                    error!(source = source.name(), %error, "Failed to retire screen input source status");
-                }
-                info!(source = source.name(), "Removed screen capture source");
-                false
-            } else {
-                true
-            }
-        });
-        self.invalidate_capture_domains((false, true, false));
-        self.publish_source_status_registry();
     }
 
     /// Apply new capture settings to any registered screen sources.
@@ -2027,19 +3003,23 @@ impl InputManager {
         &mut self,
         config: &screen::CaptureConfig,
     ) -> anyhow::Result<()> {
-        if !self.sources.iter().any(|source| source.is_screen_source()) {
+        if !self
+            .sources
+            .iter()
+            .any(|source| source.key() == ManagedSourceKey::Screen)
+        {
             return Ok(());
         }
         let source_graph_generation = self.bump_source_graph_generation();
         for source in &mut self.sources {
-            if source.is_screen_source() {
+            if source.key() == ManagedSourceKey::Screen {
                 source.set_source_graph_generation(source_graph_generation);
             }
         }
         let mut result = Ok(());
         for source in &mut self.sources {
-            if source.is_screen_source() {
-                if let Err(error) = source.reconfigure_screen_capture(config) {
+            if let Some(screen) = source.as_screen_mut() {
+                if let Err(error) = screen.reconfigure_screen_capture(config) {
                     result = Err(error);
                     break;
                 }
@@ -2063,49 +3043,67 @@ impl InputManager {
         config: &screen::CaptureConfig,
     ) -> anyhow::Result<()> {
         for source in &mut self.sources {
-            if source.is_screen_source() {
-                source.reconfigure_screen_processing(config)?;
+            if let Some(screen) = source.as_screen_mut() {
+                screen.reconfigure_screen_processing(config)?;
             }
         }
         self.publish_source_status_registry();
         Ok(())
     }
 
-    /// Mirror the active macOS daemon topology into every native source.
+    /// Apply the active process capability context to every native source.
     ///
     /// # Errors
     ///
     /// Returns an error if a source can no longer publish status.
-    pub fn set_macos_daemon_ownership(
+    pub fn set_source_capability_context(
         &mut self,
-        owner: MacosCapabilityOwner,
-        conflict: Option<MacosDaemonOwnerConflict>,
-        designated_requirement_hash: Option<Arc<str>>,
+        context: SourceCapabilityContext,
     ) -> anyhow::Result<()> {
-        self.macos_capability_owner = owner;
-        self.macos_owner_conflict.clone_from(&conflict);
-        self.macos_owner_designated_requirement_hash
-            .clone_from(&designated_requirement_hash);
+        self.source_capability_context.clone_from(&context);
         for source in &mut self.sources {
-            source.set_macos_daemon_ownership(
-                owner,
-                conflict.clone(),
-                designated_requirement_hash.clone(),
-            )?;
+            source.set_capability_context(&context)?;
         }
         self.publish_source_status_registry();
         Ok(())
     }
 
-    /// Publish the active renderer device's Metal 4 capability into macOS source status.
+    /// Update capability identity without discarding retained feature probes.
     ///
     /// # Errors
     ///
     /// Returns an error if a source can no longer publish status.
-    pub fn set_macos_metal4_capability(&mut self, metal4: bool) -> anyhow::Result<()> {
-        self.macos_metal4 = metal4;
+    pub fn set_source_capability_identity(
+        &mut self,
+        owner: impl Into<Arc<str>>,
+        conflict: Option<SourceCapabilityConflict>,
+        identity_hash: Option<Arc<str>>,
+    ) -> anyhow::Result<()> {
+        self.source_capability_context.owner = owner.into();
+        self.source_capability_context.conflict = conflict;
+        self.source_capability_context.identity_hash = identity_hash;
         for source in &mut self.sources {
-            source.set_macos_metal4_capability(metal4)?;
+            source.set_capability_context(&self.source_capability_context)?;
+        }
+        self.publish_source_status_registry();
+        Ok(())
+    }
+
+    /// Publish one backend capability flag into source status.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a source can no longer publish status.
+    pub fn set_source_capability_feature(
+        &mut self,
+        name: impl Into<Arc<str>>,
+        enabled: bool,
+    ) -> anyhow::Result<()> {
+        self.source_capability_context
+            .features
+            .insert(name.into(), enabled);
+        for source in &mut self.sources {
+            source.set_capability_context(&self.source_capability_context)?;
         }
         self.publish_source_status_registry();
         Ok(())
@@ -2117,38 +3115,19 @@ impl InputManager {
     pub fn input_authorization_action(&self) -> Option<ProtectedSourceAuthorizationAction> {
         self.sources
             .iter()
-            .find_map(|source| source.input_authorization_action())
+            .filter_map(ManagedInputSource::as_interaction)
+            .find_map(InteractionSource::input_authorization_action)
     }
 
     fn resolve_protected_source_action<A>(
         &self,
         action: A,
-        executor: ProtectedSourceActionExecutor,
-        presentation_required: bool,
+        identity: CapabilityActionIdentity,
     ) -> ResolvedProtectedSourceAction<A> {
-        if executor == ProtectedSourceActionExecutor::PlatformBackend {
-            return ResolvedProtectedSourceAction::Local {
-                action,
-                owner: ProtectedSourceActionOwner::PlatformBackend,
-            };
+        if identity.disposition() == CapabilityActionDisposition::RequiresUi {
+            return ResolvedProtectedSourceAction::RequiresUi { identity };
         }
-
-        let active_owner = self.macos_capability_owner;
-        let requires_app_ui = matches!(
-            active_owner,
-            MacosCapabilityOwner::App | MacosCapabilityOwner::Broker
-        ) || presentation_required
-            && matches!(
-                active_owner,
-                MacosCapabilityOwner::LaunchdService | MacosCapabilityOwner::HomebrewService
-            );
-        if requires_app_ui {
-            return ResolvedProtectedSourceAction::RequiresAppUi { active_owner };
-        }
-        ResolvedProtectedSourceAction::Local {
-            action,
-            owner: ProtectedSourceActionOwner::Macos(active_owner),
-        }
+        ResolvedProtectedSourceAction::Local { action, identity }
     }
 
     /// Resolve the explicit Input Monitoring request against this process.
@@ -2157,8 +3136,8 @@ impl InputManager {
         &self,
     ) -> Option<ResolvedProtectedSourceAction<ProtectedSourceAuthorizationAction>> {
         let action = self.input_authorization_action()?;
-        let executor = action.executor();
-        Some(self.resolve_protected_source_action(action, executor, false))
+        let identity = action.identity().clone();
+        Some(self.resolve_protected_source_action(action, identity))
     }
 
     /// Resolve the explicit Screen Recording request without retaining the
@@ -2167,7 +3146,8 @@ impl InputManager {
     pub fn screen_authorization_action(&self) -> Option<ProtectedSourceAuthorizationAction> {
         self.sources
             .iter()
-            .find_map(|source| source.screen_authorization_action())
+            .filter_map(ManagedInputSource::as_screen)
+            .find_map(ScreenSource::screen_authorization_action)
     }
 
     /// Resolve the explicit Screen Recording request against this process.
@@ -2176,8 +3156,8 @@ impl InputManager {
         &self,
     ) -> Option<ResolvedProtectedSourceAction<ProtectedSourceAuthorizationAction>> {
         let action = self.screen_authorization_action()?;
-        let executor = action.executor();
-        Some(self.resolve_protected_source_action(action, executor, false))
+        let identity = action.identity().clone();
+        Some(self.resolve_protected_source_action(action, identity))
     }
 
     /// Resolve the native picker action without retaining the input-manager
@@ -2186,7 +3166,8 @@ impl InputManager {
     pub fn screen_source_picker_action(&self) -> Option<ScreenSourcePickerAction> {
         self.sources
             .iter()
-            .find_map(|source| source.screen_source_picker_action())
+            .filter_map(ManagedInputSource::as_screen)
+            .find_map(ScreenSource::screen_source_picker_action)
     }
 
     /// Resolve the native picker request against its exact local executor.
@@ -2195,16 +3176,16 @@ impl InputManager {
         &self,
     ) -> Option<ResolvedProtectedSourceAction<ScreenSourcePickerAction>> {
         let action = self.screen_source_picker_action()?;
-        let executor = action.executor();
-        Some(self.resolve_protected_source_action(action, executor, true))
+        let identity = action.identity().clone();
+        Some(self.resolve_protected_source_action(action, identity))
     }
 
-    #[cfg(target_os = "macos")]
     #[must_use]
-    pub fn macos_screenshot_reference_action(&self) -> Option<MacosScreenshotReferenceAction> {
+    pub fn diagnostic_artifact_action(&self) -> Option<SourceDiagnosticArtifactAction> {
         self.sources
             .iter()
-            .find_map(|source| source.macos_screenshot_reference_action())
+            .filter_map(ManagedInputSource::as_screen)
+            .find_map(ScreenSource::diagnostic_artifact_action)
     }
 
     /// Ask screen sources to discard their persisted selection and re-prompt.
@@ -2213,19 +3194,23 @@ impl InputManager {
     ///
     /// Returns an error if a screen source cannot restart its session.
     pub fn reselect_screen_source(&mut self) -> anyhow::Result<()> {
-        if !self.sources.iter().any(|source| source.is_screen_source()) {
+        if !self
+            .sources
+            .iter()
+            .any(|source| source.key() == ManagedSourceKey::Screen)
+        {
             return Ok(());
         }
         let source_graph_generation = self.bump_source_graph_generation();
         for source in &mut self.sources {
-            if source.is_screen_source() {
+            if source.key() == ManagedSourceKey::Screen {
                 source.set_source_graph_generation(source_graph_generation);
             }
         }
         let mut result = Ok(());
         for source in &mut self.sources {
-            if source.is_screen_source() {
-                if let Err(error) = source.reselect_screen_source() {
+            if let Some(screen) = source.as_screen_mut() {
+                if let Err(error) = screen.reselect_screen_source() {
                     result = Err(error);
                     break;
                 }
@@ -2234,14 +3219,6 @@ impl InputManager {
         }
         self.publish_source_status_registry();
         result
-    }
-
-    /// Return the latest system sensor snapshot, if one is configured.
-    #[must_use]
-    pub fn latest_sensor_snapshot(&self) -> Option<Arc<SystemSnapshot>> {
-        self.sensor_snapshot_rx
-            .as_ref()
-            .map(|receiver| Arc::clone(&receiver.borrow()))
     }
 
     fn bump_source_graph_generation(&mut self) -> u64 {
@@ -2254,19 +3231,19 @@ impl InputManager {
 
     fn create_managed_source(
         &mut self,
-        mut source: Box<dyn InputSource>,
+        mut source: ManagedSourceRole,
         source_graph_generation: u64,
     ) -> ManagedInputSource {
-        source
-            .set_macos_daemon_ownership(
-                self.macos_capability_owner,
-                self.macos_owner_conflict.clone(),
-                self.macos_owner_designated_requirement_hash.clone(),
-            )
-            .expect("new source accepts retained macOS ownership status");
-        source
-            .set_macos_metal4_capability(self.macos_metal4)
-            .expect("new source accepts retained macOS Metal 4 status");
+        if let Some(screen) = source.as_screen_mut() {
+            screen
+                .set_capability_context(&self.source_capability_context)
+                .expect("new screen source accepts retained capability status");
+        }
+        if let Some(interaction) = source.as_interaction_mut() {
+            interaction
+                .set_capability_context(&self.source_capability_context)
+                .expect("new interaction source accepts retained capability status");
+        }
         let id = self.next_source_slot_id;
         self.next_source_slot_id = self
             .next_source_slot_id
@@ -2280,15 +3257,21 @@ impl InputManager {
         )
     }
 
-    fn transition_capture_demand(
+    fn transition_capture_demand<GetCache, SetCache, Matches, Transition>(
         &mut self,
-        domain: CaptureDomain,
         active: bool,
-    ) -> anyhow::Result<()> {
-        let cached = match domain {
-            CaptureDomain::Audio => self.audio_capture_active,
-            CaptureDomain::Interaction => self.interaction_capture_active,
-        };
+        get_cache: GetCache,
+        set_cache: SetCache,
+        matches: Matches,
+        mut transition: Transition,
+    ) -> anyhow::Result<()>
+    where
+        GetCache: Fn(&Self) -> Option<bool>,
+        SetCache: Fn(&mut Self, Option<bool>),
+        Matches: Fn(&ManagedInputSource) -> bool,
+        Transition: FnMut(&mut ManagedInputSource, bool) -> anyhow::Result<()>,
+    {
+        let cached = get_cache(self);
         if cached == Some(active) {
             return Ok(());
         }
@@ -2297,32 +3280,28 @@ impl InputManager {
             .sources
             .iter()
             .map(|source| {
-                domain
-                    .matches(source.as_ref())
-                    .then(|| source.source_status_handle().snapshot().demanded)
+                matches(source).then(|| source.source_status_handle().snapshot().demanded)
             })
             .collect::<Vec<_>>();
 
         let source_graph_generation = self.bump_source_graph_generation();
         for source in &mut self.sources {
-            if domain.matches(source.as_ref()) {
+            if matches(source) {
                 source.set_source_graph_generation(source_graph_generation);
             }
         }
 
         for source_index in 0..self.sources.len() {
-            if !domain.matches(self.sources[source_index].as_ref()) {
+            if !matches(&self.sources[source_index]) {
                 continue;
             }
-            let transition = domain
-                .transition(self.sources[source_index].as_mut(), active)
+            let result = transition(&mut self.sources[source_index], active)
                 .and_then(|()| self.sources[source_index].set_compatibility_demand(active));
-            if let Err(error) = transition {
+            if let Err(error) = result {
                 let mut rollback_succeeded = true;
                 for (rollback, previous) in self.sources.iter_mut().zip(&prior_demands) {
                     if let Some(previous) = previous {
-                        let rollback_result = domain
-                            .transition(rollback.as_mut(), *previous)
+                        let rollback_result = transition(rollback, *previous)
                             .and_then(|()| rollback.set_compatibility_demand(*previous));
                         if let Err(rollback_error) = rollback_result {
                             rollback_succeeded = false;
@@ -2342,22 +3321,15 @@ impl InputManager {
                 } else {
                     None
                 };
-                self.set_capture_demand_cache(domain, restored_cache);
+                set_cache(self, restored_cache);
                 self.publish_source_status_registry();
                 return Err(error);
             }
         }
 
-        self.set_capture_demand_cache(domain, Some(active));
+        set_cache(self, Some(active));
         self.publish_source_status_registry();
         Ok(())
-    }
-
-    fn set_capture_demand_cache(&mut self, domain: CaptureDomain, demand: Option<bool>) {
-        match domain {
-            CaptureDomain::Audio => self.audio_capture_active = demand,
-            CaptureDomain::Interaction => self.interaction_capture_active = demand,
-        }
     }
 
     fn transition_screen_capture_demand(
@@ -2372,16 +3344,12 @@ impl InputManager {
         let prior_demands = self
             .sources
             .iter()
-            .map(|source| {
-                source
-                    .is_screen_source()
-                    .then(|| source.screen_capture_demand())
-            })
+            .map(|source| source.as_screen().map(ScreenSource::screen_capture_demand))
             .collect::<Vec<_>>();
         let analysis_peak_bytes = self
             .sources
             .iter()
-            .filter(|source| source.is_screen_source())
+            .filter_map(ManagedInputSource::as_screen)
             .try_fold(0_u64, |total, source| {
                 let bytes = source
                     .screen_analysis_resource_plan(demand)?
@@ -2396,15 +3364,17 @@ impl InputManager {
             preparation.expected_graph_generation = source_graph_generation;
         }
         for source in &mut self.sources {
-            if source.is_screen_source() {
+            if source.key() == ManagedSourceKey::Screen {
                 source.set_source_graph_generation(source_graph_generation);
             }
         }
         for source_index in 0..self.sources.len() {
-            if !self.sources[source_index].is_screen_source() {
+            if self.sources[source_index].key() != ManagedSourceKey::Screen {
                 continue;
             }
             let transition = self.sources[source_index]
+                .as_screen_mut()
+                .expect("screen key binds typed screen source")
                 .set_screen_capture_demand(demand)
                 .and_then(|()| {
                     self.sources[source_index].set_compatibility_demand(demand.is_active())
@@ -2414,6 +3384,8 @@ impl InputManager {
                 for (source, previous) in self.sources.iter_mut().zip(&prior_demands) {
                     if let Some(previous) = previous {
                         let rollback_result = source
+                            .as_screen_mut()
+                            .expect("screen demand snapshot binds typed screen source")
                             .set_screen_capture_demand(*previous)
                             .and_then(|()| source.set_compatibility_demand(previous.is_active()));
                         if let Err(rollback_error) = rollback_result {
@@ -2469,7 +3441,7 @@ impl InputManager {
         for source in self
             .sources
             .iter_mut()
-            .filter(|source| source.is_screen_source())
+            .filter(|source| source.key() == ManagedSourceKey::Screen)
         {
             source.set_active_consumer_count(active_consumer_count);
         }
@@ -2482,11 +3454,16 @@ impl InputManager {
         for source in self
             .sources
             .iter_mut()
-            .filter(|source| source.is_screen_source())
+            .filter(|source| source.key() == ManagedSourceKey::Screen)
         {
             let active_consumer_count = active_consumer_counts
                 .iter()
-                .filter(|(source_id, _)| source.owns_screen_publication_source(source_id))
+                .filter(|(source_id, _)| {
+                    source
+                        .as_screen()
+                        .expect("screen key binds typed screen source")
+                        .owns_screen_publication_source(source_id)
+                })
                 .map(|(_, count)| *count)
                 .sum();
             source.set_active_consumer_count(active_consumer_count);
@@ -2557,17 +3534,13 @@ fn resolved_compatibility_descriptor(
         .map(|branch| branch.descriptor().clone())
 }
 
-fn declared_source_kind(source: &dyn InputSource) -> Option<SourceKind> {
-    source
-        .source_status_handle()
-        .map(|handle| handle.snapshot().kind)
-        .or_else(|| source.is_audio_source().then_some(SourceKind::Audio))
-        .or_else(|| source.is_screen_source().then_some(SourceKind::Screen))
-        .or_else(|| {
-            source
-                .is_interaction_source()
-                .then_some(SourceKind::Interaction)
-        })
+fn managed_source_capture_domains(key: ManagedSourceKey) -> (bool, bool, bool) {
+    match key {
+        ManagedSourceKey::Audio => (true, false, false),
+        ManagedSourceKey::Screen => (false, true, false),
+        ManagedSourceKey::Interaction(_) => (false, false, true),
+        ManagedSourceKey::Data(_) => (false, false, false),
+    }
 }
 
 fn sample_managed_source(
@@ -2580,7 +3553,8 @@ fn sample_managed_source(
         Ok(sample) => sample,
         Err(error) => {
             error!(source = source.name(), %error, "Input sample failed");
-            None
+            source.slot.clear_latest();
+            return;
         }
     };
     source.slot.publish_batch(sample, event_scratch);
@@ -2597,12 +3571,17 @@ mod host_source_swap_tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    use super::{HostReconfigurationError, InputData, InputManager, InputSource, SourceState};
+    use super::{
+        InputData, InputManager, InputSource, InteractionSource, InteractionSourceOrigin,
+        InteractionSourceRole, ManagedSourceKey, ManagedSourceRole, SourceRoleBinding, SourceState,
+        SourceSwapConflict, SourceSwapTarget,
+    };
 
     struct HostSource {
         name: &'static str,
         running: bool,
         stopped: Arc<AtomicBool>,
+        origin: InteractionSourceOrigin,
     }
 
     impl HostSource {
@@ -2611,6 +3590,16 @@ mod host_source_swap_tests {
                 name,
                 running: false,
                 stopped,
+                origin: InteractionSourceOrigin::Host,
+            }
+        }
+
+        fn browser(name: &'static str) -> Self {
+            Self {
+                name,
+                running: false,
+                stopped: Arc::new(AtomicBool::new(false)),
+                origin: InteractionSourceOrigin::BrowserCompatibilityAggregate,
             }
         }
     }
@@ -2637,14 +3626,100 @@ mod host_source_swap_tests {
         fn is_running(&self) -> bool {
             self.running
         }
+    }
 
-        fn is_interaction_source(&self) -> bool {
-            true
-        }
+    impl SourceRoleBinding for HostSource {
+        type Role = InteractionSourceRole;
+    }
 
-        fn is_host_capture_source(&self) -> bool {
-            true
+    impl InteractionSource for HostSource {
+        fn interaction_source_origin(&self) -> InteractionSourceOrigin {
+            self.origin
         }
+    }
+
+    #[test]
+    fn typed_swap_preserves_candidate_and_graph_on_conflict() {
+        let mut old = Box::new(HostSource::new(
+            "old-host",
+            Arc::new(AtomicBool::new(false)),
+        ));
+        old.start().expect("old host source starts");
+        let manager = InputManager::new();
+        manager
+            .add_source(ManagedSourceRole::interaction(old))
+            .expect("old host source registers");
+        let plan = manager
+            .plan_source_swap(
+                ManagedSourceKey::Interaction(InteractionSourceOrigin::Host),
+                SourceSwapTarget::Present { running: true },
+            )
+            .expect("unique host source plans");
+        let mut candidate = Box::new(HostSource::new(
+            "candidate-host",
+            Arc::new(AtomicBool::new(false)),
+        ));
+        candidate.start().expect("candidate host source starts");
+        let mut candidate = Some(ManagedSourceRole::interaction(candidate));
+        let mut prepared = plan
+            .prepare(&mut candidate)
+            .expect("candidate should prepare");
+        manager
+            .add_source(ManagedSourceRole::interaction(Box::new(
+                HostSource::browser("browser"),
+            )))
+            .expect("browser source registers");
+        let graph_generation = manager.source_graph_generation();
+
+        assert!(matches!(
+            manager.commit_source_swap(&mut prepared),
+            Err(SourceSwapConflict::GraphChanged)
+        ));
+        assert!(prepared.has_replacement());
+        assert_eq!(manager.source_graph_generation(), graph_generation);
+        assert_eq!(manager.source_names(), ["old-host", "browser"]);
+        prepared.discard();
+    }
+
+    #[test]
+    fn typed_swap_defers_retirement_and_preserves_registration_order() {
+        let old_stopped = Arc::new(AtomicBool::new(false));
+        let mut old = Box::new(HostSource::new("old-host", Arc::clone(&old_stopped)));
+        old.start().expect("old host source starts");
+        let manager = InputManager::new();
+        manager
+            .add_source(ManagedSourceRole::interaction(old))
+            .expect("old host source registers");
+        manager
+            .add_source(ManagedSourceRole::interaction(Box::new(
+                HostSource::browser("browser"),
+            )))
+            .expect("browser source registers");
+        let plan = manager
+            .plan_source_swap(
+                ManagedSourceKey::Interaction(InteractionSourceOrigin::Host),
+                SourceSwapTarget::Present { running: true },
+            )
+            .expect("unique host source plans");
+        let mut candidate = Box::new(HostSource::new(
+            "candidate-host",
+            Arc::new(AtomicBool::new(false)),
+        ));
+        candidate.start().expect("candidate host source starts");
+        let mut candidate = Some(ManagedSourceRole::interaction(candidate));
+        let mut prepared = plan
+            .prepare(&mut candidate)
+            .expect("matching candidate prepares");
+
+        let retirement = manager
+            .commit_source_swap(&mut prepared)
+            .expect("matching candidate commits");
+
+        assert!(candidate.is_none());
+        assert_eq!(manager.source_names(), ["candidate-host", "browser"]);
+        assert!(!old_stopped.load(Ordering::Acquire));
+        retirement.retire();
+        assert!(old_stopped.load(Ordering::Acquire));
     }
 
     #[test]
@@ -2653,21 +3728,29 @@ mod host_source_swap_tests {
         let candidate_stopped = Arc::new(AtomicBool::new(false));
         let mut old = Box::new(HostSource::new("old-host", Arc::clone(&old_stopped)));
         old.start().expect("old host source starts");
-        let mut manager = InputManager::new();
-        manager.add_source(old);
+        let manager = InputManager::new();
+        manager
+            .add_source(ManagedSourceRole::interaction(old))
+            .expect("old host source registers");
         let initial_generation = manager.source_graph_generation();
 
-        let mut candidate: Option<Box<dyn InputSource>> = Some(Box::new(HostSource::new(
+        let plan = manager
+            .plan_source_swap(
+                ManagedSourceKey::Interaction(InteractionSourceOrigin::Host),
+                SourceSwapTarget::Present { running: true },
+            )
+            .expect("unique host source plans");
+        let mut candidate: Box<dyn InteractionSource> = Box::new(HostSource::new(
             "candidate-host",
             Arc::clone(&candidate_stopped),
-        )));
-        candidate
-            .as_mut()
-            .expect("candidate exists")
-            .start()
-            .expect("candidate host source starts");
+        ));
+        candidate.start().expect("candidate host source starts");
+        let mut candidate = Some(ManagedSourceRole::interaction(candidate));
+        let mut prepared = plan
+            .prepare(&mut candidate)
+            .expect("running candidate prepares");
         let retirement = manager
-            .swap_host_capture_source(&mut candidate)
+            .commit_source_swap(&mut prepared)
             .expect("running candidate swaps atomically");
 
         assert!(candidate.is_none());
@@ -2690,21 +3773,68 @@ mod host_source_swap_tests {
         let old_stopped = Arc::new(AtomicBool::new(false));
         let mut old = Box::new(HostSource::new("old-host", Arc::clone(&old_stopped)));
         old.start().expect("old host source starts");
-        let mut manager = InputManager::new();
-        manager.add_source(old);
+        let manager = InputManager::new();
+        manager
+            .add_source(ManagedSourceRole::interaction(old))
+            .expect("old host source registers");
         let initial_generation = manager.source_graph_generation();
-        let mut candidate: Option<Box<dyn InputSource>> = Some(Box::new(HostSource::new(
+        let plan = manager
+            .plan_source_swap(
+                ManagedSourceKey::Interaction(InteractionSourceOrigin::Host),
+                SourceSwapTarget::Present { running: true },
+            )
+            .expect("unique host source plans");
+        let mut candidate = Some(ManagedSourceRole::interaction(Box::new(HostSource::new(
             "failed-candidate",
             Arc::new(AtomicBool::new(false)),
-        )));
+        ))));
 
         assert!(matches!(
-            manager.swap_host_capture_source(&mut candidate),
-            Err(HostReconfigurationError::InvalidReplacement)
+            plan.prepare(&mut candidate),
+            Err(SourceSwapConflict::InvalidReplacementLifecycle {
+                expected_running: true,
+                observed_running: false,
+            })
         ));
         assert!(candidate.is_some());
         assert_eq!(manager.source_names(), ["old-host"]);
         assert_eq!(manager.source_graph_generation(), initial_generation);
         assert!(!old_stopped.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn browser_candidate_rejection_preserves_candidate_and_host_source() {
+        let mut old = Box::new(HostSource::new(
+            "old-host",
+            Arc::new(AtomicBool::new(false)),
+        ));
+        old.start().expect("old host source starts");
+        let manager = InputManager::new();
+        manager
+            .add_source(ManagedSourceRole::interaction(old))
+            .expect("old host source registers");
+        let initial_generation = manager.source_graph_generation();
+        let plan = manager
+            .plan_source_swap(
+                ManagedSourceKey::Interaction(InteractionSourceOrigin::Host),
+                SourceSwapTarget::Present { running: true },
+            )
+            .expect("unique host source plans");
+        let mut candidate = Box::new(HostSource::browser("browser-candidate"));
+        candidate.start().expect("browser candidate starts");
+        let mut candidate = Some(ManagedSourceRole::interaction(candidate));
+
+        assert!(matches!(
+            plan.prepare(&mut candidate),
+            Err(SourceSwapConflict::InvalidReplacementKey {
+                expected: ManagedSourceKey::Interaction(InteractionSourceOrigin::Host),
+                observed: ManagedSourceKey::Interaction(
+                    InteractionSourceOrigin::BrowserCompatibilityAggregate
+                ),
+            })
+        ));
+        assert!(candidate.is_some());
+        assert_eq!(manager.source_names(), ["old-host"]);
+        assert_eq!(manager.source_graph_generation(), initial_generation);
     }
 }

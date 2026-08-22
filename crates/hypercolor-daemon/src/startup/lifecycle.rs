@@ -68,12 +68,9 @@ impl DaemonState {
         );
 
         // Start configured input sources.
-        {
-            let mut input_manager = self.input_manager.lock().await;
-            input_manager
-                .start_all()
-                .context("failed to start input sources")?;
-        }
+        self.input_manager
+            .start_all()
+            .context("failed to start input sources")?;
         if self.input_status_event_publisher.is_none() {
             self.input_status_event_publisher = Some(InputStatusEventPublisher::start(
                 self.input_status.clone(),
@@ -93,6 +90,11 @@ impl DaemonState {
         // Restore persisted scene state before the render loop begins producing frames.
         self.restore_runtime_session(&config).await;
 
+        let session_config = config.session.clone();
+        let monitors = self
+            .session_monitors
+            .take()
+            .unwrap_or_else(|| crate::session::platform_session_monitors(&session_config));
         self.session_controller = Some(SessionController::start(
             Arc::clone(&self.config_manager),
             Arc::clone(&self.event_bus),
@@ -101,6 +103,7 @@ impl DaemonState {
             self.discovery_runtime(),
             Arc::clone(&self.driver_host),
             Arc::clone(&self.driver_registry),
+            monitors,
         ));
 
         activate_simulated_displays(&self.discovery_runtime(), &self.simulated_displays)
@@ -135,7 +138,7 @@ impl DaemonState {
             zone_layout_previews: Arc::clone(&self.zone_layout_previews),
             render_loop: Arc::clone(&self.render_loop),
             scene_manager: Arc::clone(&self.scene_manager),
-            input_manager: Arc::clone(&self.input_manager),
+            input_manager: self.input_manager.clone(),
             interaction_routing: self.interaction_routing.clone(),
             power_state: self.power_state.subscribe(),
             device_settings: Arc::clone(&self.device_settings),
@@ -152,13 +155,7 @@ impl DaemonState {
             RenderThread::try_spawn(rt_state)
                 .context("failed to spawn render thread with resolved compositor mode")?,
         );
-        let (input_graph, sensor_snapshots) = {
-            let input_manager = self.input_manager.lock().await;
-            (
-                input_manager.input_graph_handle(),
-                input_manager.sensor_snapshot_receiver(),
-            )
-        };
+        let input_graph = self.input_manager.input_graph_handle();
         let input_demands = self
             .render_thread
             .as_ref()
@@ -170,7 +167,6 @@ impl DaemonState {
             asset_library: Some(Arc::clone(&self.asset_library)),
             event_bus: Arc::clone(&self.event_bus),
             input_graph,
-            sensor_snapshots,
             interaction_routing: self.interaction_routing.clone(),
             input_demands,
             canvas_width: config.daemon.canvas_width,
@@ -342,10 +338,7 @@ impl DaemonState {
         );
 
         // 4. Stop input sources.
-        {
-            let mut input_manager = self.input_manager.lock().await;
-            input_manager.stop_all();
-        }
+        self.input_manager.detach_all_sources().retire();
         info!("Input sources stopped");
         drop(self.input_status_event_publisher.take());
 

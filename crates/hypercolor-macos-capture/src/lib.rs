@@ -4,6 +4,7 @@
 //! boundary contains only plain Rust metadata plus an opaque retained surface.
 
 mod clock;
+#[cfg(feature = "capture-fixtures")]
 mod cpu;
 mod diagnostics;
 mod frame;
@@ -14,6 +15,7 @@ mod native;
 #[cfg(target_os = "macos")]
 mod screenshot;
 mod session;
+mod source_status;
 mod stream_contract;
 #[cfg(any(target_os = "macos", test))]
 mod worker;
@@ -32,6 +34,7 @@ pub use screenshot::{
 };
 
 pub use clock::{MacosDisplayClock, MacosDisplayClockError};
+#[cfg(feature = "capture-fixtures")]
 pub use cpu::MacosCpuSourceView;
 pub use diagnostics::{MacosCaptureCallbackDiagnostics, MacosFrameDropReason};
 #[cfg(target_os = "macos")]
@@ -51,6 +54,12 @@ pub use mailbox::MacosFrameMailbox;
 pub use session::{
     MacosCaptureCadence, MacosCaptureContentStyle, MacosCaptureSelection, MacosCaptureSelector,
     MacosStreamRequest,
+};
+pub use source_status::{
+    MacosScreenAuthorizationState, MacosScreenDiagnosticsDecodeError, MacosScreenOwnerConflict,
+    MacosScreenSelectionSnapshot, MacosScreenStatusSnapshot, MacosScreenTahoeSelectionStatus,
+    MacosScreenTahoeStatus, MacosScreenTimingStatus, MacosSourceTimingStatus,
+    screen_diagnostics_envelope, screen_selection_snapshot,
 };
 pub use stream_contract::{
     MacosCaptureCapabilities, MacosCaptureDynamicRange, MacosConfiguredStream,

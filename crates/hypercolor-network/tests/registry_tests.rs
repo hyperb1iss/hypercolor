@@ -17,7 +17,7 @@ use hypercolor_types::controls::{
 };
 use hypercolor_types::device::{
     DeviceClassHint, DeviceId, DeviceInfo, DriverModuleDescriptor, DriverModuleKind,
-    DriverPresentation, DriverProtocolDescriptor, DriverTransportKind,
+    DriverPresentation, DriverProtocolDescriptor, DriverTransportDescriptor, DriverTransportKind,
 };
 use std::sync::LazyLock;
 
@@ -502,7 +502,9 @@ fn registry_lists_module_descriptors_in_deterministic_order() {
     assert_eq!(descriptors[0].module_kind, DriverModuleKind::Network);
     assert_eq!(
         descriptors[0].transports,
-        vec![DriverTransportKind::Network]
+        vec![DriverTransportDescriptor::available(
+            DriverTransportKind::Network
+        )]
     );
     assert!(descriptors[0].capabilities.discovery);
     assert!(descriptors[0].capabilities.output_backend);

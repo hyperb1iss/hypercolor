@@ -37,6 +37,10 @@ from .driver import (
     DriverModuleDescriptor,
     DriverPresentation,
     DriverProtocolDescriptor,
+    DriverTransportAvailability,
+    DriverTransportAvailable,
+    DriverTransportDescriptor,
+    DriverTransportUnsupportedPlatform,
     TransportKind,
 )
 from .effect import (
@@ -106,6 +110,10 @@ __all__ = [
     "DriverModuleDescriptor",
     "DriverPresentation",
     "DriverProtocolDescriptor",
+    "DriverTransportAvailability",
+    "DriverTransportAvailable",
+    "DriverTransportDescriptor",
+    "DriverTransportUnsupportedPlatform",
     "Effect",
     "EffectCoverImage",
     "EffectPreset",

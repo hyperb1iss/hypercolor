@@ -193,6 +193,31 @@ fn transform_capture_origin(
                 .checked_sub(right)
                 .ok_or(CaptureFrameError::OriginCoordinateOverflow)?,
         ),
+        CaptureRotation::Flipped => (
+            native
+                .width()
+                .checked_sub(right)
+                .ok_or(CaptureFrameError::OriginCoordinateOverflow)?,
+            crop.y,
+        ),
+        CaptureRotation::Flipped90 => (
+            native
+                .height()
+                .checked_sub(bottom)
+                .ok_or(CaptureFrameError::OriginCoordinateOverflow)?,
+            native
+                .width()
+                .checked_sub(right)
+                .ok_or(CaptureFrameError::OriginCoordinateOverflow)?,
+        ),
+        CaptureRotation::Flipped180 => (
+            crop.x,
+            native
+                .height()
+                .checked_sub(bottom)
+                .ok_or(CaptureFrameError::OriginCoordinateOverflow)?,
+        ),
+        CaptureRotation::Flipped270 => (crop.y, crop.x),
     };
     let x = scaled_origin_offset(x, geometry.source_scale())?;
     let y = scaled_origin_offset(y, geometry.source_scale())?;
@@ -315,6 +340,10 @@ const fn inverse_rotation(
         CaptureRotation::Clockwise90 => (y, extent.height() - 1 - x),
         CaptureRotation::Clockwise180 => (extent.width() - 1 - x, extent.height() - 1 - y),
         CaptureRotation::Clockwise270 => (extent.width() - 1 - y, x),
+        CaptureRotation::Flipped => (extent.width() - 1 - x, y),
+        CaptureRotation::Flipped90 => (extent.width() - 1 - y, extent.height() - 1 - x),
+        CaptureRotation::Flipped180 => (x, extent.height() - 1 - y),
+        CaptureRotation::Flipped270 => (y, x),
     }
 }
 
@@ -416,6 +445,10 @@ fn transform_cursor_origin(
         CaptureRotation::Clockwise90 => (height - y - shape_height, x),
         CaptureRotation::Clockwise180 => (width - x - shape_width, height - y - shape_height),
         CaptureRotation::Clockwise270 => (y, width - x - shape_width),
+        CaptureRotation::Flipped => (width - x - shape_width, y),
+        CaptureRotation::Flipped90 => (height - y - shape_height, width - x - shape_width),
+        CaptureRotation::Flipped180 => (x, height - y - shape_height),
+        CaptureRotation::Flipped270 => (y, x),
     };
     Ok(PhysicalOrigin {
         x: i32::try_from(x).map_err(|_| CaptureFrameError::CursorCoordinateOverflow)?,
@@ -437,6 +470,10 @@ fn transform_hotspot(
         CaptureRotation::Clockwise90 => (height - 1 - y, x),
         CaptureRotation::Clockwise180 => (width - 1 - x, height - 1 - y),
         CaptureRotation::Clockwise270 => (y, width - 1 - x),
+        CaptureRotation::Flipped => (width - 1 - x, y),
+        CaptureRotation::Flipped90 => (height - 1 - y, width - 1 - x),
+        CaptureRotation::Flipped180 => (x, height - 1 - y),
+        CaptureRotation::Flipped270 => (y, x),
     };
     Ok(PhysicalOrigin {
         x: i32::try_from(x).map_err(|_| CaptureFrameError::CursorCoordinateOverflow)?,

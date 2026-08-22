@@ -8,7 +8,8 @@ use std::time::Duration;
 
 use hypercolor_core::config::ConfigManager;
 use hypercolor_core::input::{
-    InputData, InputSource, SourceIssue, SourceKind, SourceStatusHandle, SourceStatusReporter,
+    AudioSource, AudioSourceRole, InputData, InputSource, ManagedSourceRole, SourceIssue,
+    SourceKind, SourceRoleBinding, SourceStatusHandle, SourceStatusReporter,
 };
 use hypercolor_core::scene::OutputPlacement;
 use hypercolor_daemon::api::{self, AppState};
@@ -156,6 +157,12 @@ impl InputSource for FailedInputSource {
     }
 }
 
+impl SourceRoleBinding for FailedInputSource {
+    type Role = AudioSourceRole;
+}
+
+impl AudioSource for FailedInputSource {}
+
 #[tokio::test]
 async fn diagnose_matches_rest_defaults_and_excludes_protected_parity() {
     let state = Arc::new(fresh_app_state());
@@ -192,9 +199,14 @@ async fn diagnose_matches_rest_defaults_and_excludes_protected_parity() {
 async fn diagnose_reports_demanded_input_failure_as_unhealthy() {
     let state = fresh_app_state();
     {
-        let mut manager = state.input_manager.lock().await;
-        manager.add_source(Box::new(FailedInputSource::new()));
-        manager.start_all().expect("test input graph should start");
+        state
+            .input_manager
+            .add_source(ManagedSourceRole::audio(Box::new(FailedInputSource::new())))
+            .expect("failed audio source should register");
+        state
+            .input_manager
+            .start_all()
+            .expect("test input graph should start");
     }
 
     let result = execute_tool_with_state("diagnose", &json!({}), &state)
@@ -219,15 +231,12 @@ async fn diagnose_reports_demanded_input_failure_as_unhealthy() {
 }
 
 #[tokio::test]
-async fn mcp_status_surfaces_are_exact_while_input_manager_is_held() {
+async fn mcp_input_status_surfaces_use_the_lock_free_registry() {
     let state = fresh_app_state();
     state
         .input_manager
-        .lock()
-        .await
         .start_all()
         .expect("browser input source should start");
-    let manager_guard = state.input_manager.lock().await;
 
     let status = tokio::time::timeout(
         Duration::from_secs(1),
@@ -259,7 +268,6 @@ async fn mcp_status_surfaces_are_exact_while_input_manager_is_held() {
     .await
     .expect("diagnose must not wait for the input manager")
     .expect("diagnose should succeed");
-    drop(manager_guard);
 
     assert_eq!(
         diagnose["snapshot"]["input"]["sources"][0]["source_id"],

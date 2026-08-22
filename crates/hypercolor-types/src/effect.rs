@@ -644,6 +644,22 @@ pub struct EffectMetadata {
 }
 
 impl EffectMetadata {
+    /// Whether this effect consumes system sensor data.
+    ///
+    /// Sensor-aware metadata uses one of the established sensor tags or
+    /// declares at least one sensor control.
+    #[must_use]
+    pub fn requires_sensors(&self) -> bool {
+        self.tags.iter().any(|tag| {
+            tag.eq_ignore_ascii_case("sensor")
+                || tag.eq_ignore_ascii_case("sensors")
+                || tag.eq_ignore_ascii_case("system-monitor")
+        }) || self
+            .controls
+            .iter()
+            .any(|control| matches!(control.kind, ControlKind::Sensor))
+    }
+
     /// Whether this effect wants host keyboard/mouse data injected.
     ///
     /// Single predicate shared by renderer payload injection and capture

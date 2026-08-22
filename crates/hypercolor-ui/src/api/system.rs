@@ -1,13 +1,17 @@
 //! System status API.
 
 use hypercolor_types::sensor::SystemSnapshot;
-use serde::Deserialize;
+pub use hypercolor_types::source_status::{
+    SOURCE_DIAGNOSTICS_ENVELOPE_MAX_BYTES, SourceDiagnosticsDisplayField, SourceDiagnosticsEnvelope,
+};
+use serde::{Deserialize, Deserializer};
+use serde_json::value::RawValue;
 
 use super::client;
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
-/// Authenticated status carried by `GET /api/v1/system`.
+/// System status from `GET /api/v1/status`.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct SystemStatus {
     pub running: bool,
@@ -119,81 +123,6 @@ pub struct MacosDaemonOwnerRecoveryRequiredStatus {
     pub phase: Option<String>,
 }
 
-/// Persistability and redacted content style of a macOS screen selection.
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum MacosSelectionStatus {
-    None,
-    Display {
-        #[serde(default)]
-        source_id: Option<String>,
-    },
-    SessionScoped {
-        #[serde(default)]
-        content_style: Option<String>,
-    },
-    #[serde(other)]
-    Unknown,
-}
-
-/// Tahoe capabilities proven for one selected capture incarnation.
-#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
-#[serde(default)]
-pub struct MacosTahoeSelectionStatus {
-    pub source_id: Option<String>,
-    pub capture_session_generation: Option<u64>,
-    pub hdr_capture: Option<bool>,
-    pub dual_range_screenshots: Option<bool>,
-}
-
-/// Process-stable Tahoe host and active Metal-device capabilities.
-#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
-#[serde(default)]
-pub struct MacosTahoeStatus {
-    pub host_architecture: Option<String>,
-    pub translated_process: Option<bool>,
-    pub content_tone_mapping_info: Option<bool>,
-    pub metal4: Option<bool>,
-}
-
-/// Platform-specific source state carried by the daemon status endpoint.
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum InputSourcePlatformStatus {
-    MacosInput {
-        #[serde(default)]
-        keyboard: Option<String>,
-        #[serde(default)]
-        pointer: Option<String>,
-        #[serde(default)]
-        keyboard_tcc: Option<String>,
-        #[serde(default)]
-        keyboard_owner: Option<String>,
-        #[serde(default)]
-        pointer_owner: Option<String>,
-        #[serde(default)]
-        owner_conflict: Option<MacosDaemonOwnerConflictStatus>,
-    },
-    MacosScreen {
-        #[serde(default)]
-        state: Option<String>,
-        #[serde(default)]
-        tcc: Option<String>,
-        #[serde(default)]
-        owner: Option<String>,
-        #[serde(default)]
-        selection: Option<MacosSelectionStatus>,
-        #[serde(default)]
-        tahoe: Option<MacosTahoeStatus>,
-        #[serde(default)]
-        tahoe_selection: Option<MacosTahoeSelectionStatus>,
-        #[serde(default)]
-        owner_conflict: Option<MacosDaemonOwnerConflictStatus>,
-    },
-    #[serde(other)]
-    Unknown,
-}
-
 /// Lock-free lifecycle and freshness status for one input source.
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
 #[serde(default)]
@@ -216,8 +145,24 @@ pub struct InputSourceStatus {
     pub issue: Option<InputSourceIssueStatus>,
     pub lifecycle_issue: Option<InputSourceIssueStatus>,
     pub freshness_issue: Option<InputSourceIssueStatus>,
-    pub platform: Option<InputSourcePlatformStatus>,
+    pub action_issue: Option<InputSourceIssueStatus>,
+    #[serde(default, deserialize_with = "deserialize_diagnostics")]
+    pub diagnostics: Option<SourceDiagnosticsEnvelope>,
     pub retired: bool,
+}
+
+fn deserialize_diagnostics<'de, D>(
+    deserializer: D,
+) -> Result<Option<SourceDiagnosticsEnvelope>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let diagnostics = Option::<&RawValue>::deserialize(deserializer)?;
+    Ok(diagnostics.and_then(|raw| {
+        (raw.get().len() <= SOURCE_DIAGNOSTICS_ENVELOPE_MAX_BYTES)
+            .then(|| serde_json::from_str(raw.get()).ok())
+            .flatten()
+    }))
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
@@ -280,9 +225,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        InputSourcePlatformStatus, InputSourceStatus, MacosDaemonOwnerConflictStatus,
-        MacosDaemonOwnerRecoveryRequiredStatus, MacosDaemonOwnershipStatus, MacosSelectionStatus,
-        MacosTahoeSelectionStatus, MacosTahoeStatus, SystemResource,
+        InputSourceStatus, MacosDaemonOwnerConflictStatus, MacosDaemonOwnerRecoveryRequiredStatus,
+        MacosDaemonOwnershipStatus, SOURCE_DIAGNOSTICS_ENVELOPE_MAX_BYTES, SystemResource,
     };
 
     #[test]
@@ -348,179 +292,103 @@ mod tests {
     }
 
     #[test]
-    fn input_source_status_decodes_macos_input_platform_tolerantly() {
-        let status: InputSourceStatus = serde_json::from_value(json!({
-            "platform": {
-                "type": "macos_input",
-                "keyboard": "needs_process_restart",
-                "pointer": "live",
-                "keyboard_tcc": "authorized",
-                "keyboard_owner": "app_sidecar",
-                "pointer_owner": "broker",
-                "owner_conflict": {
-                    "active": "launchd_service",
-                    "contender": "homebrew_service",
-                    "observed_at_ms": 1_725_000_000_123_u64,
-                    "future_conflict_field": true
-                },
-                "future_probe": { "available": true }
+    fn input_source_status_decodes_bounded_diagnostics_tolerantly() {
+        let raw = serde_json::to_string(&json!({
+            "action_issue": {
+                "code": "process_restart_required",
+                "message": "Restart required",
+                "retryable": true
+            },
+            "diagnostics": {
+                "schema": "future.backend",
+                "version": 17,
+                "display": [
+                    {"key": "mode", "label": "Mode", "value": "diagnostic"}
+                ],
+                "payload": {"future_probe": {"available": true}}
             },
             "future_source_field": 42
         }))
-        .expect("macOS input status should decode");
+        .expect("fixture should encode");
+        let status: InputSourceStatus =
+            serde_json::from_str(&raw).expect("bounded diagnostics should decode");
 
-        let Some(InputSourcePlatformStatus::MacosInput {
-            keyboard,
-            pointer,
-            keyboard_tcc,
-            keyboard_owner,
-            pointer_owner,
-            owner_conflict,
-        }) = status.platform
-        else {
-            panic!("fixture should decode the macOS input variant");
-        };
-
-        assert_eq!(keyboard.as_deref(), Some("needs_process_restart"));
-        assert_eq!(pointer.as_deref(), Some("live"));
-        assert_eq!(keyboard_tcc.as_deref(), Some("authorized"));
-        assert_eq!(keyboard_owner.as_deref(), Some("app_sidecar"));
-        assert_eq!(pointer_owner.as_deref(), Some("broker"));
+        let diagnostics = status.diagnostics.expect("diagnostics should be present");
+        assert_eq!(diagnostics.schema(), "future.backend");
+        assert_eq!(diagnostics.version(), 17);
+        assert_eq!(diagnostics.display()[0].label, "Mode");
+        assert_eq!(diagnostics.payload()["future_probe"]["available"], true);
         assert_eq!(
-            owner_conflict,
-            Some(MacosDaemonOwnerConflictStatus {
-                active: Some("launchd_service".to_owned()),
-                contender: Some("homebrew_service".to_owned()),
-                observed_at_ms: Some(1_725_000_000_123),
-            })
-        );
-
-        let partial: InputSourceStatus = serde_json::from_value(json!({
-            "platform": { "type": "macos_input" }
-        }))
-        .expect("partial macOS input status should decode");
-        assert!(matches!(
-            partial.platform,
-            Some(InputSourcePlatformStatus::MacosInput {
-                keyboard: None,
-                owner_conflict: None,
-                ..
-            })
-        ));
-    }
-
-    #[test]
-    fn input_source_status_decodes_macos_screen_platform_tolerantly() {
-        let status: InputSourceStatus = serde_json::from_value(json!({
-            "active_consumer_count": 3,
-            "platform": {
-                "type": "macos_screen",
-                "state": "interrupted",
-                "tcc": "denied",
-                "owner": "standalone",
-                "selection": {
-                    "type": "session_scoped",
-                    "content_style": "multiple_windows",
-                    "future_selection_field": "ignored"
-                },
-                "tahoe": {
-                    "host_architecture": "apple_silicon",
-                    "translated_process": true,
-                    "content_tone_mapping_info": true,
-                    "metal4": false,
-                    "future_host_field": "ignored"
-                },
-                "tahoe_selection": {
-                    "source_id": "session:23",
-                    "capture_session_generation": 29,
-                    "hdr_capture": true,
-                    "dual_range_screenshots": true,
-                    "future_tahoe_field": 4
-                },
-                "owner_conflict": {
-                    "active": "standalone",
-                    "contender": "app",
-                    "observed_at_ms": 1_725_000_000_456_u64
-                },
-                "future_probe": { "available": true }
-            }
-        }))
-        .expect("macOS screen status should decode");
-        assert_eq!(status.active_consumer_count, 3);
-
-        let Some(InputSourcePlatformStatus::MacosScreen {
-            state,
-            tcc,
-            owner,
-            selection,
-            tahoe,
-            tahoe_selection,
-            owner_conflict,
-        }) = status.platform
-        else {
-            panic!("fixture should decode the macOS screen variant");
-        };
-
-        assert_eq!(state.as_deref(), Some("interrupted"));
-        assert_eq!(tcc.as_deref(), Some("denied"));
-        assert_eq!(owner.as_deref(), Some("standalone"));
-        assert_eq!(
-            tahoe,
-            Some(MacosTahoeStatus {
-                host_architecture: Some("apple_silicon".to_owned()),
-                translated_process: Some(true),
-                content_tone_mapping_info: Some(true),
-                metal4: Some(false),
-            })
-        );
-        assert_eq!(
-            selection,
-            Some(MacosSelectionStatus::SessionScoped {
-                content_style: Some("multiple_windows".to_owned()),
-            })
-        );
-        assert_eq!(
-            tahoe_selection,
-            Some(MacosTahoeSelectionStatus {
-                source_id: Some("session:23".to_owned()),
-                capture_session_generation: Some(29),
-                hdr_capture: Some(true),
-                dual_range_screenshots: Some(true),
-            })
-        );
-        assert_eq!(
-            owner_conflict,
-            Some(MacosDaemonOwnerConflictStatus {
-                active: Some("standalone".to_owned()),
-                contender: Some("app".to_owned()),
-                observed_at_ms: Some(1_725_000_000_456),
-            })
+            status
+                .action_issue
+                .expect("action issue should decode")
+                .code,
+            "process_restart_required"
         );
     }
 
     #[test]
-    fn input_source_status_decodes_absent_platform() {
+    fn input_source_status_decodes_absent_diagnostics() {
         let status: InputSourceStatus = serde_json::from_value(json!({
-            "source_id": "linux:host-input",
+            "source_id": "host-input",
             "future_source_field": true
         }))
-        .expect("status without platform should decode");
+        .expect("status without diagnostics should decode");
 
-        assert_eq!(status.source_id, "linux:host-input");
+        assert_eq!(status.source_id, "host-input");
         assert_eq!(status.active_consumer_count, 0);
-        assert_eq!(status.platform, None);
+        assert_eq!(status.diagnostics, None);
     }
 
     #[test]
-    fn input_source_status_decodes_future_platform_variant() {
-        let status: InputSourceStatus = serde_json::from_value(json!({
-            "platform": {
-                "type": "future_platform",
-                "future_state": "live"
+    fn input_source_status_drops_oversized_diagnostics() {
+        let oversized = "x".repeat(17 * 1024);
+        let raw = serde_json::to_string(&json!({
+            "source_id": "host-input",
+            "diagnostics": {
+                "schema": "future.backend",
+                "version": 1,
+                "display": [],
+                "payload": {"blob": oversized}
             }
         }))
-        .expect("future platform status should decode");
+        .expect("fixture should encode");
+        let status = serde_json::from_str::<InputSourceStatus>(&raw)
+            .expect("invalid optional diagnostics must not reject neutral status");
 
-        assert_eq!(status.platform, Some(InputSourcePlatformStatus::Unknown));
+        assert_eq!(status.source_id, "host-input");
+        assert_eq!(status.diagnostics, None);
+    }
+
+    #[test]
+    fn input_source_status_drops_malformed_diagnostics_shape() {
+        let status = serde_json::from_str::<InputSourceStatus>(
+            r#"{"source_id":"host-input","diagnostics":["not","an","envelope"]}"#,
+        )
+        .expect("malformed optional diagnostics must not reject neutral status");
+
+        assert_eq!(status.source_id, "host-input");
+        assert_eq!(status.diagnostics, None);
+    }
+
+    #[test]
+    fn input_source_status_drops_raw_diagnostics_over_transport_bound() {
+        let oversized = "x".repeat(SOURCE_DIAGNOSTICS_ENVELOPE_MAX_BYTES);
+        let raw = serde_json::to_string(&json!({
+            "source_id": "host-input",
+            "diagnostics": {
+                "schema": "future.backend",
+                "version": 1,
+                "display": [],
+                "payload": {},
+                "unknown": oversized
+            }
+        }))
+        .expect("fixture should encode");
+        let status = serde_json::from_str::<InputSourceStatus>(&raw)
+            .expect("oversized optional diagnostics must not reject neutral status");
+
+        assert_eq!(status.source_id, "host-input");
+        assert_eq!(status.diagnostics, None);
     }
 }

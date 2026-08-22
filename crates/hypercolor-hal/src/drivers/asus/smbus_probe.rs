@@ -2,8 +2,6 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-#[cfg(not(any(target_os = "linux", target_os = "windows")))]
-use std::sync::Once;
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use hypercolor_types::device::{
@@ -29,13 +27,14 @@ use tracing::warn;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use tracing::{debug, trace};
 
+use crate::transport::TransportError;
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+use crate::transport::{TransportIntent, TransportPlatform, resolve_transport};
+
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use crate::transport::Transport;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use crate::transport::smbus::SmBusTransport;
-
-#[cfg(not(any(target_os = "linux", target_os = "windows")))]
-static SMBUS_UNAVAILABLE_WARN_ONCE: Once = Once::new();
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 const ASUS_MOTHERBOARD_SMBUS_ADDRESSES: &[(u16, SmBusControllerKind)] = &[
@@ -87,6 +86,8 @@ pub enum AuraSmBusProbeError {
     ReadDeviceRoot(#[source] std::io::Error),
     #[error("ASUS Aura SMBus protocol error: {0}")]
     Protocol(#[from] ProtocolError),
+    #[error(transparent)]
+    Transport(#[from] TransportError),
     #[error("DRAM remap address 0x{address:02X} exceeds u8 range")]
     DramRemapAddress { address: u16 },
     #[error("DRAM slot index {slot_index} exceeds u8 range")]
@@ -265,7 +266,7 @@ pub async fn probe_asus_smbus_devices_system() -> Result<Vec<SmBusProbe>> {
 )]
 pub async fn probe_asus_smbus_devices_in_root(dev_root: &Path) -> Result<Vec<SmBusProbe>> {
     let _ = dev_root;
-    Ok(Vec::new())
+    unsupported_smbus_platform()
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]
@@ -274,12 +275,17 @@ pub async fn probe_asus_smbus_devices_in_root(dev_root: &Path) -> Result<Vec<SmB
     reason = "the scanner uses one async probe interface across supported and excluded platforms"
 )]
 pub async fn probe_asus_smbus_devices_system() -> Result<Vec<SmBusProbe>> {
-    SMBUS_UNAVAILABLE_WARN_ONCE.call_once(|| {
-        tracing::warn!(
-            "ASUS Aura SMBus discovery is only implemented on Linux and Windows; RGB RAM and SMBus motherboard controllers will not be discovered"
-        );
-    });
-    Ok(Vec::new())
+    unsupported_smbus_platform()
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+fn unsupported_smbus_platform() -> Result<Vec<SmBusProbe>> {
+    resolve_transport(
+        TransportIntent::I2cSmBus { address: 0x40 },
+        TransportPlatform::CURRENT,
+    )
+    .map(|_| Vec::new())
+    .map_err(Into::into)
 }
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]

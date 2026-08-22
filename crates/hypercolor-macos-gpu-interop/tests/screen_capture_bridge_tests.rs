@@ -10,7 +10,7 @@ use hypercolor_macos_capture::{
 };
 #[cfg(target_arch = "x86_64")]
 use hypercolor_macos_gpu_interop::{
-    ImportedFrameFormat, MacosIosurfaceImportDescriptor, MacosIosurfaceImporter,
+    FrameOrigin, ImportedFrameFormat, MacosIosurfaceImportDescriptor, MacosIosurfaceImporter,
     MacosScreenImporterCandidate, create_bgra_iosurface, qualify_macos_system_default_metal_device,
     write_bgra_pixels,
 };
@@ -138,7 +138,7 @@ fn intel_runner_qualification_requires_native_device_and_both_import_candidates(
         ));
     }
     let imported = importer
-        .import_iosurface_for_test(&wgpu.device, &iosurface)
+        .import_iosurface_for_test(&wgpu.device, &iosurface, FrameOrigin::TopLeft)
         .map_err(|error| error.to_string())?;
     assert_eq!(
         read_texture_pixels(&wgpu.device, &wgpu.queue, &imported.texture, WIDTH, HEIGHT)?,

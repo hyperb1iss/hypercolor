@@ -1,14 +1,17 @@
 //! Descriptor registration for Corsair LCD devices.
 
+use std::sync::LazyLock;
+
 use hypercolor_types::device::DeviceFamily;
 
 use crate::drivers::corsair::CORSAIR_VID;
-#[cfg(windows)]
 use crate::drivers::corsair::framing::LCD_REPORT_SIZE;
 use crate::protocol::Protocol;
-#[cfg(windows)]
 use crate::registry::HidRawReportMode;
-use crate::registry::{DeviceDescriptor, ProtocolBinding, TransportType};
+use crate::registry::{DeviceDescriptor, ProtocolBinding};
+use crate::transport::{
+    HidAccessMode, HidTransportIntent, TransportIntent, resolve_current_transport,
+};
 
 use super::protocol::CorsairLcdProtocol;
 
@@ -71,24 +74,15 @@ pub fn build_xd6_elite_lcd_protocol() -> Box<dyn Protocol> {
     build_protocol("Corsair XD6 Elite LCD", 0x01, 0x40)
 }
 
-#[cfg(windows)]
-const fn corsair_lcd_transport() -> TransportType {
-    TransportType::UsbHidApi {
-        interface: Some(CORSAIR_LCD_INTERFACE),
-        report_id: CORSAIR_LCD_REPORT_ID,
-        report_mode: HidRawReportMode::OutputReportWithReportId,
-        max_report_len: LCD_REPORT_SIZE,
-        usage_page: None,
-        usage: None,
-    }
-}
-
-#[cfg(not(windows))]
-const fn corsair_lcd_transport() -> TransportType {
-    TransportType::UsbHid {
-        interface: CORSAIR_LCD_INTERFACE,
-    }
-}
+const CORSAIR_LCD_TRANSPORT_INTENT: TransportIntent = TransportIntent::Hid(HidTransportIntent {
+    access: HidAccessMode::Direct,
+    interface: CORSAIR_LCD_INTERFACE,
+    report_id: CORSAIR_LCD_REPORT_ID,
+    report_mode: HidRawReportMode::OutputReportWithReportId,
+    max_report_len: LCD_REPORT_SIZE,
+    usage_page: None,
+    usage: None,
+});
 
 macro_rules! lcd_descriptor {
     (
@@ -102,7 +96,8 @@ macro_rules! lcd_descriptor {
             product_id: $pid,
             name: $name,
             family: DeviceFamily::new_static("corsair", "Corsair"),
-            transport: corsair_lcd_transport(),
+            transport: resolve_current_transport(CORSAIR_LCD_TRANSPORT_INTENT)
+                .expect("Corsair LCD HID transport should support the current platform"),
             protocol: ProtocolBinding {
                 id: $protocol_id,
                 build: $builder,
@@ -112,47 +107,49 @@ macro_rules! lcd_descriptor {
     };
 }
 
-static LCD_DESCRIPTORS: &[DeviceDescriptor] = &[
-    lcd_descriptor!(
-        pid: PID_ELITE_CAPELLIX_LCD,
-        name: "Corsair Elite Capellix LCD",
-        protocol_id: "corsair/elite-capellix-lcd",
-        builder: build_elite_capellix_lcd_protocol
-    ),
-    lcd_descriptor!(
-        pid: PID_ELITE_CAPELLIX_LCD_ALT,
-        name: "Corsair Elite Capellix LCD",
-        protocol_id: "corsair/elite-capellix-lcd",
-        builder: build_elite_capellix_lcd_protocol
-    ),
-    lcd_descriptor!(
-        pid: PID_ICUE_LINK_LCD,
-        name: "Corsair iCUE LINK LCD",
-        protocol_id: "corsair/icue-link-lcd",
-        builder: build_icue_link_lcd_protocol
-    ),
-    lcd_descriptor!(
-        pid: PID_NAUTILUS_RS_LCD,
-        name: "Corsair Nautilus RS LCD",
-        protocol_id: "corsair/nautilus-rs-lcd",
-        builder: build_nautilus_rs_lcd_protocol
-    ),
-    lcd_descriptor!(
-        pid: PID_XC7_RGB_ELITE_LCD,
-        name: "Corsair XC7 RGB Elite LCD",
-        protocol_id: "corsair/xc7-rgb-elite-lcd",
-        builder: build_xc7_rgb_elite_lcd_protocol
-    ),
-    lcd_descriptor!(
-        pid: PID_XD6_ELITE_LCD,
-        name: "Corsair XD6 Elite LCD",
-        protocol_id: "corsair/xd6-elite-lcd",
-        builder: build_xd6_elite_lcd_protocol
-    ),
-];
+static LCD_DESCRIPTORS: LazyLock<Vec<DeviceDescriptor>> = LazyLock::new(|| {
+    vec![
+        lcd_descriptor!(
+            pid: PID_ELITE_CAPELLIX_LCD,
+            name: "Corsair Elite Capellix LCD",
+            protocol_id: "corsair/elite-capellix-lcd",
+            builder: build_elite_capellix_lcd_protocol
+        ),
+        lcd_descriptor!(
+            pid: PID_ELITE_CAPELLIX_LCD_ALT,
+            name: "Corsair Elite Capellix LCD",
+            protocol_id: "corsair/elite-capellix-lcd",
+            builder: build_elite_capellix_lcd_protocol
+        ),
+        lcd_descriptor!(
+            pid: PID_ICUE_LINK_LCD,
+            name: "Corsair iCUE LINK LCD",
+            protocol_id: "corsair/icue-link-lcd",
+            builder: build_icue_link_lcd_protocol
+        ),
+        lcd_descriptor!(
+            pid: PID_NAUTILUS_RS_LCD,
+            name: "Corsair Nautilus RS LCD",
+            protocol_id: "corsair/nautilus-rs-lcd",
+            builder: build_nautilus_rs_lcd_protocol
+        ),
+        lcd_descriptor!(
+            pid: PID_XC7_RGB_ELITE_LCD,
+            name: "Corsair XC7 RGB Elite LCD",
+            protocol_id: "corsair/xc7-rgb-elite-lcd",
+            builder: build_xc7_rgb_elite_lcd_protocol
+        ),
+        lcd_descriptor!(
+            pid: PID_XD6_ELITE_LCD,
+            name: "Corsair XD6 Elite LCD",
+            protocol_id: "corsair/xd6-elite-lcd",
+            builder: build_xd6_elite_lcd_protocol
+        ),
+    ]
+});
 
 /// Static LCD descriptors for HAL registration.
 #[must_use]
 pub fn descriptors() -> &'static [DeviceDescriptor] {
-    LCD_DESCRIPTORS
+    LCD_DESCRIPTORS.as_slice()
 }

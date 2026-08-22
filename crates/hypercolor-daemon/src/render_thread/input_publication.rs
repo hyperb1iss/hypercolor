@@ -6,6 +6,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
 use arc_swap::ArcSwap;
+#[cfg(target_os = "macos")]
+use hypercolor_core::input::screen::ScreenRendererExecutionState;
 use hypercolor_core::input::screen::{
     CommittedScreenPublicationTransition, InputPublicationDemandRevision, LedToneMapCalibration,
     PixelExtent, RegisteredScreenBranchDemand, ScreenAspectPolicy, ScreenBranchLease,
@@ -18,20 +20,17 @@ use hypercolor_core::input::screen::{
 };
 use hypercolor_core::input::{
     InputGraphHandle, InputGraphSnapshot, InputManager, SourceKind, SourceState,
+    TryInputManagerIntent,
 };
-use hypercolor_types::sensor::SystemSnapshot;
-use tokio::sync::{Mutex, oneshot, watch};
+use tokio::sync::{oneshot, watch};
 use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::{Instant as TokioInstant, timeout};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
-use super::capture_demand::{CaptureDemand, CaptureDemandState};
+use super::capture_demand::{CaptureDemand, CaptureDemandReconcile, CaptureDemandState};
 
 const STOP_TIMEOUT: Duration = Duration::from_secs(1);
-// Staleness probe for a committed exact screen plan; capped by how long a
-// source-internal retirement may starve the plan before it re-plans.
-const COMMITMENT_PROBE_INTERVAL: Duration = Duration::from_secs(1);
 const LIFECYCLE_PROBE_INTERVAL: Duration = Duration::from_millis(250);
 /// Retry cadence for an exact plan that failed with no committed plan to
 /// replace: the source itself must change (session, consent, capacity)
@@ -40,12 +39,13 @@ const LIFECYCLE_PROBE_INTERVAL: Duration = Duration::from_millis(250);
 /// path. Spec 74 folds the source resolution revision into the pump key,
 /// which turns this into an event-driven re-arm.
 const EXACT_PLAN_UNAVAILABLE_RETRY_INTERVAL: Duration = Duration::from_secs(1);
-const SOURCE_KINDS: [SourceKind; 5] = [
+const SOURCE_KINDS: [SourceKind; 6] = [
     SourceKind::Audio,
     SourceKind::Screen,
     SourceKind::Interaction,
     SourceKind::Media,
     SourceKind::Network,
+    SourceKind::Sensors,
 ];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -69,12 +69,144 @@ pub struct InputPublicationDemand {
     interaction: u32,
     media: u32,
     network: u32,
+    sensors: u32,
+    #[cfg(target_os = "macos")]
+    macos_screen_renderer_execution: ScreenRendererExecutionState,
+    #[cfg(target_os = "macos")]
+    macos_screen_renderer_target: Option<ScreenNativeExecutionTarget>,
+    #[cfg(target_os = "macos")]
+    macos_renderer_screen: Arc<[InputScreenBranchRequest]>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InputScreenBranchDemand {
     branch: RegisteredScreenBranchDemand,
     legacy_extent: PixelExtent,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct InputScreenBranchRequest {
+    selector: ScreenSourceSelector,
+    requested_hz: NonZeroU32,
+    legacy_extent: PixelExtent,
+    kind: ScreenPublicationKind,
+    extent: ScreenExtentRequest,
+    aspect: ScreenAspectPolicy,
+    processing_profile: Arc<ScreenProcessingProfile>,
+}
+
+impl InputScreenBranchRequest {
+    pub(crate) fn new(
+        selector: ScreenSourceSelector,
+        kind: ScreenPublicationKind,
+        extent: ScreenExtentRequest,
+        aspect: ScreenAspectPolicy,
+        processing_profile: Arc<ScreenProcessingProfile>,
+        requested_hz: NonZeroU32,
+        legacy_extent: PixelExtent,
+    ) -> Self {
+        Self {
+            selector,
+            requested_hz,
+            legacy_extent,
+            kind,
+            extent,
+            aspect,
+            processing_profile,
+        }
+    }
+
+    pub(crate) fn surface(requested_hz: u32, requested_extent: PixelExtent) -> Option<Self> {
+        let requested_hz = NonZeroU32::new(requested_hz)?;
+        let extent = ScreenExtentRequest::bounded(
+            NonZeroU32::new(requested_extent.width()),
+            NonZeroU32::new(requested_extent.height()),
+            ScreenUpscalePolicy::Never,
+        );
+        // The default profile rejects HDR sources outright, which makes an
+        // HDR-configured capture stream permanently unresolvable. Enabling
+        // the spec 76 BT.2390 tone map here is what admits HDR sources at
+        // all; the platform source refreshes the calibration from the live
+        // capture config during branch resolution, so the default
+        // calibration never reaches a kernel.
+        let profile = ScreenProcessingProfile::new(ScreenProcessingProfileConfig {
+            hdr: ScreenHdrPolicy::ToneMap(ScreenToneMapPolicy::from_calibration(
+                ScreenToneMapOperator::Bt2390Eetf,
+                LedToneMapCalibration::DEFAULT,
+            )),
+            ..ScreenProcessingProfileConfig::default()
+        });
+        Some(Self::new(
+            ScreenSourceSelector::Configured,
+            ScreenPublicationKind::Surface,
+            extent,
+            ScreenAspectPolicy::Contain,
+            Arc::new(profile),
+            requested_hz,
+            requested_extent,
+        ))
+    }
+
+    pub(crate) fn bind(
+        self,
+        executor: ScreenPublicationExecutorRequest,
+    ) -> InputScreenBranchDemand {
+        let request = ScreenPublicationRequest::new(
+            self.selector,
+            self.kind,
+            executor,
+            self.extent,
+            self.aspect,
+            self.processing_profile,
+        );
+        InputScreenBranchDemand::new(
+            RegisteredScreenBranchDemand::new(request, self.requested_hz),
+            self.legacy_extent,
+        )
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn from_registered(demand: &InputScreenBranchDemand) -> Self {
+        let request = demand.branch.request();
+        Self {
+            selector: request.selector().clone(),
+            requested_hz: demand.branch.requested_hz(),
+            legacy_extent: demand.legacy_extent,
+            kind: request.kind(),
+            extent: request.extent(),
+            aspect: request.aspect(),
+            processing_profile: Arc::clone(request.processing_profile()),
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn bind_macos_native_required(
+        self,
+        target: &ScreenNativeExecutionTarget,
+    ) -> InputScreenBranchDemand {
+        self.bind(ScreenPublicationExecutorRequest::SourceNativeRequired(
+            target.clone(),
+        ))
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn kind(&self) -> ScreenPublicationKind {
+        self.kind
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn extent(&self) -> ScreenExtentRequest {
+        self.extent
+    }
+
+    #[cfg(test)]
+    pub(crate) fn processing_profile(&self) -> &Arc<ScreenProcessingProfile> {
+        &self.processing_profile
+    }
+
+    pub(crate) const fn requested_hz(&self) -> NonZeroU32 {
+        self.requested_hz
+    }
 }
 
 impl InputScreenBranchDemand {
@@ -104,37 +236,8 @@ impl InputScreenBranchDemand {
         requested_extent: PixelExtent,
         executor: ScreenPublicationExecutorRequest,
     ) -> Option<Self> {
-        let requested_hz = NonZeroU32::new(requested_hz)?;
-        let extent = ScreenExtentRequest::bounded(
-            NonZeroU32::new(requested_extent.width()),
-            NonZeroU32::new(requested_extent.height()),
-            ScreenUpscalePolicy::Never,
-        );
-        // The default profile rejects HDR sources outright, which makes an
-        // HDR-configured capture stream permanently unresolvable. Enabling
-        // the spec 76 BT.2390 tone map here is what admits HDR sources at
-        // all; the platform source refreshes the calibration from the live
-        // capture config during branch resolution, so the default
-        // calibration never reaches a kernel.
-        let profile = ScreenProcessingProfile::new(ScreenProcessingProfileConfig {
-            hdr: ScreenHdrPolicy::ToneMap(ScreenToneMapPolicy::from_calibration(
-                ScreenToneMapOperator::Bt2390Eetf,
-                LedToneMapCalibration::DEFAULT,
-            )),
-            ..ScreenProcessingProfileConfig::default()
-        });
-        let request = ScreenPublicationRequest::new(
-            ScreenSourceSelector::Configured,
-            ScreenPublicationKind::Surface,
-            executor,
-            extent,
-            ScreenAspectPolicy::Contain,
-            Arc::new(profile),
-        );
-        Some(Self::new(
-            RegisteredScreenBranchDemand::new(request, requested_hz),
-            requested_extent,
-        ))
+        InputScreenBranchRequest::surface(requested_hz, requested_extent)
+            .map(|request| request.bind(executor))
     }
 
     const fn requested_hz(&self) -> u32 {
@@ -146,20 +249,15 @@ impl InputPublicationDemand {
     /// Request the same rate for every typed source.
     #[must_use]
     pub fn all_sources(requested_hz: u32, screen_extent: PixelExtent) -> Self {
-        Self {
+        let demand = Self {
             audio: requested_hz,
-            screen: InputScreenBranchDemand::surface(
-                requested_hz,
-                screen_extent,
-                ScreenPublicationExecutorRequest::Cpu,
-            )
-            .into_iter()
-            .collect::<Vec<_>>()
-            .into(),
             interaction: requested_hz,
             media: requested_hz,
             network: requested_hz,
-        }
+            sensors: requested_hz,
+            ..Self::default()
+        };
+        demand.with_screen(requested_hz, screen_extent)
     }
 
     /// Set one scalar source rate, preserving the other source rates.
@@ -185,6 +283,7 @@ impl InputPublicationDemand {
             SourceKind::Interaction => self.interaction = requested_hz,
             SourceKind::Media => self.media = requested_hz,
             SourceKind::Network => self.network = requested_hz,
+            SourceKind::Sensors => self.sensors = requested_hz,
         }
         self
     }
@@ -192,14 +291,26 @@ impl InputPublicationDemand {
     /// Set screen publication cadence and extent together.
     #[must_use]
     pub fn with_screen(mut self, requested_hz: u32, requested_extent: PixelExtent) -> Self {
-        self.screen = InputScreenBranchDemand::surface(
-            requested_hz,
-            requested_extent,
-            ScreenPublicationExecutorRequest::Cpu,
-        )
-        .into_iter()
-        .collect::<Vec<_>>()
-        .into();
+        #[cfg(target_os = "macos")]
+        {
+            self.screen = Arc::default();
+            self.macos_renderer_screen =
+                InputScreenBranchRequest::surface(requested_hz, requested_extent)
+                    .into_iter()
+                    .collect::<Vec<_>>()
+                    .into();
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            self.screen = InputScreenBranchDemand::surface(
+                requested_hz,
+                requested_extent,
+                ScreenPublicationExecutorRequest::Cpu,
+            )
+            .into_iter()
+            .collect::<Vec<_>>()
+            .into();
+        }
         self
     }
 
@@ -211,6 +322,10 @@ impl InputPublicationDemand {
         requested_extent: PixelExtent,
         executor: ScreenPublicationExecutorRequest,
     ) -> Self {
+        #[cfg(target_os = "macos")]
+        if matches!(executor, ScreenPublicationExecutorRequest::Cpu) {
+            return self.with_screen(requested_hz, requested_extent);
+        }
         self.screen = InputScreenBranchDemand::surface(requested_hz, requested_extent, executor)
             .into_iter()
             .collect::<Vec<_>>()
@@ -224,7 +339,89 @@ impl InputPublicationDemand {
         mut self,
         branches: impl IntoIterator<Item = InputScreenBranchDemand>,
     ) -> Self {
+        #[cfg(target_os = "macos")]
+        {
+            let mut exact = Vec::new();
+            let mut renderer = Vec::new();
+            for branch in branches {
+                if matches!(
+                    branch.branch.request().executor(),
+                    ScreenPublicationExecutorRequest::Cpu
+                ) {
+                    renderer.push(InputScreenBranchRequest::from_registered(&branch));
+                } else {
+                    exact.push(branch);
+                }
+            }
+            self.screen = exact.into();
+            self.macos_renderer_screen = renderer.into();
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            self.screen = branches.into_iter().collect::<Vec<_>>().into();
+        }
+        self
+    }
+
+    #[cfg(test)]
+    fn with_fixture_screen(mut self, requested_hz: u32, requested_extent: PixelExtent) -> Self {
+        self.screen = InputScreenBranchDemand::surface(
+            requested_hz,
+            requested_extent,
+            ScreenPublicationExecutorRequest::Cpu,
+        )
+        .into_iter()
+        .collect::<Vec<_>>()
+        .into();
+        #[cfg(target_os = "macos")]
+        {
+            self.macos_renderer_screen = Arc::default();
+        }
+        self
+    }
+
+    #[cfg(test)]
+    fn with_fixture_screen_branches(
+        mut self,
+        branches: impl IntoIterator<Item = InputScreenBranchDemand>,
+    ) -> Self {
         self.screen = branches.into_iter().collect::<Vec<_>>().into();
+        #[cfg(target_os = "macos")]
+        {
+            self.macos_renderer_screen = Arc::default();
+        }
+        self
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn with_macos_renderer_screen_requests(
+        mut self,
+        requests: impl IntoIterator<Item = InputScreenBranchRequest>,
+    ) -> Self {
+        self.macos_renderer_screen = requests.into_iter().collect::<Vec<_>>().into();
+        self
+    }
+
+    #[cfg(all(test, target_os = "macos"))]
+    pub(crate) fn macos_renderer_screen_requests(&self) -> &[InputScreenBranchRequest] {
+        &self.macos_renderer_screen
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn with_macos_screen_renderer_target(
+        mut self,
+        target: Option<&ScreenNativeExecutionTarget>,
+    ) -> Self {
+        self.macos_screen_renderer_target = target.cloned();
+        self
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn with_macos_screen_renderer_execution(
+        mut self,
+        state: ScreenRendererExecutionState,
+    ) -> Self {
+        self.macos_screen_renderer_execution = state;
         self
     }
 
@@ -238,15 +435,32 @@ impl InputPublicationDemand {
     pub(crate) fn requested_hz(&self, source: SourceKind) -> u32 {
         match source {
             SourceKind::Audio => self.audio,
-            SourceKind::Screen => self
-                .screen
-                .iter()
-                .map(InputScreenBranchDemand::requested_hz)
-                .max()
-                .unwrap_or(0),
+            SourceKind::Screen => {
+                let exact = self
+                    .screen
+                    .iter()
+                    .map(InputScreenBranchDemand::requested_hz)
+                    .max()
+                    .unwrap_or(0);
+                #[cfg(target_os = "macos")]
+                {
+                    exact.max(
+                        self.macos_renderer_screen
+                            .iter()
+                            .map(|request| request.requested_hz().get())
+                            .max()
+                            .unwrap_or(0),
+                    )
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    exact
+                }
+            }
             SourceKind::Interaction => self.interaction,
             SourceKind::Media => self.media,
             SourceKind::Network => self.network,
+            SourceKind::Sensors => self.sensors,
         }
     }
 }
@@ -285,6 +499,12 @@ struct InputPublicationDemandEntry {
     demand: InputPublicationDemand,
 }
 
+struct ResolvedInputScreenDemand {
+    entry_id: u64,
+    consumer: InputPublicationConsumer,
+    screen: InputScreenBranchDemand,
+}
+
 #[derive(Clone, Debug, Default)]
 struct InputPublicationDemandSnapshot {
     entries: Arc<[InputPublicationDemandEntry]>,
@@ -294,6 +514,8 @@ struct InputPublicationDemandSnapshot {
     compatibility_surface: Option<RegisteredScreenBranchDemand>,
     compatibility_zones: Option<RegisteredScreenBranchDemand>,
     revision: InputPublicationDemandRevision,
+    #[cfg(target_os = "macos")]
+    macos_screen_renderer_execution: ScreenRendererExecutionState,
 }
 
 impl InputPublicationDemandSnapshot {
@@ -302,55 +524,75 @@ impl InputPublicationDemandSnapshot {
         revision: InputPublicationDemandRevision,
     ) -> Self {
         let mut cadence = InputPublicationCadence::default();
-        let mut screen_branches = Vec::new();
-        let mut compatibility_screen: Option<(
-            &InputPublicationDemandEntry,
-            &InputScreenBranchDemand,
-        )> = None;
-        let mut compatibility_surface = None;
-        let mut compatibility_zones = None;
+        #[cfg(target_os = "macos")]
+        let renderer_target = entries
+            .iter()
+            .find(|entry| entry.consumer == InputPublicationConsumer::Authoritative)
+            .and_then(|entry| entry.demand.macos_screen_renderer_target.as_ref());
+        let mut resolved_screens = Vec::new();
         for entry in &entries {
             cadence.merge_demand(&entry.demand);
-            for screen in entry.demand.screen.iter() {
-                screen_branches.push(screen.branch.clone());
-                if compatibility_screen
-                    .as_ref()
-                    .is_none_or(|(selected_entry, selected_screen)| {
-                        compatibility_screen_precedes(
-                            entry,
-                            screen,
-                            selected_entry,
-                            selected_screen,
-                        )
-                    })
-                {
-                    compatibility_screen = Some((entry, screen));
+            resolved_screens.extend(entry.demand.screen.iter().cloned().map(|screen| {
+                ResolvedInputScreenDemand {
+                    entry_id: entry.id,
+                    consumer: entry.consumer,
+                    screen,
                 }
-                let selected = match screen.branch.request().kind() {
-                    ScreenPublicationKind::Surface => &mut compatibility_surface,
-                    ScreenPublicationKind::Zones { .. } => &mut compatibility_zones,
-                };
-                if selected.as_ref().is_none_or(
-                    |(selected_entry, selected_screen): &(
-                        &InputPublicationDemandEntry,
-                        &InputScreenBranchDemand,
-                    )| {
-                        compatibility_screen_precedes(
-                            entry,
-                            screen,
-                            selected_entry,
-                            selected_screen,
-                        )
+            }));
+            #[cfg(target_os = "macos")]
+            if let Some(target) = renderer_target {
+                resolved_screens.extend(entry.demand.macos_renderer_screen.iter().cloned().map(
+                    |request| ResolvedInputScreenDemand {
+                        entry_id: entry.id,
+                        consumer: entry.consumer,
+                        screen: request.bind_macos_native_required(target),
                     },
-                ) {
-                    *selected = Some((entry, screen));
-                }
+                ));
+            }
+        }
+        cadence = cadence.with_source(
+            SourceKind::Screen,
+            resolved_screens
+                .iter()
+                .map(|screen| screen.screen.requested_hz())
+                .max()
+                .unwrap_or(0),
+        );
+        let mut screen_branches = Vec::new();
+        let mut compatibility_screen: Option<&ResolvedInputScreenDemand> = None;
+        let mut compatibility_surface: Option<&ResolvedInputScreenDemand> = None;
+        let mut compatibility_zones: Option<&ResolvedInputScreenDemand> = None;
+        for resolved in &resolved_screens {
+            screen_branches.push(resolved.screen.branch.clone());
+            if compatibility_screen
+                .is_none_or(|selected| compatibility_screen_precedes(resolved, selected))
+            {
+                compatibility_screen = Some(resolved);
+            }
+            let selected = match resolved.screen.branch.request().kind() {
+                ScreenPublicationKind::Surface => &mut compatibility_surface,
+                ScreenPublicationKind::Zones { .. } => &mut compatibility_zones,
+            };
+            if selected
+                .as_ref()
+                .is_none_or(|selected| compatibility_screen_precedes(resolved, selected))
+            {
+                *selected = Some(resolved);
             }
         }
         let compatibility_screen_extent =
-            compatibility_screen.map(|(_, screen)| screen.legacy_extent);
-        let compatibility_surface = compatibility_surface.map(|(_, screen)| screen.branch.clone());
-        let compatibility_zones = compatibility_zones.map(|(_, screen)| screen.branch.clone());
+            compatibility_screen.map(|resolved| resolved.screen.legacy_extent);
+        let compatibility_surface =
+            compatibility_surface.map(|resolved| resolved.screen.branch.clone());
+        let compatibility_zones =
+            compatibility_zones.map(|resolved| resolved.screen.branch.clone());
+        #[cfg(target_os = "macos")]
+        let macos_screen_renderer_execution = entries
+            .iter()
+            .find(|entry| entry.consumer == InputPublicationConsumer::Authoritative)
+            .map_or(ScreenRendererExecutionState::Inactive, |entry| {
+                entry.demand.macos_screen_renderer_execution
+            });
         Self {
             entries: entries.into(),
             cadence,
@@ -359,6 +601,8 @@ impl InputPublicationDemandSnapshot {
             compatibility_surface,
             compatibility_zones,
             revision,
+            #[cfg(target_os = "macos")]
+            macos_screen_renderer_execution,
         }
     }
 
@@ -392,6 +636,11 @@ impl InputPublicationDemandSnapshot {
         self.revision
     }
 
+    #[cfg(target_os = "macos")]
+    const fn macos_screen_renderer_execution(&self) -> ScreenRendererExecutionState {
+        self.macos_screen_renderer_execution
+    }
+
     fn exact_screen_demand(&self, graph_generation: u64) -> ScreenPublicationDemandSnapshot {
         ScreenPublicationDemandSnapshot::try_new(
             self.revision,
@@ -419,31 +668,29 @@ impl InputPublicationDemandSnapshot {
 }
 
 fn compatibility_screen_precedes(
-    candidate: &InputPublicationDemandEntry,
-    candidate_screen: &InputScreenBranchDemand,
-    selected: &InputPublicationDemandEntry,
-    selected_screen: &InputScreenBranchDemand,
+    candidate: &ResolvedInputScreenDemand,
+    selected: &ResolvedInputScreenDemand,
 ) -> bool {
     let candidate_rank = consumer_rank(candidate.consumer);
     let selected_rank = consumer_rank(selected.consumer);
     if candidate_rank != selected_rank {
         return candidate_rank < selected_rank;
     }
-    let candidate_kind = publication_kind_rank(candidate_screen.branch.request().kind());
-    let selected_kind = publication_kind_rank(selected_screen.branch.request().kind());
+    let candidate_kind = publication_kind_rank(candidate.screen.branch.request().kind());
+    let selected_kind = publication_kind_rank(selected.screen.branch.request().kind());
     if candidate_kind != selected_kind {
         return candidate_kind < selected_kind;
     }
-    let candidate_pixels = u64::from(candidate_screen.legacy_extent.width())
-        * u64::from(candidate_screen.legacy_extent.height());
-    let selected_pixels = u64::from(selected_screen.legacy_extent.width())
-        * u64::from(selected_screen.legacy_extent.height());
+    let candidate_pixels = u64::from(candidate.screen.legacy_extent.width())
+        * u64::from(candidate.screen.legacy_extent.height());
+    let selected_pixels = u64::from(selected.screen.legacy_extent.width())
+        * u64::from(selected.screen.legacy_extent.height());
     candidate_pixels > selected_pixels
         || (candidate_pixels == selected_pixels
-            && candidate_screen.requested_hz() > selected_screen.requested_hz())
+            && candidate.screen.requested_hz() > selected.screen.requested_hz())
         || (candidate_pixels == selected_pixels
-            && candidate_screen.requested_hz() == selected_screen.requested_hz()
-            && candidate.id < selected.id)
+            && candidate.screen.requested_hz() == selected.screen.requested_hz()
+            && candidate.entry_id < selected.entry_id)
 }
 
 const fn publication_kind_rank(kind: ScreenPublicationKind) -> u8 {
@@ -467,8 +714,30 @@ struct InputPublicationDemandRegistry {
     latest: ArcSwap<InputPublicationDemandSnapshot>,
     revision_tx: watch::Sender<InputPublicationDemandRevision>,
     revision_gate: SyncMutex<()>,
+    revision_gate_release_tx: watch::Sender<u64>,
     #[cfg(test)]
     commit_test_hook: SyncMutex<Option<ExactScreenCommitTestHook>>,
+}
+
+enum TryDemandCommit<T> {
+    Busy,
+    Stale,
+    Committed(T),
+}
+
+struct DemandRevisionGateGuard<'a> {
+    guard: Option<std::sync::MutexGuard<'a, ()>>,
+    release_tx: &'a watch::Sender<u64>,
+}
+
+impl Drop for DemandRevisionGateGuard<'_> {
+    fn drop(&mut self) {
+        drop(self.guard.take());
+        if self.release_tx.receiver_count() > 0 {
+            self.release_tx
+                .send_modify(|revision| *revision = revision.wrapping_add(1));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -506,12 +775,14 @@ impl InputPublicationDemandHandle {
     #[must_use]
     pub fn new() -> Self {
         let (revision_tx, _) = watch::channel(InputPublicationDemandRevision::default());
+        let (revision_gate_release_tx, _) = watch::channel(0);
         Self {
             registry: Arc::new(InputPublicationDemandRegistry {
                 next_id: AtomicU64::new(1),
                 latest: ArcSwap::from_pointee(InputPublicationDemandSnapshot::default()),
                 revision_tx,
                 revision_gate: SyncMutex::new(()),
+                revision_gate_release_tx,
                 #[cfg(test)]
                 commit_test_hook: SyncMutex::new(None),
             }),
@@ -581,17 +852,30 @@ impl InputPublicationDemandHandle {
         self.registry.revision_tx.subscribe()
     }
 
-    fn commit_if_revision<T>(
+    async fn wait_for_revision_gate_release_after_busy(&self) {
+        let mut revision = self.registry.revision_gate_release_tx.subscribe();
+        if let Some(guard) = self.registry.try_lock_revision_gate() {
+            drop(guard);
+            return;
+        }
+        revision
+            .changed()
+            .await
+            .expect("input publication demand retains the revision gate publisher");
+    }
+
+    fn try_commit_if_revision<T>(
         &self,
         expected: InputPublicationDemandRevision,
         commit: impl FnOnce() -> T,
-    ) -> Option<T> {
-        let _revision_guard = self
-            .registry
-            .revision_gate
-            .lock()
-            .expect("input publication revision gate is healthy");
-        (self.registry.latest.load().revision() == expected).then(commit)
+    ) -> TryDemandCommit<T> {
+        let Some(_revision_guard) = self.registry.try_lock_revision_gate() else {
+            return TryDemandCommit::Busy;
+        };
+        if self.registry.latest.load().revision() != expected {
+            return TryDemandCommit::Stale;
+        }
+        TryDemandCommit::Committed(commit())
     }
 
     #[cfg(test)]
@@ -634,11 +918,31 @@ impl Default for InputPublicationDemandHandle {
 }
 
 impl InputPublicationDemandRegistry {
+    fn lock_revision_gate(&self) -> DemandRevisionGateGuard<'_> {
+        DemandRevisionGateGuard {
+            guard: Some(
+                self.revision_gate
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            ),
+            release_tx: &self.revision_gate_release_tx,
+        }
+    }
+
+    fn try_lock_revision_gate(&self) -> Option<DemandRevisionGateGuard<'_>> {
+        let guard = match self.revision_gate.try_lock() {
+            Ok(guard) => guard,
+            Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => return None,
+        };
+        Some(DemandRevisionGateGuard {
+            guard: Some(guard),
+            release_tx: &self.revision_gate_release_tx,
+        })
+    }
+
     fn update_entries(&self, update: impl Fn(&mut Vec<InputPublicationDemandEntry>)) {
-        let _revision_guard = self
-            .revision_gate
-            .lock()
-            .expect("input publication revision gate is healthy");
+        let _revision_guard = self.lock_revision_gate();
         self.latest.rcu(|current| {
             let mut entries = current.entries.to_vec();
             update(&mut entries);
@@ -729,7 +1033,6 @@ impl OwnedInputPublicationDemand {
 #[derive(Clone)]
 pub(crate) struct InputPublicationReader {
     graph: InputGraphHandle,
-    sensors: Option<watch::Receiver<Arc<SystemSnapshot>>>,
     #[allow(
         dead_code,
         reason = "screen publication leases are optional for pump consumers"
@@ -738,14 +1041,9 @@ pub(crate) struct InputPublicationReader {
 }
 
 impl InputPublicationReader {
-    fn new(
-        graph: InputGraphHandle,
-        sensors: Option<watch::Receiver<Arc<SystemSnapshot>>>,
-        screen_publications: Arc<ScreenPublicationHub>,
-    ) -> Self {
+    fn new(graph: InputGraphHandle, screen_publications: Arc<ScreenPublicationHub>) -> Self {
         Self {
             graph,
-            sensors,
             screen_publications,
         }
     }
@@ -754,19 +1052,12 @@ impl InputPublicationReader {
     pub(crate) fn empty() -> Self {
         Self::new(
             InputGraphHandle::default(),
-            None,
             hypercolor_core::input::screen::ScreenPlanBuilder::new().publication_hub(),
         )
     }
 
     pub(crate) fn graph_snapshot(&self) -> Arc<InputGraphSnapshot> {
         self.graph.snapshot()
-    }
-
-    pub(crate) fn latest_sensor_snapshot(&self) -> Option<Arc<SystemSnapshot>> {
-        self.sensors
-            .as_ref()
-            .map(|receiver| Arc::clone(&receiver.borrow()))
     }
 
     #[allow(
@@ -786,15 +1077,27 @@ impl InputPublicationReader {
             .observe_matching_lease(|descriptor| {
                 descriptor.kind() == ScreenPublicationKind::Surface
                     && descriptor.geometry().output_extent() == extent
-                    && match (target, descriptor.requested_executor()) {
-                        (
-                            Some(target),
-                            ScreenPublicationExecutorRequest::SourceNative(selected),
-                        ) => selected.id() == target.id(),
-                        (None, ScreenPublicationExecutorRequest::Cpu) => true,
-                        _ => false,
-                    }
+                    && screen_executor_matches_render_target(
+                        target,
+                        descriptor.requested_executor(),
+                    )
             })
+    }
+}
+
+fn screen_executor_matches_render_target(
+    target: Option<&ScreenNativeExecutionTarget>,
+    requested: &ScreenPublicationExecutorRequest,
+) -> bool {
+    match (target, requested) {
+        (
+            Some(target),
+            ScreenPublicationExecutorRequest::SourceNative(selected)
+            | ScreenPublicationExecutorRequest::SourceNativeRequired(selected),
+        ) => selected.id() == target.id(),
+        #[cfg(not(target_os = "macos"))]
+        (None, ScreenPublicationExecutorRequest::Cpu) => true,
+        _ => false,
     }
 }
 
@@ -851,17 +1154,13 @@ pub(crate) struct InputPublicationPump {
 
 impl InputPublicationPump {
     pub(crate) async fn start(
-        manager: Arc<Mutex<InputManager>>,
+        manager: InputManager,
         demands: InputPublicationDemandHandle,
     ) -> Result<Self> {
-        let reader = {
-            let manager = manager.lock().await;
-            InputPublicationReader::new(
-                manager.input_graph_handle(),
-                manager.sensor_snapshot_receiver(),
-                manager.screen_publication_hub(),
-            )
-        };
+        let reader = InputPublicationReader::new(
+            manager.input_graph_handle(),
+            manager.screen_publication_hub(),
+        );
         let cancel = CancellationToken::new();
         let (ready_tx, ready_rx) = oneshot::channel();
         let (status_tx, status_rx) = watch::channel(InputPublicationStatus::Starting);
@@ -992,7 +1291,7 @@ impl<T> Drop for AbortOnDropTask<T> {
     }
 }
 
-type ExactScreenTransitionKey = (InputPublicationDemandRevision, u64);
+type ExactScreenTransitionKey = (InputPublicationDemandRevision, u64, u64);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ExactScreenTransitionPurpose {
@@ -1015,18 +1314,27 @@ fn exact_screen_failure_retry_at(
 struct ExactScreenTransitionTask {
     key: ExactScreenTransitionKey,
     purpose: ExactScreenTransitionPurpose,
-    task: AbortOnDropTask<Result<Option<CommittedScreenPublicationTransition>>>,
+    task: AbortOnDropTask<Result<ExactScreenTransitionOutcome>>,
+}
+
+enum ExactScreenTransitionOutcome {
+    Completed(Option<CommittedScreenPublicationTransition>),
 }
 
 impl ExactScreenTransitionTask {
     fn spawn(
-        manager: Arc<Mutex<InputManager>>,
+        manager: InputManager,
         reader: InputPublicationReader,
         demands: InputPublicationDemandHandle,
         demand: ScreenPublicationDemandSnapshot,
+        source_resolution_revision: u64,
         purpose: ExactScreenTransitionPurpose,
     ) -> Self {
-        let key = (demand.revision(), demand.graph_generation().get());
+        let key = (
+            demand.revision(),
+            demand.graph_generation().get(),
+            source_resolution_revision,
+        );
         let task = AbortOnDropTask::new(tokio::spawn(run_exact_screen_transition(
             manager, reader, demands, demand,
         )));
@@ -1039,64 +1347,115 @@ impl ExactScreenTransitionTask {
 
     async fn join(
         self,
-    ) -> std::result::Result<
-        Result<Option<CommittedScreenPublicationTransition>>,
-        tokio::task::JoinError,
-    > {
+    ) -> std::result::Result<Result<ExactScreenTransitionOutcome>, tokio::task::JoinError> {
         self.task.join().await
     }
 }
 
 async fn run_exact_screen_transition(
-    manager: Arc<Mutex<InputManager>>,
+    manager: InputManager,
     reader: InputPublicationReader,
     demands: InputPublicationDemandHandle,
     demand: ScreenPublicationDemandSnapshot,
-) -> Result<Option<CommittedScreenPublicationTransition>> {
+) -> Result<ExactScreenTransitionOutcome> {
     let revision = demand.revision();
     let graph_generation = demand.graph_generation().get();
-    let mut input_manager = manager.lock().await;
     if demands.snapshot().revision() != revision
         || reader.graph_snapshot().generation() != graph_generation
     {
-        return Ok(None);
+        return Ok(ExactScreenTransitionOutcome::Completed(None));
     }
-    let preparation = input_manager
-        .begin_screen_publication_transition(demand)
-        .context("exact screen publication plan was rejected")?;
-    drop(input_manager);
-    let Some(preparation) = preparation else {
-        return Ok(None);
+    let preparation = loop {
+        let preparation = manager.try_begin_screen_publication_transition_if(&demand, || {
+            demands.snapshot().revision() == revision
+                && reader.graph_snapshot().generation() == graph_generation
+        });
+        let mut demand_changes = demands.subscribe_revision();
+        let mut graph_changes = reader.graph.subscribe_generation();
+        match preparation {
+            TryInputManagerIntent::Busy => {
+                tokio::select! {
+                    () = manager.wait_for_lifecycle_release_after_busy() => {}
+                    _ = demand_changes.changed() => {
+                        return Ok(ExactScreenTransitionOutcome::Completed(None));
+                    }
+                    _ = graph_changes.changed() => {
+                        return Ok(ExactScreenTransitionOutcome::Completed(None));
+                    }
+                }
+            }
+            TryInputManagerIntent::Stale => {
+                return Ok(ExactScreenTransitionOutcome::Completed(None));
+            }
+            TryInputManagerIntent::Applied(preparation) => {
+                break preparation.context("exact screen publication plan was rejected")?;
+            }
+        }
     };
-    let prepared = preparation
-        .await_workers()
-        .await
-        .context("exact screen publication worker preparation failed")?;
+    let Some(preparation) = preparation else {
+        return Ok(ExactScreenTransitionOutcome::Completed(None));
+    };
+    let mut prepared = Some(
+        preparation
+            .await_workers()
+            .await
+            .context("exact screen publication worker preparation failed")?,
+    );
     if demands.snapshot().revision() != revision
         || reader.graph_snapshot().generation() != graph_generation
     {
-        return Ok(None);
-    }
-    let mut input_manager = manager.lock().await;
-    if demands.snapshot().revision() != revision
-        || reader.graph_snapshot().generation() != graph_generation
-    {
-        return Ok(None);
+        return Ok(ExactScreenTransitionOutcome::Completed(None));
     }
     #[cfg(test)]
     demands.wait_at_exact_screen_commit_test_hook().await;
-    let Some(committed) = demands.commit_if_revision(revision, || {
-        input_manager.commit_screen_publication_transition(prepared, revision)
-    }) else {
-        return Ok(None);
+    let committed = loop {
+        let mut demand_changes = demands.subscribe_revision();
+        let mut graph_changes = reader.graph.subscribe_generation();
+        match demands.try_commit_if_revision(revision, || {
+            manager.try_commit_screen_publication_transition_if(&mut prepared, revision, || {
+                reader.graph_snapshot().generation() == graph_generation
+            })
+        }) {
+            TryDemandCommit::Busy => {
+                tokio::select! {
+                    () = demands.wait_for_revision_gate_release_after_busy() => {}
+                    _ = demand_changes.changed() => {
+                        return Ok(ExactScreenTransitionOutcome::Completed(None));
+                    }
+                    _ = graph_changes.changed() => {
+                        return Ok(ExactScreenTransitionOutcome::Completed(None));
+                    }
+                }
+            }
+            TryDemandCommit::Stale => {
+                return Ok(ExactScreenTransitionOutcome::Completed(None));
+            }
+            TryDemandCommit::Committed(TryInputManagerIntent::Busy) => {
+                tokio::select! {
+                    () = manager.wait_for_lifecycle_release_after_busy() => {}
+                    _ = demand_changes.changed() => {
+                        return Ok(ExactScreenTransitionOutcome::Completed(None));
+                    }
+                    _ = graph_changes.changed() => {
+                        return Ok(ExactScreenTransitionOutcome::Completed(None));
+                    }
+                }
+            }
+            TryDemandCommit::Committed(TryInputManagerIntent::Stale) => {
+                return Ok(ExactScreenTransitionOutcome::Completed(None));
+            }
+            TryDemandCommit::Committed(TryInputManagerIntent::Applied(committed)) => {
+                break committed;
+            }
+        }
     };
     committed
         .context("exact screen publication plan commit failed")
-        .map(Some)
+        .map(|committed| ExactScreenTransitionOutcome::Completed(Some(committed)))
 }
 
 async fn run_pump(
-    manager: Arc<Mutex<InputManager>>,
+    manager: InputManager,
     reader: InputPublicationReader,
     demands: InputPublicationDemandHandle,
     cancel: CancellationToken,
@@ -1113,10 +1472,11 @@ async fn run_pump(
     let mut exact_screen_recovery = None;
     let mut exact_screen_failure_streak: u64 = 0;
     let mut exact_screen_transition: Option<ExactScreenTransitionTask> = None;
+    #[cfg(target_os = "macos")]
+    let mut applied_macos_renderer_execution = None;
     let mut publication_retirements = VecDeque::new();
     let mut worker_retirement_tasks = JoinSet::new();
     let mut due_sources = Vec::with_capacity(SOURCE_KINDS.len());
-    let mut last_commitment_probe = Instant::now();
     let mut graph_changes = reader.graph.subscribe_generation();
     let mut demand_changes = demands.subscribe_revision();
     loop {
@@ -1130,17 +1490,37 @@ async fn run_pump(
             .as_ref()
             .is_some_and(ExactScreenTransitionTask::is_finished)
         {
+            let current_demand = demands.snapshot();
+            let current_graph = reader.graph_snapshot();
+            let current_source_revision = match manager
+                .try_screen_publication_resolution_revision_if(|| {
+                    demands.snapshot().revision() == current_demand.revision()
+                        && reader.graph_snapshot().generation() == current_graph.generation()
+                }) {
+                TryInputManagerIntent::Busy => {
+                    tokio::select! {
+                        () = cancel.cancelled() => break,
+                        () = manager.wait_for_lifecycle_release_after_busy() => {}
+                        _ = demand_changes.changed() => {}
+                        _ = graph_changes.changed() => {}
+                    }
+                    continue;
+                }
+                TryInputManagerIntent::Stale => continue,
+                TryInputManagerIntent::Applied(revision) => revision,
+            };
             let transition = exact_screen_transition
                 .take()
                 .expect("finished exact screen transition remains present");
             let transition_key = transition.key;
             let transition_purpose = transition.purpose;
             let current_key = (
-                demands.snapshot().revision(),
-                reader.graph_snapshot().generation(),
+                current_demand.revision(),
+                current_graph.generation(),
+                current_source_revision,
             );
             match transition.join().await {
-                Ok(Ok(committed)) => {
+                Ok(Ok(ExactScreenTransitionOutcome::Completed(committed))) => {
                     if exact_screen_failure_streak > 0 {
                         info!(
                             suppressed_failures = exact_screen_failure_streak,
@@ -1232,22 +1612,56 @@ async fn run_pump(
         let desired_capture = demand.capture_demand();
         let mut graph = reader.graph_snapshot();
         if !capture_demand.is_current(graph.generation(), desired_capture) {
-            let manager_lock = manager.lock();
-            tokio::pin!(manager_lock);
-            let mut input_manager = tokio::select! {
-                () = cancel.cancelled() => break,
-                _ = demand_changes.changed() => continue,
-                manager = &mut manager_lock => manager,
-            };
-            if demands.snapshot().revision() != demand.revision() {
-                continue;
+            let reconcile = capture_demand.reconcile(&manager, desired_capture, || {
+                demands.snapshot().revision() == demand.revision()
+            });
+            match reconcile {
+                CaptureDemandReconcile::Applied => {}
+                CaptureDemandReconcile::Busy => {
+                    tokio::select! {
+                        () = cancel.cancelled() => break,
+                        () = manager.wait_for_lifecycle_release_after_busy() => {}
+                        _ = demand_changes.changed() => {}
+                        _ = graph_changes.changed() => {}
+                    }
+                    continue;
+                }
+                CaptureDemandReconcile::Stale => continue,
             }
-            capture_demand.reconcile(&mut input_manager, desired_capture);
-            drop(input_manager);
             graph = reader.graph_snapshot();
         }
+        #[cfg(target_os = "macos")]
+        {
+            let renderer_execution = demand.macos_screen_renderer_execution();
+            let renderer_execution_key = (graph.generation(), renderer_execution);
+            if applied_macos_renderer_execution != Some(renderer_execution_key) {
+                manager.set_screen_renderer_execution_state(renderer_execution);
+                applied_macos_renderer_execution = Some(renderer_execution_key);
+            }
+        }
         let lifecycle_current = capture_demand.is_current(graph.generation(), desired_capture);
-        let exact_screen_key = (demand.revision(), graph.generation());
+        let source_resolution_revision = match manager
+            .try_screen_publication_resolution_revision_if(|| {
+                demands.snapshot().revision() == demand.revision()
+                    && reader.graph_snapshot().generation() == graph.generation()
+            }) {
+            TryInputManagerIntent::Busy => {
+                tokio::select! {
+                    () = cancel.cancelled() => break,
+                    () = manager.wait_for_lifecycle_release_after_busy() => {}
+                    _ = demand_changes.changed() => {}
+                    _ = graph_changes.changed() => {}
+                }
+                continue;
+            }
+            TryInputManagerIntent::Stale => continue,
+            TryInputManagerIntent::Applied(revision) => revision,
+        };
+        let exact_screen_key = (
+            demand.revision(),
+            graph.generation(),
+            source_resolution_revision,
+        );
         if exact_screen_transition
             .as_ref()
             .is_some_and(|transition| transition.key != exact_screen_key)
@@ -1283,10 +1697,11 @@ async fn run_pump(
                 }
             };
             exact_screen_transition = Some(ExactScreenTransitionTask::spawn(
-                Arc::clone(&manager),
+                manager.clone(),
                 reader.clone(),
                 demands.clone(),
                 exact_demand,
+                source_resolution_revision,
                 purpose,
             ));
         }
@@ -1355,41 +1770,39 @@ async fn run_pump(
             continue;
         }
 
-        let manager_lock = manager.lock();
-        tokio::pin!(manager_lock);
-        let mut manager = tokio::select! {
-            () = cancel.cancelled() => break,
-            _ = demand_changes.changed() => continue,
-            _ = graph_changes.changed() => continue,
-            manager = &mut manager_lock => manager,
-        };
         if demands.snapshot().revision() != demand.revision() {
             continue;
         }
-        // A screen source can retire its publication source without any
-        // demand or graph change (a capture worker restart does exactly
-        // this), leaving a committed plan with no producer behind it.
-        // Piggyback a throttled currency probe on the sampling lock so a
-        // starved plan gets re-planned instead of trusted forever.
-        if applied_exact_screen.is_some()
-            && last_commitment_probe.elapsed() >= COMMITMENT_PROBE_INTERVAL
-        {
-            last_commitment_probe = Instant::now();
-            if !manager.screen_publication_commitment_is_current() {
-                applied_exact_screen = None;
+        let mut committed_schedule = schedule.clone();
+        committed_schedule.collect_due(Instant::now(), &mut due_sources);
+        let sampling = manager.try_sample_source_kinds_if(&due_sources, || {
+            demands.snapshot().revision() == demand.revision()
+                && reader.graph_snapshot().generation() == graph.generation()
+        });
+        match sampling {
+            TryInputManagerIntent::Applied(()) => schedule = committed_schedule,
+            TryInputManagerIntent::Busy => {
+                tokio::select! {
+                    () = cancel.cancelled() => break,
+                    () = manager.wait_for_lifecycle_release_after_busy() => {}
+                    _ = demand_changes.changed() => {}
+                    _ = graph_changes.changed() => {}
+                }
             }
+            TryInputManagerIntent::Stale => continue,
         }
-        schedule.collect_due(Instant::now(), &mut due_sources);
-        manager.sample_source_kinds(&due_sources);
     }
 
-    // Cancellation can win the wake-up race after the authoritative renderer
-    // clears its demand, so shutdown must explicitly release capture hardware.
-    let mut manager = manager.lock().await;
-    capture_demand.reconcile(
-        &mut manager,
-        CaptureDemand::new(false, ScreenCaptureDemand::Inactive, false),
-    );
+    let inactive_capture = CaptureDemand::new(false, ScreenCaptureDemand::Inactive, false);
+    match capture_demand.reconcile(&manager, inactive_capture, || true) {
+        CaptureDemandReconcile::Applied => {}
+        CaptureDemandReconcile::Busy => {
+            debug!("input publication shutdown deferred capture release to source retirement");
+        }
+        CaptureDemandReconcile::Stale => {
+            debug!("input publication shutdown rejected an unexpectedly stale capture release");
+        }
+    }
     debug!("input publication worker exited");
 }
 
@@ -1435,7 +1848,7 @@ struct SourceCadence {
     next_sample_at: Option<Instant>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct InputPublicationSchedule {
     sources: [SourceCadence; SOURCE_KINDS.len()],
 }
@@ -1501,6 +1914,7 @@ const fn source_kind_index(source: SourceKind) -> usize {
         SourceKind::Interaction => 2,
         SourceKind::Media => 3,
         SourceKind::Network => 4,
+        SourceKind::Sensors => 5,
     }
 }
 

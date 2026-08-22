@@ -7,6 +7,13 @@ pub(crate) struct ExactBoxList<T> {
     head: Option<Box<ExactBoxNode<T>>>,
 }
 
+impl<T> ExactBoxNode<T> {
+    #[cfg(all(test, target_os = "linux"))]
+    pub(crate) const fn value(&self) -> &T {
+        &self.value
+    }
+}
+
 impl<T> Default for ExactBoxList<T> {
     fn default() -> Self {
         Self { head: None }
@@ -51,6 +58,26 @@ impl<T> ExactBoxList<T> {
                 *link = node.next.take();
             }
         }
+    }
+
+    pub(crate) fn extract_if(&mut self, mut extract: impl FnMut(&mut T) -> bool) -> Self {
+        let mut extracted = Self::default();
+        let mut extracted_tail = &mut extracted.head;
+        let mut link = &mut self.head;
+        while let Some(mut node) = link.take() {
+            if extract(&mut node.value) {
+                *link = node.next.take();
+                *extracted_tail = Some(node);
+                extracted_tail = &mut extracted_tail
+                    .as_mut()
+                    .expect("extracted node was installed")
+                    .next;
+            } else {
+                *link = Some(node);
+                link = &mut link.as_mut().expect("retained node was restored").next;
+            }
+        }
+        extracted
     }
 
     pub(crate) fn clear(&mut self) {

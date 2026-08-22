@@ -1,0 +1,45 @@
+[package]
+name = "hypercolor-macos-media"
+description = "Supported macOS media Automation adapters for Hypercolor"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints.rust]
+unsafe_code = "allow"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"
+unwrap_used = "deny"
+
+[dependencies]
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { workspace = true, features = ["std"] }
+objc2-app-kit = { workspace = true, features = ["std", "libc", "NSRunningApplication"] }
+objc2-core-services = { version = "0.3.2", default-features = false, features = [
+  "AE",
+  "AEDataModel",
+  "AERegistry",
+  "AppleEvents",
+] }
+objc2-core-foundation = { workspace = true, features = ["CFNumber", "CFString"] }
+objc2-foundation = { workspace = true, features = [
+  "std",
+  "NSArray",
+  "NSAppleEventDescriptor",
+  "NSBundle",
+  "NSData",
+  "NSDictionary",
+  "NSError",
+  "NSObject",
+  "NSString",
+  "NSValue",
+] }
+objc2-scripting-bridge = { version = "0.3.2", default-features = true }
+objc2-security = { version = "0.3.2", default-features = false, features = ["SecTask"] }

@@ -1,13 +1,16 @@
 //! Self-contained `PrismRGB` device registry entries.
 
+use std::sync::LazyLock;
+
 use hypercolor_types::device::DeviceFamily;
 
 use crate::protocol::Protocol;
-#[cfg(windows)]
 use crate::registry::HidRawReportMode;
-use crate::registry::{DeviceDescriptor, ProtocolBinding, TransportType};
+use crate::registry::{DeviceDescriptor, ProtocolBinding};
+use crate::transport::{
+    HidAccessMode, HidTransportIntent, TransportIntent, resolve_current_transport,
+};
 
-#[cfg(windows)]
 use super::protocol::HID_REPORT_SIZE;
 use super::protocol::{PrismRgbModel, PrismRgbProtocol};
 
@@ -30,21 +33,16 @@ pub fn build_prism_mini_protocol() -> Box<dyn Protocol> {
     Box::new(PrismRgbProtocol::new(PrismRgbModel::PrismMini))
 }
 
-#[cfg(windows)]
-const fn prismrgb_hid_transport(interface: u8) -> TransportType {
-    TransportType::UsbHidApi {
-        interface: Some(interface),
+const fn prismrgb_hid_intent(interface: u8) -> TransportIntent {
+    TransportIntent::Hid(HidTransportIntent {
+        access: HidAccessMode::Direct,
+        interface,
         report_id: 0x00,
         report_mode: HidRawReportMode::OutputReportWithReportId,
         max_report_len: HID_REPORT_SIZE,
         usage_page: None,
         usage: None,
-    }
-}
-
-#[cfg(not(windows))]
-const fn prismrgb_hid_transport(interface: u8) -> TransportType {
-    TransportType::UsbHid { interface }
+    })
 }
 
 macro_rules! prismrgb_descriptor {
@@ -61,7 +59,8 @@ macro_rules! prismrgb_descriptor {
             product_id: $pid,
             name: $name,
             family: DeviceFamily::new_static("prismrgb", "PrismRGB"),
-            transport: prismrgb_hid_transport($interface),
+            transport: resolve_current_transport(prismrgb_hid_intent($interface))
+                .expect("PrismRGB HID transport should support the current platform"),
             protocol: ProtocolBinding {
                 id: $protocol_id,
                 build: $builder,
@@ -71,27 +70,29 @@ macro_rules! prismrgb_descriptor {
     };
 }
 
-static PRISMRGB_DESCRIPTORS: &[DeviceDescriptor] = &[
-    prismrgb_descriptor!(
-        vid: PRISM_GCS_VENDOR_ID,
-        pid: PID_PRISM_S,
-        name: "PrismRGB Prism S",
-        protocol_id: "prismrgb/prism-s",
-        interface: 2,
-        builder: build_prism_s_protocol
-    ),
-    prismrgb_descriptor!(
-        vid: PRISM_GCS_VENDOR_ID,
-        pid: PID_PRISM_MINI,
-        name: "PrismRGB Prism Mini",
-        protocol_id: "prismrgb/prism-mini",
-        interface: 2,
-        builder: build_prism_mini_protocol
-    ),
-];
+static PRISMRGB_DESCRIPTORS: LazyLock<Vec<DeviceDescriptor>> = LazyLock::new(|| {
+    vec![
+        prismrgb_descriptor!(
+            vid: PRISM_GCS_VENDOR_ID,
+            pid: PID_PRISM_S,
+            name: "PrismRGB Prism S",
+            protocol_id: "prismrgb/prism-s",
+            interface: 2,
+            builder: build_prism_s_protocol
+        ),
+        prismrgb_descriptor!(
+            vid: PRISM_GCS_VENDOR_ID,
+            pid: PID_PRISM_MINI,
+            name: "PrismRGB Prism Mini",
+            protocol_id: "prismrgb/prism-mini",
+            interface: 2,
+            builder: build_prism_mini_protocol
+        ),
+    ]
+});
 
 /// Static `PrismRGB` descriptors for HAL registration.
 #[must_use]
 pub fn descriptors() -> &'static [DeviceDescriptor] {
-    PRISMRGB_DESCRIPTORS
+    PRISMRGB_DESCRIPTORS.as_slice()
 }

@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+#[cfg(not(target_os = "macos"))]
 use std::num::NonZeroU32;
 use std::sync::{Arc, LazyLock, Mutex as StdMutex, PoisonError};
 use std::time::{Duration, SystemTime};
@@ -11,13 +12,17 @@ use tokio_util::sync::CancellationToken;
 
 use hypercolor_core::bus::{CanvasFrame, HypercolorBus, ZonePreviewFrame};
 use hypercolor_core::effect::EffectRegistry;
+use hypercolor_core::input::screen::PixelExtent;
+#[cfg(not(target_os = "macos"))]
 use hypercolor_core::input::screen::{
-    PixelExtent, ScreenExtentRequest, ScreenPublicationExecutorRequest, ScreenPublicationKind,
+    ScreenExtentRequest, ScreenPublicationExecutorRequest, ScreenPublicationKind,
 };
 use hypercolor_core::input::{
     BrowserConnectionIncarnation, BrowserInputChildKey, BrowserInputHandle, BrowserInputSource,
-    BrowserPreviewId, InputData, InputGraphHandle, InputManager, InputSource, SourceIssue,
-    SourceKind, SourceSessionSlot, SourceStatusHandle, SourceStatusReporter,
+    BrowserPreviewId, DataSource, DataSourceKind, DataSourceRole, InputData, InputGraphHandle,
+    InputManager, InputSource, InteractionSource, InteractionSourceRole, ManagedSourceKey,
+    ManagedSourceRole, SourceIssue, SourceKind, SourceRoleBinding, SourceSessionSlot,
+    SourceStatusHandle, SourceStatusReporter, SourceSwapTarget,
 };
 use hypercolor_core::scene::SceneManager;
 use hypercolor_leptos_ext::ws::registry::{
@@ -225,16 +230,21 @@ fn websocket_input_demand_leases_follow_subscription_lifetime() {
         PixelExtent::new(5_120, 2_880).ok()
     );
     let canvas_only = demands.screen_branches();
-    assert_eq!(canvas_only.len(), 1);
-    assert_eq!(
-        canvas_only[0].request().executor(),
-        &ScreenPublicationExecutorRequest::Cpu
-    );
-    let ScreenExtentRequest::Bounded(canvas_bounds) = canvas_only[0].request().extent() else {
-        panic!("width-only canvas request remains bounded");
-    };
-    assert_eq!(canvas_bounds.max_width().map(NonZeroU32::get), Some(5_120));
-    assert_eq!(canvas_bounds.max_height(), None);
+    #[cfg(target_os = "macos")]
+    assert!(canvas_only.is_empty());
+    #[cfg(not(target_os = "macos"))]
+    {
+        assert_eq!(canvas_only.len(), 1);
+        assert_eq!(
+            canvas_only[0].request().executor(),
+            &ScreenPublicationExecutorRequest::Cpu
+        );
+        let ScreenExtentRequest::Bounded(canvas_bounds) = canvas_only[0].request().extent() else {
+            panic!("width-only canvas request remains bounded");
+        };
+        assert_eq!(canvas_bounds.max_width().map(NonZeroU32::get), Some(5_120));
+        assert_eq!(canvas_bounds.max_height(), None);
+    }
     // A refused cadence never reaches the config store, and the lease
     // it would have moved stays exactly where it was.
     let canvas_revision = demands.revision();
@@ -268,28 +278,35 @@ fn websocket_input_demand_leases_follow_subscription_lifetime() {
         3
     );
     assert_eq!(demands.requested_hz(SourceKind::Audio), 24);
+    #[cfg(target_os = "macos")]
+    assert_eq!(demands.requested_hz(SourceKind::Screen), 0);
+    #[cfg(not(target_os = "macos"))]
     assert_eq!(demands.requested_hz(SourceKind::Screen), 15);
     assert_eq!(
         leases.screen_requested_extent(),
         PixelExtent::new(5_120, 720).ok()
     );
     let mixed_branches = demands.screen_branches();
-    assert_eq!(mixed_branches.len(), 2);
-    assert!(
-        mixed_branches.iter().all(|branch| {
+    #[cfg(target_os = "macos")]
+    assert!(mixed_branches.is_empty());
+    #[cfg(not(target_os = "macos"))]
+    {
+        assert_eq!(mixed_branches.len(), 2);
+        assert!(mixed_branches.iter().all(|branch| {
             branch.request().executor() == &ScreenPublicationExecutorRequest::Cpu
-        })
-    );
-    let ScreenExtentRequest::Bounded(canvas_bounds) = mixed_branches[0].request().extent() else {
-        panic!("two-axis canvas request remains bounded");
-    };
-    assert_eq!(canvas_bounds.max_width().map(NonZeroU32::get), Some(5_120));
-    assert_eq!(canvas_bounds.max_height().map(NonZeroU32::get), Some(720));
-    assert!(matches!(
-        mixed_branches[1].request().kind(),
-        ScreenPublicationKind::Zones { columns, rows }
-            if columns.get() == 8 && rows.get() == 6
-    ));
+        }));
+        let ScreenExtentRequest::Bounded(canvas_bounds) = mixed_branches[0].request().extent()
+        else {
+            panic!("two-axis canvas request remains bounded");
+        };
+        assert_eq!(canvas_bounds.max_width().map(NonZeroU32::get), Some(5_120));
+        assert_eq!(canvas_bounds.max_height().map(NonZeroU32::get), Some(720));
+        assert!(matches!(
+            mixed_branches[1].request().kind(),
+            ScreenPublicationKind::Zones { columns, rows }
+                if columns.get() == 8 && rows.get() == 6
+        ));
+    }
     assert_eq!(demands.requested_hz(SourceKind::Interaction), 60);
 
     subscriptions = subscriptions
@@ -300,14 +317,22 @@ fn websocket_input_demand_leases_follow_subscription_lifetime() {
         .synchronize(&subscriptions)
         .expect("screen zone demand synchronizes");
     assert_eq!(demands.requested_hz(SourceKind::Audio), 48);
+    #[cfg(target_os = "macos")]
+    assert_eq!(demands.requested_hz(SourceKind::Screen), 0);
+    #[cfg(not(target_os = "macos"))]
     assert_eq!(demands.requested_hz(SourceKind::Screen), 15);
     assert_eq!(leases.screen_requested_extent(), Some(base_screen_extent));
     let zone_only = demands.screen_branches();
-    assert_eq!(zone_only.len(), 1);
-    assert!(matches!(
-        zone_only[0].request().kind(),
-        ScreenPublicationKind::Zones { .. }
-    ));
+    #[cfg(target_os = "macos")]
+    assert!(zone_only.is_empty());
+    #[cfg(not(target_os = "macos"))]
+    {
+        assert_eq!(zone_only.len(), 1);
+        assert!(matches!(
+            zone_only[0].request().kind(),
+            ScreenPublicationKind::Zones { .. }
+        ));
+    }
 
     subscriptions = subscriptions.unsubscribed_unkeyed(&["screen_zones", "input_events"]);
     leases
@@ -544,16 +569,87 @@ impl InputSource for StatusEventTestSource {
     fn is_running(&self) -> bool {
         self.running
     }
+}
 
-    fn is_interaction_source(&self) -> bool {
-        true
+impl SourceRoleBinding for StatusEventTestSource {
+    type Role = InteractionSourceRole;
+}
+
+impl InteractionSource for StatusEventTestSource {}
+
+struct MutableSensorSource {
+    snapshot: Arc<StdMutex<Arc<SystemSnapshot>>>,
+    running: bool,
+}
+
+impl InputSource for MutableSensorSource {
+    fn name(&self) -> &'static str {
+        "mutable-sensors"
     }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        self.running = true;
+        Ok(())
+    }
+
+    fn stop(&mut self) {
+        self.running = false;
+    }
+
+    fn sample(&mut self) -> anyhow::Result<InputData> {
+        Ok(if self.running {
+            InputData::Sensors(Arc::clone(
+                &self.snapshot.lock().unwrap_or_else(PoisonError::into_inner),
+            ))
+        } else {
+            InputData::None
+        })
+    }
+
+    fn is_running(&self) -> bool {
+        self.running
+    }
+}
+
+impl SourceRoleBinding for MutableSensorSource {
+    type Role = DataSourceRole;
+}
+
+impl DataSource for MutableSensorSource {
+    fn data_source_kind(&self) -> DataSourceKind {
+        DataSourceKind::Sensors
+    }
+}
+
+async fn recv_sensor_snapshot(
+    json_rx: &mut tokio::sync::mpsc::Receiver<Utf8Bytes>,
+    polled_at_ms: u64,
+) -> serde_json::Value {
+    tokio::time::timeout(Duration::from_millis(250), async {
+        loop {
+            let message = json_rx
+                .recv()
+                .await
+                .expect("sensor relay should remain connected");
+            let payload: serde_json::Value =
+                serde_json::from_str(message.as_str()).expect("sensor payload should parse");
+            if payload["type"] == "sensors" && payload["data"]["polled_at_ms"] == polled_at_ms {
+                return payload;
+            }
+        }
+    })
+    .await
+    .expect("expected sensor snapshot should arrive")
 }
 
 fn status_event_state() -> (Arc<AppState>, SourceSessionSlot) {
     let session_slot = SourceSessionSlot::new();
-    let mut input_manager = InputManager::new();
-    input_manager.add_source(Box::new(StatusEventTestSource::new(session_slot.clone())));
+    let input_manager = InputManager::new();
+    input_manager
+        .add_source(ManagedSourceRole::interaction(Box::new(
+            StatusEventTestSource::new(session_slot.clone()),
+        )))
+        .expect("status event test source should register");
     input_manager
         .start_all()
         .expect("status event test source should start");
@@ -561,7 +657,7 @@ fn status_event_state() -> (Arc<AppState>, SourceSessionSlot) {
     let screen_capacity_status = input_manager.screen_capacity_status_handle();
 
     let mut state = AppState::new();
-    state.input_manager = Arc::new(tokio::sync::Mutex::new(input_manager));
+    state.input_manager = input_manager;
     state.screen_capacity_status = screen_capacity_status;
     state.input_status = input_status;
     (Arc::new(state), session_slot)
@@ -1551,12 +1647,19 @@ async fn relay_sensors_streams_latest_snapshot_from_watch() {
     let mut initial = SystemSnapshot::empty();
     initial.cpu_load_percent = 42.0;
     initial.polled_at_ms = 1_000;
-    let (sensor_tx, sensor_rx) = watch::channel(Arc::new(initial));
+    let sensor_snapshot = Arc::new(StdMutex::new(Arc::new(initial)));
     state
         .input_manager
-        .lock()
-        .await
-        .set_sensor_snapshot_receiver(sensor_rx);
+        .add_source(ManagedSourceRole::data(Box::new(MutableSensorSource {
+            snapshot: Arc::clone(&sensor_snapshot),
+            running: false,
+        })))
+        .expect("mutable sensor source should register");
+    state
+        .input_manager
+        .start_all()
+        .expect("mutable sensor source starts");
+    state.input_manager.sample_sources(0.0);
 
     let initial_subscriptions = SubscriptionState::default();
     let (subscriptions_tx, subscriptions_rx) = watch::channel(initial_subscriptions.clone());
@@ -1582,7 +1685,10 @@ async fn relay_sensors_streams_latest_snapshot_from_watch() {
     let mut next = SystemSnapshot::empty();
     next.cpu_load_percent = 55.0;
     next.polled_at_ms = 2_000;
-    sensor_tx.send_replace(Arc::new(next));
+    *sensor_snapshot
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = Arc::new(next);
+    state.input_manager.sample_sources(0.0);
 
     let message = tokio::time::timeout(std::time::Duration::from_millis(250), json_rx.recv())
         .await
@@ -1598,16 +1704,118 @@ async fn relay_sensors_streams_latest_snapshot_from_watch() {
 }
 
 #[tokio::test]
+async fn relay_sensors_discovers_source_added_while_subscribed() {
+    let state = Arc::new(AppState::new());
+    let initial_subscriptions = SubscriptionState::default();
+    let (subscriptions_tx, subscriptions_rx) = watch::channel(initial_subscriptions.clone());
+    let (json_tx, mut json_rx) = tokio::sync::mpsc::channel::<Utf8Bytes>(4);
+    let relay_handle = tokio::spawn(relay_sensors(Arc::clone(&state), json_tx, subscriptions_rx));
+    let subscriptions = initial_subscriptions
+        .subscribed_unkeyed(&["sensors"], serde_json::Value::Null)
+        .expect("sensors subscribe applies");
+    publish_subscriptions(&subscriptions_tx, &subscriptions);
+
+    let _ = recv_sensor_snapshot(&mut json_rx, 0).await;
+    let mut snapshot = SystemSnapshot::empty();
+    snapshot.cpu_load_percent = 61.0;
+    snapshot.polled_at_ms = 3_000;
+    state
+        .input_manager
+        .add_source(ManagedSourceRole::data(Box::new(MutableSensorSource {
+            snapshot: Arc::new(StdMutex::new(Arc::new(snapshot))),
+            running: false,
+        })))
+        .expect("late sensor source should register");
+    state
+        .input_manager
+        .start_all()
+        .expect("late sensor source starts");
+    state.input_manager.sample_sources(0.0);
+
+    let payload = recv_sensor_snapshot(&mut json_rx, 3_000).await;
+    assert_eq!(payload["data"]["cpu_load_percent"], 61.0);
+    relay_handle.abort();
+}
+
+#[tokio::test]
+async fn relay_sensors_reacquires_replaced_source_while_subscribed() {
+    let state = Arc::new(AppState::new());
+    let mut initial = SystemSnapshot::empty();
+    initial.polled_at_ms = 4_000;
+    state
+        .input_manager
+        .add_source(ManagedSourceRole::data(Box::new(MutableSensorSource {
+            snapshot: Arc::new(StdMutex::new(Arc::new(initial))),
+            running: false,
+        })))
+        .expect("initial sensor source should register");
+    state
+        .input_manager
+        .start_all()
+        .expect("initial sensor source starts");
+    state.input_manager.sample_sources(0.0);
+
+    let initial_subscriptions = SubscriptionState::default();
+    let (subscriptions_tx, subscriptions_rx) = watch::channel(initial_subscriptions.clone());
+    let (json_tx, mut json_rx) = tokio::sync::mpsc::channel::<Utf8Bytes>(4);
+    let relay_handle = tokio::spawn(relay_sensors(Arc::clone(&state), json_tx, subscriptions_rx));
+    let subscriptions = initial_subscriptions
+        .subscribed_unkeyed(&["sensors"], serde_json::Value::Null)
+        .expect("sensors subscribe applies");
+    publish_subscriptions(&subscriptions_tx, &subscriptions);
+    let _ = recv_sensor_snapshot(&mut json_rx, 4_000).await;
+
+    let mut replacement_snapshot = SystemSnapshot::empty();
+    replacement_snapshot.cpu_load_percent = 72.0;
+    replacement_snapshot.polled_at_ms = 5_000;
+    let plan = state
+        .input_manager
+        .plan_source_swap(
+            ManagedSourceKey::Data(DataSourceKind::Sensors),
+            SourceSwapTarget::Present { running: false },
+        )
+        .expect("unique sensor source should plan replacement");
+    let mut replacement = Some(ManagedSourceRole::data(Box::new(MutableSensorSource {
+        snapshot: Arc::new(StdMutex::new(Arc::new(replacement_snapshot))),
+        running: false,
+    })));
+    let mut prepared = plan
+        .prepare(&mut replacement)
+        .expect("sensor replacement should prepare");
+    let retirement = state
+        .input_manager
+        .commit_source_swap(&mut prepared)
+        .expect("sensor replacement should commit");
+    retirement.retire();
+    state
+        .input_manager
+        .start_all()
+        .expect("replacement sensor source starts");
+    state.input_manager.sample_sources(0.0);
+
+    let payload = recv_sensor_snapshot(&mut json_rx, 5_000).await;
+    assert_eq!(payload["data"]["cpu_load_percent"], 72.0);
+    relay_handle.abort();
+}
+
+#[tokio::test]
 async fn relay_sensors_coalesces_to_latest_snapshot_while_output_is_full() {
     let state = Arc::new(AppState::new());
     let mut initial = SystemSnapshot::empty();
     initial.polled_at_ms = 1_000;
-    let (sensor_tx, sensor_rx) = watch::channel(Arc::new(initial));
+    let sensor_snapshot = Arc::new(StdMutex::new(Arc::new(initial)));
     state
         .input_manager
-        .lock()
-        .await
-        .set_sensor_snapshot_receiver(sensor_rx);
+        .add_source(ManagedSourceRole::data(Box::new(MutableSensorSource {
+            snapshot: Arc::clone(&sensor_snapshot),
+            running: false,
+        })))
+        .expect("mutable sensor source should register");
+    state
+        .input_manager
+        .start_all()
+        .expect("mutable sensor source starts");
+    state.input_manager.sample_sources(0.0);
 
     let initial_subscriptions = SubscriptionState::default();
     let (subscriptions_tx, subscriptions_rx) = watch::channel(initial_subscriptions.clone());
@@ -1625,7 +1833,10 @@ async fn relay_sensors_coalesces_to_latest_snapshot_while_output_is_full() {
     for polled_at_ms in [2_000, 3_000, 4_000] {
         let mut snapshot = SystemSnapshot::empty();
         snapshot.polled_at_ms = polled_at_ms;
-        sensor_tx.send_replace(Arc::new(snapshot));
+        *sensor_snapshot
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Arc::new(snapshot);
+        state.input_manager.sample_sources(0.0);
         tokio::task::yield_now().await;
     }
 
@@ -4000,16 +4211,16 @@ async fn input_status_publisher_rebuilds_watchers_after_graph_change() {
         .expect("initial status should publish")
         .expect("event bus should remain open");
 
-    {
-        let mut manager = state.input_manager.lock().await;
-        manager.add_source(Box::new(StatusEventTestSource::with_id(
-            "status-event-added",
-            SourceSessionSlot::new(),
-        )));
-        manager
-            .start_all()
-            .expect("new status event source should start");
-    }
+    state
+        .input_manager
+        .add_source(ManagedSourceRole::interaction(Box::new(
+            StatusEventTestSource::with_id("status-event-added", SourceSessionSlot::new()),
+        )))
+        .expect("new status event source should register");
+    state
+        .input_manager
+        .start_all()
+        .expect("new status event source should start");
 
     let added = tokio::time::timeout(Duration::from_secs(1), async {
         loop {
@@ -4348,7 +4559,6 @@ async fn browser_preview_test_executor(
             asset_library: None,
             event_bus: Arc::new(HypercolorBus::new()),
             input_graph: InputGraphHandle::default(),
-            sensor_snapshots: None,
             interaction_routing: routing,
             input_demands: InputPublicationDemandHandle::new(),
             canvas_width: 64,
@@ -5408,18 +5618,18 @@ fn parse_command_method_rejects_invalid_values() {
 #[test]
 fn normalize_command_path_adds_api_prefix() {
     assert_eq!(
-        normalize_command_path("/system").expect("path should normalize"),
-        "/api/v1/system"
+        normalize_command_path("/status").expect("path should normalize"),
+        "/api/v1/status"
     );
     assert_eq!(
-        normalize_command_path("/api/v1/system").expect("path should stay stable"),
-        "/api/v1/system"
+        normalize_command_path("/api/v1/status").expect("path should stay stable"),
+        "/api/v1/status"
     );
 }
 
 #[test]
 fn normalize_command_path_rejects_relative_paths() {
-    let error = normalize_command_path("system").expect_err("relative path must fail");
+    let error = normalize_command_path("status").expect_err("relative path must fail");
     assert_eq!(error.code, "malformed_request");
 }
 
@@ -5482,12 +5692,42 @@ async fn command_response_from_http_unwraps_error_envelope() {
 }
 
 #[tokio::test]
-async fn dispatch_command_routes_to_system() {
+async fn dispatch_command_routes_to_status() {
     let state = Arc::new(AppState::new());
     let message = dispatch_command(
         &state,
         RequestAuthContext::unsecured(),
         "cmd_status".to_owned(),
+        "GET".to_owned(),
+        "/status".to_owned(),
+        None,
+    )
+    .await;
+
+    match message {
+        ServerMessage::Response {
+            id,
+            status,
+            data,
+            error,
+        } => {
+            assert_eq!(id, "cmd_status");
+            assert_eq!(status, 200);
+            let payload = data.expect("status command should return payload");
+            assert!(payload.get("running").is_some());
+            assert!(error.is_none());
+        }
+        _ => panic!("expected command response"),
+    }
+}
+
+#[tokio::test]
+async fn dispatch_command_routes_to_system() {
+    let state = Arc::new(AppState::new());
+    let message = dispatch_command(
+        &state,
+        RequestAuthContext::unsecured(),
+        "cmd_system".to_owned(),
         "GET".to_owned(),
         "/system".to_owned(),
         None,
@@ -5501,7 +5741,7 @@ async fn dispatch_command_routes_to_system() {
             data,
             error,
         } => {
-            assert_eq!(id, "cmd_status");
+            assert_eq!(id, "cmd_system");
             assert_eq!(status, 200);
             let payload = data.expect("system command should return payload");
             assert!(payload.get("identity").is_some());
@@ -5520,7 +5760,7 @@ async fn dispatch_command_rejects_invalid_method() {
         RequestAuthContext::unsecured(),
         "cmd_bad_method".to_owned(),
         "BREW".to_owned(),
-        "/system".to_owned(),
+        "/status".to_owned(),
         None,
     )
     .await;
@@ -5552,7 +5792,7 @@ async fn dispatch_command_preserves_secured_ws_auth_context() {
         RequestAuthContext::read_only(),
         "cmd_status".to_owned(),
         "GET".to_owned(),
-        "/system".to_owned(),
+        "/status".to_owned(),
         None,
     )
     .await;
@@ -5640,7 +5880,7 @@ async fn dispatch_command_requires_auth_context_when_security_is_enabled() {
         RequestAuthContext::unsecured(),
         "cmd_status".to_owned(),
         "GET".to_owned(),
-        "/capture/monitors".to_owned(),
+        "/status".to_owned(),
         None,
     )
     .await;

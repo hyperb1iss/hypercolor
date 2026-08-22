@@ -1,5 +1,7 @@
-use std::io;
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Write as _};
 use std::os::windows::ffi::OsStrExt;
+use std::os::windows::fs::OpenOptionsExt as _;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::Path;
 
@@ -9,8 +11,9 @@ use windows_sys::Win32::Foundation::{
 };
 use windows_sys::Win32::Globalization::{CSTR_EQUAL, CompareStringOrdinal};
 use windows_sys::Win32::Storage::FileSystem::{
-    CreateFileW, FILE_CASE_SENSITIVE_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_ID_INFO,
-    FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    CreateFileW, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO, FILE_CASE_SENSITIVE_INFO,
+    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_INFO, FILE_READ_ATTRIBUTES,
+    FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileAttributeTagInfo,
     FileCaseSensitiveInfo, FileIdInfo, GetFileInformationByHandleEx, MOVEFILE_REPLACE_EXISTING,
     MOVEFILE_WRITE_THROUGH, MoveFileExW, OPEN_EXISTING,
 };
@@ -155,7 +158,7 @@ fn open_directory(path: &Path) -> io::Result<OwnedHandle> {
     Ok(unsafe { OwnedHandle::from_raw_handle(handle) })
 }
 
-pub(super) fn replace_file(source: &Path, destination: &Path) -> io::Result<()> {
+pub(super) fn durable_replace(source: &Path, destination: &Path) -> io::Result<()> {
     let source = wide_path(source)?;
     let destination = wide_path(destination)?;
 
@@ -168,6 +171,44 @@ pub(super) fn replace_file(source: &Path, destination: &Path) -> io::Result<()> 
     } else {
         Ok(())
     }
+}
+
+pub(super) fn write_secret(path: &Path, contents: &[u8]) -> io::Result<()> {
+    let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
+    if let Err(error) = file.write_all(contents).and_then(|()| file.sync_all()) {
+        drop(file);
+        drop(fs::remove_file(path));
+        return Err(error);
+    }
+    Ok(())
+}
+
+pub(super) fn open_no_follow(path: &Path) -> io::Result<File> {
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)?;
+    let mut information = FILE_ATTRIBUTE_TAG_INFO::default();
+    // SAFETY: The handle is live for the call and `information` points to
+    // writable storage matching the requested information class.
+    if unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            FileAttributeTagInfo,
+            std::ptr::addr_of_mut!(information).cast(),
+            size_of::<FILE_ATTRIBUTE_TAG_INFO>() as u32,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    if information.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "refusing to follow a Windows reparse point",
+        ));
+    }
+    Ok(file)
 }
 
 fn wide_path(path: &Path) -> io::Result<Vec<u16>> {

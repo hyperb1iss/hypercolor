@@ -22,7 +22,7 @@ use hypercolor_core::input::screen::{
     WindowsScreenCaptureInput,
 };
 use hypercolor_core::input::{
-    InputManager, SourceFreshness, SourceKind, SourceState, WindowsHostInput,
+    InputManager, ManagedSourceRole, SourceFreshness, SourceKind, SourceState, WindowsHostInput,
 };
 use hypercolor_core::scene::{SceneManager, make_scene};
 use hypercolor_core::spatial::SpatialEngine;
@@ -154,7 +154,7 @@ fn render_state(input_manager: InputManager, screen_capture_configured: bool) ->
         zone_layout_previews: Arc::new(ZoneLayoutPreviewStore::default()),
         render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
         scene_manager: Arc::new(RwLock::new(SceneManager::with_default())),
-        input_manager: Arc::new(Mutex::new(input_manager)),
+        input_manager,
         interaction_routing: InteractionRoutingControl::default(),
         power_state,
         device_settings: Arc::new(RwLock::new(DeviceSettingsStore::new(PathBuf::from(
@@ -182,7 +182,7 @@ async fn stop_render_thread(state: &RenderThreadState, render_thread: &mut Rende
         .shutdown()
         .await
         .expect("fixture render thread shuts down");
-    state.input_manager.lock().await.stop_all();
+    state.input_manager.stop_all();
 }
 
 async fn wait_until(description: &str, condition: impl Fn() -> bool) {
@@ -319,7 +319,9 @@ async fn raw_input_reaches_daemon_frame_routing_and_event_bus() {
     let (source, fixture) = WindowsHostInput::new_deterministic_fixture(true, true);
     let mut manager = InputManager::new();
     let statuses = manager.source_status_registry();
-    manager.add_source(Box::new(source));
+    manager
+        .add_source(ManagedSourceRole::interaction(Box::new(source)))
+        .expect("Windows host fixture should register");
     manager.start_all().expect("fixture source starts");
     let state = render_state(manager, false);
     install_effect_with_test_demand_activation(&state, "solid_color", true).await;
@@ -437,7 +439,9 @@ async fn capture_frame_reaches_daemon_screen_and_canvas_watches() {
             .expect("deterministic Windows capture source is valid");
     let mut manager = InputManager::new();
     let statuses = manager.source_status_registry();
-    manager.add_source(Box::new(source));
+    manager
+        .add_source(ManagedSourceRole::screen(Box::new(source)))
+        .expect("Windows screen fixture should register");
     manager.start_all().expect("fixture source starts idle");
     let state = render_state(manager, true);
     install_effect_with_test_demand_activation(&state, "screen_cast", false).await;

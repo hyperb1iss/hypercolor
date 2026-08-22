@@ -36,26 +36,28 @@ use hypercolor_core::effect::EffectEntry;
 use hypercolor_core::engine::RenderLoopState;
 use hypercolor_core::input::screen::ScreenAdmissionCapacity;
 use hypercolor_core::input::{
-    BrowserInputEdge, InputData, InputSource, SourceIssue, SourceKind, SourceSessionWriter,
-    SourceStatusHandle, SourceStatusReporter,
+    AudioSource, AudioSourceRole, BrowserInputEdge, InputData, InputSource, ManagedSourceRole,
+    SourceIssue, SourceKind, SourceRoleBinding, SourceSessionWriter, SourceStatusHandle,
+    SourceStatusReporter,
 };
 use hypercolor_core::types::event::InputButtonState;
 #[cfg(feature = "persistence-test-hooks")]
 use hypercolor_daemon::api::layouts::{LayoutMutationTestOperation, LayoutMutationTestPoint};
-use hypercolor_daemon::api::local::TrustedLocalApi;
 use hypercolor_daemon::api::{self, AppState};
 #[cfg(feature = "persistence-test-hooks")]
 use hypercolor_daemon::library::JsonLibraryStore;
 #[cfg(feature = "persistence-test-hooks")]
 use hypercolor_daemon::persistence::AtomicFileWriter;
+use hypercolor_daemon::profile_store::{Profile, ProfilePrimary};
 use hypercolor_daemon::runtime_state;
 use hypercolor_daemon::scene_transactions::SceneTransaction;
-use hypercolor_daemon::session::{OutputOverride, OutputPowerState};
+use hypercolor_daemon::session::{
+    OutputOverride, OutputPowerState, current_global_brightness, set_global_brightness,
+};
 #[cfg(feature = "persistence-test-hooks")]
 use hypercolor_daemon::simulators::{SimulatedDisplayConfig, SimulatedDisplayStore};
 use hypercolor_network::DriverModuleRegistry;
-use hypercolor_types::api::scene::SceneDocument;
-use hypercolor_types::api::scenes::{ReplaceSceneLayerRequest, ReplaceSceneRequest};
+use hypercolor_types::asset::AssetId;
 use hypercolor_types::canvas::{Canvas, Rgba};
 use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig, RenderAccelerationMode};
 use hypercolor_types::controls::{
@@ -70,17 +72,21 @@ use hypercolor_types::device::{
     DriverTransportKind, SegmentInfo,
 };
 use hypercolor_types::effect::{
-    ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory, EffectId,
-    EffectMetadata, EffectSource, EffectState, PresetTemplate,
+    ControlBinding, ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory,
+    EffectId, EffectMetadata, EffectSource, EffectState, PresetTemplate,
 };
-use hypercolor_types::event::{HypercolorEvent, ZoneChangeKind};
+use hypercolor_types::event::{
+    ChangeTrigger, EffectStopReason, HypercolorEvent, SceneChangeReason, ZoneChangeKind,
+};
 use hypercolor_types::layer::{
-    LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
+    LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, MediaPlayback, SceneLayer,
+    SceneLayerId,
 };
+use hypercolor_types::library::PresetId;
 use hypercolor_types::scene::{
     ColorInterpolation, DisplayFaceBlendMode, DisplayFaceTarget, EasingFunction, Scene, SceneId,
     SceneKind, SceneMutationMode, ScenePriority, SceneScope, TransitionSpec, UnassignedBehavior,
-    Zone, ZoneId, ZoneRole,
+    Zone, ZoneRole,
 };
 use hypercolor_types::session::OffOutputBehavior;
 use hypercolor_types::spatial::{
@@ -244,6 +250,12 @@ impl InputSource for ObservableInputSource {
     }
 }
 
+impl SourceRoleBinding for ObservableInputSource {
+    type Role = AudioSourceRole;
+}
+
+impl AudioSource for ObservableInputSource {}
+
 struct CoverFixtureGuard {
     _tempdir: tempfile::TempDir,
     data_dir: PathBuf,
@@ -292,6 +304,12 @@ fn test_app() -> axum::Router {
 /// Build a test router with shared state (for multi-step tests).
 fn test_app_with_state(state: Arc<AppState>) -> axum::Router {
     api::build_router(state, None)
+}
+
+/// Build a trusted in-process API for tests exercising privacy-bearing
+/// config keys, which require the protected-control credential.
+fn trusted_api(state: Arc<AppState>) -> api::local::TrustedLocalApi {
+    api::local::TrustedLocalApi::new(state)
 }
 
 /// Build a test router with a web UI mounted, which installs the SPA
@@ -349,10 +367,7 @@ fn test_state_with_temp_config_manager() -> (Arc<AppState>, Arc<ConfigManager>, 
             .with_config_manager(Some(Arc::clone(&manager))),
     );
     {
-        let mut input_manager = state
-            .input_manager
-            .try_lock()
-            .expect("isolated input manager should be uncontended");
+        let input_manager = &state.input_manager;
         let capacity = input_manager.screen_resource_capacity();
         input_manager
             .set_screen_capacity_plan(capacity, capacity, capacity)
@@ -1030,19 +1045,6 @@ async fn request_with_layout_ack(
     request_with_layout_ack_and_hook(app, request, state, || async {}).await
 }
 
-async fn trusted_request_with_layout_ack(
-    request: Request<Body>,
-    state: &Arc<AppState>,
-) -> (axum::response::Response, Vec<SpatialLayout>) {
-    let api = TrustedLocalApi::new(Arc::clone(state));
-    let request = async move {
-        api.execute(request)
-            .await
-            .expect("trusted local request should execute")
-    };
-    drive_request_with_layout_ack(request, state, || async {}).await
-}
-
 async fn request_with_layout_ack_and_hook<F, Fut>(
     app: axum::Router,
     request: Request<Body>,
@@ -1053,15 +1055,31 @@ where
     F: Fn() -> Fut + Clone + Send + Sync + 'static,
     Fut: Future<Output = ()> + Send + 'static,
 {
-    let request = async move {
+    let response = async move {
         app.oneshot(request)
             .await
             .expect("failed to execute request")
     };
-    drive_request_with_layout_ack(request, state, before_publication).await
+    layout_ack_pump(response, state, before_publication).await
 }
 
-async fn drive_request_with_layout_ack<R, F, Fut>(
+/// Like [`request_with_layout_ack`], but through the trusted local API so
+/// the request carries the protected-control grant the config gates need.
+async fn trusted_request_with_layout_ack(
+    trusted: api::local::TrustedLocalApi,
+    request: Request<Body>,
+    state: &Arc<AppState>,
+) -> (axum::response::Response, Vec<SpatialLayout>) {
+    let response = async move {
+        trusted
+            .execute(request)
+            .await
+            .expect("trusted request should execute")
+    };
+    layout_ack_pump(response, state, || async {}).await
+}
+
+async fn layout_ack_pump<R, F, Fut>(
     request: R,
     state: &Arc<AppState>,
     before_publication: F,
@@ -1549,17 +1567,39 @@ async fn system_returns_identity_and_status_with_envelope() {
             .is_some_and(|s| !s.is_empty()),
         "cache_dir should be a non-empty string"
     );
-    assert!(
-        json["data"]["status"]["audio_available"].is_boolean(),
-        "audio_available should be a bool"
-    );
+    assert_eq!(json["data"]["status"]["audio_available"], false);
     assert_eq!(
         json["data"]["status"]["capture_available"],
         serde_json::json!(
-            cfg!(target_os = "windows")
+            cfg!(any(target_os = "windows", target_os = "macos"))
                 || (cfg!(target_os = "linux") && std::env::var_os("WAYLAND_DISPLAY").is_some())
         )
     );
+}
+
+#[tokio::test]
+async fn status_derives_audio_availability_from_registered_sources() {
+    let state = Arc::new(isolated_state());
+    let (source, _) = ObservableInputSource::new("available_audio", false, Duration::from_secs(1));
+    state
+        .input_manager
+        .add_source(ManagedSourceRole::audio(Box::new(source)))
+        .expect("observable audio source should register");
+    let app = test_app_with_state(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/status")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["audio_available"], true);
 }
 
 #[tokio::test]
@@ -1577,8 +1617,10 @@ async fn status_reports_stale_source_health_without_captured_contents() {
     let (source, _) =
         ObservableInputSource::new("stale_test_audio", true, Duration::from_millis(1));
     {
-        let mut manager = state.input_manager.lock().await;
-        manager.add_source(Box::new(source));
+        let manager = &state.input_manager;
+        manager
+            .add_source(ManagedSourceRole::audio(Box::new(source)))
+            .expect("stale audio source should register");
         manager.start_all().expect("test input graph should start");
     }
     tokio::time::sleep(Duration::from_millis(25)).await;
@@ -1645,12 +1687,12 @@ async fn diagnose_default_set_includes_memory_as_a_finding() {
 }
 
 #[tokio::test]
-async fn input_status_and_diagnose_observe_failure_while_manager_is_locked() {
+async fn input_status_and_diagnose_observe_failure_from_lock_free_handles() {
     let state = Arc::new(isolated_state());
     let (source, session) =
         ObservableInputSource::new("failed_test_audio", true, Duration::from_millis(1));
     {
-        let mut manager = state.input_manager.lock().await;
+        let manager = &state.input_manager;
         manager
             .set_screen_capacity_plan(
                 ScreenAdmissionCapacity::new(2_000_000, 1_500_000),
@@ -1658,17 +1700,23 @@ async fn input_status_and_diagnose_observe_failure_while_manager_is_locked() {
                 ScreenAdmissionCapacity::new(750_000, 700_000),
             )
             .expect("empty manager should accept exact test capacity");
-        manager.add_source(Box::new(source));
+        manager
+            .add_source(ManagedSourceRole::audio(Box::new(source)))
+            .expect("failed audio source should register");
         manager.start_all().expect("test input graph should start");
     }
 
-    let mut manager_guard = state.input_manager.lock().await;
+    let manager_guard = &state.input_manager;
     let (demanded_stopped, _) =
         ObservableInputSource::new("demanded_stopped_audio", true, Duration::from_secs(30));
-    manager_guard.add_source(Box::new(demanded_stopped));
+    manager_guard
+        .add_source(ManagedSourceRole::audio(Box::new(demanded_stopped)))
+        .expect("demanded stopped audio source should register");
     let (undemanded, _) =
         ObservableInputSource::new("undemanded_stopped_audio", false, Duration::from_secs(30));
-    manager_guard.add_source(Box::new(undemanded));
+    manager_guard
+        .add_source(ManagedSourceRole::audio(Box::new(undemanded)))
+        .expect("undemanded audio source should register");
     let session = session
         .lock()
         .expect("test source session lock should not be poisoned")
@@ -1740,7 +1788,6 @@ async fn input_status_and_diagnose_observe_failure_while_manager_is_locked() {
     .await
     .expect("diagnose must not wait for the input manager")
     .expect("diagnose request should succeed");
-    drop(manager_guard);
 
     let json = body_json(response).await;
     let checks = json["data"]["checks"]
@@ -2035,16 +2082,6 @@ fn config_delete_request(key: &str) -> Request<Body> {
         .expect("failed to build request")
 }
 
-async fn execute_trusted_config_request(
-    state: &Arc<AppState>,
-    request: Request<Body>,
-) -> axum::response::Response {
-    TrustedLocalApi::new(Arc::clone(state))
-        .execute(request)
-        .await
-        .expect("trusted config request should execute")
-}
-
 /// Read a table-driven test value the way a human types it: JSON when it
 /// parses, a JSON string otherwise.
 fn config_test_value(raw: &str) -> serde_json::Value {
@@ -2061,16 +2098,16 @@ async fn config_set_audio_device_persists_without_live_rebuild_by_default() {
     let mut state = isolated_state();
     state.config_manager = Some(config_manager);
     let state = Arc::new(state);
+    let app = trusted_api(Arc::clone(&state));
 
-    let response = execute_trusted_config_request(
-        &state,
-        config_put_request(
+    let response = app
+        .execute(config_put_request(
             "audio.device",
             &serde_json::json!("microphone"),
             Some(false),
-        ),
-    )
-    .await;
+        ))
+        .await
+        .expect("failed to execute request");
 
     assert_eq!(response.status(), StatusCode::OK);
 
@@ -2080,7 +2117,7 @@ async fn config_set_audio_device_persists_without_live_rebuild_by_default() {
     assert_eq!(json["data"]["live"], false);
 
     {
-        let input_manager = state.input_manager.lock().await;
+        let input_manager = &state.input_manager;
         assert_eq!(
             input_manager.source_count(),
             1,
@@ -2293,6 +2330,7 @@ async fn config_write_rejection_keeps_detail_for_a_plain_key() {
 #[tokio::test]
 async fn config_set_rejects_invalid_capture_boundaries_before_persistence() {
     let (state, manager, _tempdir) = test_state_with_temp_config_manager();
+    let app = trusted_api(Arc::clone(&state));
 
     for (key, value) in [
         ("capture.capture_fps", "0"),
@@ -2300,11 +2338,10 @@ async fn config_set_rejects_invalid_capture_boundaries_before_persistence() {
         ("capture.smoothing", "1.1"),
         ("capture.gamma", "nan"),
     ] {
-        let response = execute_trusted_config_request(
-            &state,
-            config_put_request(key, &config_test_value(value), None),
-        )
-        .await;
+        let response = app
+            .execute(config_put_request(key, &config_test_value(value), None))
+            .await
+            .expect("failed to execute request");
 
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
         let json = body_json(response).await;
@@ -2315,35 +2352,36 @@ async fn config_set_rejects_invalid_capture_boundaries_before_persistence() {
         !manager.path().exists(),
         "invalid capture config must not reach persistent storage"
     );
-    assert!(!state.input_manager.lock().await.has_screen_source());
+    assert!(!state.input_manager.has_screen_source());
 }
 
 #[cfg(target_os = "windows")]
 #[tokio::test]
 async fn config_set_rejects_capture_resource_plan_before_persistence() {
     let (state, manager, _tempdir) = test_state_with_temp_config_manager();
+    let app = trusted_api(Arc::clone(&state));
 
-    let response = execute_trusted_config_request(
-        &state,
-        config_put_request(
+    let response = app
+        .execute(config_put_request(
             "capture.publication_memory_bytes",
             &serde_json::json!(1),
             None,
-        ),
-    )
-    .await;
+        ))
+        .await
+        .expect("failed to execute request");
 
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     let json = body_json(response).await;
     assert_eq!(json["error"]["code"], "validation_error");
     assert!(!manager.path().exists());
-    assert!(!state.input_manager.lock().await.has_screen_source());
+    assert!(!state.input_manager.has_screen_source());
 }
 
 #[cfg(target_os = "windows")]
 #[tokio::test]
 async fn config_set_applies_windows_capture_settings_source_and_disable_live() {
     let (state, manager, _tempdir) = test_state_with_temp_config_manager();
+    let app = trusted_api(Arc::clone(&state));
 
     let source = r"monitor:\\?\DISPLAY#TEST#stable";
     for (key, value) in [
@@ -2353,28 +2391,30 @@ async fn config_set_applies_windows_capture_settings_source_and_disable_live() {
             serde_json::to_string(source).expect("source should encode as JSON"),
         ),
     ] {
-        let response = execute_trusted_config_request(
-            &state,
-            config_put_request(key, &config_test_value(&value), None),
-        )
-        .await;
+        let response = app
+            .execute(config_put_request(key, &config_test_value(&value), None))
+            .await
+            .expect("failed to execute request");
 
         assert_eq!(response.status(), StatusCode::OK);
         let json = body_json(response).await;
         assert_eq!(json["data"]["live"], true);
-        assert!(state.input_manager.lock().await.has_screen_source());
+        assert!(state.input_manager.has_screen_source());
     }
 
-    let response = execute_trusted_config_request(
-        &state,
-        config_put_request("capture.enabled", &serde_json::json!(false), None),
-    )
-    .await;
+    let response = app
+        .execute(config_put_request(
+            "capture.enabled",
+            &serde_json::json!(false),
+            None,
+        ))
+        .await
+        .expect("failed to execute request");
 
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
     assert_eq!(json["data"]["live"], true);
-    assert!(!state.input_manager.lock().await.has_screen_source());
+    assert!(!state.input_manager.has_screen_source());
 
     let persisted = fs::read_to_string(manager.path()).expect("capture config should persist");
     let persisted: HypercolorConfig =
@@ -2394,12 +2434,16 @@ async fn config_set_audio_device_rebuilds_live_input_manager_when_requested() {
     let mut state = isolated_state();
     state.config_manager = Some(config_manager);
     let state = Arc::new(state);
+    let app = trusted_api(Arc::clone(&state));
 
-    let response = execute_trusted_config_request(
-        &state,
-        config_put_request("audio.device", &serde_json::json!("microphone"), Some(true)),
-    )
-    .await;
+    let response = app
+        .execute(config_put_request(
+            "audio.device",
+            &serde_json::json!("microphone"),
+            Some(true),
+        ))
+        .await
+        .expect("failed to execute request");
 
     assert_eq!(response.status(), StatusCode::OK);
 
@@ -2409,7 +2453,7 @@ async fn config_set_audio_device_rebuilds_live_input_manager_when_requested() {
     assert_eq!(json["data"]["live"], true);
 
     {
-        let input_manager = state.input_manager.lock().await;
+        let input_manager = &state.input_manager;
         assert_eq!(
             input_manager.source_count(),
             2,
@@ -2440,12 +2484,16 @@ async fn config_set_legacy_audio_alias_persists_canonical_device_id() {
     let mut state = isolated_state();
     state.config_manager = Some(config_manager);
     let state = Arc::new(state);
+    let app = trusted_api(Arc::clone(&state));
 
-    let response = execute_trusted_config_request(
-        &state,
-        config_put_request("audio.device", &serde_json::json!("mic"), Some(true)),
-    )
-    .await;
+    let response = app
+        .execute(config_put_request(
+            "audio.device",
+            &serde_json::json!("mic"),
+            Some(true),
+        ))
+        .await
+        .expect("failed to execute request");
 
     assert_eq!(response.status(), StatusCode::OK);
 
@@ -2455,7 +2503,7 @@ async fn config_set_legacy_audio_alias_persists_canonical_device_id() {
     assert_eq!(json["data"]["live"], true);
 
     {
-        let input_manager = state.input_manager.lock().await;
+        let input_manager = &state.input_manager;
         assert!(
             input_manager
                 .source_names()
@@ -2481,12 +2529,16 @@ async fn config_set_legacy_audio_alias_skips_live_rebuild_when_already_canonical
     let mut state = isolated_state();
     state.config_manager = Some(config_manager);
     let state = Arc::new(state);
+    let app = trusted_api(Arc::clone(&state));
 
-    let response = execute_trusted_config_request(
-        &state,
-        config_put_request("audio.device", &serde_json::json!("auto"), Some(true)),
-    )
-    .await;
+    let response = app
+        .execute(config_put_request(
+            "audio.device",
+            &serde_json::json!("auto"),
+            Some(true),
+        ))
+        .await
+        .expect("failed to execute request");
 
     assert_eq!(response.status(), StatusCode::OK);
 
@@ -2496,7 +2548,7 @@ async fn config_set_legacy_audio_alias_skips_live_rebuild_when_already_canonical
     assert_eq!(json["data"]["live"], false);
 
     {
-        let input_manager = state.input_manager.lock().await;
+        let input_manager = &state.input_manager;
         assert_eq!(
             input_manager.source_count(),
             1,
@@ -2520,12 +2572,16 @@ async fn config_set_identical_audio_value_skips_live_rebuild() {
     let mut state = isolated_state();
     state.config_manager = Some(config_manager);
     let state = Arc::new(state);
+    let app = trusted_api(Arc::clone(&state));
 
-    let response = execute_trusted_config_request(
-        &state,
-        config_put_request("audio.device", &serde_json::json!("default"), Some(true)),
-    )
-    .await;
+    let response = app
+        .execute(config_put_request(
+            "audio.device",
+            &serde_json::json!("default"),
+            Some(true),
+        ))
+        .await
+        .expect("failed to execute request");
 
     assert_eq!(response.status(), StatusCode::OK);
 
@@ -2535,7 +2591,7 @@ async fn config_set_identical_audio_value_skips_live_rebuild() {
     assert_eq!(json["data"]["live"], false);
 
     {
-        let input_manager = state.input_manager.lock().await;
+        let input_manager = &state.input_manager;
         assert_eq!(
             input_manager.source_count(),
             1,
@@ -2675,7 +2731,7 @@ async fn config_set_render_target_fps_updates_render_loop_live() {
 /// settings stand in for anything a driver may persist without the host
 /// modelling the shape.
 const RESET_FIXTURE_CONFIG: &str = r#"
-schema_version = 5
+schema_version = 4
 include = ["desk-overrides.toml", "travel.toml"]
 
 [daemon]
@@ -2703,7 +2759,7 @@ refresh_token = "rt-do-not-lose-me"
 /// Spec 76 §3.1 promises arbitrary extension documents survive a reset, so
 /// the shape that exercises the serialization boundary gets its own fixture.
 const RESET_NESTED_EXTENSION_CONFIG: &str = r#"
-schema_version = 5
+schema_version = 4
 
 [telemetry]
 enabled = true
@@ -2724,7 +2780,7 @@ name = "audit"
 
 /// A driver entry the registered WLED module rejects as invalid.
 const RESET_INVALID_DRIVER_CONFIG: &str = r#"
-schema_version = 5
+schema_version = 4
 
 [drivers.wled]
 enabled = true
@@ -2750,10 +2806,7 @@ fn reset_fixture_state_from(
     let mut state = isolated_state();
     state.config_manager = Some(Arc::clone(&config_manager));
     {
-        let mut input_manager = state
-            .input_manager
-            .try_lock()
-            .expect("isolated input manager should be uncontended");
+        let input_manager = &state.input_manager;
         let capacity = input_manager.screen_resource_capacity();
         input_manager
             .set_screen_capacity_plan(capacity, capacity, capacity)
@@ -2777,8 +2830,11 @@ fn reset_fixture_app(config_path: &Path) -> (axum::Router, Arc<AppState>, Arc<Co
 /// queues a canvas transaction that waits on a pipeline acknowledgment.
 /// The test state's layout starts at 320x200 against a 640x480 config
 /// default, so the reset genuinely resizes and needs the ack pump.
+/// It rides the trusted local API because a full reset rewrites the
+/// capture domain and carries the protected-control requirement.
 async fn post_config_reset(state: &Arc<AppState>) -> axum::response::Response {
     trusted_request_with_layout_ack(
+        trusted_api(Arc::clone(state)),
         Request::builder()
             .method("POST")
             .uri("/api/v1/config/reset")
@@ -3794,6 +3850,23 @@ async fn activate_display_face_test_scene_with_layers(
     scene.id
 }
 
+fn test_media_layer() -> SceneLayer {
+    SceneLayer {
+        id: SceneLayerId::new(),
+        name: None,
+        source: LayerSource::Media {
+            asset_id: AssetId::new(),
+            playback: MediaPlayback::default(),
+        },
+        blend: LayerBlendMode::Alpha,
+        opacity: 1.0,
+        transform: LayerTransform::default(),
+        adjust: LayerAdjust::default(),
+        bindings: Vec::new(),
+        enabled: true,
+    }
+}
+
 fn default_config_path() -> String {
     ConfigManager::config_dir()
         .join("hypercolor.toml")
@@ -4102,7 +4175,10 @@ async fn list_drivers_returns_registered_module_descriptors() {
     assert_eq!(wled["descriptor"]["module_kind"], "network");
     assert_eq!(
         wled["descriptor"]["transports"],
-        serde_json::json!(["network"])
+        serde_json::json!([{
+            "kind": "network",
+            "availability": { "status": "available" }
+        }])
     );
     assert_eq!(wled["descriptor"]["capabilities"]["discovery"], true);
     assert_eq!(wled["descriptor"]["capabilities"]["output_backend"], true);
@@ -4129,7 +4205,16 @@ async fn list_drivers_returns_registered_module_descriptors() {
     assert_eq!(nollie["descriptor"]["module_kind"], "hal");
     assert_eq!(
         nollie["descriptor"]["transports"],
-        serde_json::json!(["usb", "serial"])
+        serde_json::json!([
+            {
+                "kind": "usb",
+                "availability": { "status": "available" }
+            },
+            {
+                "kind": "serial",
+                "availability": { "status": "available" }
+            }
+        ])
     );
     assert_eq!(
         nollie["descriptor"]["capabilities"]["protocol_catalog"],
@@ -5982,6 +6067,28 @@ async fn get_effect_returns_controls() {
 }
 
 #[tokio::test]
+async fn get_active_effect_returns_idle_payload_when_none() {
+    let app = test_app();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/effects/active")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["state"], "idle");
+    assert!(json["data"]["id"].is_null());
+    assert!(json["data"]["name"].is_null());
+    assert!(json["data"]["zone_id"].is_null());
+}
+
+#[tokio::test]
 async fn apply_effect_upserts_primary_group() {
     let state = Arc::new(isolated_state());
     insert_test_effect(&state, "solid_color").await;
@@ -6038,7 +6145,7 @@ async fn apply_effect_targets_a_named_zone_via_zone_id() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::to_vec(&serde_json::json!({
-                        "zone": custom_id.to_string(),
+                        "zone_id": custom_id.to_string(),
                     }))
                     .expect("request body should serialize"),
                 ))
@@ -6088,7 +6195,7 @@ async fn effect_started_event_for_named_zone_carries_zone_identity() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::to_vec(&serde_json::json!({
-                        "zone": custom_id.to_string(),
+                        "zone_id": custom_id.to_string(),
                     }))
                     .expect("request body should serialize"),
                 ))
@@ -6133,6 +6240,98 @@ async fn effect_started_event_for_named_zone_carries_zone_identity() {
 }
 
 #[tokio::test]
+async fn get_active_effect_returns_primary_group_info() {
+    let state = Arc::new(isolated_state());
+    insert_test_effect(&state, "solid_color").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let apply_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/solid_color/apply")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(apply_response.status(), StatusCode::OK);
+
+    let primary_group_id = {
+        let manager = state.scene_manager.read().await;
+        manager
+            .active_scene()
+            .and_then(Scene::primary_group)
+            .map(|group| (group.id.to_string(), group.effect_id))
+            .expect("active scene should expose a primary group")
+    };
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/effects/active")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(
+        json["data"]["id"],
+        primary_group_id
+            .1
+            .expect("primary group should have an effect id")
+            .to_string()
+    );
+    assert_eq!(json["data"]["name"], "solid_color");
+    assert_eq!(json["data"]["state"], "running");
+    assert_eq!(json["data"]["zone_id"], primary_group_id.0);
+}
+
+#[tokio::test]
+async fn get_active_effect_includes_cover_image_url_when_available() {
+    let _cover_lock = COVER_DATA_DIR_LOCK.lock().await;
+    let cover_fixture = CoverFixtureGuard::install("rainbow");
+    let state = Arc::new(AppState::new_with_data_dir(cover_fixture.data_dir()));
+    insert_test_effect(&state, "rainbow").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let apply_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/rainbow/apply")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(apply_response.status(), StatusCode::OK);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/effects/active")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    let cover_url = json["data"]["cover_image_url"]
+        .as_str()
+        .expect("active effect should include a cover image URL");
+    assert!(cover_url.starts_with("/api/v1/effects/"));
+    assert!(cover_url.ends_with("/cover"));
+}
+
+#[tokio::test]
 async fn get_effect_cover_returns_webp_image() {
     let _cover_lock = COVER_DATA_DIR_LOCK.lock().await;
     let cover_fixture = CoverFixtureGuard::install("rainbow");
@@ -6170,6 +6369,94 @@ async fn get_effect_cover_returns_webp_image() {
     assert_eq!(content_type, "image/webp");
     assert_eq!(cache_control, "public, max-age=86400");
     assert!(bytes.starts_with(b"RIFF"));
+}
+
+#[tokio::test]
+async fn get_active_effect_cover_returns_current_webp_image() {
+    let _cover_lock = COVER_DATA_DIR_LOCK.lock().await;
+    let cover_fixture = CoverFixtureGuard::install("rainbow");
+    let state = Arc::new(AppState::new_with_data_dir(cover_fixture.data_dir()));
+    insert_test_effect(&state, "rainbow").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let apply_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/rainbow/apply")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(apply_response.status(), StatusCode::OK);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/effects/active/cover")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let content_type = response
+        .headers()
+        .get(http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    let cache_control = response
+        .headers()
+        .get(http::header::CACHE_CONTROL)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("failed to read response body");
+
+    assert_eq!(content_type, "image/webp");
+    assert_eq!(cache_control, "no-store");
+    assert!(bytes.starts_with(b"RIFF"));
+}
+
+#[tokio::test]
+async fn get_active_effect_cover_returns_not_found_when_idle() {
+    let app = test_app();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/effects/active/cover")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn stop_effect_returns_not_found_when_none() {
+    let app = test_app();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/stop")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -6420,8 +6707,12 @@ async fn output_patch_validates_brightness_before_moving_power() {
 
 /// The routes this resource replaced are gone, not aliased.
 ///
-/// Retired paths and method mismatches are both owned by the API fallback,
-/// so every removed route has one canonical 404 shape.
+/// Most retired paths match no route and answer 404. Pause and resume
+/// are the deliberate exception: `/effects/pause` now falls through to
+/// the GET-only `/effects/{id}` sibling, so a POST answers 405. That is
+/// still a deletion — no handler treats `pause` as an output verb any
+/// more — and pinning the specific status is what would catch someone
+/// re-adding one that does.
 #[tokio::test]
 async fn the_merged_output_routes_leave_nothing_behind() {
     let app = test_app();
@@ -6465,7 +6756,7 @@ async fn the_merged_output_routes_leave_nothing_behind() {
                 .uri("/api/v1/effects/pause")
                 .body(Body::empty())
                 .expect("failed to build request"),
-            StatusCode::NOT_FOUND,
+            StatusCode::METHOD_NOT_ALLOWED,
         ),
         (
             Request::builder()
@@ -6473,7 +6764,7 @@ async fn the_merged_output_routes_leave_nothing_behind() {
                 .uri("/api/v1/effects/resume")
                 .body(Body::empty())
                 .expect("failed to build request"),
-            StatusCode::NOT_FOUND,
+            StatusCode::METHOD_NOT_ALLOWED,
         ),
         (
             Request::builder()
@@ -6489,7 +6780,7 @@ async fn the_merged_output_routes_leave_nothing_behind() {
                 .header("content-type", "application/json")
                 .body(Body::from(r#"{"power":"paused"}"#))
                 .expect("failed to build request"),
-            StatusCode::NOT_FOUND,
+            StatusCode::METHOD_NOT_ALLOWED,
         ),
     ];
 
@@ -6601,6 +6892,365 @@ async fn an_unmatched_api_path_renders_the_canonical_envelope_without_a_ui() {
 }
 
 #[tokio::test]
+async fn stop_active_clears_primary_effect_id_but_keeps_scene() {
+    let state = Arc::new(isolated_state());
+    insert_test_effect(&state, "solid_color").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let apply_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/solid_color/apply")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(apply_response.status(), StatusCode::OK);
+    let stop_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/stop")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(stop_response.status(), StatusCode::OK);
+
+    let manager = state.scene_manager.read().await;
+    let active_scene = manager.active_scene().expect("active scene should remain");
+    assert_eq!(active_scene.id, SceneId::DEFAULT);
+    let primary = active_scene
+        .primary_group()
+        .expect("primary group shell should remain after stop");
+    assert!(primary.effect_id.is_none());
+}
+
+/// The wire-level receipt for the two-state projection: a destructive
+/// stop leaves outputs dark, so the resource reads `paused`, and
+/// patching `running` clears the stop rather than being a no-op.
+///
+/// The status surfaces answer differently on purpose. `reported_paused`
+/// (`session.rs:86`) means "the user latched a pause", and a stop
+/// publishes no `Paused` event, so the WS hello and the MCP status keep
+/// reporting `paused: false` here. Both readings are pinned; §3 of the
+/// REST matrix names the split.
+#[tokio::test]
+async fn a_stopped_output_reads_as_paused_and_patches_back_to_running() {
+    let state = Arc::new(isolated_state());
+    insert_test_effect(&state, "solid_color").await;
+    state.render_loop.write().await.start();
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let applied = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/solid_color/apply")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(applied.status(), StatusCode::OK);
+
+    let stopped = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/stop")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(stopped.status(), StatusCode::OK);
+    assert_eq!(
+        state.power_state.borrow().output_override,
+        OutputOverride::Stopped
+    );
+
+    let read = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/output")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(body_json(read).await["data"]["power"], "paused");
+
+    let resumed = app
+        .oneshot(output_patch_request(r#"{"power":"running"}"#))
+        .await
+        .expect("failed to execute request");
+    assert_eq!(resumed.status(), StatusCode::OK);
+    assert_eq!(body_json(resumed).await["data"]["power"], "running");
+    assert_eq!(
+        state.power_state.borrow().output_override,
+        OutputOverride::None
+    );
+}
+
+#[tokio::test]
+async fn pause_resume_preserves_effect_state_and_holds_static_output() {
+    let state = Arc::new(isolated_state());
+    insert_test_effect(&state, "solid_color").await;
+    state.render_loop.write().await.start();
+
+    let group_id = hypercolor_types::scene::ZoneId::new();
+    state.event_bus.upsert_display_group_target(
+        group_id,
+        DisplayGroupTarget {
+            device_id: DeviceId::new(),
+            blend_mode: DisplayFaceBlendMode::Alpha,
+            opacity: 1.0,
+            finalized: false,
+        },
+    );
+    let group_sender = state.event_bus.group_canvas_sender(group_id);
+    let mut red_canvas = Canvas::new(2, 2);
+    red_canvas.fill(Rgba::new(255, 0, 0, 255));
+    group_sender.send_replace(display_group_frame(&red_canvas, 7, 7));
+    let group_receiver = group_sender.subscribe();
+
+    let app = test_app_with_state(Arc::clone(&state));
+    let apply_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/solid_color/apply")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"controls":{"speed":7.5}}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(apply_response.status(), StatusCode::OK);
+    let (primary_id, preset_id, group_before_pause) = {
+        let mut manager = state.scene_manager.write().await;
+        let primary_id = manager
+            .active_scene()
+            .and_then(Scene::primary_group)
+            .expect("primary group should exist")
+            .id;
+        let preset_id = PresetId::new();
+        manager.set_group_preset_id(primary_id, Some(preset_id));
+        let group = manager
+            .active_scene()
+            .and_then(Scene::primary_group)
+            .expect("primary group should remain")
+            .clone();
+        (primary_id, preset_id, group)
+    };
+    assert!(
+        group_before_pause.effect_id.is_some(),
+        "primary group should retain its effect across the pause"
+    );
+
+    let pause_response = app
+        .clone()
+        .oneshot(output_patch_request(r#"{"power":"paused"}"#))
+        .await
+        .expect("failed to execute request");
+    assert_eq!(pause_response.status(), StatusCode::OK);
+    assert_eq!(body_json(pause_response).await["data"]["power"], "paused");
+
+    assert_eq!(
+        state.render_loop.read().await.state(),
+        RenderLoopState::Paused
+    );
+    let power_state = *state.power_state.borrow();
+    assert!(power_state.sleeping());
+    assert!(power_state.manually_paused());
+    assert_eq!(power_state.session_brightness, 1.0);
+    assert_eq!(
+        power_state.effective_off_output_behavior(),
+        OffOutputBehavior::Static
+    );
+    assert_canvas_frame_black(&state.event_bus.canvas_receiver().borrow());
+    assert_display_group_frame_black(&group_receiver.borrow());
+
+    let active_paused_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/effects/active")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(active_paused_response.status(), StatusCode::OK);
+    let active_paused_json = body_json(active_paused_response).await;
+    assert_eq!(active_paused_json["data"]["state"], "paused");
+    assert_eq!(
+        active_paused_json["data"]["control_values"]["speed"]["float"],
+        7.5
+    );
+
+    let resume_response = app
+        .clone()
+        .oneshot(output_patch_request(r#"{"power":"running"}"#))
+        .await
+        .expect("failed to execute request");
+    assert_eq!(resume_response.status(), StatusCode::OK);
+    assert_eq!(body_json(resume_response).await["data"]["power"], "running");
+
+    assert_eq!(
+        state.render_loop.read().await.state(),
+        RenderLoopState::Running
+    );
+    let power_state = *state.power_state.borrow();
+    assert!(!power_state.sleeping());
+    assert_eq!(power_state.session_brightness, 1.0);
+    let group_after_resume = state
+        .scene_manager
+        .read()
+        .await
+        .active_scene()
+        .and_then(Scene::primary_group)
+        .expect("primary group should remain after resume")
+        .clone();
+    assert_eq!(group_after_resume.id, primary_id);
+    assert_eq!(group_after_resume.preset_id, Some(preset_id));
+    assert_eq!(group_after_resume, group_before_pause);
+    let snapshot = runtime_state::load(&state.runtime_state_path)
+        .expect("runtime snapshot should load")
+        .expect("resume should persist runtime state");
+    assert!(!snapshot.manual_paused);
+    let active_resumed_response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/effects/active")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    let active_resumed_json = body_json(active_resumed_response).await;
+    assert_eq!(active_resumed_json["data"]["state"], "running");
+    assert_eq!(
+        active_resumed_json["data"]["control_values"]["speed"]["float"],
+        7.5
+    );
+}
+
+#[tokio::test]
+async fn stop_active_quiesces_output_and_resume_wakes_pipeline() {
+    let state = Arc::new(isolated_state());
+    insert_test_effect(&state, "solid_color").await;
+    state.render_loop.write().await.start();
+
+    let group_id = hypercolor_types::scene::ZoneId::new();
+    let display_device_id = DeviceId::new();
+    state.event_bus.upsert_display_group_target(
+        group_id,
+        DisplayGroupTarget {
+            device_id: display_device_id,
+            blend_mode: DisplayFaceBlendMode::Alpha,
+            opacity: 1.0,
+            finalized: false,
+        },
+    );
+    let group_sender = state.event_bus.group_canvas_sender(group_id);
+    let mut red_canvas = Canvas::new(2, 2);
+    red_canvas.fill(Rgba::new(255, 0, 0, 255));
+    group_sender.send_replace(display_group_frame(&red_canvas, 7, 7));
+    let group_receiver = group_sender.subscribe();
+
+    let app = test_app_with_state(Arc::clone(&state));
+    let apply_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/solid_color/apply")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(apply_response.status(), StatusCode::OK);
+
+    let stop_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/stop")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(stop_response.status(), StatusCode::OK);
+
+    assert_eq!(
+        state.render_loop.read().await.state(),
+        RenderLoopState::Paused
+    );
+    let power_state = *state.power_state.borrow();
+    assert!(power_state.sleeping());
+    assert_eq!(power_state.output_override, OutputOverride::Stopped);
+    assert_eq!(
+        power_state.effective_off_output_behavior(),
+        OffOutputBehavior::Release
+    );
+    let power_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/output")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute output request");
+    // A destructive stop leaves outputs dark, so the resource reports
+    // `paused`. The stop's extra consequences (released ownership,
+    // cleared effect) are observable on the effect surface, not here.
+    assert_eq!(body_json(power_response).await["data"]["power"], "paused");
+    let canvas_receiver = state.event_bus.canvas_receiver();
+    let canvas_frame = canvas_receiver.borrow().clone();
+    assert_canvas_frame_black(&canvas_frame);
+    let scene_canvas_receiver = state.event_bus.scene_canvas_receiver();
+    let scene_canvas_frame = scene_canvas_receiver.borrow().clone();
+    assert_canvas_frame_black(&scene_canvas_frame);
+    let group_frame = group_receiver.borrow().clone();
+    assert_display_group_frame_black(&group_frame);
+
+    let resume_response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/solid_color/apply")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(resume_response.status(), StatusCode::OK);
+    assert_eq!(
+        state.render_loop.read().await.state(),
+        RenderLoopState::Running
+    );
+    let power_state = *state.power_state.borrow();
+    assert!(!power_state.sleeping());
+    assert_eq!(power_state.session_brightness, 1.0);
+}
+
+#[tokio::test]
 async fn apply_effect_resumes_before_release_reconnect_scan_finishes() {
     let (mut state, dir) = isolated_state_with_tempdir();
     let manager = Arc::new(
@@ -6671,6 +7321,326 @@ async fn apply_effect_resumes_before_release_reconnect_scan_finishes() {
     .await
     .expect("reconnect scan should run in the background");
     release_scan.add_permits(1);
+}
+
+#[tokio::test]
+async fn update_active_controls_requires_active_effect() {
+    let app = test_app();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri("/api/v1/effects/active/controls")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"controls":{"speed":7.5}}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn patch_controls_updates_primary_group_controls() {
+    let state = Arc::new(isolated_state());
+    insert_test_effect(&state, "solid_color").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let apply_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/solid_color/apply")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(apply_response.status(), StatusCode::OK);
+
+    let update_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri("/api/v1/effects/active/controls")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"controls":{"speed":7.25}}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(update_response.status(), StatusCode::OK);
+    let update_json = body_json(update_response).await;
+    assert_eq!(update_json["data"]["applied"]["speed"]["float"], 7.5);
+
+    let active_response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/effects/active")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(active_response.status(), StatusCode::OK);
+    let active_json = body_json(active_response).await;
+    assert_eq!(active_json["data"]["control_values"]["speed"]["float"], 7.5);
+}
+
+#[tokio::test]
+async fn patch_effect_controls_by_id_rejects_non_uuid_path_segment() {
+    // The effect-id PATCH endpoint is UUID-keyed; anything that isn't
+    // parseable as a UUID is a client bug, not a misrouted request,
+    // so 400 is the right answer (404 would let a fat-fingered call
+    // look like "that effect just isn't loaded").
+    let app = test_app();
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri("/api/v1/effects/not-a-uuid/controls")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"controls":{"speed":7.0}}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn patch_effect_controls_by_id_threads_controls_version_through_etag() {
+    let state = Arc::new(isolated_state());
+    insert_test_effect(&state, "solid_color").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let apply_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/solid_color/apply")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(apply_response.status(), StatusCode::OK);
+
+    // The active-effect endpoint seeds the modal's draft; it must
+    // hand back both the current `controls_version` and an `ETag`
+    // header so the client can round-trip either form.
+    let active_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/effects/active")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(active_response.status(), StatusCode::OK);
+    let etag = active_response
+        .headers()
+        .get("etag")
+        .expect("active effect response should carry ETag")
+        .to_str()
+        .expect("ETag must be ASCII")
+        .to_owned();
+    let active_body = body_json(active_response).await;
+    let effect_id = active_body["data"]["id"]
+        .as_str()
+        .expect("active effect must have an id")
+        .to_owned();
+    let active_controls_version = active_body["data"]["controls_version"]
+        .as_u64()
+        .expect("active effect should expose controls_version");
+    assert_eq!(etag, format!("\"{active_controls_version}\""));
+
+    // Valid `If-Match` applies; the response body + ETag advance to
+    // the next version so the next commit can chain against the fresh token.
+    let patch_uri = format!("/api/v1/effects/{effect_id}/controls");
+    let if_match = active_controls_version.to_string();
+    let next_controls_version = active_controls_version + 1;
+    let ok_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(&patch_uri)
+                .header("content-type", "application/json")
+                .header("if-match", if_match.as_str())
+                .body(Body::from(r#"{"controls":{"speed":3.0}}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(ok_response.status(), StatusCode::OK);
+    let ok_etag = ok_response
+        .headers()
+        .get("etag")
+        .expect("successful PATCH should carry ETag")
+        .to_str()
+        .expect("ETag must be ASCII")
+        .to_owned();
+    assert_eq!(ok_etag, format!("\"{next_controls_version}\""));
+    let ok_body = body_json(ok_response).await;
+    assert_eq!(
+        ok_body["data"]["controls_version"]
+            .as_u64()
+            .expect("controls_version should serialize as u64"),
+        next_controls_version
+    );
+
+    // Re-issuing the same precondition now fires the stale path; the
+    // 412 body carries the server's current version so the client can
+    // rebase without a second GET.
+    let stale_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(&patch_uri)
+                .header("content-type", "application/json")
+                .header("if-match", if_match.as_str())
+                .body(Body::from(r#"{"controls":{"speed":3.5}}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(stale_response.status(), StatusCode::PRECONDITION_FAILED);
+    let stale_body = body_json(stale_response).await;
+    assert_eq!(stale_body["error"]["code"], "precondition_failed");
+    assert_eq!(
+        stale_body["error"]["details"]["current"]
+            .as_u64()
+            .expect("stale response should expose current version"),
+        next_controls_version
+    );
+}
+
+#[tokio::test]
+async fn patch_effect_controls_by_id_accepts_missing_if_match_as_no_precondition() {
+    // Omitting the header must keep the endpoint usable for simple
+    // clients (curl, tests, ad-hoc integrations) that don't want to
+    // participate in optimistic concurrency.
+    let state = Arc::new(isolated_state());
+    insert_test_effect(&state, "solid_color").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/solid_color/apply")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    let active_body = body_json(
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/effects/active")
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+            )
+            .await
+            .expect("failed to execute request"),
+    )
+    .await;
+    let effect_id = active_body["data"]["id"].as_str().expect("id").to_owned();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/v1/effects/{effect_id}/controls"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"controls":{"speed":4.0}}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn patch_effect_controls_by_id_rejects_apply_after_effect_swap() {
+    // TOCTOU guard: the modal captures effect A's id and version,
+    // an apply() swaps the primary to effect B in between, and the
+    // stale PATCH must NOT silently land on B.
+    //
+    // The scene manager's primary-group reuse ([upsert_primary_group])
+    // keeps the same `ZoneId` across effect swaps, so
+    // patching by group id alone is unsafe — the handler verifies
+    // `effect_id` still matches before writing.
+    let state = Arc::new(isolated_state());
+    insert_test_effect(&state, "Aurora").await;
+    insert_test_effect(&state, "Sunset").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/Aurora/apply")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    let stale_body = body_json(
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/effects/active")
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+            )
+            .await
+            .expect("failed to execute request"),
+    )
+    .await;
+    let stale_effect_id = stale_body["data"]["id"]
+        .as_str()
+        .expect("Aurora id")
+        .to_owned();
+
+    // Swap to a different effect. Same zone slot; different
+    // effect_id.
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/Sunset/apply")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    // Modal's stale PATCH against Aurora's id must not mutate Sunset.
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/v1/effects/{stale_effect_id}/controls"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"controls":{"speed":6.0}}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -6789,6 +7759,165 @@ async fn apply_effect_with_preset_id_sets_group_preset_atomically() {
 }
 
 #[tokio::test]
+async fn effect_preset_stack_lists_and_applies_both_origins() {
+    let state = Arc::new(isolated_state());
+    let bundled_id = PresetId::stable("calm");
+    insert_test_effect_with_presets(
+        &state,
+        "solid_color",
+        vec![PresetTemplate {
+            id: bundled_id,
+            name: "Calm".to_owned(),
+            description: Some("Bundled calm state".to_owned()),
+            controls: HashMap::from([("speed".to_owned(), ControlValue::Float(2.5))]),
+        }],
+    )
+    .await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let create_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/library/presets")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "name":"Fast",
+                        "effect":"solid_color",
+                        "controls":{"speed":8.5},
+                        "tags":["custom"]
+                    }"#,
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(create_response.status(), StatusCode::CREATED);
+    let saved_id = body_json(create_response).await["data"]["id"]
+        .as_str()
+        .expect("saved preset id should be a string")
+        .to_owned();
+
+    let list_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/effects/solid_color/presets")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(list_response.status(), StatusCode::OK);
+    let list_json = body_json(list_response).await;
+    assert_eq!(list_json["data"]["items"][0]["id"], bundled_id.to_string());
+    assert_eq!(list_json["data"]["items"][0]["origin"], "bundled");
+    assert_eq!(list_json["data"]["items"][0]["editable"], false);
+    assert_eq!(list_json["data"]["items"][1]["id"], saved_id);
+    assert_eq!(list_json["data"]["items"][1]["origin"], "saved");
+    assert_eq!(list_json["data"]["items"][1]["editable"], true);
+    let items = list_json["data"]["items"]
+        .as_array()
+        .expect("preset stack should contain items");
+    let unique_ids = items
+        .iter()
+        .filter_map(|item| item["id"].as_str())
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(unique_ids.len(), items.len());
+
+    for (preset_id, expected_speed) in [
+        (bundled_id.to_string(), 2.5_f32),
+        (saved_id.clone(), 8.5_f32),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!(
+                        "/api/v1/effects/solid_color/presets/{preset_id}/apply"
+                    ))
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+            )
+            .await
+            .expect("failed to execute request");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let active_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/effects/active")
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+            )
+            .await
+            .expect("failed to execute request");
+        let active_json = body_json(active_response).await;
+        assert_eq!(active_json["data"]["active_preset_id"], preset_id);
+        assert_eq!(active_json["data"]["active_preset_modified"], false);
+
+        {
+            let manager = state.scene_manager.read().await;
+            let primary = manager
+                .active_scene()
+                .and_then(Scene::primary_group)
+                .expect("primary group should exist after preset apply");
+            assert_eq!(primary.preset_id.map(|id| id.to_string()), Some(preset_id));
+            assert!(matches!(
+                primary.controls.get("speed"),
+                Some(ControlValue::Float(value)) if (*value - expected_speed).abs() < 0.01
+            ));
+        }
+    }
+
+    let active_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/effects/active")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(
+        body_json(active_response).await["data"]["active_preset_id"],
+        saved_id
+    );
+
+    let control_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri("/api/v1/effects/active/controls")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"controls":{"speed":4.0}}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(control_response.status(), StatusCode::OK);
+
+    let modified_response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/effects/active")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    let modified_json = body_json(modified_response).await;
+    assert_eq!(modified_json["data"]["active_preset_id"], saved_id);
+    assert_eq!(modified_json["data"]["active_preset_modified"], true);
+}
+
+#[tokio::test]
 async fn apply_effect_rejects_preset_targeting_different_effect() {
     let state = Arc::new(isolated_state());
     insert_test_effect(&state, "solid_color").await;
@@ -6829,6 +7958,398 @@ async fn apply_effect_rejects_preset_targeting_different_effect() {
         .expect("failed to execute request");
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
 }
+
+#[tokio::test]
+async fn put_active_control_binding_updates_active_effect_schema() {
+    let state = Arc::new(isolated_state());
+    insert_test_effect(&state, "solid_color").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let apply_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/solid_color/apply")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(apply_response.status(), StatusCode::OK);
+
+    let binding = ControlBinding {
+        sensor: " cpu_temp ".to_owned(),
+        sensor_min: 30.0,
+        sensor_max: 100.0,
+        target_min: 0.0,
+        target_max: 1.0,
+        deadband: -0.5,
+        smoothing: 1.2,
+    };
+    let binding_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/v1/effects/active/controls/speed/binding")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&binding).expect("binding should serialize"),
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(binding_response.status(), StatusCode::OK);
+    let binding_json = body_json(binding_response).await;
+    assert_eq!(binding_json["data"]["control"], "speed");
+    assert_eq!(binding_json["data"]["binding"]["sensor"], "cpu_temp");
+    assert_eq!(binding_json["data"]["binding"]["deadband"], 0.0);
+    assert!(
+        (binding_json["data"]["binding"]["smoothing"]
+            .as_f64()
+            .expect("smoothing should be numeric")
+            - 0.99)
+            .abs()
+            < 1.0e-6
+    );
+
+    let active_response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/effects/active")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(active_response.status(), StatusCode::OK);
+    let active_json = body_json(active_response).await;
+    assert_eq!(
+        active_json["data"]["controls"][0]["binding"]["sensor"],
+        "cpu_temp"
+    );
+    assert_eq!(
+        active_json["data"]["controls"][0]["binding"]["target_max"],
+        1.0
+    );
+    assert_eq!(active_json["data"]["control_values"]["speed"]["float"], 5.0);
+
+    let persisted =
+        runtime_state::load(&state.runtime_state_path).expect("runtime state should load");
+    let persisted = persisted.expect("runtime state should exist");
+    let primary = persisted
+        .default_scene_groups
+        .iter()
+        .find(|group| group.role == ZoneRole::Primary)
+        .expect("primary group should be persisted");
+    assert_eq!(
+        primary
+            .control_bindings
+            .get("speed")
+            .expect("binding should be persisted")
+            .sensor,
+        "cpu_temp"
+    );
+}
+
+#[tokio::test]
+async fn rest_effect_lifecycle_publishes_started_and_stopped_events() {
+    let state = Arc::new(isolated_state());
+    insert_test_effect(&state, "solid_color").await;
+    let mut events = state.event_bus.subscribe_all();
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let apply_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/solid_color/apply")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(apply_response.status(), StatusCode::OK);
+
+    let started = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            match events.recv().await {
+                Ok(timestamped) => {
+                    if let HypercolorEvent::EffectStarted {
+                        effect,
+                        trigger,
+                        previous,
+                        transition,
+                        ..
+                    } = timestamped.event
+                    {
+                        break (effect, trigger, previous, transition);
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    panic!("event bus closed before effect start event arrived");
+                }
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for effect start event");
+
+    assert_eq!(started.0.name, "solid_color");
+    assert_eq!(started.1, ChangeTrigger::Api);
+    assert!(
+        started.2.is_none(),
+        "first activation should have no previous effect"
+    );
+    assert!(
+        started.3.is_none(),
+        "REST effect apply should mirror MCP transition semantics"
+    );
+
+    let stop_response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/stop")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(stop_response.status(), StatusCode::OK);
+
+    let stopped = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            match events.recv().await {
+                Ok(timestamped) => {
+                    if let HypercolorEvent::EffectStopped { effect, reason, .. } = timestamped.event
+                    {
+                        break (effect, reason);
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    panic!("event bus closed before effect stop event arrived");
+                }
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for effect stop event");
+
+    assert_eq!(stopped.0.name, "solid_color");
+    assert_eq!(stopped.1, EffectStopReason::Stopped);
+}
+
+#[tokio::test]
+async fn scene_activate_and_deactivate_publish_active_scene_events() {
+    let state = Arc::new(isolated_state());
+    let app = test_app_with_state(Arc::clone(&state));
+    let mut events = state.event_bus.subscribe_all();
+
+    let create_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/scenes")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"name": "Studio"}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    let create_json = body_json(create_response).await;
+    let scene_id = create_json["data"]["id"]
+        .as_str()
+        .expect("scene id should be present")
+        .parse::<uuid::Uuid>()
+        .map(SceneId)
+        .expect("scene id should parse");
+
+    let activate_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/scenes/{scene_id}/activate"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(activate_response.status(), StatusCode::OK);
+
+    let activated = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            match events.recv().await {
+                Ok(timestamped) => {
+                    if let HypercolorEvent::ActiveSceneChanged {
+                        previous,
+                        current,
+                        current_name,
+                        current_snapshot_locked,
+                        reason,
+                        ..
+                    } = timestamped.event
+                    {
+                        break (
+                            previous,
+                            current,
+                            current_name,
+                            current_snapshot_locked,
+                            reason,
+                        );
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    panic!("event bus closed before scene activation event arrived");
+                }
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for scene activation event");
+
+    assert_eq!(activated.0, Some(SceneId::DEFAULT));
+    assert_eq!(activated.1, scene_id);
+    assert_eq!(activated.2, "Studio");
+    assert!(!activated.3);
+    assert_eq!(activated.4, SceneChangeReason::UserActivate);
+
+    let deactivate_response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/scenes/deactivate")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(deactivate_response.status(), StatusCode::OK);
+
+    let deactivated = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            match events.recv().await {
+                Ok(timestamped) => {
+                    if let HypercolorEvent::ActiveSceneChanged {
+                        previous,
+                        current,
+                        current_name,
+                        current_snapshot_locked,
+                        reason,
+                        ..
+                    } = timestamped.event
+                    {
+                        break (
+                            previous,
+                            current,
+                            current_name,
+                            current_snapshot_locked,
+                            reason,
+                        );
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    panic!("event bus closed before scene deactivation event arrived");
+                }
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for scene deactivation event");
+
+    assert_eq!(deactivated.0, Some(scene_id));
+    assert_eq!(deactivated.1, SceneId::DEFAULT);
+    assert_eq!(deactivated.2, "Default");
+    assert!(!deactivated.3);
+    assert_eq!(deactivated.4, SceneChangeReason::UserDeactivate);
+}
+
+#[tokio::test]
+async fn patch_active_controls_publishes_render_group_and_control_events() {
+    let state = Arc::new(isolated_state());
+    insert_test_effect(&state, "solid_color").await;
+    let app = test_app_with_state(Arc::clone(&state));
+    let mut events = state.event_bus.subscribe_all();
+
+    let apply_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/solid_color/apply")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(apply_response.status(), StatusCode::OK);
+
+    let patch_response = app
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri("/api/v1/effects/active/controls")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"controls":{"speed":7.5}}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(patch_response.status(), StatusCode::OK);
+
+    let mut saw_render_group_change = false;
+    let mut saw_control_change = false;
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !saw_render_group_change || !saw_control_change {
+            match events.recv().await {
+                Ok(timestamped) => match timestamped.event {
+                    HypercolorEvent::ZoneChanged {
+                        scene_id,
+                        role,
+                        kind,
+                        ..
+                    } if scene_id == SceneId::DEFAULT
+                        && role == ZoneRole::Primary
+                        && kind == ZoneChangeKind::ControlsPatched =>
+                    {
+                        saw_render_group_change = true;
+                    }
+                    HypercolorEvent::EffectControlChanged {
+                        control_id,
+                        old_value,
+                        new_value,
+                        trigger,
+                        ..
+                    } if control_id == "speed"
+                        && old_value == hypercolor_types::event::EventControlValue::Number(5.0)
+                        && new_value == hypercolor_types::event::EventControlValue::Number(7.5)
+                        && trigger == ChangeTrigger::Api =>
+                    {
+                        saw_control_change = true;
+                    }
+                    _ => {}
+                },
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    panic!("event bus closed before control change events arrived");
+                }
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for control patch events");
+}
+
+// ── Library ──────────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn library_favorites_crud_lifecycle() {
@@ -6944,6 +8465,273 @@ async fn library_presets_create_and_get() {
 }
 
 #[tokio::test]
+async fn library_preset_apply_activates_effect_with_controls() {
+    let state = Arc::new(isolated_state());
+    insert_test_effect(&state, "solid_color").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let create_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/library/presets")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "name":"Apply Me",
+                        "effect":"solid_color",
+                        "controls":{"speed":7.25}
+                    }"#,
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(create_response.status(), StatusCode::CREATED);
+    let create_json = body_json(create_response).await;
+    let preset_id = create_json["data"]["id"]
+        .as_str()
+        .expect("preset id should be string")
+        .to_owned();
+
+    let apply_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/library/presets/{preset_id}/apply"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(apply_response.status(), StatusCode::OK);
+    let apply_json = body_json(apply_response).await;
+    assert_eq!(apply_json["data"]["preset"]["id"], preset_id);
+    assert_eq!(apply_json["data"]["effect"]["name"], "solid_color");
+    assert_eq!(
+        apply_json["data"]["applied_controls"]["speed"]["float"],
+        7.5
+    );
+
+    let active_response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/effects/active")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(active_response.status(), StatusCode::OK);
+    let active_json = body_json(active_response).await;
+    assert_eq!(active_json["data"]["name"], "solid_color");
+    assert_eq!(active_json["data"]["control_values"]["speed"]["float"], 7.5);
+}
+
+#[tokio::test]
+async fn library_preset_apply_targets_a_named_zone_via_zone_id() {
+    let state = Arc::new(isolated_state());
+    insert_test_effect(&state, "solid_color").await;
+
+    let (custom_id, primary_effect_before) = {
+        let mut manager = state.scene_manager.write().await;
+        let custom_id = manager
+            .create_render_group(&SceneId::DEFAULT, "Ambient".to_owned(), None, (320, 200))
+            .expect("custom zone should be created");
+        let primary_effect = manager
+            .active_scene()
+            .and_then(Scene::primary_group)
+            .and_then(|group| group.effect_id);
+        (custom_id, primary_effect)
+    };
+
+    let app = test_app_with_state(Arc::clone(&state));
+    let create_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/library/presets")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "name":"Zone Preset",
+                        "effect":"solid_color",
+                        "controls":{"speed":7.25}
+                    }"#,
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(create_response.status(), StatusCode::CREATED);
+    let create_json = body_json(create_response).await;
+    let preset_id = create_json["data"]["id"]
+        .as_str()
+        .expect("preset id should be string")
+        .to_owned();
+
+    let apply_response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/library/presets/{preset_id}/apply"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&serde_json::json!({
+                        "zone_id": custom_id.to_string(),
+                    }))
+                    .expect("request body should serialize"),
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(apply_response.status(), StatusCode::OK);
+    let apply_json = body_json(apply_response).await;
+    assert_eq!(apply_json["data"]["preset"]["id"], preset_id);
+
+    let manager = state.scene_manager.read().await;
+    let scene = manager.active_scene().expect("a scene should be active");
+    let custom = scene
+        .groups
+        .iter()
+        .find(|group| group.id == custom_id)
+        .expect("the targeted zone should still exist");
+    assert!(
+        custom.effect_id.is_some(),
+        "the preset's effect should land in the targeted zone"
+    );
+    assert_eq!(
+        custom.preset_id.map(|id| id.to_string()),
+        Some(preset_id),
+        "the targeted zone should record the preset id"
+    );
+    assert_eq!(
+        custom
+            .controls
+            .get("speed")
+            .and_then(hypercolor_types::effect::ControlValue::as_f32),
+        Some(7.5),
+        "the preset's controls (clamped to the control range) should land in the zone"
+    );
+    assert_eq!(
+        scene.primary_group().and_then(|group| group.effect_id),
+        primary_effect_before,
+        "a named-zone preset apply must leave the Primary zone untouched",
+    );
+}
+
+#[tokio::test]
+async fn reset_controls_targets_a_named_zone_via_zone_id() {
+    let state = Arc::new(isolated_state());
+    insert_test_effect(&state, "solid_color").await;
+
+    let custom_id = {
+        let mut manager = state.scene_manager.write().await;
+        manager
+            .create_render_group(&SceneId::DEFAULT, "Ambient".to_owned(), None, (320, 200))
+            .expect("custom zone should be created")
+    };
+
+    let app = test_app_with_state(Arc::clone(&state));
+    let apply_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/solid_color/apply")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&serde_json::json!({
+                        "zone_id": custom_id.to_string(),
+                        "controls": { "speed": 7.25 },
+                    }))
+                    .expect("request body should serialize"),
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(apply_response.status(), StatusCode::OK);
+
+    let reset_response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/active/reset")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&serde_json::json!({
+                        "zone_id": custom_id.to_string(),
+                    }))
+                    .expect("request body should serialize"),
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(reset_response.status(), StatusCode::OK);
+
+    let manager = state.scene_manager.read().await;
+    let scene = manager.active_scene().expect("a scene should be active");
+    let custom = scene
+        .groups
+        .iter()
+        .find(|group| group.id == custom_id)
+        .expect("the targeted zone should still exist");
+    assert_ne!(
+        custom
+            .controls
+            .get("speed")
+            .and_then(hypercolor_types::effect::ControlValue::as_f32),
+        Some(7.5),
+        "the zone's tweaked control should be back at its default"
+    );
+}
+
+#[tokio::test]
+async fn library_preset_apply_resolves_by_name() {
+    let state = Arc::new(isolated_state());
+    insert_test_effect(&state, "solid_color").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let create_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/library/presets")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "name":"named_preset",
+                        "effect":"solid_color",
+                        "controls":{"speed":5}
+                    }"#,
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(create_response.status(), StatusCode::CREATED);
+
+    let apply_response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/library/presets/named_preset/apply")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(apply_response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
 async fn library_playlists_create_with_effect_and_preset_targets() {
     let state = Arc::new(isolated_state());
     insert_test_effect(&state, "solid_color").await;
@@ -7029,7 +8817,111 @@ async fn library_playlists_create_with_effect_and_preset_targets() {
 }
 
 #[tokio::test]
-async fn library_playlist_advance_replaces_stack_without_waking_output() {
+async fn library_playlist_activate_and_stop_lifecycle() {
+    let state = Arc::new(isolated_state());
+    insert_test_effect(&state, "solid_color").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let create_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/library/playlists")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "name":"Runtime Playlist",
+                        "loop_enabled":true,
+                        "items":[
+                            {
+                                "target":{"type":"effect","effect":"solid_color"},
+                                "duration_ms":10000
+                            }
+                        ]
+                    }"#,
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(create_response.status(), StatusCode::CREATED);
+    let create_json = body_json(create_response).await;
+    let playlist_id = create_json["data"]["id"]
+        .as_str()
+        .expect("playlist id should be string")
+        .to_owned();
+
+    let activate_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/library/playlists/{playlist_id}/activate"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(activate_response.status(), StatusCode::OK);
+    let activate_json = body_json(activate_response).await;
+    assert_eq!(activate_json["data"]["playlist"]["id"], playlist_id);
+
+    let active_playlist_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/library/playlists/active")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(active_playlist_response.status(), StatusCode::OK);
+    let active_playlist_json = body_json(active_playlist_response).await;
+    assert_eq!(active_playlist_json["data"]["playlist"]["id"], playlist_id);
+
+    let active_effect_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/effects/active")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(active_effect_response.status(), StatusCode::OK);
+    let active_effect_json = body_json(active_effect_response).await;
+    assert_eq!(active_effect_json["data"]["name"], "solid_color");
+
+    let stop_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/library/playlists/stop")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(stop_response.status(), StatusCode::OK);
+
+    let active_playlist_response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/library/playlists/active")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(active_playlist_response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn library_playlist_activate_resolves_by_name() {
     let state = Arc::new(isolated_state());
     insert_test_effect(&state, "solid_color").await;
     let app = test_app_with_state(Arc::clone(&state));
@@ -7058,12 +8950,6 @@ async fn library_playlist_advance_replaces_stack_without_waking_output() {
         .expect("failed to execute request");
     assert_eq!(create_response.status(), StatusCode::CREATED);
 
-    hypercolor_daemon::domain::output::set_power(
-        &state,
-        hypercolor_types::api::output::OutputPowerMode::Paused,
-    )
-    .await;
-
     let activate_response = app
         .clone()
         .oneshot(
@@ -7076,42 +8962,6 @@ async fn library_playlist_advance_replaces_stack_without_waking_output() {
         .await
         .expect("failed to execute request");
     assert_eq!(activate_response.status(), StatusCode::OK);
-    assert!(state.power_state.borrow().manually_paused());
-
-    let first_layer_id = {
-        let manager = state.scene_manager.read().await;
-        manager
-            .active_scene()
-            .and_then(hypercolor_types::scene::Scene::primary_group)
-            .and_then(|zone| zone.layers.first())
-            .map(|layer| layer.id)
-            .expect("playlist activation should create one primary layer")
-    };
-
-    let second_activate_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/library/playlists/runtime_by_name/activate")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(second_activate_response.status(), StatusCode::OK);
-    assert!(state.power_state.borrow().manually_paused());
-
-    let second_layer_id = {
-        let manager = state.scene_manager.read().await;
-        let primary = manager
-            .active_scene()
-            .and_then(hypercolor_types::scene::Scene::primary_group)
-            .expect("playlist activation should retain the primary zone");
-        assert_eq!(primary.layers.len(), 1);
-        primary.layers[0].id
-    };
-    assert_ne!(first_layer_id, second_layer_id);
 
     let deactivate_response = app
         .oneshot(
@@ -7496,6 +9346,252 @@ async fn scene_crud_publishes_scene_library_changed_events() {
 }
 
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "CRUD lifecycle test covers full create-read-update-delete flow"
+)]
+async fn scene_crud_lifecycle() {
+    let (state, tempdir) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    let scenes_path = tempdir.path().join("data/scenes.json");
+
+    // Create scene
+    let app = test_app_with_state(Arc::clone(&state));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/scenes")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"name": "Test Scene", "description": "A test scene"}"#,
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["name"], "Test Scene");
+    let scene_id = json["data"]["id"]
+        .as_str()
+        .expect("id should be a string")
+        .to_owned();
+    let persisted: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(&scenes_path).expect("scene store should be written after create"),
+    )
+    .expect("scene store should parse");
+    assert_eq!(persisted[scene_id.as_str()]["name"], "Test Scene");
+
+    // Get scene
+    let app = test_app_with_state(Arc::clone(&state));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/scenes/{scene_id}"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["name"], "Test Scene");
+
+    // List scenes
+    let app = test_app_with_state(Arc::clone(&state));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/scenes")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["pagination"]["total"], 1);
+
+    // Update scene
+    let app = test_app_with_state(Arc::clone(&state));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/v1/scenes/{scene_id}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"name": "Updated Scene", "description": "Updated description"}"#,
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["name"], "Updated Scene");
+    let persisted: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(&scenes_path).expect("scene store should be written after update"),
+    )
+    .expect("scene store should parse");
+    assert_eq!(persisted[scene_id.as_str()]["name"], "Updated Scene");
+
+    // Activate scene
+    let app = test_app_with_state(Arc::clone(&state));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/scenes/{scene_id}/activate"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["activated"], true);
+
+    let app = test_app_with_state(Arc::clone(&state));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/scenes/active")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["id"], scene_id);
+    assert_eq!(json["data"]["kind"], "named");
+    // A created scene is born with a Default zone (§5.2 output roster).
+    let groups = json["data"]["zones"]
+        .as_array()
+        .expect("groups should serialize as an array");
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0]["role"], "primary");
+
+    // Delete scene
+    let app = test_app_with_state(Arc::clone(&state));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/v1/scenes/{scene_id}"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["deleted"], true);
+    let persisted: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(&scenes_path).expect("scene store should be written after delete"),
+    )
+    .expect("scene store should parse");
+    assert!(
+        persisted.get(scene_id.as_str()).is_none(),
+        "deleted scene should be removed from the scene store"
+    );
+
+    // Verify deletion
+    let app = test_app_with_state(Arc::clone(&state));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/scenes/{scene_id}"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn scene_deactivate_returns_to_default_scene() {
+    let state = Arc::new(isolated_state());
+
+    let app = test_app_with_state(Arc::clone(&state));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/scenes")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"name": "Work"}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    let json = body_json(response).await;
+    let scene_id = json["data"]["id"]
+        .as_str()
+        .expect("id should be a string")
+        .to_owned();
+
+    let app = test_app_with_state(Arc::clone(&state));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/scenes/{scene_id}/activate"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let app = test_app_with_state(Arc::clone(&state));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/scenes/deactivate")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["scene"]["name"], "Default");
+
+    let app = test_app_with_state(Arc::clone(&state));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/scenes/active")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["name"], "Default");
+    assert_eq!(json["data"]["kind"], "ephemeral");
+    let groups = json["data"]["zones"]
+        .as_array()
+        .expect("groups should serialize as an array");
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0]["name"], "Default zone");
+    assert_eq!(groups[0]["role"], "primary");
+}
+
+#[tokio::test]
 async fn list_scenes_excludes_default_scene() {
     let state = Arc::new(isolated_state());
     let app = test_app_with_state(Arc::clone(&state));
@@ -7551,291 +9647,6 @@ async fn list_scenes_excludes_default_scene() {
 }
 
 #[tokio::test]
-async fn snapshot_scene_creates_a_locked_copy_of_the_live_tree() {
-    let state = Arc::new(isolated_state());
-    let active = state
-        .scene_manager
-        .read()
-        .await
-        .active_scene()
-        .cloned()
-        .expect("default scene should be active");
-    let app = test_app_with_state(Arc::clone(&state));
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/scenes/snapshot")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"name":"Desk capture","description":"Current runtime"}"#,
-                ))
-                .expect("snapshot request"),
-        )
-        .await
-        .expect("snapshot response");
-
-    assert_eq!(response.status(), StatusCode::CREATED);
-    let json = body_json(response).await;
-    assert_eq!(json["data"]["name"], "Desk capture");
-    assert_eq!(json["data"]["mutation_mode"], "snapshot");
-    let scene_id = json["data"]["id"]
-        .as_str()
-        .expect("snapshot id")
-        .parse::<Uuid>()
-        .expect("snapshot UUID");
-
-    let manager = state.scene_manager.read().await;
-    let saved = manager
-        .get(&SceneId(scene_id))
-        .expect("snapshot should be stored");
-    assert_eq!(saved.groups, active.groups);
-    assert_eq!(saved.activation_brightness, None);
-    assert_eq!(manager.active_scene_id(), Some(&active.id));
-}
-
-#[tokio::test]
-async fn stored_scene_replace_is_whole_document_versioned_and_identity_safe() {
-    let state = Arc::new(isolated_state());
-    let app = test_app_with_state(Arc::clone(&state));
-    let created = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/scenes")
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"name":"Original","description":"old"}"#))
-                .expect("create request"),
-        )
-        .await
-        .expect("create response");
-    let created = body_json(created).await;
-    let scene_id = created["data"]["id"].as_str().expect("scene id");
-
-    let fetched = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri(format!("/api/v1/scenes/{scene_id}"))
-                .body(Body::empty())
-                .expect("get request"),
-        )
-        .await
-        .expect("get response");
-    assert_eq!(fetched.status(), StatusCode::OK);
-    let etag = fetched
-        .headers()
-        .get(http::header::ETAG)
-        .expect("stored scene ETag")
-        .clone();
-    let fetched = body_json(fetched).await;
-    let document: SceneDocument =
-        serde_json::from_value(fetched["data"].clone()).expect("full scene document");
-    let old_zone_id = document.zones[0].id;
-    let mut replacement = ReplaceSceneRequest::from(&document);
-    replacement.name = "Replacement".to_owned();
-    replacement.description = None;
-    replacement.activation_brightness = Some(0.42);
-    replacement.priority = ScenePriority::ALERT;
-    replacement.enabled = false;
-    replacement
-        .metadata
-        .insert("origin".to_owned(), "whole-document-test".to_owned());
-    replacement.zones[0].id = None;
-    replacement.zones[0].layers.push(ReplaceSceneLayerRequest {
-        id: None,
-        name: Some("Minted fill".to_owned()),
-        source: LayerSource::ColorFill {
-            rgba: [0.1, 0.2, 0.3, 1.0],
-        },
-        blend: LayerBlendMode::Replace,
-        opacity: 0.75,
-        transform: LayerTransform::default(),
-        adjust: LayerAdjust::default(),
-        bindings: Vec::new(),
-        enabled: true,
-    });
-
-    let replaced = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("PUT")
-                .uri(format!("/api/v1/scenes/{scene_id}"))
-                .header("content-type", "application/json")
-                .header(http::header::IF_MATCH, etag.clone())
-                .body(Body::from(
-                    serde_json::to_vec(&replacement).expect("replacement body"),
-                ))
-                .expect("replace request"),
-        )
-        .await
-        .expect("replace response");
-    assert_eq!(replaced.status(), StatusCode::OK);
-    assert_ne!(
-        replaced.headers().get(http::header::ETAG),
-        Some(&etag),
-        "successful replacement advances the scene revision"
-    );
-    let replaced = body_json(replaced).await;
-    let document: SceneDocument =
-        serde_json::from_value(replaced["data"].clone()).expect("replacement document");
-    assert_eq!(document.id.to_string(), scene_id);
-    assert_eq!(document.name, "Replacement");
-    assert_eq!(document.description, None);
-    assert_eq!(document.activation_brightness, Some(0.42));
-    assert_eq!(document.priority, ScenePriority::ALERT);
-    assert!(!document.enabled);
-    assert_eq!(
-        document.metadata.get("origin").map(String::as_str),
-        Some("whole-document-test")
-    );
-    assert_ne!(document.zones[0].id, old_zone_id);
-    assert_eq!(document.zones[0].layers.len(), 1);
-    let minted_zone_id = document.zones[0].id;
-
-    let stale = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("PUT")
-                .uri(format!("/api/v1/scenes/{scene_id}"))
-                .header("content-type", "application/json")
-                .header(http::header::IF_MATCH, etag)
-                .body(Body::from(
-                    serde_json::to_vec(&replacement).expect("stale body"),
-                ))
-                .expect("stale request"),
-        )
-        .await
-        .expect("stale response");
-    assert_eq!(stale.status(), StatusCode::PRECONDITION_FAILED);
-
-    let mut mismatch = ReplaceSceneRequest::from(&document);
-    mismatch.id = Some(SceneId::new());
-    let mismatch = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("PUT")
-                .uri(format!("/api/v1/scenes/{scene_id}"))
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::to_vec(&mismatch).expect("mismatch body"),
-                ))
-                .expect("mismatch request"),
-        )
-        .await
-        .expect("mismatch response");
-    assert_eq!(mismatch.status(), StatusCode::UNPROCESSABLE_ENTITY);
-
-    let mut foreign_zone = ReplaceSceneRequest::from(&document);
-    foreign_zone.zones[0].id = Some(ZoneId::new());
-    let foreign_zone = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("PUT")
-                .uri(format!("/api/v1/scenes/{scene_id}"))
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::to_vec(&foreign_zone).expect("foreign zone body"),
-                ))
-                .expect("foreign zone request"),
-        )
-        .await
-        .expect("foreign zone response");
-    assert_eq!(foreign_zone.status(), StatusCode::UNPROCESSABLE_ENTITY);
-
-    let mut foreign_layer = ReplaceSceneRequest::from(&document);
-    foreign_layer.zones[0].id = Some(minted_zone_id);
-    foreign_layer.zones[0].layers[0].id = Some(SceneLayerId::new());
-    let foreign_layer = app
-        .oneshot(
-            Request::builder()
-                .method("PUT")
-                .uri(format!("/api/v1/scenes/{scene_id}"))
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::to_vec(&foreign_layer).expect("foreign layer body"),
-                ))
-                .expect("foreign layer request"),
-        )
-        .await
-        .expect("foreign layer response");
-    assert_eq!(foreign_layer.status(), StatusCode::UNPROCESSABLE_ENTITY);
-}
-
-#[tokio::test]
-async fn stored_scene_get_and_put_exclude_the_ephemeral_default() {
-    let state = Arc::new(isolated_state());
-    let app = test_app_with_state(Arc::clone(&state));
-
-    let before = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/scene")
-                .body(Body::empty())
-                .expect("live scene request"),
-        )
-        .await
-        .expect("live scene response");
-    let etag = before
-        .headers()
-        .get(http::header::ETAG)
-        .expect("live scene ETag")
-        .clone();
-    let before = body_json(before).await;
-    let document: SceneDocument =
-        serde_json::from_value(before["data"].clone()).expect("default scene document");
-
-    let get = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/scenes/default")
-                .body(Body::empty())
-                .expect("stored scene GET"),
-        )
-        .await
-        .expect("stored scene GET response");
-    assert_eq!(get.status(), StatusCode::NOT_FOUND);
-
-    let put = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("PUT")
-                .uri("/api/v1/scenes/default")
-                .header("content-type", "application/json")
-                .header(http::header::IF_MATCH, etag)
-                .body(Body::from(
-                    serde_json::to_vec(&ReplaceSceneRequest::from(&document))
-                        .expect("default replacement body"),
-                ))
-                .expect("stored scene PUT"),
-        )
-        .await
-        .expect("stored scene PUT response");
-    assert_eq!(put.status(), StatusCode::NOT_FOUND);
-
-    let after = app
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/scene")
-                .body(Body::empty())
-                .expect("live scene request after refusal"),
-        )
-        .await
-        .expect("live scene response after refusal");
-    let after = body_json(after).await;
-    assert_eq!(after["data"], before["data"]);
-}
-
-#[tokio::test]
 async fn delete_default_returns_409_or_422() {
     let state = Arc::new(isolated_state());
     let app = test_app_with_state(Arc::clone(&state));
@@ -7860,6 +9671,644 @@ async fn delete_default_returns_409_or_422() {
             .expect("message should be a string")
             .contains("cannot be deleted"),
     );
+}
+
+#[tokio::test]
+async fn scene_deactivate_on_default_is_noop() {
+    let state = Arc::new(isolated_state());
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/scenes/deactivate")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["deactivated"], true);
+    assert_eq!(json["data"]["scene"]["name"], "Default");
+    assert_eq!(json["data"]["previous_scene"]["name"], "Default");
+}
+
+// ── Profiles ─────────────────────────────────────────────────────────────
+
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "profile lifecycle coverage is clearer as one end-to-end integration test"
+)]
+async fn profile_crud_lifecycle() {
+    let (state, _tempdir) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    insert_test_effect(&state, "solid_color").await;
+    let display_id = insert_test_display_device(&state, "Pump LCD").await;
+    let face = insert_test_display_face_effect(&state, "System Monitor").await;
+    let profile_layout = SpatialLayout {
+        id: "layout_profile".to_owned(),
+        name: "Profile Layout".to_owned(),
+        description: None,
+        canvas_width: 320,
+        canvas_height: 200,
+        zones: Vec::new(),
+
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        spaces: None,
+        version: 1,
+    };
+    let alternate_layout = SpatialLayout {
+        id: "layout_alternate".to_owned(),
+        name: "Alternate Layout".to_owned(),
+        description: None,
+        canvas_width: 320,
+        canvas_height: 200,
+        zones: Vec::new(),
+
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        spaces: None,
+        version: 1,
+    };
+    {
+        let mut layouts = state.layouts.write().await;
+        layouts.insert(profile_layout.id.clone(), profile_layout.clone());
+        layouts.insert(alternate_layout.id.clone(), alternate_layout.clone());
+    }
+    {
+        let mut spatial = state.spatial_engine.write().await;
+        spatial.update_layout(profile_layout.clone());
+    }
+    set_global_brightness(&state.power_state, 0.72);
+
+    let app = test_app_with_state(Arc::clone(&state));
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/solid_color/apply")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"controls":{"speed":12.5}}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/v1/displays/{display_id}/face"))
+                .header("content-type", "application/json")
+                .body(Body::from(format!(
+                    r#"{{"effect_id":"{}","scope":"scene"}}"#,
+                    face.id
+                )))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Create profile
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/profiles")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"name": "Gaming Mode"}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["name"], "Gaming Mode");
+    assert_eq!(json["data"]["brightness"], 72);
+    assert_eq!(json["data"]["layout_id"], profile_layout.id);
+    assert_eq!(json["data"]["primary"]["controls"]["speed"]["float"], 12.5);
+    assert_eq!(
+        json["data"]["displays"][0]["device_id"],
+        display_id.to_string()
+    );
+    assert_eq!(
+        json["data"]["displays"][0]["effect_id"],
+        face.id.to_string()
+    );
+    let primary_effect_id = json["data"]["primary"]["effect_id"]
+        .as_str()
+        .expect("Default-zone effect id should be present")
+        .to_owned();
+    let profile_id = json["data"]["id"]
+        .as_str()
+        .expect("id should be a string")
+        .to_owned();
+
+    // Get profile
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/profiles/{profile_id}"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["name"], "Gaming Mode");
+    assert_eq!(json["data"]["primary"]["controls"]["speed"]["float"], 12.5);
+    assert_eq!(
+        json["data"]["displays"][0]["effect_id"],
+        face.id.to_string()
+    );
+    assert_eq!(json["data"]["layout_id"], profile_layout.id);
+
+    // List profiles
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/profiles")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["pagination"]["total"], 1);
+
+    // Update profile
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/v1/profiles/{profile_id}"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"name": "Chill Mode", "brightness": 50}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["name"], "Chill Mode");
+    assert_eq!(json["data"]["brightness"], 50);
+
+    {
+        let mut spatial = state.spatial_engine.write().await;
+        spatial.update_layout(alternate_layout);
+    }
+    set_global_brightness(&state.power_state, 0.05);
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/stop")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Apply profile
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/v1/displays/{display_id}/face?scope=scene"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let (response, _) = request_with_layout_ack(
+        app.clone(),
+        Request::builder()
+            .method("POST")
+            .uri(format!("/api/v1/profiles/{profile_id}/apply"))
+            .body(Body::empty())
+            .expect("failed to build request"),
+        &state,
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["applied"], true);
+    assert_eq!(
+        json["data"]["profile"]["primary"]["effect_id"],
+        primary_effect_id
+    );
+    assert_eq!(
+        json["data"]["profile"]["primary"]["controls"]["speed"]["float"],
+        12.5
+    );
+    assert_eq!(
+        json["data"]["profile"]["displays"][0]["device_id"],
+        display_id.to_string()
+    );
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/effects/active")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["name"], "solid_color");
+    assert_eq!(json["data"]["control_values"]["speed"]["float"], 12.5);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/displays/{display_id}/face"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["effect"]["id"], face.id.to_string());
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/layouts/active")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["id"], profile_layout.id);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/output")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["brightness"], 0.5);
+
+    // Delete profile
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/v1/profiles/{profile_id}"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["deleted"], true);
+
+    // Verify deletion
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/profiles/{profile_id}"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn pre_final_profile_shape_is_rejected_on_load() {
+    let state = {
+        let tempdir = tempfile::tempdir().expect("tempdir should be created");
+        let data_dir = tempdir.path().join("data");
+        fs::create_dir_all(&data_dir).expect("temp data dir should be created");
+
+        let effect_id = EffectId::new(Uuid::now_v7());
+        let preset_id = PresetId(Uuid::now_v7());
+        let profiles_path = data_dir.join("profiles.json");
+        fs::write(
+            &profiles_path,
+            serde_json::to_string_pretty(&serde_json::json!({
+                "prof_evening": {
+                    "id": "prof_evening",
+                    "name": "Evening",
+                    "effect_id": effect_id,
+                    "effect_name": "solid_color",
+                    "active_preset_id": preset_id,
+                    "controls": {
+                        "speed": { "float": 12.5 }
+                    }
+                }
+            }))
+            .expect("pre-final profile json should serialize"),
+        )
+        .expect("pre-final profile json should be written");
+
+        AppState::new_with_data_dir(data_dir)
+    };
+
+    {
+        let profiles = state.profiles.read().await;
+        assert!(
+            profiles.get("prof_evening").is_none(),
+            "invalid pre-final profiles should be dropped on load"
+        );
+    }
+}
+
+#[tokio::test]
+async fn create_profile_rejects_duplicate_names_without_force_and_force_overwrites() {
+    let state = Arc::new(isolated_state());
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let first_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/profiles")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"name":"Gaming Mode","brightness":72}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(first_response.status(), StatusCode::CREATED);
+    let first_json = body_json(first_response).await;
+    let first_id = first_json["data"]["id"]
+        .as_str()
+        .expect("profile id should be present")
+        .to_owned();
+
+    let duplicate_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/profiles")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"name":"gaming mode","brightness":15}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(duplicate_response.status(), StatusCode::CONFLICT);
+    let duplicate_json = body_json(duplicate_response).await;
+    assert_eq!(duplicate_json["error"]["code"], "conflict");
+
+    let forced_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/profiles")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"name":"gaming mode","brightness":15,"force":true}"#,
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(forced_response.status(), StatusCode::OK);
+    let forced_json = body_json(forced_response).await;
+    assert_eq!(forced_json["data"]["id"], first_id);
+    assert_eq!(forced_json["data"]["brightness"], 15);
+
+    let list_response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/profiles")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(list_response.status(), StatusCode::OK);
+    let list_json = body_json(list_response).await;
+    assert_eq!(list_json["data"]["pagination"]["total"], 1);
+}
+
+#[tokio::test]
+async fn profile_lookup_returns_conflict_for_ambiguous_name() {
+    let state = Arc::new(isolated_state());
+    {
+        let mut profiles = state.profiles.write().await;
+        profiles
+            .insert(Profile::named("prof_alpha", "Evening"))
+            .expect("seed first profile");
+        profiles
+            .insert(Profile::named("prof_beta", "evening"))
+            .expect("seed second profile");
+    }
+
+    let app = test_app_with_state(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/profiles/evening")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let json = body_json(response).await;
+    assert_eq!(json["error"]["code"], "conflict");
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .expect("message should be a string")
+            .contains("ambiguous"),
+    );
+}
+
+#[tokio::test]
+async fn apply_profile_rejects_unimplemented_transition_requests() {
+    let state = Arc::new(isolated_state());
+    {
+        let mut profiles = state.profiles.write().await;
+        profiles
+            .insert(Profile::named("prof_evening", "Evening"))
+            .expect("seed profile");
+    }
+
+    let app = test_app_with_state(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/profiles/prof_evening/apply")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"transition_ms":250}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let json = body_json(response).await;
+    assert_eq!(json["error"]["code"], "validation_error");
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .expect("message should be a string")
+            .contains("only immediate apply is supported"),
+    );
+}
+
+#[tokio::test]
+async fn apply_profile_conflicts_when_snapshot_scene_is_active() {
+    let state = Arc::new(isolated_state());
+    {
+        let mut profiles = state.profiles.write().await;
+        let mut profile = Profile::named("prof_evening", "Evening");
+        profile.brightness = Some(40);
+        profiles.insert(profile).expect("seed profile");
+    }
+    activate_empty_test_scene_with_mode(&state, "Focus", SceneMutationMode::Snapshot).await;
+
+    let app = test_app_with_state(Arc::clone(&state));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/profiles/prof_evening/apply")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let json = body_json(response).await;
+    assert_eq!(json["error"]["code"], "conflict");
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .expect("message should be a string")
+            .contains("snapshot mode"),
+    );
+}
+
+#[tokio::test]
+async fn failed_profile_apply_does_not_mutate_layout_or_brightness() {
+    let state = Arc::new(isolated_state());
+    let current_layout = SpatialLayout {
+        id: "layout_current".to_owned(),
+        name: "Current Layout".to_owned(),
+        description: None,
+        canvas_width: 320,
+        canvas_height: 200,
+        zones: Vec::new(),
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        spaces: None,
+        version: 1,
+    };
+    let profile_layout = SpatialLayout {
+        id: "layout_profile".to_owned(),
+        name: "Profile Layout".to_owned(),
+        description: None,
+        canvas_width: 320,
+        canvas_height: 200,
+        zones: Vec::new(),
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        spaces: None,
+        version: 1,
+    };
+    {
+        let mut layouts = state.layouts.write().await;
+        layouts.insert(current_layout.id.clone(), current_layout.clone());
+        layouts.insert(profile_layout.id.clone(), profile_layout);
+    }
+    {
+        let mut spatial = state.spatial_engine.write().await;
+        spatial.update_layout(current_layout.clone());
+    }
+    set_global_brightness(&state.power_state, 0.8);
+    {
+        let mut profiles = state.profiles.write().await;
+        let mut profile = Profile::named("prof_broken", "Broken");
+        profile.brightness = Some(25);
+        profile.primary = Some(ProfilePrimary {
+            effect_id: EffectId::new(Uuid::now_v7()),
+            controls: HashMap::new(),
+            active_preset_id: None,
+        });
+        profile.layout_id = Some("layout_profile".to_owned());
+        profiles.insert(profile).expect("seed profile");
+    }
+
+    let app = test_app_with_state(Arc::clone(&state));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/profiles/prof_broken/apply")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let json = body_json(response).await;
+    // An internal failure names itself in tracing, never on the wire.
+    assert_eq!(json["error"]["code"], "internal_error");
+    assert_eq!(json["error"]["message"], "internal error");
+
+    let active_layout = {
+        let spatial = state.spatial_engine.read().await;
+        spatial.layout().id.clone()
+    };
+    assert_eq!(active_layout, current_layout.id);
+    assert!((current_global_brightness(&state.power_state) - 0.8).abs() < f32::EPSILON);
 }
 
 // ── Layouts ──────────────────────────────────────────────────────────────
@@ -9921,6 +12370,13 @@ async fn layout_preview_rejects_invalid_geometry_without_mutating() {
 
 // ── Effect Layout Associations ──────────────────────────────────────────
 
+fn test_state_with_temp_effect_layout_store() -> (Arc<AppState>, tempfile::TempDir) {
+    let mut state = isolated_state();
+    let dir = tempfile::tempdir().expect("tempdir should be created");
+    state.effect_layout_links_path = dir.path().join("effect-layouts.json");
+    (Arc::new(state), dir)
+}
+
 fn test_state_with_temp_layout_and_runtime_store() -> (Arc<AppState>, tempfile::TempDir) {
     let mut state = isolated_state();
     let dir = tempfile::tempdir().expect("tempdir should be created");
@@ -9989,6 +12445,233 @@ fn test_state_with_temp_output_store() -> (Arc<AppState>, tempfile::TempDir) {
 }
 
 #[tokio::test]
+async fn effect_layout_association_crud_persists_to_disk() {
+    let (state, _tmp) = test_state_with_temp_effect_layout_store();
+    insert_test_effect(&state, "solid_color").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let create_layout_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/layouts")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"name":"Effect Bound Layout","canvas_width":640,"canvas_height":360}"#,
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(create_layout_response.status(), StatusCode::CREATED);
+    let create_layout_json = body_json(create_layout_response).await;
+    let layout_id = create_layout_json["data"]["id"]
+        .as_str()
+        .expect("layout id should be string")
+        .to_owned();
+
+    let link_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/v1/effects/solid_color/layout")
+                .header("content-type", "application/json")
+                .body(Body::from(format!(r#"{{"layout_id":"{layout_id}"}}"#)))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(link_response.status(), StatusCode::OK);
+    let link_json = body_json(link_response).await;
+    assert_eq!(link_json["data"]["linked"], true);
+    assert_eq!(link_json["data"]["layout"]["id"], layout_id);
+    let effect_id = link_json["data"]["effect"]["id"]
+        .as_str()
+        .expect("effect id should be string")
+        .to_owned();
+
+    let get_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/effects/solid_color/layout")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(get_response.status(), StatusCode::OK);
+    let get_json = body_json(get_response).await;
+    assert_eq!(get_json["data"]["layout_id"], layout_id);
+    assert_eq!(get_json["data"]["resolved"], true);
+
+    let persisted_raw = std::fs::read_to_string(&state.effect_layout_links_path)
+        .expect("effect layout persistence file should exist");
+    let persisted: serde_json::Value =
+        serde_json::from_str(&persisted_raw).expect("effect layout map should be valid JSON");
+    assert_eq!(persisted[&effect_id], layout_id);
+
+    let delete_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/api/v1/effects/solid_color/layout")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(delete_response.status(), StatusCode::OK);
+    let delete_json = body_json(delete_response).await;
+    assert_eq!(delete_json["data"]["deleted"], true);
+
+    let get_after_delete_response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/effects/solid_color/layout")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(get_after_delete_response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn applying_effect_auto_applies_associated_layout() {
+    let state = Arc::new(isolated_state());
+    insert_test_effect(&state, "solid_color").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let resp_layout_a = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/layouts")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"name":"Layout A"}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(resp_layout_a.status(), StatusCode::CREATED);
+    let json_layout_a = body_json(resp_layout_a).await;
+    let first_layout_id = json_layout_a["data"]["id"]
+        .as_str()
+        .expect("layout A id should be string")
+        .to_owned();
+
+    let resp_layout_b = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/layouts")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"name":"Layout B"}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(resp_layout_b.status(), StatusCode::CREATED);
+    let json_layout_b = body_json(resp_layout_b).await;
+    let layout_b_id = json_layout_b["data"]["id"]
+        .as_str()
+        .expect("layout B id should be string")
+        .to_owned();
+
+    let _ = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/v1/effects/solid_color/layout")
+                .header("content-type", "application/json")
+                .body(Body::from(format!(r#"{{"layout_id":"{layout_b_id}"}}"#)))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    let _ = request_with_layout_ack(
+        app.clone(),
+        Request::builder()
+            .method("POST")
+            .uri(format!("/api/v1/layouts/{first_layout_id}/apply"))
+            .body(Body::empty())
+            .expect("failed to build request"),
+        &state,
+    )
+    .await;
+
+    let (apply_effect_response, _) = request_with_layout_ack(
+        app.clone(),
+        Request::builder()
+            .method("POST")
+            .uri("/api/v1/effects/solid_color/apply")
+            .body(Body::empty())
+            .expect("failed to build request"),
+        &state,
+    )
+    .await;
+    assert_eq!(apply_effect_response.status(), StatusCode::OK);
+    let apply_effect_json = body_json(apply_effect_response).await;
+    assert_eq!(apply_effect_json["data"]["layout"]["applied"], true);
+    assert_eq!(
+        apply_effect_json["data"]["layout"]["associated_layout_id"],
+        layout_b_id
+    );
+
+    let active_layout_response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/layouts/active")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(active_layout_response.status(), StatusCode::OK);
+    let active_layout_json = body_json(active_layout_response).await;
+    assert_eq!(active_layout_json["data"]["id"], layout_b_id);
+}
+
+#[tokio::test]
+async fn apply_effect_rejects_unimplemented_transition_requests() {
+    let state = Arc::new(isolated_state());
+    insert_test_effect(&state, "solid_color").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/solid_color/apply")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"transition":{"type":"crossfade","duration_ms":250}}"#,
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let json = body_json(response).await;
+    assert_eq!(json["error"]["code"], "validation_error");
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .expect("error message should be a string")
+            .contains("only immediate cut applies"),
+    );
+}
+
+#[tokio::test]
 async fn apply_effect_rejects_display_face_effects() {
     let state = Arc::new(isolated_state());
     let face = insert_test_display_face_effect(&state, "System Monitor").await;
@@ -10008,6 +12691,124 @@ async fn apply_effect_rejects_display_face_effects() {
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     let json = body_json(response).await;
     assert_eq!(json["error"]["code"], "validation_error");
+}
+
+#[tokio::test]
+async fn apply_effect_mutates_active_scene_not_default_if_named_active() {
+    let state = Arc::new(isolated_state());
+    insert_test_effect(&state, "Aurora").await;
+    insert_test_effect(&state, "Sunset").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let default_apply = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/Aurora/apply")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(default_apply.status(), StatusCode::OK);
+
+    let default_effect_id = {
+        let manager = state.scene_manager.read().await;
+        manager
+            .get(&SceneId::DEFAULT)
+            .and_then(Scene::primary_group)
+            .and_then(|group| group.effect_id)
+            .expect("default scene should retain its Default-zone effect")
+            .to_string()
+    };
+
+    let named_scene_id = activate_empty_test_scene(&state, "Focus").await;
+
+    let named_apply = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/Sunset/apply")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(named_apply.status(), StatusCode::OK);
+
+    let named_primary_group_id = {
+        let manager = state.scene_manager.read().await;
+        let default_scene = manager
+            .get(&SceneId::DEFAULT)
+            .expect("default scene should still exist");
+        assert_eq!(
+            default_scene
+                .primary_group()
+                .and_then(|group| group.effect_id)
+                .map(|effect_id| effect_id.to_string()),
+            Some(default_effect_id.clone())
+        );
+
+        let active_scene = manager
+            .active_scene()
+            .expect("named scene should stay active");
+        assert_eq!(active_scene.id, named_scene_id);
+        let primary = active_scene
+            .primary_group()
+            .expect("named scene should gain a primary group");
+        assert_ne!(
+            primary.effect_id.map(|effect_id| effect_id.to_string()),
+            Some(default_effect_id.clone())
+        );
+        primary.id.to_string()
+    };
+
+    let active_named = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/effects/active")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(active_named.status(), StatusCode::OK);
+    let active_named_json = body_json(active_named).await;
+    assert_eq!(active_named_json["data"]["name"], "Sunset");
+    assert_eq!(active_named_json["data"]["zone_id"], named_primary_group_id);
+
+    let deactivate = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/scenes/deactivate")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(deactivate.status(), StatusCode::OK);
+
+    let active_default = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/effects/active")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(active_default.status(), StatusCode::OK);
+    let active_default_json = body_json(active_default).await;
+    assert_eq!(active_default_json["data"]["name"], "Aurora");
+    assert_ne!(
+        active_default_json["data"]["zone_id"],
+        named_primary_group_id
+    );
 }
 
 #[tokio::test]
@@ -10100,7 +12901,7 @@ async fn error_responses_have_correct_envelope() {
     let response = app
         .oneshot(
             Request::builder()
-                .uri("/api/v1/scenes/nonexistent")
+                .uri("/api/v1/profiles/nonexistent")
                 .body(Body::empty())
                 .expect("failed to build request"),
         )
@@ -11255,6 +14056,147 @@ async fn list_displays_only_returns_display_capable_devices() {
 }
 
 #[tokio::test]
+async fn active_scene_syncs_empty_screen_surface_for_display_device() {
+    let state = Arc::new(isolated_state());
+    let display_id = insert_test_display_device(&state, "Ableton Push 2").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/scenes/active")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    let groups = json["data"]["zones"]
+        .as_array()
+        .expect("groups should be an array");
+    let display_group = groups
+        .iter()
+        .find(|group| group["role"] == "display")
+        .expect("display-capable device should have a screen surface");
+    assert_eq!(display_group["name"], "Ableton Push 2");
+    assert_eq!(
+        display_group["display_target"]["device_id"],
+        display_id.to_string()
+    );
+    assert!(display_group["effect_id"].is_null());
+    assert_eq!(display_group["layers"].as_array().map(Vec::len), Some(0));
+    assert_eq!(display_group["layout"]["canvas_width"], 320);
+    assert_eq!(display_group["layout"]["canvas_height"], 320);
+
+    let scene_id = json["data"]["id"]
+        .as_str()
+        .expect("scene id should be present");
+    let group_id = display_group["id"]
+        .as_str()
+        .expect("group id should be present");
+    let layers_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/scenes/{scene_id}/zones/{group_id}/layers"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(layers_response.status(), StatusCode::OK);
+    let layers_json = body_json(layers_response).await;
+    assert_eq!(
+        layers_json["data"]["items"].as_array().map(Vec::len),
+        Some(0)
+    );
+
+    let face_response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/displays/{display_id}/face"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(face_response.status(), StatusCode::OK);
+    let face_json = body_json(face_response).await;
+    assert!(face_json["data"].is_null());
+}
+
+#[tokio::test]
+async fn display_face_layer_stack_includes_legacy_face_beside_media() {
+    let state = Arc::new(isolated_state());
+    let display_id = insert_test_display_device(&state, "Pump LCD").await;
+    let face = insert_test_display_face_effect(&state, "System Monitor").await;
+    let scene_id = activate_display_face_test_scene_with_layers(
+        &state,
+        "Desk Scene",
+        face.id,
+        display_id,
+        vec![test_media_layer()],
+    )
+    .await;
+    let group_id = {
+        let manager = state.scene_manager.read().await;
+        manager
+            .active_scene()
+            .and_then(|scene| scene.display_group_for(display_id))
+            .expect("display group should be active")
+            .id
+    };
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/scenes/{scene_id}/zones/{group_id}/layers"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    let items = json["data"]["items"]
+        .as_array()
+        .expect("layer stack should serialize as an array");
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0]["source"]["type"], "effect");
+    assert_eq!(items[0]["source"]["effect_id"], face.id.to_string());
+    assert_eq!(items[1]["source"]["type"], "media");
+}
+
+#[tokio::test]
+async fn active_scene_does_not_sync_screen_surfaces_into_snapshot_scene() {
+    let state = Arc::new(isolated_state());
+    let _display_id = insert_test_display_device(&state, "Ableton Push 2").await;
+    let scene_id =
+        activate_empty_test_scene_with_mode(&state, "Locked", SceneMutationMode::Snapshot).await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/scenes/active")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["id"], scene_id.to_string());
+    assert_eq!(json["data"]["zones"].as_array().map(Vec::len), Some(0));
+}
+
+#[tokio::test]
 async fn delete_face_idempotent_when_no_group_present() {
     let state = Arc::new(isolated_state());
     let display_id = insert_test_display_device(&state, "Pump LCD").await;
@@ -11423,6 +14365,138 @@ async fn put_face_conflicts_when_snapshot_scene_is_active() {
 }
 
 #[tokio::test]
+async fn display_face_endpoints_assign_get_and_delete_face() {
+    let state = Arc::new(isolated_state());
+    let display_id = insert_test_display_device(&state, "Pump LCD").await;
+    let face = insert_test_display_face_effect(&state, "System Monitor").await;
+    let scene_id = activate_empty_test_scene(&state, "Desk Scene").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let put_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/v1/displays/{display_id}/face"))
+                .header("content-type", "application/json")
+                .body(Body::from(format!(
+                    r#"{{"effect_id":"{}","scope":"scene"}}"#,
+                    face.id
+                )))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(put_response.status(), StatusCode::OK);
+    let put_json = body_json(put_response).await;
+    assert_eq!(put_json["data"]["device_id"], display_id.to_string());
+    assert_eq!(put_json["data"]["scene_id"], scene_id.to_string());
+    assert_eq!(put_json["data"]["effect"]["id"], face.id.to_string());
+    assert_eq!(put_json["data"]["effect"]["category"], "display");
+    assert_eq!(
+        put_json["data"]["zone"]["display_target"]["device_id"],
+        display_id.to_string()
+    );
+    assert_eq!(put_json["data"]["zone"]["layout"]["canvas_width"], 320);
+    assert_eq!(put_json["data"]["zone"]["layout"]["canvas_height"], 320);
+    assert!(
+        put_json["data"]["zone"]["layout"]["zones"]
+            .as_array()
+            .expect("zones should serialize as an array")
+            .is_empty()
+    );
+    let group_id = put_json["data"]["zone"]["id"]
+        .as_str()
+        .expect("display face zone should include an id");
+
+    let layers_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/scenes/{scene_id}/zones/{group_id}/layers"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(layers_response.status(), StatusCode::OK);
+    let layers_json = body_json(layers_response).await;
+    let [layer] = layers_json["data"]["items"]
+        .as_array()
+        .expect("display face layers should serialize as an array")
+        .as_slice()
+    else {
+        panic!("display face should appear in the Studio layer stack");
+    };
+    assert_eq!(layer["source"]["type"], "effect");
+    assert_eq!(layer["source"]["effect_id"], face.id.to_string());
+
+    let get_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/displays/{display_id}/face"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(get_response.status(), StatusCode::OK);
+    let get_json = body_json(get_response).await;
+    assert_eq!(get_json["data"]["effect"]["id"], face.id.to_string());
+    assert_eq!(
+        get_json["data"]["zone"]["display_target"]["device_id"],
+        display_id.to_string()
+    );
+
+    {
+        let manager = state.scene_manager.read().await;
+        let active_scene = manager.active_scene().expect("scene should be active");
+        assert_eq!(active_scene.id, scene_id);
+        assert_eq!(active_scene.groups.len(), 1);
+    }
+
+    let delete_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/v1/displays/{display_id}/face?scope=scene"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(delete_response.status(), StatusCode::OK);
+    let delete_json = body_json(delete_response).await;
+    assert_eq!(delete_json["data"]["deleted"], true);
+
+    let missing_response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/displays/{display_id}/face"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(missing_response.status(), StatusCode::OK);
+    let missing_json = body_json(missing_response).await;
+    assert!(missing_json["data"].is_null());
+
+    let manager = state.scene_manager.read().await;
+    let active_scene = manager.active_scene().expect("scene should remain active");
+    let display_group = active_scene
+        .display_group_for(display_id)
+        .expect("display screen surface should survive face deletion");
+    assert_eq!(display_group.id.to_string(), group_id);
+    assert_eq!(display_group.role, ZoneRole::Display);
+    assert_eq!(display_group.effect_id, None);
+    assert!(display_group.layers.is_empty());
+    assert!(display_group.effective_layers().is_empty());
+}
+
+#[tokio::test]
 async fn patch_face_composition_updates_material_blend_mode_and_normalizes_replace() {
     let state = Arc::new(isolated_state());
     let display_id = insert_test_display_device(&state, "Pump LCD").await;
@@ -11584,6 +14658,99 @@ async fn reassigning_display_face_resets_composition_to_blended_default() {
         .expect("display target should remain present");
     assert_eq!(target.blend_mode, DisplayFaceBlendMode::Alpha);
     assert!((target.opacity - 1.0).abs() < f32::EPSILON);
+}
+
+#[tokio::test]
+async fn face_survives_effect_swap() {
+    let state = Arc::new(isolated_state());
+    insert_test_effect(&state, "Aurora").await;
+    insert_test_effect(&state, "Sunset").await;
+    let display_id = insert_test_display_device(&state, "Pump LCD").await;
+    let face = insert_test_display_face_effect(&state, "System Monitor").await;
+    let scene_id = activate_empty_test_scene(&state, "Desk Scene").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let assign_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/v1/displays/{display_id}/face"))
+                .header("content-type", "application/json")
+                .body(Body::from(format!(
+                    r#"{{"effect_id":"{}","scope":"scene"}}"#,
+                    face.id
+                )))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(assign_response.status(), StatusCode::OK);
+    let assign_json = body_json(assign_response).await;
+    let face_group_id = assign_json["data"]["zone"]["id"]
+        .as_str()
+        .expect("face zone id should be present")
+        .to_owned();
+
+    for effect_name in ["Aurora", "Sunset"] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/v1/effects/{effect_name}/apply"))
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+            )
+            .await
+            .expect("failed to execute request");
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    let active_effect = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/effects/active")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(active_effect.status(), StatusCode::OK);
+    let active_effect_json = body_json(active_effect).await;
+    assert_eq!(active_effect_json["data"]["name"], "Sunset");
+    assert_ne!(active_effect_json["data"]["zone_id"], face_group_id);
+
+    let face_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/displays/{display_id}/face"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(face_response.status(), StatusCode::OK);
+    let face_json = body_json(face_response).await;
+    assert_eq!(face_json["data"]["scene_id"], scene_id.to_string());
+    assert_eq!(face_json["data"]["effect"]["id"], face.id.to_string());
+    assert_eq!(face_json["data"]["zone"]["id"], face_group_id);
+
+    let manager = state.scene_manager.read().await;
+    let active_scene = manager.active_scene().expect("scene should remain active");
+    assert_eq!(active_scene.id, scene_id);
+    assert_eq!(active_scene.groups.len(), 2);
+    let primary = active_scene
+        .primary_group()
+        .expect("primary group should exist after effect apply");
+    let display_group = active_scene
+        .display_group_for(display_id)
+        .expect("display face should remain assigned");
+    assert_eq!(display_group.id.to_string(), face_group_id);
+    assert_eq!(display_group.effect_id, Some(face.id));
+    assert_ne!(primary.id, display_group.id);
 }
 
 #[tokio::test]

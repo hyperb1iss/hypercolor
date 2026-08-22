@@ -16,7 +16,7 @@ just release         # Full release build (LTO, stripped)
 just daemon          # Daemon on :9420 (preview profile, debug logging)
 just daemon-servo    # Daemon with Servo HTML effect rendering
 just tui             # TUI client (auto-starts daemon)
-just tray            # System tray applet
+just app             # Unified desktop app with system tray
 just cli             # CLI tool (`hypercolor`)
 just dev             # Daemon + UI dev server together
 
@@ -72,7 +72,6 @@ crates/
   hypercolor-daemon/               # Daemon binary: render-loop host + REST/WebSocket/MCP server on :9420
   hypercolor-cli/                  # The `hypercolor` CLI binary
   hypercolor-tui/                  # Ratatui terminal UI library, launched via `hypercolor tui`
-  hypercolor-tray/                 # System tray applet binary
   hypercolor-app/                  # Unified desktop app shell: supervises the daemon, owns the tray, handles autostart and single-instance
   hypercolor-leptos-ext/           # Leptos 0.8 extension helpers for the web UI
   hypercolor-ui/                   # Leptos 0.8 CSR web UI (WASM, Trunk), EXCLUDED from workspace
@@ -115,7 +114,6 @@ graph TD
     CORE --> CLI[hypercolor-cli]
     T --> TUI[hypercolor-tui]
     TUI -.->|optional| CLI
-    CORE & T --> TRAY[hypercolor-tray]
     CORE & T --> APP[hypercolor-app]
     T --> UI[hypercolor-ui<br><i>excluded from workspace</i>]
     LE[hypercolor-leptos-ext] --> UI & D & TUI
@@ -252,7 +250,7 @@ without the runtime cliffs of unoptimized Servo.
 
 - **Edition 2024**, Rust 1.94+
 - **Tests:** integration and public-API coverage lives in `tests/` directories, named `{feature}_tests.rs`. Small private-internals unit tests may use `#[cfg(test)]` modules; avoid large inline test bodies.
-- **`unsafe_code` is forbidden** workspace-wide by default. The audited opt-outs are `linux-gpu-interop`, `macos-capture`, `macos-gpu-interop`, `macos-input`, `windows-gpu-interop`, `windows-pawnio`, `windows-capture`, `windows-input`, `windows-helper`, `platform-fs`, and `hypercolor-app` (Win32 power-event FFI); each denies `clippy::undocumented_unsafe_blocks`
+- **`unsafe_code` is forbidden** workspace-wide by default. The audited opt-outs are `linux-gpu-interop`, `macos-capture`, `macos-gpu-interop`, `macos-input`, `macos-media`, `macos-session`, `windows-gpu-interop`, `windows-pawnio`, `windows-capture`, `windows-input`, `windows-helper`, `platform-fs`, and `hypercolor-app` (Win32 power-event FFI); each denies `clippy::undocumented_unsafe_blocks`
 - **Clippy pedantic** at deny level; see `Cargo.toml` for allowed exceptions
 - **`unwrap()` is forbidden**: use `?`, `.ok()`, `expect("reason")`, or handle errors properly
 - **`thiserror`** for library errors, **`anyhow`** for application errors

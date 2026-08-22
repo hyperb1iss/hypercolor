@@ -82,6 +82,15 @@ pub fn module_enabled(config: &HypercolorConfig, descriptor: &DriverModuleDescri
     driver_enabled_with_default(config, &descriptor.id, descriptor.default_enabled)
 }
 
+/// Whether a driver module exposes at least one transport runnable on this host.
+#[must_use]
+pub fn module_has_available_transport(descriptor: &DriverModuleDescriptor) -> bool {
+    descriptor
+        .transports
+        .iter()
+        .any(|transport| transport.is_available())
+}
+
 /// Whether one registered driver module is enabled by the active config.
 #[must_use]
 pub fn module_enabled_by_id(
@@ -233,10 +242,9 @@ pub fn enabled_module_ids_for_transports(
     module_descriptors_for_kind(registry, module_kind)
         .iter()
         .filter(|descriptor| {
-            descriptor
-                .transports
-                .iter()
-                .any(|item| transports.iter().any(|transport| item == transport))
+            descriptor.transports.iter().any(|item| {
+                item.is_available() && transports.iter().any(|transport| item.kind == *transport)
+            })
         })
         .filter(|descriptor| module_enabled(config, descriptor))
         .map(|descriptor| descriptor.id.clone())
@@ -302,6 +310,9 @@ pub fn register_enabled_driver_output_backends(
             continue;
         }
         if !descriptor.capabilities.output_backend {
+            continue;
+        }
+        if !module_has_available_transport(&descriptor) {
             continue;
         }
 

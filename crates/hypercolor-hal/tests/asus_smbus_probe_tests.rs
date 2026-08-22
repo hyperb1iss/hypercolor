@@ -5,34 +5,50 @@ use std::os::unix::fs as unix_fs;
 #[cfg(unix)]
 use hypercolor_hal::drivers::asus::resolve_parent_pci_id_from_sysfs_path;
 use hypercolor_hal::drivers::asus::{
-    SmBusControllerKind, build_aura_smbus_protocol, dram_capable_pci_id,
-    probe_asus_smbus_devices_in_root,
+    AuraSmBusProbeError, SmBusControllerKind, SmBusProbe, build_aura_smbus_protocol,
+    dram_capable_pci_id, probe_asus_smbus_devices_in_root,
 };
 use hypercolor_hal::protocol::Protocol;
+use hypercolor_hal::transport::{TransportError, TransportPlatform};
 use tempfile::tempdir;
 
 #[tokio::test]
-async fn asus_smbus_probe_ignores_empty_dev_root() {
+async fn asus_smbus_probe_reports_platform_state_for_empty_dev_root() {
     let tempdir = tempdir().expect("tempdir should create");
 
-    let devices = probe_asus_smbus_devices_in_root(tempdir.path())
-        .await
-        .expect("probe should succeed");
-
-    assert!(devices.is_empty());
+    assert_empty_or_unsupported(probe_asus_smbus_devices_in_root(tempdir.path()).await);
 }
 
 #[tokio::test]
-async fn asus_smbus_probe_ignores_non_device_i2c_nodes() {
+async fn asus_smbus_probe_reports_platform_state_for_non_device_i2c_nodes() {
     let tempdir = tempdir().expect("tempdir should create");
     let fake_bus = tempdir.path().join("i2c-0");
     fs::write(&fake_bus, b"not a real i2c bus").expect("fake i2c node should write");
 
-    let devices = probe_asus_smbus_devices_in_root(tempdir.path())
-        .await
-        .expect("probe should succeed");
+    assert_empty_or_unsupported(probe_asus_smbus_devices_in_root(tempdir.path()).await);
+}
 
-    assert!(devices.is_empty());
+fn assert_empty_or_unsupported(result: Result<Vec<SmBusProbe>, AuraSmBusProbeError>) {
+    if cfg!(any(target_os = "linux", target_os = "windows")) {
+        assert!(
+            result
+                .expect("supported SMBus probe should succeed")
+                .is_empty()
+        );
+        return;
+    }
+
+    let error = result.expect_err("unsupported SMBus probe should report platform status");
+    assert!(
+        matches!(
+            error,
+            AuraSmBusProbeError::Transport(TransportError::UnsupportedPlatform {
+                transport: "SMBus",
+                platform,
+            }) if platform == TransportPlatform::CURRENT
+        ),
+        "unexpected SMBus probe error: {error:?}"
+    );
 }
 
 #[test]

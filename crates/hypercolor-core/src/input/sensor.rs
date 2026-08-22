@@ -1,6 +1,6 @@
 //! Background system sensor polling for the render pipeline.
 
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -14,11 +14,157 @@ use sysinfo::{
     Components, CpuRefreshKind, MINIMUM_CPU_UPDATE_INTERVAL, MemoryRefreshKind, RefreshKind, System,
 };
 
-use crate::input::worker_retention::{retain_input_worker, spawn_input_worker};
+use hypercolor_worker_retention::{retain_worker, spawn_worker};
+
+use super::traits::{
+    DataSource, DataSourceKind, DataSourceRole, InputData, InputSource, SourceRoleBinding,
+};
+use super::{SourceIssue, SourceKind, SourceStatusHandle, SourceStatusReporter};
 
 const DEFAULT_SENSOR_POLL_INTERVAL: Duration = Duration::from_secs(2);
 const SENSOR_STOP_TIMEOUT: Duration = Duration::from_secs(1);
 const BYTES_PER_MEGABYTE: f64 = 1_000_000.0;
+
+/// Graph-owned system telemetry source.
+pub struct SensorSource {
+    poller: SensorPoller,
+    receiver: watch::Receiver<Arc<SystemSnapshot>>,
+    running: bool,
+    status: SourceStatusReporter,
+}
+
+impl SensorSource {
+    /// Create a source using the native two-second acquisition cadence.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::with_interval(DEFAULT_SENSOR_POLL_INTERVAL)
+    }
+
+    fn with_interval(interval: Duration) -> Self {
+        let poller = SensorPoller::with_interval(interval);
+        let receiver = poller.receiver();
+        Self {
+            poller,
+            receiver,
+            running: false,
+            status: SourceStatusReporter::new(
+                "sensors",
+                SourceKind::Sensors,
+                "sysinfo",
+                true,
+                true,
+                true,
+            ),
+        }
+    }
+
+    fn report_worker_exit(&mut self, reason: String) -> anyhow::Error {
+        self.running = false;
+        if let Some(status) = self.status.session() {
+            status.failed(SourceIssue::new(
+                "sensor_poller_exited",
+                reason.clone(),
+                true,
+            ));
+        }
+        anyhow::anyhow!(reason)
+    }
+
+    #[cfg(test)]
+    fn set_test_sampler(&mut self, sampler: impl FnMut() -> SystemSnapshot + Send + 'static) {
+        self.poller.set_test_sampler(sampler);
+    }
+}
+
+impl Default for SensorSource {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl InputSource for SensorSource {
+    fn name(&self) -> &'static str {
+        "sensors"
+    }
+
+    fn start(&mut self) -> Result<()> {
+        if self.running {
+            return Ok(());
+        }
+        self.status.begin_session()?;
+        self.receiver = self.poller.receiver();
+        if let Err(error) = self.poller.start() {
+            if let Some(status) = self.status.session() {
+                status.failed(SourceIssue::new(
+                    "sensor_poller_start_failed",
+                    error.to_string(),
+                    true,
+                ));
+            }
+            return Err(error);
+        }
+        self.running = true;
+        Ok(())
+    }
+
+    fn stop(&mut self) {
+        self.running = false;
+        self.poller.stop();
+        self.status.stop();
+    }
+
+    fn sample(&mut self) -> Result<InputData> {
+        if !self.running {
+            return Ok(InputData::None);
+        }
+        if let Some(reason) = self.poller.observe_exit() {
+            return Err(self.report_worker_exit(reason));
+        }
+        match self.receiver.has_changed() {
+            Ok(false) => Ok(InputData::None),
+            Ok(true) => {
+                let snapshot = Arc::clone(&self.receiver.borrow_and_update());
+                if snapshot.polled_at_ms == 0 {
+                    return Ok(InputData::None);
+                }
+                if let Some(status) = self.status.session() {
+                    let sampled_at = std::time::Instant::now();
+                    status.record_sample(
+                        sampled_at,
+                        sampled_at + self.poller.interval.saturating_add(self.poller.interval),
+                        1,
+                    )?;
+                }
+                Ok(InputData::Sensors(snapshot))
+            }
+            Err(error) => {
+                Err(self.report_worker_exit(format!("sensor publication channel closed: {error}")))
+            }
+        }
+    }
+
+    fn is_running(&self) -> bool {
+        self.running
+    }
+
+    fn source_status_handle(&self) -> Option<SourceStatusHandle> {
+        Some(self.status.handle())
+    }
+
+    fn source_status_reporter(&mut self) -> Option<&mut SourceStatusReporter> {
+        Some(&mut self.status)
+    }
+}
+
+impl SourceRoleBinding for SensorSource {
+    type Role = DataSourceRole;
+}
+
+impl DataSource for SensorSource {
+    fn data_source_kind(&self) -> DataSourceKind {
+        DataSourceKind::Sensors
+    }
+}
 
 /// Backoff between attempts to open the Windows PawnIO CPU temperature
 /// reader while it is unavailable. Long enough that a permanently
@@ -28,7 +174,7 @@ const BYTES_PER_MEGABYTE: f64 = 1_000_000.0;
 const CPU_TEMP_REPROBE_INTERVAL: Duration = Duration::from_secs(20);
 
 /// Background poller that publishes latest-value system telemetry snapshots.
-pub struct SensorPoller {
+struct SensorPoller {
     interval: Duration,
     tx: watch::Sender<Arc<SystemSnapshot>>,
     publication_session: Arc<Mutex<Option<u64>>>,
@@ -47,13 +193,13 @@ struct SensorPollerThread {
 impl SensorPoller {
     /// Create a new poller using the default cadence.
     #[must_use]
-    pub fn new() -> Self {
+    fn new() -> Self {
         Self::with_interval(DEFAULT_SENSOR_POLL_INTERVAL)
     }
 
     /// Create a new poller with a custom cadence.
     #[must_use]
-    pub fn with_interval(interval: Duration) -> Self {
+    fn with_interval(interval: Duration) -> Self {
         let (tx, _) = watch::channel(Arc::new(SystemSnapshot::empty()));
         Self {
             interval: interval.max(MINIMUM_CPU_UPDATE_INTERVAL),
@@ -68,7 +214,7 @@ impl SensorPoller {
 
     /// Subscribe to latest-value snapshots.
     #[must_use]
-    pub fn receiver(&self) -> watch::Receiver<Arc<SystemSnapshot>> {
+    fn receiver(&self) -> watch::Receiver<Arc<SystemSnapshot>> {
         self.tx.subscribe()
     }
 
@@ -77,7 +223,7 @@ impl SensorPoller {
     /// # Errors
     ///
     /// Returns an error if the poller thread cannot be spawned.
-    pub fn start(&mut self) -> Result<()> {
+    fn start(&mut self) -> Result<()> {
         if self.thread.is_some() {
             return Ok(());
         }
@@ -102,7 +248,7 @@ impl SensorPoller {
         let (exit_tx, exit_rx) = mpsc::sync_channel(1);
         #[cfg(test)]
         let mut sampler = self.sampler.take();
-        let join_handle = spawn_input_worker(
+        let join_handle = spawn_worker(
             std::thread::Builder::new().name("hypercolor-sensors".to_owned()),
             move || {
                 #[cfg(test)]
@@ -160,7 +306,7 @@ impl SensorPoller {
     }
 
     /// Stop the poller thread if it is running.
-    pub fn stop(&mut self) {
+    fn stop(&mut self) {
         self.stop_with_timeout(SENSOR_STOP_TIMEOUT);
     }
 
@@ -179,7 +325,24 @@ impl SensorPoller {
             return;
         }
         tracing::warn!("sensor poller did not stop before the deadline; retaining its join handle");
-        retain_input_worker(thread.join_handle, "sensor poller");
+        retain_worker(thread.join_handle, "sensor poller");
+    }
+
+    fn observe_exit(&mut self) -> Option<String> {
+        let thread = self.thread.as_ref()?;
+        let exit = match thread.exit_rx.try_recv() {
+            Ok(()) | Err(TryRecvError::Disconnected) => true,
+            Err(TryRecvError::Empty) => thread.join_handle.is_finished(),
+        };
+        if !exit {
+            return None;
+        }
+        self.end_publication_session();
+        let thread = self.thread.take().expect("observed sensor thread exists");
+        match thread.join_handle.join() {
+            Ok(()) => Some("sensor poller exited unexpectedly".to_owned()),
+            Err(_) => Some("sensor poller panicked".to_owned()),
+        }
     }
 
     fn end_publication_session(&self) {
@@ -193,10 +356,7 @@ impl SensorPoller {
     }
 
     #[cfg(test)]
-    pub(crate) fn set_test_sampler(
-        &mut self,
-        sampler: impl FnMut() -> SystemSnapshot + Send + 'static,
-    ) {
+    fn set_test_sampler(&mut self, sampler: impl FnMut() -> SystemSnapshot + Send + 'static) {
         self.sampler = Some(Box::new(sampler));
     }
 }
@@ -820,12 +980,59 @@ fn sanitize_zone_label(instance_name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{SensorPoller, publish_sensor_snapshot};
+    use super::{SensorPoller, SensorSource, publish_sensor_snapshot};
+    use crate::input::{InputData, InputSource, SourceState};
     use hypercolor_types::sensor::SystemSnapshot;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::mpsc;
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn source_publishes_changed_snapshots_through_the_data_role() {
+        let counter = Arc::new(AtomicU64::new(1));
+        let mut source = SensorSource::with_interval(Duration::from_millis(20));
+        let next = Arc::clone(&counter);
+        source.set_test_sampler(move || SystemSnapshot {
+            polled_at_ms: next.fetch_add(1, Ordering::Relaxed),
+            ..SystemSnapshot::empty()
+        });
+        source.set_source_graph_generation(1);
+        source.start().expect("sensor source should start");
+
+        let first = wait_for_source_sample(&mut source, Duration::from_secs(1));
+        let second = wait_for_source_sample(&mut source, Duration::from_secs(1));
+
+        assert!(second > first);
+        source.stop();
+    }
+
+    #[test]
+    fn source_reports_worker_panics_as_terminal_failure() {
+        let mut source = SensorSource::with_interval(Duration::from_millis(20));
+        source.set_test_sampler(|| panic!("fixture sensor panic"));
+        source.set_source_graph_generation(1);
+        source.start().expect("sensor source should start");
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let error = loop {
+            match source.sample() {
+                Err(error) => break error,
+                Ok(_) if Instant::now() < deadline => std::thread::yield_now(),
+                Ok(_) => panic!("sensor worker panic was not observed"),
+            }
+        };
+
+        assert!(error.to_string().contains("panicked"));
+        assert_eq!(
+            source
+                .source_status_handle()
+                .expect("sensor source publishes status")
+                .snapshot()
+                .state,
+            SourceState::Failed
+        );
+        assert!(!source.is_running());
+    }
 
     #[test]
     fn poller_publishes_updated_snapshots() {
@@ -989,6 +1196,21 @@ mod tests {
                 Ok(Ok(()))
             )
         })
+    }
+
+    fn wait_for_source_sample(source: &mut SensorSource, timeout: Duration) -> u64 {
+        let deadline = Instant::now() + timeout;
+        loop {
+            match source
+                .sample()
+                .expect("sensor source sample should succeed")
+            {
+                InputData::Sensors(snapshot) => return snapshot.polled_at_ms,
+                InputData::None if Instant::now() < deadline => std::thread::yield_now(),
+                InputData::None => panic!("sensor source did not publish before the deadline"),
+                sample => panic!("unexpected sensor source sample: {sample:?}"),
+            }
+        }
     }
 
     fn wait_for_snapshot(

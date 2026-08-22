@@ -11,7 +11,7 @@ use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
 use windows::core::BOOL;
 
 use crate::decode::ScreenRect;
-use crate::shared::RawCursor;
+use hypercolor_types::host_input::HostPointerSnapshot;
 
 const MONITOR_INFO_PRIMARY: u32 = 1;
 
@@ -160,17 +160,21 @@ fn topology_from_monitors(monitors: Vec<(ScreenRect, bool)>) -> Option<MonitorTo
 }
 
 /// Sample the cursor in physical pixels, normalized against the selected desktop.
-pub(crate) fn sample_cursor(virtual_screen: ScreenRect) -> Option<RawCursor> {
+pub(crate) fn sample_cursor(
+    virtual_screen: ScreenRect,
+    coordinate_space_generation: u64,
+) -> Option<HostPointerSnapshot> {
     let mut point = POINT::default();
     // SAFETY: `point` is a live, aligned output value. Secure-desktop access
     // failures return an error and publish no partial coordinate.
     unsafe { GetCursorPos(&raw mut point) }.ok()?;
     let (norm_x, norm_y) = virtual_screen.normalize(point.x, point.y);
-    Some(RawCursor {
-        x: point.x,
-        y: point.y,
+    Some(HostPointerSnapshot {
+        x: f64::from(point.x),
+        y: f64::from(point.y),
         norm_x,
         norm_y,
+        coordinate_space_generation,
     })
 }
 

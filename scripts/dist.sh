@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build a ready-to-ship Hypercolor release bundle.
-# Includes the daemon, CLI, unified desktop app, tray applet, TUI launcher, UI, bundled effects/faces,
+# Includes the daemon, CLI, unified desktop app, TUI launcher, UI, bundled effects/faces,
 # docs, agent skills, and host integration files in one directory.
 #
 # Usage:
@@ -91,7 +91,7 @@ Options:
   --ci                 CI mode (expect --web-assets for pre-built UI/effects)
   --web-assets <dir>   Path to pre-built web assets (ui/ + effects/)
   --bin-dir <dir>      Package pre-built binaries from <dir> instead of
-                       building them (absolute path; must contain the four
+                       building them (absolute path; must contain the three
                        release binaries)
   --tcc-canary         Include the signed physical TCC canary surface
   -h, --help           Show this help
@@ -106,7 +106,7 @@ if [[ -n "${BIN_DIR}" ]]; then
   [[ "${BIN_DIR}" == /* ]] || die "--bin-dir must be an absolute path (the script runs from the repo root): ${BIN_DIR}"
   [[ -d "${BIN_DIR}" ]] || die "--bin-dir does not exist: ${BIN_DIR}"
   MISSING_BINS=()
-  for bin in hypercolor-daemon hypercolor hypercolor-app hypercolor-tray; do
+  for bin in hypercolor-daemon hypercolor hypercolor-app; do
     [[ -f "${BIN_DIR}/${bin}" && -x "${BIN_DIR}/${bin}" ]] || MISSING_BINS+=("${bin}")
   done
   if [[ ${#MISSING_BINS[@]} -ne 0 ]]; then
@@ -182,8 +182,8 @@ else
   # array expansion as an unbound-variable error under set -u.
   #
   # Two invocations on purpose. Built together, feature unification turns
-  # on hypercolor-core's servo feature for every binary, so the CLI, tray,
-  # and app each fat-LTO-merge the full Servo bitcode only for the link to
+  # on hypercolor-core's servo feature for every binary, so the CLI and app
+  # each fat-LTO-merge the full Servo bitcode only for the link to
   # dead-strip it again (their shipped binaries are 10-18MB; the daemon,
   # which actually uses Servo, is 144MB). Splitting keeps Servo's LTO cost
   # to the daemon: one Servo-sized merge at peak instead of four racing.
@@ -200,7 +200,6 @@ else
     ${TARGET_FLAG[@]+"${TARGET_FLAG[@]}"}
   ./scripts/cargo-cache-build.sh cargo build --release --locked \
     -p hypercolor-cli --bin hypercolor \
-    -p hypercolor-tray --bin hypercolor-tray \
     -p hypercolor-app --bin hypercolor-app \
     ${TARGET_FLAG[@]+"${TARGET_FLAG[@]}"}
 fi
@@ -290,7 +289,6 @@ fi
 install -m755 "${RELEASE_DIR}/hypercolor-daemon" "${DIST_DIR}/bin/hypercolor-daemon"
 install -m755 "${RELEASE_DIR}/hypercolor" "${DIST_DIR}/bin/hypercolor"
 install -m755 "${RELEASE_DIR}/hypercolor-app" "${DIST_DIR}/bin/hypercolor-app"
-install -m755 "${RELEASE_DIR}/hypercolor-tray" "${DIST_DIR}/bin/hypercolor-tray"
 install -m755 packaging/bin/hypercolor-tui "${DIST_DIR}/bin/hypercolor-tui"
 install -m755 packaging/bin/hypercolor-open "${DIST_DIR}/bin/hypercolor-open"
 
@@ -366,30 +364,72 @@ fi
 
 cp LICENSE NOTICE README.md "${DIST_DIR}/"
 
-cat > "${DIST_DIR}/manifest.json" <<EOF
-{
-  "name": "hypercolor",
-  "version": "${VERSION}",
-  "platform": "${PLATFORM}",
-  "rust_target": "${RUST_TARGET}",
-  "binaries": [
-    "hypercolor-daemon",
-    "hypercolor",
-    "hypercolor-app",
-    "hypercolor-tray",
-    "hypercolor-tui",
-    "hypercolor-open"
-  ],
-  "assets": {
-    "ui_files": $(count_files "${DIST_DIR}/share/hypercolor/ui"),
-    "bundled_effect_files": $(count_files "${DIST_DIR}/share/hypercolor/effects/bundled"),
-    "docs_files": $(count_files "${DIST_DIR}/share/hypercolor/docs"),
-    "skill_files": $(count_files "${DIST_DIR}/share/hypercolor/agents/skills"),
-    "agent_files": $(count_files "${DIST_DIR}/share/hypercolor/agents/agents"),
-    "site_files": $(count_files "${DIST_DIR}/share/hypercolor/site")
-  }
+DIST_DIR="${DIST_DIR}" VERSION="${VERSION}" PLATFORM="${PLATFORM}" \
+RUST_TARGET="${RUST_TARGET}" python3 - <<'PY'
+import hashlib
+import json
+import os
+import stat
+from pathlib import Path
+
+root = Path(os.environ["DIST_DIR"])
+members = []
+for path in sorted(root.rglob("*")):
+    relative = path.relative_to(root).as_posix()
+    if relative == "manifest.json":
+        continue
+    metadata = path.lstat()
+    mode = stat.S_IMODE(metadata.st_mode)
+    if stat.S_ISDIR(metadata.st_mode):
+        members.append({"path": relative, "type": "directory", "mode": mode})
+        continue
+    if not stat.S_ISREG(metadata.st_mode):
+        raise SystemExit(f"release payload contains unsupported member: {relative}")
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    members.append(
+        {
+            "path": relative,
+            "type": "file",
+            "mode": mode,
+            "size": metadata.st_size,
+            "sha256": digest.hexdigest(),
+        }
+    )
+
+def count_files(relative: str) -> int:
+    directory = root / relative
+    return sum(1 for path in directory.rglob("*") if path.is_file())
+
+manifest = {
+    "name": "hypercolor",
+    "version": os.environ["VERSION"],
+    "platform": os.environ["PLATFORM"],
+    "rust_target": os.environ["RUST_TARGET"],
+    "binaries": [
+        "hypercolor-daemon",
+        "hypercolor",
+        "hypercolor-app",
+        "hypercolor-tui",
+        "hypercolor-open",
+    ],
+    "assets": {
+        "ui_files": count_files("share/hypercolor/ui"),
+        "bundled_effect_files": count_files("share/hypercolor/effects/bundled"),
+        "docs_files": count_files("share/hypercolor/docs"),
+        "skill_files": count_files("share/hypercolor/agents/skills"),
+        "agent_files": count_files("share/hypercolor/agents/agents"),
+        "site_files": count_files("share/hypercolor/site"),
+    },
+    "members": members,
 }
-EOF
+(root / "manifest.json").write_text(
+    json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
+PY
 
 info "Creating tarball"
 (cd dist && tar czf "${DIST_NAME}.tar.gz" "${DIST_NAME}")

@@ -6,6 +6,9 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use hypercolor_types::event::PointerScrollPhase;
+use hypercolor_types::host_input::HostInputBatch;
+use hypercolor_worker_retention::{retain_worker, spawn_worker};
 use objc2_app_kit::NSEvent;
 use objc2_core_foundation::{
     CFMachPort, CFRetained, CFRunLoop, CFRunLoopSource, CFRunLoopSourceContext,
@@ -18,16 +21,18 @@ use objc2_core_graphics::{
     CGPreflightListenEventAccess, CGRequestListenEventAccess,
 };
 
-use crate::queue::{DEFAULT_QUEUE_CAPACITY, EventQueue};
+use crate::queue::{DEFAULT_QUEUE_CAPACITY, EventQueue, MacosQueuedInputEvent};
 use crate::{
-    EffectiveEventMasks, MacosInputBatch, MacosInputConfig, MacosInputDiagnostics, MacosInputError,
-    MacosInputEvent, MacosInputGapReason, MacosInputPublicationOutcome, MacosInputResult,
-    MacosModifierFlags, MacosScrollPhase, MacosScrollUnit, MacosVirtualDesktop,
-    MacosWorkerDegradation, MacosWorkerState, decode_button_event, decode_media_key,
-    decode_momentum_phase, decode_scroll_phase, event_masks,
+    EffectiveEventMasks, MacosInputConfig, MacosInputDiagnostics, MacosInputError,
+    MacosInputGapReason, MacosInputPublicationOutcome, MacosInputResult, MacosModifierFlags,
+    MacosVirtualDesktop, MacosWorkerDegradation, MacosWorkerState, decode_button_event,
+    decode_media_key, decode_momentum_phase, decode_scroll_phase, event_masks,
+    normalize_button_event, normalize_key_event, normalize_modifier_event, normalize_motion_event,
+    normalize_scroll_event,
 };
 
 const READY_TIMEOUT: Duration = Duration::from_secs(2);
+const WORKER_STOP_TIMEOUT: Duration = Duration::from_secs(2);
 const HEALTH_INTERVAL: Duration = Duration::from_millis(250);
 const TOPOLOGY_INTERVAL: Duration = Duration::from_secs(1);
 const TAP_DISABLE_HEALTH_WINDOW: Duration = Duration::from_secs(10);
@@ -134,6 +139,22 @@ struct TapBundle {
     context: Box<TapContext>,
 }
 
+struct ManagedWorker {
+    handle: JoinHandle<()>,
+    finished: mpsc::Receiver<()>,
+}
+
+impl ManagedWorker {
+    fn retire(self, timeout: Duration, context: &'static str) -> bool {
+        let finished = matches!(
+            self.finished.recv_timeout(timeout),
+            Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected)
+        );
+        retain_worker(self.handle, context);
+        finished
+    }
+}
+
 impl TapBundle {
     fn teardown(&self, run_loop: &CFRunLoop) {
         // SAFETY: Core Foundation exports this process-lifetime static mode.
@@ -152,8 +173,8 @@ pub struct MacosInputSession {
     state: Arc<Mutex<MacosWorkerState>>,
     queue: Arc<EventQueue>,
     control: Arc<RunLoopControl>,
-    event_worker: Option<JoinHandle<()>>,
-    sink_worker: Option<JoinHandle<()>>,
+    event_worker: Option<ManagedWorker>,
+    sink_worker: Option<ManagedWorker>,
     stopped: bool,
 }
 
@@ -161,7 +182,7 @@ impl MacosInputSession {
     /// Start the requested event taps and block until their run loop is ready.
     pub fn start(
         config: MacosInputConfig,
-        sink: impl FnMut(MacosInputBatch<'_>) -> MacosInputPublicationOutcome + Send + 'static,
+        sink: impl FnMut(HostInputBatch<'_>) -> MacosInputPublicationOutcome + Send + 'static,
     ) -> MacosInputResult<Self> {
         if !config.keyboard && !config.pointer {
             return Err(MacosInputError::NothingToCapture);
@@ -176,32 +197,50 @@ impl MacosInputSession {
         let state = Arc::new(Mutex::new(MacosWorkerState::Running));
         let control = Arc::new(RunLoopControl::new());
 
-        let sink_worker = thread::Builder::new()
-            .name("hypercolor-macos-input-fold".to_owned())
-            .spawn({
+        let (sink_finished_tx, sink_finished_rx) = mpsc::sync_channel(1);
+        let sink_handle = spawn_worker(
+            thread::Builder::new().name("hypercolor-macos-input-fold".to_owned()),
+            {
                 let queue = Arc::clone(&queue);
                 let state = Arc::clone(&state);
                 let control = Arc::clone(&control);
                 let config = config.clone();
-                move || drain_batches(config, desktop, sink, &queue, &state, &control)
-            })
-            .map_err(|error| MacosInputError::WorkerSpawn(error.to_string()))?;
+                move || {
+                    drain_batches(config, desktop, sink, &queue, &state, &control);
+                    let _ = sink_finished_tx.send(());
+                }
+            },
+        )
+        .map_err(|error| MacosInputError::WorkerSpawn(error.to_string()))?;
+        let sink_worker = ManagedWorker {
+            handle: sink_handle,
+            finished: sink_finished_rx,
+        };
 
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
-        let event_worker = match thread::Builder::new()
-            .name("hypercolor-macos-event-tap".to_owned())
-            .spawn({
+        let (event_finished_tx, event_finished_rx) = mpsc::sync_channel(1);
+        let event_handle = match spawn_worker(
+            thread::Builder::new().name("hypercolor-macos-event-tap".to_owned()),
+            {
                 let queue = Arc::clone(&queue);
                 let state = Arc::clone(&state);
                 let control = Arc::clone(&control);
-                move || run_event_taps(masks, &queue, &state, &control, &ready_tx)
-            }) {
+                move || {
+                    run_event_taps(masks, &queue, &state, &control, &ready_tx);
+                    let _ = event_finished_tx.send(());
+                }
+            },
+        ) {
             Ok(worker) => worker,
             Err(error) => {
                 queue.close();
-                let _ = sink_worker.join();
+                sink_worker.retire(WORKER_STOP_TIMEOUT, "macOS input sink startup failure");
                 return Err(MacosInputError::WorkerSpawn(error.to_string()));
             }
+        };
+        let event_worker = ManagedWorker {
+            handle: event_handle,
+            finished: event_finished_rx,
         };
 
         match ready_rx.recv_timeout(READY_TIMEOUT) {
@@ -216,16 +255,16 @@ impl MacosInputSession {
             }),
             Ok(Err(error)) => {
                 control.request_stop();
-                let _ = event_worker.join();
+                event_worker.retire(WORKER_STOP_TIMEOUT, "macOS event tap startup failure");
                 queue.close();
-                let _ = sink_worker.join();
+                sink_worker.retire(WORKER_STOP_TIMEOUT, "macOS input sink startup failure");
                 Err(error)
             }
             Err(_) => {
                 control.request_stop();
-                let _ = event_worker.join();
+                event_worker.retire(WORKER_STOP_TIMEOUT, "macOS event tap readiness timeout");
                 queue.close();
-                let _ = sink_worker.join();
+                sink_worker.retire(WORKER_STOP_TIMEOUT, "macOS input sink readiness timeout");
                 Err(MacosInputError::WorkerReadyTimeout)
             }
         }
@@ -296,12 +335,12 @@ impl MacosInputSession {
         self.stopped = true;
         self.control.request_stop();
         if let Some(worker) = self.event_worker.take() {
-            let _ = worker.join();
+            worker.retire(WORKER_STOP_TIMEOUT, "macOS event tap shutdown");
         }
         self.queue.request_gap(MacosInputGapReason::SourceStopped);
         self.queue.close();
         if let Some(worker) = self.sink_worker.take() {
-            let _ = worker.join();
+            worker.retire(WORKER_STOP_TIMEOUT, "macOS input sink shutdown");
         }
     }
 }
@@ -604,9 +643,10 @@ fn handle_tap_disable(context: &TapContext, reason: MacosInputGapReason, callbac
         .queue
         .diagnostics()
         .record_tap_disable(repeated, reason);
-    context
-        .queue
-        .enqueue_at(MacosInputEvent::StateGap { reason }, callback_entry);
+    context.queue.enqueue_at(
+        MacosQueuedInputEvent::gap(reason.host_reason()),
+        callback_entry,
+    );
     // Always re-enable, including on repeated disables. A disabled tap
     // fires no callbacks, so refusing here would be permanent capture
     // death with no recovery trigger anywhere. The retry cadence is
@@ -628,30 +668,31 @@ fn decode_native_event(
     event_type: CGEventType,
     event: &CGEvent,
     context: &TapContext,
-) -> Option<MacosInputEvent> {
+) -> Option<MacosQueuedInputEvent> {
     if event_type == CGEventType::KeyDown || event_type == CGEventType::KeyUp {
-        return Some(MacosInputEvent::Key {
-            virtual_keycode: u16::try_from(CGEvent::integer_value_field(
-                Some(event),
-                CGEventField::KeyboardEventKeycode,
-            ))
-            .ok()?,
-            pressed: event_type == CGEventType::KeyDown,
-            autorepeat: CGEvent::integer_value_field(
-                Some(event),
-                CGEventField::KeyboardEventAutorepeat,
-            ) != 0,
-        });
+        let virtual_keycode = u16::try_from(CGEvent::integer_value_field(
+            Some(event),
+            CGEventField::KeyboardEventKeycode,
+        ))
+        .ok()?;
+        return normalize_key_event(
+            virtual_keycode,
+            event_type == CGEventType::KeyDown,
+            CGEvent::integer_value_field(Some(event), CGEventField::KeyboardEventAutorepeat) != 0,
+        )
+        .map(MacosQueuedInputEvent::Event);
     }
     if event_type == CGEventType::FlagsChanged {
-        return Some(MacosInputEvent::ModifierFlags {
-            virtual_keycode: u16::try_from(CGEvent::integer_value_field(
-                Some(event),
-                CGEventField::KeyboardEventKeycode,
-            ))
-            .ok()?,
-            flags: MacosModifierFlags::from_bits(CGEvent::flags(Some(event)).bits()),
-        });
+        let virtual_keycode = u16::try_from(CGEvent::integer_value_field(
+            Some(event),
+            CGEventField::KeyboardEventKeycode,
+        ))
+        .ok()?;
+        return normalize_modifier_event(
+            virtual_keycode,
+            MacosModifierFlags::from_bits(CGEvent::flags(Some(event)).bits()),
+        )
+        .map(MacosQueuedInputEvent::Event);
     }
     if event_type == SYSTEM_DEFINED_EVENT {
         // The tap thread never spins an autorelease pool of its own, and
@@ -667,11 +708,7 @@ fn decode_native_event(
             };
             let data1 = i64::try_from(native.data1()).ok()?;
             if let Some(media) = decode_media_key(native.subtype().0, data1) {
-                return Some(MacosInputEvent::MediaKey {
-                    nx_key_type: media.nx_key_type,
-                    pressed: media.pressed,
-                    repeat: media.repeat,
-                });
+                return Some(MacosQueuedInputEvent::Event(media));
             }
             context
                 .queue
@@ -688,7 +725,9 @@ fn decode_native_event(
         ))
         .ok()?,
     ) {
-        return Some(MacosInputEvent::Button { button, pressed });
+        return Some(MacosQueuedInputEvent::Event(normalize_button_event(
+            button, pressed,
+        )));
     }
     if matches!(
         event_type,
@@ -698,13 +737,9 @@ fn decode_native_event(
             | CGEventType::OtherMouseDragged
     ) {
         let location = CGEvent::location(Some(event));
-        return Some(MacosInputEvent::Motion {
+        return Some(MacosQueuedInputEvent::Motion {
             x: location.x,
             y: location.y,
-            delta_x: CGEvent::integer_value_field(Some(event), CGEventField::MouseEventDeltaX)
-                as f64,
-            delta_y: CGEvent::integer_value_field(Some(event), CGEventField::MouseEventDeltaY)
-                as f64,
         });
     }
     if event_type == CGEventType::ScrollWheel {
@@ -730,22 +765,16 @@ fn decode_native_event(
             context,
             decode_momentum_phase,
         );
-        let unit = if CGEvent::integer_value_field(
-            Some(event),
-            CGEventField::ScrollWheelEventIsContinuous,
-        ) != 0
-        {
-            MacosScrollUnit::Pixels
-        } else {
-            MacosScrollUnit::Notches
-        };
-        return Some(MacosInputEvent::Wheel {
-            fixed_delta_x: q16_16_field(event, CGEventField::ScrollWheelEventFixedPtDeltaAxis2),
-            fixed_delta_y: q16_16_field(event, CGEventField::ScrollWheelEventFixedPtDeltaAxis1),
-            unit,
+        let continuous =
+            CGEvent::integer_value_field(Some(event), CGEventField::ScrollWheelEventIsContinuous)
+                != 0;
+        return Some(MacosQueuedInputEvent::Event(normalize_scroll_event(
+            q16_16_field(event, CGEventField::ScrollWheelEventFixedPtDeltaAxis2),
+            q16_16_field(event, CGEventField::ScrollWheelEventFixedPtDeltaAxis1),
+            continuous,
             phase,
             momentum_phase,
-        });
+        )));
     }
     None
 }
@@ -775,22 +804,23 @@ fn q16_16_field(event: &CGEvent, field: CGEventField) -> i64 {
 fn decode_phase(
     raw: i64,
     context: &TapContext,
-    decode: impl FnOnce(i64) -> Option<MacosScrollPhase>,
-) -> MacosScrollPhase {
+    decode: impl FnOnce(i64) -> Option<PointerScrollPhase>,
+) -> PointerScrollPhase {
     decode(raw).unwrap_or_else(|| {
         context.queue.diagnostics().record_invalid_scroll_phase();
-        MacosScrollPhase::None
+        PointerScrollPhase::None
     })
 }
 
 fn drain_batches(
     config: MacosInputConfig,
     mut desktop: MacosVirtualDesktop,
-    mut sink: impl FnMut(MacosInputBatch<'_>) -> MacosInputPublicationOutcome,
+    mut sink: impl FnMut(HostInputBatch<'_>) -> MacosInputPublicationOutcome,
     queue: &EventQueue,
     state: &Mutex<MacosWorkerState>,
     control: &RunLoopControl,
 ) {
+    let mut queued_events = Vec::with_capacity(DEFAULT_QUEUE_CAPACITY + 2);
     let mut events = Vec::with_capacity(DEFAULT_QUEUE_CAPACITY + 2);
     let mut callback_entries = Vec::with_capacity(DEFAULT_QUEUE_CAPACITY);
     let mut next_topology_check = Instant::now() + TOPOLOGY_INTERVAL;
@@ -842,16 +872,28 @@ fn drain_batches(
             next_topology_check = now + TOPOLOGY_INTERVAL;
         }
 
+        queued_events.clear();
         events.clear();
         callback_entries.clear();
         let at_ms = (config.clock)();
-        queue.drain_into(&mut events, &mut callback_entries);
+        queue.drain_into(&mut queued_events, &mut callback_entries);
+        let mut pointer = None;
+        for event in &queued_events {
+            match event {
+                MacosQueuedInputEvent::Event(event) => events.push(event.clone()),
+                MacosQueuedInputEvent::Motion { x, y } => {
+                    let (event, snapshot) = normalize_motion_event(desktop, *x, *y);
+                    events.push(event);
+                    pointer = Some(snapshot);
+                }
+            }
+        }
         if !events.is_empty() {
-            let outcome = sink(MacosInputBatch {
-                epoch: config.epoch,
-                at_ms,
+            let outcome = sink(HostInputBatch {
                 events: &events,
-                virtual_desktop: desktop,
+                pointer,
+                at_ms,
+                device_catalog_generation: 0,
             });
             if outcome == MacosInputPublicationOutcome::Published {
                 queue
@@ -917,5 +959,45 @@ mod tests {
                 pointer: 0b0100,
             }
         );
+    }
+
+    #[test]
+    fn managed_worker_observes_cooperative_exit() {
+        let (finished_tx, finished_rx) = mpsc::sync_channel(1);
+        let handle = spawn_worker(
+            thread::Builder::new().name("macos-managed-worker-exit-test".to_owned()),
+            move || {
+                let _ = finished_tx.send(());
+            },
+        )
+        .expect("worker spawns");
+        let worker = ManagedWorker {
+            handle,
+            finished: finished_rx,
+        };
+
+        assert!(worker.retire(Duration::from_secs(1), "cooperative test worker"));
+    }
+
+    #[test]
+    fn managed_worker_retirement_is_bounded_when_exit_stalls() {
+        let (release_tx, release_rx) = mpsc::channel();
+        let (_finished_tx, finished_rx) = mpsc::sync_channel(1);
+        let handle = spawn_worker(
+            thread::Builder::new().name("macos-managed-worker-timeout-test".to_owned()),
+            move || {
+                let _ = release_rx.recv();
+            },
+        )
+        .expect("worker spawns");
+        let worker = ManagedWorker {
+            handle,
+            finished: finished_rx,
+        };
+        let started = Instant::now();
+
+        assert!(!worker.retire(Duration::from_millis(20), "stalled test worker"));
+        assert!(started.elapsed() < Duration::from_millis(500));
+        release_tx.send(()).expect("retained worker is released");
     }
 }
