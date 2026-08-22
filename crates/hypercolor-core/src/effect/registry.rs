@@ -26,6 +26,8 @@ pub struct RescanReport {
     pub removed: usize,
     /// Number of effects re-loaded (source file modified).
     pub updated: usize,
+    /// Path-derived IDs that persisted documents must replace before use.
+    pub legacy_effect_ids: HashMap<EffectId, EffectId>,
 }
 
 // ── EffectEntry ──────────────────────────────────────────────────────────────
@@ -263,6 +265,7 @@ impl EffectRegistry {
             added,
             removed,
             updated,
+            legacy_effect_ids: html_report.legacy_effect_ids,
         };
 
         info!(
@@ -291,19 +294,12 @@ impl EffectRegistry {
                 added: 0,
                 removed: removed_count,
                 updated: 0,
+                legacy_effect_ids: HashMap::new(),
             };
         }
 
-        let entry = match super::loader::load_html_effect_file(path) {
-            Ok(Some(entry)) => entry,
-            Ok(None) => {
-                let removed_count = self.remove_by_source_path(path);
-                return RescanReport {
-                    added: 0,
-                    removed: removed_count,
-                    updated: 0,
-                };
-            }
+        let loaded = match super::loader::inspect_html_effect_file(path) {
+            Ok(loaded) => loaded,
             Err(error) => {
                 warn!(
                     path = %error.path.display(),
@@ -313,6 +309,16 @@ impl EffectRegistry {
                 return RescanReport::default();
             }
         };
+        let legacy_effect_ids = loaded.legacy_effect_ids.into_iter().collect();
+        let Some(entry) = loaded.entry else {
+            let removed_count = self.remove_by_source_path(path);
+            return RescanReport {
+                added: 0,
+                removed: removed_count,
+                updated: 0,
+                legacy_effect_ids,
+            };
+        };
 
         let stale_count =
             self.remove_by_source_path_except(&entry.source_path, Some(entry.metadata.id));
@@ -321,12 +327,14 @@ impl EffectRegistry {
                 added: 0,
                 removed: stale_count,
                 updated: 1,
+                legacy_effect_ids,
             }
         } else {
             RescanReport {
                 added: 1,
                 removed: stale_count,
                 updated: 0,
+                legacy_effect_ids,
             }
         }
     }

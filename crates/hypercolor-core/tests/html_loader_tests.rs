@@ -395,6 +395,34 @@ fn registry_rescan_preserves_builtin_native_effects() {
 }
 
 #[test]
+fn registry_rescan_preserves_late_legacy_id_migrations() {
+    let temp = TempDir::new().expect("failed to create tempdir");
+    let root = temp.path().join("effects");
+    fs::create_dir_all(&root).expect("effect root should exist");
+    let mut registry = EffectRegistry::new(vec![root.clone()]);
+
+    write_html(
+        &root.join("bundled/late-arrival.html"),
+        r#"
+<head>
+  <title>Late Arrival</title>
+  <meta description="Discovered after startup" />
+  <meta publisher="Hypercolor" />
+</head>
+"#,
+    );
+
+    let report = registry.rescan();
+
+    assert_eq!(report.added, 1);
+    assert!(!report.legacy_effect_ids.is_empty());
+    for (legacy_id, canonical_id) in report.legacy_effect_ids {
+        assert!(registry.get(&legacy_id).is_none());
+        assert!(registry.get(&canonical_id).is_some());
+    }
+}
+
+#[test]
 fn registry_reload_single_does_not_rescan_sibling_effects() {
     let temp = TempDir::new().expect("failed to create tempdir");
     let root = temp.path().join("effects");
@@ -452,6 +480,33 @@ fn registry_reload_single_does_not_rescan_sibling_effects() {
             .any(|(_, entry)| entry.metadata.name == "Nebula"),
         "unchanged sibling registry entry should keep its previous metadata"
     );
+}
+
+#[test]
+fn registry_reload_single_preserves_late_legacy_id_migrations() {
+    let temp = TempDir::new().expect("failed to create tempdir");
+    let root = temp.path().join("effects");
+    let path = root.join("bundled/watched-arrival.html");
+    write_html(
+        &path,
+        r#"
+<head>
+  <title>Watched Arrival</title>
+  <meta description="Discovered by the watcher" />
+  <meta publisher="Hypercolor" />
+</head>
+"#,
+    );
+    let mut registry = EffectRegistry::new(vec![root]);
+
+    let report = registry.reload_single(&path);
+
+    assert_eq!(report.added, 1);
+    assert!(!report.legacy_effect_ids.is_empty());
+    for (legacy_id, canonical_id) in report.legacy_effect_ids {
+        assert!(registry.get(&legacy_id).is_none());
+        assert!(registry.get(&canonical_id).is_some());
+    }
 }
 
 #[test]
@@ -655,6 +710,13 @@ fn register_html_effects_skips_builtin_html_ports_without_servo() {
     assert_eq!(report.scanned_files, 1);
     assert_eq!(report.loaded_effects, 0);
     assert_eq!(report.skipped_files, 1);
+    assert!(!report.legacy_effect_ids.is_empty());
+    assert!(
+        report
+            .legacy_effect_ids
+            .iter()
+            .all(|(legacy_id, canonical_id)| legacy_id != canonical_id)
+    );
     assert_eq!(registry.len(), 0);
 }
 
