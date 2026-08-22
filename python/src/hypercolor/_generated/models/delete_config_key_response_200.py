@@ -18,7 +18,7 @@ T = TypeVar("T", bound="DeleteConfigKeyResponse200")
 class DeleteConfigKeyResponse200:
     """
     Attributes:
-        data (ConfigMutationResponse): The outcome of a config write, reset, or whole-config reset.
+        data (ConfigMutationResponse): Outcome of a config write, key reset, or whole-config reset.
         meta (ResponseMeta): Response metadata included in every envelope.
     """
 
