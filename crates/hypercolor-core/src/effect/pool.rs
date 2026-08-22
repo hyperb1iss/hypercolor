@@ -34,7 +34,7 @@ pub struct EffectPool {
     asset_library: Option<Arc<RwLock<AssetLibrary>>>,
 }
 
-/// Fully constructed effect-pool changes that can be committed without failure.
+/// Effect-pool changes with allocation and control validation completed.
 pub struct PreparedEffectPoolReconcile {
     slots: HashMap<EffectSlotKey, EffectSlot>,
     reused_keys: Vec<EffectSlotKey>,
@@ -43,7 +43,14 @@ pub struct PreparedEffectPoolReconcile {
 
 struct PreparedControlUpdate {
     key: EffectSlotKey,
-    source: LayerEffectSource,
+    state: PreparedLayerState,
+}
+
+struct PreparedLayerState {
+    controls: ControlSet,
+    control_bindings: HashMap<String, ControlBinding>,
+    changed_bindings: Vec<String>,
+    changes: Vec<(ControlId, ControlValue)>,
     revision: SetRevision,
 }
 
@@ -160,8 +167,7 @@ impl EffectPool {
                 {
                     control_updates.push(PreparedControlUpdate {
                         key,
-                        source,
-                        revision,
+                        state: slot.prepare_layer_state(source, revision)?,
                     });
                 }
                 reused_keys.push(key);
@@ -175,7 +181,7 @@ impl EffectPool {
         })
     }
 
-    /// Commit a previously prepared reconciliation without fallible work.
+    /// Commit a previously prepared reconciliation without allocating.
     pub fn commit_reconcile(&mut self, prepared: PreparedEffectPoolReconcile) -> Result<()> {
         let PreparedEffectPoolReconcile {
             mut slots,
@@ -187,7 +193,7 @@ impl EffectPool {
                 .slots
                 .get_mut(&update.key)
                 .ok_or_else(|| anyhow!("prepared effect slot disappeared before commit"))?;
-            slot.sync_layer_state(&update.source, update.revision)?;
+            slot.commit_prepared_layer_state(update.state)?;
         }
         let mut live_slots = std::mem::take(&mut self.slots);
         for key in reused_keys {
@@ -465,7 +471,7 @@ impl EffectSlot {
             elapsed: Duration::ZERO,
             frame_number: 0,
         };
-        slot.sync_layer_state(&layer_source, SetRevision::new(group.controls_version))?;
+        slot.sync_layer_state(layer_source, SetRevision::new(group.controls_version))?;
         Ok(slot)
     }
 
@@ -486,12 +492,17 @@ impl EffectSlot {
             || self.canvas_height != canvas_height
     }
 
-    fn sync_layer_state(
-        &mut self,
-        source: &LayerEffectSource,
+    fn sync_layer_state(&mut self, source: LayerEffectSource, revision: SetRevision) -> Result<()> {
+        let prepared = self.prepare_layer_state(source, revision)?;
+        self.commit_prepared_layer_state(prepared)
+    }
+
+    fn prepare_layer_state(
+        &self,
+        source: LayerEffectSource,
         revision: SetRevision,
-    ) -> Result<()> {
-        let desired = canonical_control_set(revision, &self.metadata, source)?;
+    ) -> Result<PreparedLayerState> {
+        let controls = canonical_control_set(revision, &self.metadata, &source)?;
         let changed_bindings = self
             .control_bindings
             .keys()
@@ -502,8 +513,8 @@ impl EffectSlot {
             .cloned()
             .collect::<std::collections::HashSet<_>>();
 
-        if self.controls_initialized {
-            let changes = desired
+        let changes = if self.controls_initialized {
+            controls
                 .iter()
                 .filter_map(|(control_id, authored_value)| {
                     let control_id_text = control_id.as_str();
@@ -527,23 +538,43 @@ impl EffectSlot {
                     (previous_value != Some(desired_value))
                         .then(|| (control_id.clone(), desired_value.clone()))
                 })
-                .collect::<Vec<_>>();
-            if !changes.is_empty() {
-                let batch = ControlDeltaBatch::new(revision, 0, &changes);
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+
+        let mut changed_bindings = changed_bindings.into_iter().collect::<Vec<_>>();
+        changed_bindings.sort_unstable();
+
+        Ok(PreparedLayerState {
+            controls,
+            control_bindings: source.control_bindings,
+            changed_bindings,
+            changes,
+            revision,
+        })
+    }
+
+    fn commit_prepared_layer_state(&mut self, prepared: PreparedLayerState) -> Result<()> {
+        if self.controls_initialized {
+            if !prepared.changes.is_empty() {
+                let batch = ControlDeltaBatch::new(prepared.revision, 0, &prepared.changes);
                 if self.renderer.apply_controls(&batch).is_err() {
-                    self.renderer.initialize_controls(revision, &desired)?;
+                    self.renderer
+                        .initialize_controls(prepared.revision, &prepared.controls)?;
                     self.binding_state.clear();
                 }
             }
         } else {
-            self.renderer.initialize_controls(revision, &desired)?;
+            self.renderer
+                .initialize_controls(prepared.revision, &prepared.controls)?;
         }
 
-        for control_id in changed_bindings {
+        for control_id in prepared.changed_bindings {
             self.binding_state.remove(&control_id);
         }
-        self.controls = desired;
-        self.control_bindings.clone_from(&source.control_bindings);
+        self.controls = prepared.controls;
+        self.control_bindings = prepared.control_bindings;
         self.controls_initialized = true;
         self.resolution_seq = 0;
         Ok(())
@@ -1345,7 +1376,7 @@ mod tests {
             control_bindings: HashMap::new(),
         };
 
-        slot.sync_layer_state(&source, SetRevision::new(1))
+        slot.sync_layer_state(source, SetRevision::new(1))
             .expect("snapshot replay should recover the renderer");
 
         assert_eq!(
@@ -1452,7 +1483,7 @@ mod tests {
             control_bindings: HashMap::from([("speed".into(), binding)]),
         };
 
-        slot.sync_layer_state(&source, SetRevision::new(1))
+        slot.sync_layer_state(source, SetRevision::new(1))
             .expect("snapshot replay should recover the renderer");
 
         assert!(slot.binding_state.is_empty());
