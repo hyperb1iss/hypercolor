@@ -777,16 +777,10 @@ impl ControlValue {
                     .map_err(|_| EffectJsonValueError::IntegerOutOfRange)?,
             ),
             Self::ColorRgb(value) => serde_json::Value::String(value.to_hex()),
-            Self::ColorRgba(value) => serde_json::Value::String(format!(
-                "#{:02x}{:02x}{:02x}{:02x}",
-                value.r, value.g, value.b, value.a
-            )),
+            Self::ColorRgba(value) => serde_json::Value::String(effect_color_hex(*value)),
             Self::ColorLinear(value) => {
                 let value = value.to_encoded();
-                serde_json::Value::String(format!(
-                    "#{:02x}{:02x}{:02x}{:02x}",
-                    value.r, value.g, value.b, value.a
-                ))
+                serde_json::Value::String(effect_color_hex(value))
             }
             Self::Gradient(stops) => serde_json::Value::Array(
                 stops
@@ -994,4 +988,15 @@ pub fn narrow_effect_f32(value: f64) -> Result<f32, EffectJsonValueError> {
     }
     #[expect(clippy::cast_possible_truncation, clippy::as_conversions)]
     Ok(value as f32)
+}
+
+fn effect_color_hex(value: Rgba) -> String {
+    if value.a == u8::MAX {
+        format!("#{:02x}{:02x}{:02x}", value.r, value.g, value.b)
+    } else {
+        format!(
+            "#{:02x}{:02x}{:02x}{:02x}",
+            value.r, value.g, value.b, value.a
+        )
+    }
 }

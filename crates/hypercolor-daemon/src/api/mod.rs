@@ -9,7 +9,6 @@ pub mod assets;
 pub mod attachments;
 pub mod capture;
 pub mod config;
-pub mod control_values;
 pub mod controls;
 pub mod devices;
 pub mod diagnose;

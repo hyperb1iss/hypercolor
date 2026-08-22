@@ -458,23 +458,5 @@ async fn active_effect_layer(
 }
 
 fn control_value_from_json(value: serde_json::Value) -> Result<ControlValue> {
-    if let Some(value) = value.as_i64() {
-        return Ok(ControlValue::Int(value));
-    }
-    if value.is_number() {
-        return Ok(ControlValue::Float(serde_json::from_value(value)?));
-    }
-    if let Some(value) = value.as_bool() {
-        return Ok(ControlValue::Bool(value));
-    }
-    if let Some(value) = value.as_str() {
-        return Ok(ControlValue::Text(value.to_owned()));
-    }
-    if let Ok(color) = serde_json::from_value::<[f32; 4]>(value.clone()) {
-        return Ok(ControlValue::linear_color(color));
-    }
-    if let Ok(rect) = serde_json::from_value::<hypercolor_types::viewport::ViewportRect>(value) {
-        return Ok(ControlValue::rect(rect));
-    }
-    anyhow::bail!("Unsupported effect control value")
+    ControlValue::try_from_effect_json(&value).map_err(Into::into)
 }

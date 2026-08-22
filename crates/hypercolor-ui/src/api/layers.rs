@@ -110,9 +110,9 @@ pub async fn patch_layer_controls(
         .ok_or_else(|| "Controls must be a JSON object".to_owned())?
         .iter()
         .map(|(name, value)| {
-            control_value_from_json(value)
+            ControlValue::try_from_effect_json(value)
                 .map(|value| (name.clone(), value))
-                .ok_or_else(|| format!("Unsupported control value for {name}"))
+                .map_err(|error| format!("Invalid control value for {name}: {error}"))
         })
         .collect::<Result<BTreeMap<_, _>, _>>()?;
     client::patch_json_discard(
@@ -172,27 +172,4 @@ fn layer_stack(zone: ZoneResource, revision: u64) -> LayerStackResponse {
         items: zone.layers,
         revision,
     }
-}
-
-fn control_value_from_json(value: &serde_json::Value) -> Option<ControlValue> {
-    if let Some(value) = value.as_i64() {
-        return Some(ControlValue::Int(value));
-    }
-    if value.is_number() {
-        return serde_json::from_value::<f64>(value.clone())
-            .ok()
-            .map(ControlValue::Float);
-    }
-    if let Some(value) = value.as_bool() {
-        return Some(ControlValue::Bool(value));
-    }
-    if let Some(value) = value.as_str() {
-        return Some(ControlValue::Text(value.to_owned()));
-    }
-    if let Ok(color) = serde_json::from_value::<[f32; 4]>(value.clone()) {
-        return Some(ControlValue::linear_color(color));
-    }
-    serde_json::from_value::<hypercolor_types::viewport::ViewportRect>(value.clone())
-        .ok()
-        .map(ControlValue::rect)
 }

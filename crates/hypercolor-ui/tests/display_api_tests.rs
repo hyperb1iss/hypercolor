@@ -39,7 +39,7 @@ fn dropdown_control(id: &str) -> ControlDefinition {
         min: None,
         max: None,
         step: None,
-        labels: vec!["a".to_owned(), "b".to_owned()],
+        labels: vec!["high".to_owned(), "low".to_owned()],
         group: None,
         tooltip: None,
         aspect_lock: None,

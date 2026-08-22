@@ -328,53 +328,14 @@ fn parse_controls_map(
 
     let mut controls = std::collections::HashMap::with_capacity(map.len());
     for (key, value) in map {
-        let Some(control) = control_value_from_json(value) else {
-            return Err(ToolError::InvalidParam {
+        let control =
+            ControlValue::try_from_effect_json(value).map_err(|error| ToolError::InvalidParam {
                 param: "controls".into(),
-                reason: format!("unsupported control value for '{key}'"),
-            });
-        };
+                reason: format!("invalid control value for '{key}': {error}"),
+            })?;
         controls.insert(key.clone(), control);
     }
     Ok(controls)
-}
-
-fn control_value_from_json(value: &Value) -> Option<ControlValue> {
-    if let Some(flag) = value.as_bool() {
-        return Some(ControlValue::Bool(flag));
-    }
-
-    if let Some(integer_value) = value.as_i64() {
-        return Some(ControlValue::Int(integer_value));
-    }
-
-    if let Some(float_value) = value.as_f64() {
-        let finite = if float_value.is_finite() {
-            float_value
-        } else {
-            return None;
-        };
-        return Some(ControlValue::Float(finite));
-    }
-
-    if let Some(text) = value.as_str() {
-        return Some(ControlValue::Text(text.to_owned()));
-    }
-
-    if let Some(array) = value.as_array()
-        && array.len() == 4
-    {
-        let mut rgba = [0.0_f32; 4];
-        for (idx, component) in array.iter().enumerate() {
-            let number = component.as_f64()?;
-            #[expect(clippy::cast_possible_truncation, clippy::as_conversions)]
-            let number = number as f32;
-            rgba[idx] = number;
-        }
-        return Some(ControlValue::linear_color(rgba));
-    }
-
-    None
 }
 
 async fn resolve_display_device(
@@ -417,5 +378,36 @@ fn display_device_payload(info: &DeviceInfo, surface: DisplaySurfaceInfo) -> Dis
         width: surface.width,
         height: surface.height,
         circular: surface.circular,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use hypercolor_types::control::ControlValue;
+
+    use super::parse_controls_map;
+
+    #[test]
+    fn display_controls_reject_f64_values_outside_the_effect_abi() {
+        let payload = serde_json::json!({
+            "gain": f64::from(f32::MAX) * 2.0,
+        });
+
+        let error =
+            parse_controls_map(Some(&payload)).expect_err("f64 values beyond f32 must be rejected");
+        assert!(error.to_string().contains("within the f32 range"));
+    }
+
+    #[test]
+    fn display_controls_admit_checked_rgba_arrays() {
+        let payload = serde_json::json!({
+            "accent": [0.1, 0.2, 0.3, 0.4],
+        });
+
+        let controls = parse_controls_map(Some(&payload)).expect("valid RGBA should parse");
+        let ControlValue::ColorLinear(color) = controls["accent"] else {
+            panic!("expected linear color");
+        };
+        assert!((color.a - 0.4).abs() < f32::EPSILON);
     }
 }

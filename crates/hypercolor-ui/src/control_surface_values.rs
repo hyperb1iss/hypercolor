@@ -5,59 +5,13 @@ use hypercolor_types::control::{ControlValue, SecretRef};
 use hypercolor_types::controls::{ControlObjectField, ControlValueType};
 use serde_json::Value as JsonValue;
 
+use crate::control_value_json::control_value_to_json;
+
 pub fn json_text(value: Option<&ControlValue>) -> String {
     value
         .map(control_value_to_json)
         .and_then(|value| serde_json::to_string_pretty(&value).ok())
         .unwrap_or_default()
-}
-
-pub fn control_value_to_json(value: &ControlValue) -> JsonValue {
-    match value {
-        ControlValue::Null => JsonValue::Null,
-        ControlValue::Bool(value) => JsonValue::Bool(*value),
-        ControlValue::Int(value) => JsonValue::from(*value),
-        ControlValue::Float(value) => JsonValue::from(*value),
-        ControlValue::Text(value) | ControlValue::Enum(value) => JsonValue::String(value.clone()),
-        ControlValue::SecretRef(value) => JsonValue::String(value.as_str().to_owned()),
-        ControlValue::Ip(value) => JsonValue::String(value.as_str().to_owned()),
-        ControlValue::Mac(value) => JsonValue::String(value.as_str().to_owned()),
-        ControlValue::ColorRgb(value) => {
-            JsonValue::Array([value.r, value.g, value.b].map(JsonValue::from).into())
-        }
-        ControlValue::ColorRgba(value) => JsonValue::Array(
-            [value.r, value.g, value.b, value.a]
-                .map(JsonValue::from)
-                .into(),
-        ),
-        ControlValue::Duration(value) => {
-            JsonValue::from(u64::try_from(value.as_millis()).unwrap_or(u64::MAX))
-        }
-        ControlValue::ColorLinear(value) => serde_json::json!([value.r, value.g, value.b, value.a]),
-        ControlValue::Gradient(values) => serde_json::json!(values),
-        ControlValue::Rect(value) => serde_json::json!({
-            "x": value.x,
-            "y": value.y,
-            "width": value.width,
-            "height": value.height,
-        }),
-        ControlValue::Flags(values) => JsonValue::Array(
-            values
-                .iter()
-                .map(|value| JsonValue::String(value.clone()))
-                .collect(),
-        ),
-        ControlValue::List(values) => {
-            JsonValue::Array(values.iter().map(control_value_to_json).collect())
-        }
-        ControlValue::Map(values) => JsonValue::Object(
-            values
-                .iter()
-                .map(|(key, value)| (key.clone(), control_value_to_json(value)))
-                .collect(),
-        ),
-        ControlValue::Unknown => JsonValue::Null,
-    }
 }
 
 pub fn parse_json_control_value(

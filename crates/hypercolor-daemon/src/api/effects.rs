@@ -36,7 +36,6 @@ use hypercolor_types::session::OffOutputBehavior;
 use hypercolor_types::spatial::SpatialLayout;
 
 use crate::api::AppState;
-use crate::api::control_values::json_to_control_value;
 use crate::api::envelope;
 use crate::discovery;
 use crate::domain;
@@ -890,8 +889,8 @@ pub(crate) fn normalize_control_payload(
     let mut rejected = Vec::new();
 
     for (name, value) in raw_controls {
-        let Some(parsed) = json_to_control_value(value) else {
-            rejected.push(format!("{name} (unsupported JSON shape)"));
+        let Ok(parsed) = ControlValue::try_from_effect_json(value) else {
+            rejected.push(format!("{name} (unsupported JSON shape or numeric range)"));
             continue;
         };
 

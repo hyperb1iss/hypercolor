@@ -12,7 +12,6 @@ use hypercolor_types::event::{HypercolorEvent, LibraryChangeKind, LibraryCollect
 use hypercolor_types::library::{EffectPreset, PresetId};
 
 use crate::api::AppState;
-use crate::api::control_values::json_to_control_value;
 use crate::api::effects::resolve_effect_metadata;
 use crate::api::envelope;
 use crate::domain::{DomainError, ResourceKind};
@@ -210,8 +209,8 @@ fn parse_preset_controls(
     let mut normalized = HashMap::new();
     let mut rejected = Vec::new();
     for (name, raw_value) in control_map {
-        let Some(parsed) = json_to_control_value(raw_value) else {
-            rejected.push(format!("{name} (unsupported JSON shape)"));
+        let Ok(parsed) = ControlValue::try_from_effect_json(raw_value) else {
+            rejected.push(format!("{name} (unsupported JSON shape or numeric range)"));
             continue;
         };
         let Some(definition) = effect.control_by_id(name) else {
