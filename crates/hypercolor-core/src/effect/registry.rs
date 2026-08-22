@@ -333,9 +333,10 @@ impl EffectRegistry {
         path: &Path,
         loaded: super::loader::HtmlEffectFile,
     ) -> RescanReport {
-        let legacy_effect_ids = loaded.legacy_effect_ids.into_iter().collect();
+        let legacy_effect_ids = loaded.legacy_effect_ids;
         let Some(entry) = loaded.entry else {
             let removed_count = self.remove_by_source_path(path);
+            let legacy_effect_ids = super::loader::registered_migrations(self, legacy_effect_ids);
             return RescanReport {
                 added: 0,
                 removed: removed_count,
@@ -343,6 +344,8 @@ impl EffectRegistry {
                 legacy_effect_ids,
             };
         };
+
+        let legacy_effect_ids = legacy_effect_ids.into_iter().collect();
 
         let stale_count =
             self.remove_by_source_path_except(&entry.source_path, Some(entry.metadata.id));

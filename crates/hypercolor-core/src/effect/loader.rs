@@ -129,11 +129,9 @@ pub fn register_html_effects(
             };
 
             let Some(entry) = loaded.entry else {
-                for (legacy_id, canonical_id) in loaded.legacy_effect_ids {
-                    if registry.get(&canonical_id).is_some() {
-                        report.legacy_effect_ids.insert(legacy_id, canonical_id);
-                    }
-                }
+                report
+                    .legacy_effect_ids
+                    .extend(registered_migrations(registry, loaded.legacy_effect_ids));
                 report.skipped_files += 1;
                 continue;
             };
@@ -163,6 +161,16 @@ pub fn register_html_effects(
     }
 
     report
+}
+
+pub(super) fn registered_migrations(
+    registry: &EffectRegistry,
+    migrations: impl IntoIterator<Item = (EffectId, EffectId)>,
+) -> HashMap<EffectId, EffectId> {
+    migrations
+        .into_iter()
+        .filter(|(_, canonical_id)| registry.get(canonical_id).is_some())
+        .collect()
 }
 
 /// Load a single HTML effect file into a registry-ready entry.

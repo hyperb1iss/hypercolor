@@ -601,6 +601,92 @@ async fn watcher_reload_reapplies_the_ephemeral_map_idempotently() {
     assert_eq!(favorites[0].added_at_ms, 20);
 }
 
+#[cfg(not(feature = "servo"))]
+#[tokio::test]
+async fn skipped_screen_cast_port_never_migrates_scene_persistence() {
+    let temp = TempDir::new().expect("tempdir");
+    let data_dir = temp.path().join("state");
+    let state = AppState::new_with_data_dir(data_dir.clone());
+    let effect_path = data_dir.join("effects/bundled/screen-cast.html");
+    std::fs::create_dir_all(
+        effect_path
+            .parent()
+            .expect("effect path should have a parent"),
+    )
+    .expect("effect directory should build");
+    std::fs::write(
+        &effect_path,
+        r#"<head><title>Screen Cast</title><meta builtin-id="screen_cast" /></head>"#,
+    )
+    .expect("screen cast port should write");
+    let source_path = std::fs::canonicalize(&effect_path).expect("effect should canonicalize");
+    let legacy_id =
+        deterministic_html_effect_id(&format!("hypercolor:html:{}", source_path.display()));
+    let unregistered_target = deterministic_html_effect_id("hypercolor:html-bundled:screen-cast");
+
+    let mut mutation = state.scene_manager.begin_mutation().await;
+    let mut named_scene = mutation
+        .scenes()
+        .get(&SceneId::DEFAULT)
+        .cloned()
+        .expect("default scene should exist");
+    named_scene.id = SceneId::new();
+    named_scene.name = "Legacy screen scene".to_owned();
+    named_scene.kind = SceneKind::Named;
+    named_scene.mutation_mode = SceneMutationMode::Live;
+    named_scene.zones[0].layers = vec![SceneLayer::from_effect(
+        SceneLayerId::new(),
+        legacy_id,
+        HashMap::new(),
+        HashMap::new(),
+        None,
+    )];
+    mutation
+        .create_scene(named_scene)
+        .expect("named scene should enter the candidate");
+    state
+        .scene_manager
+        .commit_mutation(mutation)
+        .await
+        .expect("named scene should commit");
+
+    for report in [
+        rescan_registry(&state)
+            .await
+            .expect("rescan should skip the unavailable port"),
+        reload_registry_file(&state, &effect_path)
+            .await
+            .expect("watcher reload should skip the unavailable port"),
+    ] {
+        assert!(
+            report.legacy_effect_ids.is_empty(),
+            "skipped port exposed migrations: {:?}",
+            report.legacy_effect_ids
+        );
+    }
+    let registry = state.domains.effects.registry_handle();
+    assert!(registry.read().await.get(&unregistered_target).is_none());
+    let manager = state.scene_manager.snapshot().await;
+    assert!(
+        manager
+            .list()
+            .into_iter()
+            .filter(|scene| scene.kind == SceneKind::Named)
+            .flat_map(|scene| &scene.zones)
+            .flat_map(hypercolor_types::scene::Zone::effect_ids)
+            .all(|effect_id| effect_id == legacy_id)
+    );
+    let durable = crate::scene_store::SceneStore::load(&data_dir.join("scenes.json"))
+        .expect("scene store should remain readable");
+    assert!(
+        durable
+            .list()
+            .flat_map(|scene| &scene.zones)
+            .flat_map(hypercolor_types::scene::Zone::effect_ids)
+            .all(|effect_id| effect_id == legacy_id)
+    );
+}
+
 #[tokio::test]
 async fn publication_conflict_reprepares_inside_the_same_rescan() {
     let temp = TempDir::new().expect("tempdir");
