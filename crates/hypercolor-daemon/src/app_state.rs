@@ -29,7 +29,7 @@ use hypercolor_core::input::screen::ScreenCapacityStatusHandle;
 use hypercolor_core::input::{InputManager, SourceStatusRegistry};
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
-use hypercolor_driver_api::CredentialStore;
+use hypercolor_driver_support::CredentialStore;
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::{HypercolorConfig, RenderAccelerationMode};
 use hypercolor_types::device::DeviceId;

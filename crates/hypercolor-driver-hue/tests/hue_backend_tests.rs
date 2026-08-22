@@ -2,13 +2,13 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use hypercolor_driver_api::CredentialStore;
 use hypercolor_driver_api::DeviceBackend;
 use hypercolor_driver_api::DeviceLifecyclePolicy;
 use hypercolor_driver_api::DiscoveryConnectBehavior;
 use hypercolor_driver_hue::{
     GAMUT_C, HueBackend, HueConfig, HueDiscoveredBridge, build_device_info, rgb_to_cie_xyb,
 };
+use hypercolor_driver_support::CredentialStore;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex as AsyncMutex;

@@ -31,9 +31,10 @@ use hypercolor_daemon::network::{self, DaemonDriverHost};
 use hypercolor_daemon::output_power::OutputPower;
 use hypercolor_daemon::scene_transactions::SceneTransactionQueue;
 use hypercolor_driver_api::{
-    CredentialStore, DiscoveryCapability, DiscoveryRequest, DriverConfigView, DriverDescriptor,
-    DriverError, DriverHost, DriverModule,
+    DiscoveryCapability, DiscoveryRequest, DriverConfigView, DriverDescriptor, DriverError,
+    DriverHost, DriverModule,
 };
+use hypercolor_driver_support::CredentialStore;
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
 use hypercolor_types::device::{

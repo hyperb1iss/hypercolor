@@ -58,6 +58,7 @@ hypercolor-types = { workspace = true }
 hypercolor-core = { path = "../hypercolor-core", default-features = false }
 hypercolor-macos-owner = { workspace = true }
 hypercolor-driver-api = { workspace = true }
+hypercolor-driver-support = { workspace = true }
 hypercolor-driver-builtin = { workspace = true, default-features = false, optional = true }
 hypercolor-network = { workspace = true }
 hypercolor-leptos-ext = { path = "../hypercolor-leptos-ext", default-features = false, features = ["ws-core", "axum"] }

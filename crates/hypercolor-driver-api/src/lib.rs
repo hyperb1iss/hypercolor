@@ -16,7 +16,6 @@ pub mod driver_discovery;
 pub mod error;
 pub mod host;
 pub mod module;
-pub mod net;
 pub mod pairing;
 pub mod support;
 pub mod validation;
@@ -44,7 +43,6 @@ pub use module::{
     DeviceBackendFactory, DriverModule, DriverPresentationProvider, DriverProtocolCatalog,
     DriverRuntimeCacheProvider, OutputBinding,
 };
-pub use net::{CredentialStore, MdnsBrowser, MdnsService};
 pub use pairing::{
     ClearPairingOutcome, DeviceAuthState, DeviceAuthSummary, PairDeviceOutcome, PairDeviceRequest,
     PairDeviceStatus, PairingCapability, PairingDescriptor, PairingFieldDescriptor,

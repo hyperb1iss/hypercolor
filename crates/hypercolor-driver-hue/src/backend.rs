@@ -11,11 +11,11 @@ use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 use hypercolor_color::Rgb;
-use hypercolor_driver_api::CredentialStore;
 use hypercolor_driver_api::{
     BackendInfo, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId, DeviceDeliveryObserver,
     DeviceFrameSink, DeviceLifecyclePolicy, DeviceWriteOutcome, DiscoveredDevice, OutputCadence,
 };
+use hypercolor_driver_support::CredentialStore;
 use hypercolor_types::device::{DeviceError, DeviceId, DeviceInfo};
 
 use super::bridge::HueBridgeClient;

@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use async_trait::async_trait;
-use hypercolor_driver_api::CredentialStore;
 use hypercolor_driver_api::{
     DriverConfigProvider, DriverCredentialStore, DriverDiscoveryState, DriverError, DriverHost,
     DriverModule, DriverRuntimeActions, DriverTrackedDevice, TrackedDeviceCtx,
@@ -13,6 +12,7 @@ use hypercolor_driver_hue::{
     HueConfig, HueDriverModule, hue_device_control_surface, hue_driver_control_surface,
     resolve_hue_probe_bridges_from_sources,
 };
+use hypercolor_driver_support::CredentialStore;
 use hypercolor_types::controls::{
     ApplyImpact, ControlAccess, ControlAvailabilityState, ControlSurfaceScope, ControlValue,
 };

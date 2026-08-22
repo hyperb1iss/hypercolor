@@ -17,14 +17,15 @@ use hypercolor_driver_api::control_surface;
 use hypercolor_driver_api::support::{activate_if_requested, disconnect_after_unpair};
 use hypercolor_driver_api::validation::validate_ip;
 use hypercolor_driver_api::{
-    ClearPairingOutcome, ControlApplyTarget, CredentialStore, DeviceAuthState, DeviceAuthSummary,
-    DeviceBackend, DeviceBackendFactory, DiscoveredDevice, DiscoveryCapability,
-    DiscoveryConnectBehavior, DiscoveryRequest, DriverConfigProvider, DriverConfigView,
-    DriverControlProvider, DriverDescriptor, DriverError, DriverHost, DriverModule,
-    DriverPresentationProvider, DriverRuntimeCacheProvider, DriverTrackedDevice, OutputBinding,
-    PairDeviceOutcome, PairDeviceRequest, PairDeviceStatus, PairingCapability, PairingDescriptor,
+    ClearPairingOutcome, ControlApplyTarget, DeviceAuthState, DeviceAuthSummary, DeviceBackend,
+    DeviceBackendFactory, DiscoveredDevice, DiscoveryCapability, DiscoveryConnectBehavior,
+    DiscoveryRequest, DriverConfigProvider, DriverConfigView, DriverControlProvider,
+    DriverDescriptor, DriverError, DriverHost, DriverModule, DriverPresentationProvider,
+    DriverRuntimeCacheProvider, DriverTrackedDevice, OutputBinding, PairDeviceOutcome,
+    PairDeviceRequest, PairDeviceStatus, PairingCapability, PairingDescriptor,
     PairingFieldDescriptor, PairingFlowKind, TrackedDeviceCtx, ValidatedControlChanges,
 };
+use hypercolor_driver_support::CredentialStore;
 use hypercolor_types::config::{DriverConfigEntry, GoveeConfig};
 use hypercolor_types::controls::{
     ApplyControlChangesResponse, ApplyImpact, ControlChange, ControlFieldDescriptor,

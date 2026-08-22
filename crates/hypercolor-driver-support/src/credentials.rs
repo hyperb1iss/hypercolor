@@ -13,7 +13,7 @@ use serde_json::Value;
 use tokio::fs;
 use tokio::sync::RwLock;
 
-use crate::DriverCredentialStore;
+use hypercolor_driver_api::DriverCredentialStore;
 
 /// Per-process temp-file suffix counter for atomic store writes.
 static SAVE_COUNTER: AtomicU64 = AtomicU64::new(0);

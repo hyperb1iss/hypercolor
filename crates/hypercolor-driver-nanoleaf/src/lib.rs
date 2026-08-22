@@ -19,7 +19,6 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
-use hypercolor_driver_api::CredentialStore;
 use hypercolor_driver_api::DeviceBackend;
 use hypercolor_driver_api::control_apply;
 use hypercolor_driver_api::control_surface;
@@ -37,6 +36,7 @@ use hypercolor_driver_api::{
     PairingCapability, PairingDescriptor, PairingFlowKind, TrackedDeviceCtx,
     ValidatedControlChanges,
 };
+use hypercolor_driver_support::CredentialStore;
 use hypercolor_types::config::DriverConfigEntry;
 use hypercolor_types::controls::{
     ActionConfirmation, ActionConfirmationLevel, ApplyControlChangesResponse, ApplyImpact,

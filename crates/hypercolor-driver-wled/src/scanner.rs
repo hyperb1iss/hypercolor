@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 use tokio::task::JoinSet;
 use tracing::{debug, warn};
 
-use hypercolor_driver_api::MdnsBrowser;
 use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior};
+use hypercolor_driver_support::MdnsBrowser;
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
     DeviceFingerprint, DeviceInfo, DeviceOrigin, DeviceTopologyHint, FingerprintNamespace,

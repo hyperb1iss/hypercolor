@@ -6,9 +6,10 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use hypercolor_driver_api::{
-    BackendInfo, CredentialStore, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId,
-    DeviceDeliveryObserver, DeviceFrameSink, DeviceWriteOutcome, DiscoveredDevice, OutputCadence,
+    BackendInfo, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId, DeviceDeliveryObserver,
+    DeviceFrameSink, DeviceWriteOutcome, DiscoveredDevice, OutputCadence,
 };
+use hypercolor_driver_support::CredentialStore;
 use hypercolor_types::config::GoveeConfig;
 use hypercolor_types::device::{DeviceError, DeviceId, DeviceInfo};
 use tokio::net::UdpSocket;

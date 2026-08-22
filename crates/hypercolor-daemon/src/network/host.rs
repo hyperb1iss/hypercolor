@@ -4,12 +4,12 @@ use std::sync::Arc;
 use anyhow::{Result, bail};
 use async_trait::async_trait;
 use hypercolor_core::config::ConfigManager;
-use hypercolor_driver_api::CredentialStore;
 use hypercolor_driver_api::{
     BackendRebindActions, DeviceControlStore, DriverConfigView, DriverControlHost,
     DriverControlStore, DriverCredentialStore, DriverDiscoveryState, DriverHost,
     DriverLifecycleActions, DriverRuntimeActions, DriverTrackedDevice,
 };
+use hypercolor_driver_support::CredentialStore;
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::controls::{ControlSurfaceEvent, ControlValue, ControlValueMap};

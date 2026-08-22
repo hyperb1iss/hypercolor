@@ -4892,6 +4892,7 @@ dependencies = [
  "hypercolor-core",
  "hypercolor-driver-api",
  "hypercolor-driver-builtin",
+ "hypercolor-driver-support",
  "hypercolor-leptos-ext",
  "hypercolor-macos-capture",
  "hypercolor-macos-gpu-interop",
@@ -4949,15 +4950,11 @@ dependencies = [
 name = "hypercolor-driver-api"
 version = "0.3.2"
 dependencies = [
- "aes-gcm 0.10.3",
  "anyhow",
  "async-trait",
  "hypercolor-types",
- "mdns-sd",
- "rand 0.10.1",
  "serde",
  "serde_json",
- "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -4975,6 +4972,7 @@ dependencies = [
  "hypercolor-driver-hue",
  "hypercolor-driver-nanoleaf",
  "hypercolor-driver-openrgb",
+ "hypercolor-driver-support",
  "hypercolor-driver-wled",
  "hypercolor-hal",
  "hypercolor-network",
@@ -4990,6 +4988,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "hypercolor-driver-api",
+ "hypercolor-driver-support",
  "hypercolor-types",
  "reqwest 0.12.28",
  "serde",
@@ -5006,6 +5005,7 @@ dependencies = [
  "async-trait",
  "hypercolor-color",
  "hypercolor-driver-api",
+ "hypercolor-driver-support",
  "hypercolor-types",
  "reqwest 0.12.28",
  "rustls",
@@ -5026,6 +5026,7 @@ dependencies = [
  "async-trait",
  "hypercolor-color",
  "hypercolor-driver-api",
+ "hypercolor-driver-support",
  "hypercolor-types",
  "reqwest 0.12.28",
  "serde",
@@ -5051,12 +5052,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "hypercolor-driver-support"
+version = "0.3.2"
+dependencies = [
+ "aes-gcm 0.10.3",
+ "anyhow",
+ "async-trait",
+ "hypercolor-driver-api",
+ "mdns-sd",
+ "rand 0.10.1",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "hypercolor-driver-wled"
 version = "0.3.2"
 dependencies = [
  "anyhow",
  "async-trait",
  "hypercolor-driver-api",
+ "hypercolor-driver-support",
  "hypercolor-types",
  "log",
  "mdns-sd",

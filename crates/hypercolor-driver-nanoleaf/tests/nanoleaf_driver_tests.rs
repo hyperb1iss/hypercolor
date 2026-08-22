@@ -5,7 +5,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Result;
 use async_trait::async_trait;
-use hypercolor_driver_api::CredentialStore;
 use hypercolor_driver_api::{
     BackendRebindActions, DeviceControlStore, DriverConfigProvider, DriverControlHost,
     DriverControlStore, DriverCredentialStore, DriverDiscoveryState, DriverError, DriverHost,
@@ -16,6 +15,7 @@ use hypercolor_driver_nanoleaf::{
     NanoleafConfig, NanoleafDriverModule, nanoleaf_device_control_surface,
     nanoleaf_driver_control_surface, resolve_nanoleaf_probe_devices_from_sources,
 };
+use hypercolor_driver_support::CredentialStore;
 use hypercolor_types::controls::{
     ActionConfirmationLevel, ApplyImpact, ControlAccess, ControlActionStatus, ControlSurfaceEvent,
     ControlValue, ControlValueMap,

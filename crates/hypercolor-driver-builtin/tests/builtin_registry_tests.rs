@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 #[cfg(feature = "hal")]
 use hypercolor_core::device::UsbProtocolConfigStore;
-use hypercolor_driver_api::CredentialStore;
 use hypercolor_driver_builtin::build_driver_module_registry;
+use hypercolor_driver_support::CredentialStore;
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::HypercolorConfig;
 #[cfg(any(feature = "hal", feature = "openrgb"))]

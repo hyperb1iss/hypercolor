@@ -11,8 +11,8 @@ use serde_json::Value;
 use tokio::task::JoinSet;
 use tracing::warn;
 
-use hypercolor_driver_api::{CredentialStore, MdnsBrowser};
 use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior};
+use hypercolor_driver_support::{CredentialStore, MdnsBrowser};
 use hypercolor_types::portable::PortableIdentityClaim;
 
 use super::fetch_device_info;

@@ -1,4 +1,4 @@
-use hypercolor_driver_api::CredentialStore;
+use hypercolor_driver_support::CredentialStore;
 use tempfile::tempdir;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;

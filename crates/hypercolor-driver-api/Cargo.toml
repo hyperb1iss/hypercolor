@@ -20,10 +20,6 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 async-trait = { workspace = true }
 tokio = { workspace = true }
-mdns-sd = { workspace = true }
-aes-gcm = { workspace = true }
-rand = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
-tempfile = { workspace = true }

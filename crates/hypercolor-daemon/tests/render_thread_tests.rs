@@ -32,7 +32,7 @@ use hypercolor_daemon::attachment_profiles::ComponentProfileStore;
 use hypercolor_daemon::device_settings::DeviceSettingsStore;
 use hypercolor_daemon::domain::scene::{SceneMutation, SceneService};
 use hypercolor_daemon::domain::spatial::SpatialService;
-use hypercolor_driver_api::CredentialStore;
+use hypercolor_driver_support::CredentialStore;
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{Canvas, PublishedSurface, Rgba};
 use hypercolor_types::config::RenderAccelerationMode;

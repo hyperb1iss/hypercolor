@@ -13,7 +13,7 @@ use std::sync::Arc;
 use anyhow::Result;
 #[cfg(feature = "hal")]
 use hypercolor_core::device::UsbProtocolConfigStore;
-use hypercolor_driver_api::CredentialStore;
+use hypercolor_driver_support::CredentialStore;
 use hypercolor_network::DriverModuleRegistry;
 #[cfg(feature = "govee")]
 use hypercolor_types::config::GoveeConfig;

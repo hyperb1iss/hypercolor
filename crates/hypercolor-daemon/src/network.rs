@@ -10,9 +10,9 @@ use anyhow::{Context, Result};
 use hypercolor_core::device::BackendManager;
 #[cfg(not(feature = "builtin-drivers"))]
 use hypercolor_core::device::UsbProtocolConfigStore;
-#[cfg(not(feature = "builtin-drivers"))]
-use hypercolor_driver_api::CredentialStore;
 use hypercolor_driver_api::{DriverConfigView, DriverHost};
+#[cfg(not(feature = "builtin-drivers"))]
+use hypercolor_driver_support::CredentialStore;
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
 use hypercolor_types::device::{

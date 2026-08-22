@@ -48,7 +48,7 @@ use hypercolor_core::input::screen::{ScreenAdmissionCapacity, ScreenAnalysisReso
 use hypercolor_core::input::{InputManager, SensorPoller, SourceStatusHandle};
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
-use hypercolor_driver_api::CredentialStore;
+use hypercolor_driver_support::CredentialStore;
 use hypercolor_types::audio::{AudioPipelineConfig, AudioSourceType};
 use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};

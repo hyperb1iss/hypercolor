@@ -9,9 +9,10 @@ use hypercolor_core::device::{
     UsbHotplugMonitor, UsbProtocolConfigStore,
 };
 use hypercolor_driver_api::{
-    CredentialStore, DiscoveryRequest, DriverConfigView, DriverCredentialStore,
-    DriverDiscoveryState, DriverHost, DriverRuntimeActions, DriverTrackedDevice,
+    DiscoveryRequest, DriverConfigView, DriverCredentialStore, DriverDiscoveryState, DriverHost,
+    DriverRuntimeActions, DriverTrackedDevice,
 };
+use hypercolor_driver_support::CredentialStore;
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::device::DeviceInfo;

@@ -27,7 +27,7 @@ use hypercolor_core::effect::EffectRegistry;
 use hypercolor_core::engine::RenderLoop;
 use hypercolor_core::input::screen::ScreenCapacityStatusHandle;
 use hypercolor_core::input::{InputManager, SourceStatusRegistry};
-use hypercolor_driver_api::CredentialStore;
+use hypercolor_driver_support::CredentialStore;
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::device::DeviceId;
