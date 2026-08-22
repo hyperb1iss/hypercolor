@@ -329,7 +329,7 @@ pub fn SettingsPage() -> impl IntoView {
                                 >
                                     <span
                                         class="w-4 h-4 flex items-center justify-center shrink-0"
-                                        class=("text-electric-yellow", is_active)
+                                        class=("text-status-warning", is_active)
                                     >
                                         <Icon icon=tab.icon width="14px" height="14px" />
                                     </span>

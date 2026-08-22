@@ -229,7 +229,7 @@ fn SceneSwitcherRow(row: SceneRow, set_open: WriteSignal<bool>) -> impl IntoView
             </span>
             {row.locked.then(|| view! {
                 <span
-                    class="flex shrink-0 text-electric-yellow/70"
+                    class="flex shrink-0 text-status-warning/70"
                     title="Snapshot-locked scene"
                 >
                     <Icon icon=LuLock width="11px" height="11px" />

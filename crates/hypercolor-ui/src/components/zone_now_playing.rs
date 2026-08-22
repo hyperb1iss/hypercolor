@@ -178,7 +178,7 @@ pub fn ZoneEffectChips() -> impl IntoView {
                             .zone
                             .color
                             .clone()
-                            .unwrap_or_else(|| "var(--color-electric-purple)".to_owned());
+                            .unwrap_or_else(|| "var(--color-accent)".to_owned());
                         let dot_glow = format!("0 0 6px {dot}");
                         let label = state.display_label();
                         let enabled = state.zone.enabled;

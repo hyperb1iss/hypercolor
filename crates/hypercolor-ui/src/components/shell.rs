@@ -319,7 +319,7 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
                                 let dot = zone
                                     .color
                                     .clone()
-                                    .unwrap_or_else(|| "var(--color-electric-purple)".to_owned());
+                                    .unwrap_or_else(|| "var(--color-accent)".to_owned());
                                 view! {
                                     <span
                                         class="inline-flex items-center gap-1.5 shrink-0 text-[9px] \
@@ -372,7 +372,7 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
                                                 view! {
                                                     <button
                                                         class="w-full flex items-center gap-3 px-4 py-2.5 text-left
-                                                               hover:bg-electric-purple/[0.05] btn-press group animate-enter-up"
+                                                               hover:bg-accent/[0.05] btn-press group animate-enter-up"
                                                         style=row_style
                                                         id=format!("palette-opt-{i}")
                                                         role="option"
@@ -402,7 +402,7 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
                                                 view! {
                                                     <button
                                                         class="w-full flex items-center gap-3 px-4 py-2.5 text-left
-                                                               hover:bg-electric-purple/[0.05] btn-press group animate-enter-up"
+                                                               hover:bg-accent/[0.05] btn-press group animate-enter-up"
                                                         style=row_style
                                                         id=format!("palette-opt-{i}")
                                                         role="option"
@@ -431,7 +431,7 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
                                                             </span>
                                                             {locked.then(|| view! {
                                                                 <span
-                                                                    class="flex shrink-0 text-electric-yellow/70"
+                                                                    class="flex shrink-0 text-status-warning/70"
                                                                     title="Snapshot-locked scene"
                                                                 >
                                                                     <Icon icon=LuLock width="11px" height="11px" />
@@ -440,7 +440,7 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
                                                         </div>
                                                         <span
                                                             class="text-[10px] shrink-0 px-2 py-0.5 rounded-full"
-                                                            style="background: rgba(225, 53, 255, 0.10); color: var(--color-electric-purple)"
+                                                            style="background: rgba(225, 53, 255, 0.10); color: var(--color-accent)"
                                                         >
                                                             "Scene"
                                                         </span>

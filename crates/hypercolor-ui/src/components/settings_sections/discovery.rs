@@ -156,7 +156,7 @@ fn HardwareSupportPanel() -> impl IntoView {
                 Some(Ok(None)) => ().into_any(),
                 Some(Err(error)) => view! {
                     <HardwareSupportFrame>
-                        <div class="flex items-center gap-2 text-xs text-error-red/80">
+                        <div class="flex items-center gap-2 text-xs text-status-error/80">
                             <Icon icon=LuTriangleAlert width="13px" height="13px" />
                             {format!("Hardware support status unavailable: {error}")}
                         </div>

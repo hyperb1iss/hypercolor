@@ -118,7 +118,7 @@ pub(super) fn PipelinePanel(
         >
             <div class="px-4 py-2.5 flex items-center justify-between">
                 <div class="flex items-center gap-2">
-                    <Icon icon=LuLayers width="14px" height="14px" style="color: var(--color-electric-purple)" />
+                    <Icon icon=LuLayers width="14px" height="14px" style="color: var(--color-accent)" />
                     <h2 class="text-[13px] font-medium text-fg-secondary">"Pipeline Breakdown"</h2>
                 </div>
                 <div class="text-[10px] font-mono text-fg-tertiary/70">
@@ -213,7 +213,7 @@ pub(super) fn ThroughputPanel(
         >
             <div class="px-4 py-2.5 flex items-center justify-between">
                 <div class="flex items-center gap-2">
-                    <Icon icon=LuWifi width="14px" height="14px" style="color: var(--color-electric-yellow)" />
+                    <Icon icon=LuWifi width="14px" height="14px" style="color: var(--color-status-warning)" />
                     <h2 class="text-[13px] font-medium text-fg-secondary">"WebSocket Throughput"</h2>
                 </div>
                 <div class="text-[10px] font-mono text-fg-tertiary/70">
@@ -223,14 +223,14 @@ pub(super) fn ThroughputPanel(
             <div class="p-4 grid grid-cols-1 md:grid-cols-[auto_1fr] gap-4 items-center">
                 <div class="flex flex-col">
                     <span class=label_class(LabelSize::Micro, LabelTone::Default)>"Bytes / sec"</span>
-                    <span class="text-[22px] font-semibold tabular-nums text-electric-yellow mt-0.5">
+                    <span class="text-[22px] font-semibold tabular-nums text-status-warning mt-0.5">
                         {move || ws_bytes.get()}
                     </span>
                 </div>
                 <div class="h-14">
                     <Sparkline
                         values=ws_bytes_series
-                        stroke="var(--color-electric-yellow)"
+                        stroke="var(--color-status-warning)"
                     />
                 </div>
             </div>
@@ -342,7 +342,7 @@ pub(super) fn FavoritesPanel() -> impl IntoView {
                     {move || target_zone_name.get().map(|name| view! {
                         <span
                             class="text-[10px] font-mono rounded-full px-2 py-[3px] truncate max-w-[120px]"
-                            style="color: var(--color-electric-purple); \
+                            style="color: var(--color-accent); \
                                    background: rgba(225, 53, 255, 0.08); \
                                    border: 1px solid rgba(225, 53, 255, 0.22)"
                             title="Effects apply to this zone"

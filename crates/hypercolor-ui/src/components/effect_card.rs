@@ -106,7 +106,7 @@ pub fn EffectCard(
                 let base = "relative rounded-xl border text-left w-full group overflow-hidden \
                             card-hover animate-enter-up aspect-[4/3] effect-card content-auto-card";
                 let state = if is_active.get() {
-                    "border-electric-purple/50"
+                    "border-accent/50"
                 } else if !runnable {
                     "border-edge-subtle opacity-30 cursor-not-allowed"
                 } else {
@@ -199,7 +199,7 @@ pub fn EffectCard(
                     style="box-shadow: inset 0 0 0 1px rgba(225, 53, 255, 0.35), \
                            inset 0 1px 0 rgba(225, 53, 255, 0.25)"
                 />
-                <div class="absolute top-0 left-1/2 -translate-x-1/2 w-20 h-[2px] rounded-full bg-electric-purple/70 blur-[1px]" />
+                <div class="absolute top-0 left-1/2 -translate-x-1/2 w-20 h-[2px] rounded-full bg-accent/70 blur-[1px]" />
             })}
 
             // ── Favorite heart (top-right, floats above everything) ──────
@@ -269,10 +269,10 @@ pub fn EffectCard(
                         view! {
                             <div
                                 class="mb-1 flex min-w-0 items-center gap-1.5 text-[10px] \
-                                       text-electric-purple/90 drop-shadow-[0_1px_3px_rgba(0,0,0,0.85)]"
+                                       text-accent/90 drop-shadow-[0_1px_3px_rgba(0,0,0,0.85)]"
                                 title=title
                             >
-                                <span class="h-1 w-1 shrink-0 rounded-full bg-electric-purple/80" />
+                                <span class="h-1 w-1 shrink-0 rounded-full bg-accent/80" />
                                 <span class="truncate">{label}</span>
                             </div>
                         }
@@ -309,7 +309,7 @@ pub fn EffectCard(
                     <div class="flex items-center gap-1.5 shrink-0">
                         {is_calibration.then(|| view! {
                             <span
-                                class="inline-flex items-center gap-1 text-[9px] font-mono px-1.5 py-0.5 rounded-full bg-neon-cyan/14 text-neon-cyan backdrop-blur-sm"
+                                class="inline-flex items-center gap-1 text-[9px] font-mono px-1.5 py-0.5 rounded-full bg-cyan/14 text-cyan backdrop-blur-sm"
                                 title="Layout setup and calibration tool"
                             >
                                 <Icon icon=LuRadar width="11px" height="11px" />

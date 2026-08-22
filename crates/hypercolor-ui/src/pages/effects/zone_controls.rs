@@ -151,7 +151,7 @@ fn ZoneTabStrip(selected_zone_id: Memo<Option<String>>) -> impl IntoView {
                         let dot = zone
                             .color
                             .clone()
-                            .unwrap_or_else(|| "var(--color-electric-purple)".to_owned());
+                            .unwrap_or_else(|| "var(--color-accent)".to_owned());
                         let dot_glow = format!("0 0 6px {dot}");
                         view! {
                             <button

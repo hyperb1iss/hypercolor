@@ -48,11 +48,11 @@ pub fn DeviceMetricsStrip(
         }
         let ratio = state.current.sent_fps().max(0.0) / queued;
         if ratio >= 0.9 {
-            "var(--color-success-green)"
+            "var(--color-status-success)"
         } else if ratio >= 0.7 {
-            "var(--color-electric-yellow)"
+            "var(--color-status-warning)"
         } else {
-            "var(--color-error-red)"
+            "var(--color-status-error)"
         }
     });
 
@@ -70,8 +70,8 @@ pub fn DeviceMetricsStrip(
             return "var(--color-fg-tertiary)";
         }
         match last_sent_ago.get() {
-            Some(ms) if ms <= RECENT_ERROR_WINDOW_MS => "var(--color-error-red)",
-            _ => "var(--color-electric-yellow)",
+            Some(ms) if ms <= RECENT_ERROR_WINDOW_MS => "var(--color-status-error)",
+            _ => "var(--color-status-warning)",
         }
     });
 
@@ -134,7 +134,7 @@ pub fn DeviceMetricsStrip(
             <div class="ml-auto h-4 w-[80px] shrink-0 opacity-80">
                 <Sparkline
                     values=Signal::derive(move || fps_samples.get())
-                    stroke="var(--color-neon-cyan)"
+                    stroke="var(--color-cyan)"
                     fill=true
                     aria_label="Device FPS history"
                 />

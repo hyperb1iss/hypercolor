@@ -22,8 +22,6 @@
 //   Accent:    {bg,text,border,ring}-{accent,accent-hover,accent-muted,accent-subtle}
 //   Status:    {bg,text,border}-{status-success,status-error,status-warning,status-info}
 //   Palette:   bg-{purple,cyan,coral,yellow,green,red,blue}
-//              bg-{electric-purple,neon-cyan,electric-yellow,success-green,error-red}
-//              bg-{info-blue,pink-soft}
 //
 // See `tokens/primitives.css` for the OKLCH source values and
 // `tokens/semantic.css` for per-theme overrides (dark + light).
@@ -49,15 +47,6 @@ export default {
         green: "var(--color-green)",
         red: "var(--color-red)",
         blue: "var(--color-blue)",
-
-        // Legacy hex aliases (migration era — prefer OKLCH primitives above)
-        "electric-purple": "var(--color-electric-purple)",
-        "neon-cyan": "var(--color-neon-cyan)",
-        "electric-yellow": "var(--color-electric-yellow)",
-        "success-green": "var(--color-success-green)",
-        "error-red": "var(--color-error-red)",
-        "info-blue": "var(--color-info-blue)",
-        "pink-soft": "var(--color-pink-soft)",
 
         // Semantic surfaces (theme-swappable via tokens/semantic.css)
         "surface-base": "var(--surface-base)",

@@ -24,9 +24,9 @@ enum DiagnosticTone {
 impl DiagnosticTone {
     const fn chip_classes(self) -> &'static str {
         match self {
-            Self::Good => "border-success-green/30 bg-success-green/10 text-success-green",
-            Self::Warn => "border-electric-yellow/30 bg-electric-yellow/10 text-electric-yellow",
-            Self::Bad => "border-error-red/30 bg-error-red/10 text-error-red",
+            Self::Good => "border-status-success/30 bg-status-success/10 text-status-success",
+            Self::Warn => "border-status-warning/30 bg-status-warning/10 text-status-warning",
+            Self::Bad => "border-status-error/30 bg-status-error/10 text-status-error",
             Self::Neutral => "border-edge-subtle bg-surface-sunken/55 text-fg-secondary",
         }
     }
@@ -35,9 +35,9 @@ impl DiagnosticTone {
     /// secondary foreground so only meaningful rows carry color.
     const fn value_color(self) -> &'static str {
         match self {
-            Self::Good => "var(--color-success-green)",
-            Self::Warn => "var(--color-electric-yellow)",
-            Self::Bad => "var(--color-error-red)",
+            Self::Good => "var(--color-status-success)",
+            Self::Warn => "var(--color-status-warning)",
+            Self::Bad => "var(--color-status-error)",
             Self::Neutral => "var(--color-fg-secondary)",
         }
     }
@@ -46,10 +46,10 @@ impl DiagnosticTone {
     /// rather than muted text, so a calm tile still looks instrumented.
     const fn data_color(self) -> &'static str {
         match self {
-            Self::Good => "var(--color-success-green)",
-            Self::Warn => "var(--color-electric-yellow)",
-            Self::Bad => "var(--color-error-red)",
-            Self::Neutral => "var(--color-neon-cyan)",
+            Self::Good => "var(--color-status-success)",
+            Self::Warn => "var(--color-status-warning)",
+            Self::Bad => "var(--color-status-error)",
+            Self::Neutral => "var(--color-cyan)",
         }
     }
 }
@@ -126,7 +126,7 @@ pub(super) fn RendererHardwarePanel(
         <div class="overflow-hidden rounded-lg border border-edge-subtle/70 bg-surface-overlay/40">
             <div class="flex flex-col gap-3 border-b border-edge-subtle/55 px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
                 <div class="flex min-w-0 items-center gap-2">
-                    <Icon icon=LuCpu width="14px" height="14px" style="color: var(--color-neon-cyan)" />
+                    <Icon icon=LuCpu width="14px" height="14px" style="color: var(--color-cyan)" />
                     <h2 class="min-w-0 break-words text-[13px] font-medium text-fg-secondary">
                         "Renderer & Hardware"
                     </h2>
@@ -193,7 +193,7 @@ pub(super) fn RendererHardwarePanel(
                                 sensors.with(|s| s.as_ref().and_then(|s| s.gpu_vram_used_mb).map_or_else(|| "—".to_owned(), |mb| fmt_mem_gb(f64::from(mb))))
                             })
                             sub=Signal::derive(|| "graphics card".to_owned())
-                            accent=Signal::derive(|| "var(--color-neon-cyan)")
+                            accent=Signal::derive(|| "var(--color-cyan)")
                             fill=Memo::new(move |_| {
                                 sensors.with(|s| s.as_ref().and_then(|s| s.gpu_vram_used_mb).map_or(0.0, |mb| f64::from(mb) / 8192.0))
                             })
@@ -263,7 +263,7 @@ pub(super) fn RendererHardwarePanel(
                                 metrics.with(|m| m.as_ref().map_or_else(|| "—".to_owned(), |m| fmt_mem_gb(m.memory.daemon_rss_mb)))
                             })
                             sub=Signal::derive(|| "in use".to_owned())
-                            accent=Signal::derive(|| "var(--color-neon-cyan)")
+                            accent=Signal::derive(|| "var(--color-cyan)")
                             fill=Memo::new(move |_| {
                                 metrics.with(|m| m.as_ref().map_or(0.0, |m| m.memory.daemon_rss_mb / 1024.0))
                             })

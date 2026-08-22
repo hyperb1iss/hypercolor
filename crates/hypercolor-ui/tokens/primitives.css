@@ -31,15 +31,6 @@
     --color-red:            oklch(0.68 0.22 25);
     --color-blue:           oklch(0.72 0.12 260);
 
-    /* ── Legacy hex aliases (backward compat during migration) ── */
-    --color-electric-purple: #e135ff;
-    --color-neon-cyan:       #80ffea;
-    --color-electric-yellow: #f1fa8c;
-    --color-success-green:   #50fa7b;
-    --color-error-red:       #ff6363;
-    --color-info-blue:       #82AAFF;
-    --color-pink-soft:       #ff99ff;
-
     /* ── Typography ── */
     --font-sans:    'Satoshi', 'Inter', system-ui, -apple-system, sans-serif;
     --font-mono:    'JetBrains Mono', 'Fira Code', 'SF Mono', ui-monospace, monospace;

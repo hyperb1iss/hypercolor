@@ -163,7 +163,7 @@ pub(super) fn HeroGauges(
         >
             <div class="px-4 py-2.5 flex items-center justify-between">
                 <div class="flex items-center gap-2">
-                    <Icon icon=LuActivity width="14px" height="14px" style="color: var(--color-neon-cyan)" />
+                    <Icon icon=LuActivity width="14px" height="14px" style="color: var(--color-cyan)" />
                     <h2 class="text-[13px] font-medium text-fg-secondary">"Performance"</h2>
                 </div>
                 <div class="text-[10px] font-mono text-fg-tertiary/70">
@@ -176,7 +176,7 @@ pub(super) fn HeroGauges(
                     value=engine_primary
                     detail=engine_secondary
                     series=engine_fps_series
-                    color="var(--color-neon-cyan)"
+                    color="var(--color-cyan)"
                     healthy=engine_healthy
                 />
                 <StatTile
@@ -184,7 +184,7 @@ pub(super) fn HeroGauges(
                     value=frame_primary
                     detail=frame_secondary
                     series=frame_time_series
-                    color="var(--color-electric-purple)"
+                    color="var(--color-accent)"
                     healthy=frame_healthy
                 />
                 <StatTile
@@ -198,7 +198,7 @@ pub(super) fn HeroGauges(
                     label="Clients"
                     value=Memo::new(move |_| ws_clients.get().to_string())
                     detail=Signal::derive(|| "ws connected".to_owned())
-                    color="var(--color-electric-yellow)"
+                    color="var(--color-status-warning)"
                 />
             </div>
         </div>
@@ -216,11 +216,11 @@ fn StatTile(
     #[prop(into)] value: Signal<String>,
     #[prop(into)] detail: Signal<String>,
     #[prop(optional, into)] series: Option<Signal<Vec<f64>>>,
-    #[prop(default = "var(--color-neon-cyan)")] color: &'static str,
+    #[prop(default = "var(--color-cyan)")] color: &'static str,
     #[prop(optional, into)] healthy: Option<Signal<bool>>,
 ) -> impl IntoView {
     let value_style = move || match healthy {
-        Some(h) if !h.get() => "color: var(--color-electric-yellow)",
+        Some(h) if !h.get() => "color: var(--color-status-warning)",
         _ => "",
     };
 
@@ -281,7 +281,7 @@ pub(super) fn ReuseRatesPanel(
         >
             <div class="px-4 py-2.5 flex items-center justify-between">
                 <div class="flex items-center gap-2">
-                    <Icon icon=LuZap width="14px" height="14px" style="color: var(--color-success-green)" />
+                    <Icon icon=LuZap width="14px" height="14px" style="color: var(--color-status-success)" />
                     <h2 class="text-[13px] font-medium text-fg-secondary">"Reuse Efficiency"</h2>
                 </div>
                 <div class="text-[10px] font-mono text-fg-tertiary/70">"120-frame window"</div>
@@ -291,19 +291,19 @@ pub(super) fn ReuseRatesPanel(
                     label=Signal::derive(|| "Input reuse".to_string())
                     value=reused_inputs
                     total=window
-                    color="var(--color-success-green)"
+                    color="var(--color-status-success)"
                 />
                 <HitRateBar
                     label=Signal::derive(|| "Canvas reuse".to_string())
                     value=reused_canvas
                     total=window
-                    color="var(--color-neon-cyan)"
+                    color="var(--color-cyan)"
                 />
                 <HitRateBar
                     label=Signal::derive(|| "Effect retained".to_string())
                     value=retained_effect
                     total=window
-                    color="var(--color-electric-purple)"
+                    color="var(--color-accent)"
                 />
                 <HitRateBar
                     label=Signal::derive(|| "Screen retained".to_string())
@@ -315,7 +315,7 @@ pub(super) fn ReuseRatesPanel(
                     label=Signal::derive(|| "Composition bypassed".to_string())
                     value=composition_bypassed
                     total=window
-                    color="var(--color-electric-yellow)"
+                    color="var(--color-status-warning)"
                 />
             </div>
         </div>
@@ -355,11 +355,11 @@ pub(super) fn MemoryAndDevicesPanel(
     let errors_color = Memo::new(move |_| {
         let e = output_errors.get();
         if e == 0 {
-            "var(--color-success-green)"
+            "var(--color-status-success)"
         } else if e < 10 {
-            "var(--color-electric-yellow)"
+            "var(--color-status-warning)"
         } else {
-            "var(--color-error-red)"
+            "var(--color-status-error)"
         }
     });
 
@@ -379,7 +379,7 @@ pub(super) fn MemoryAndDevicesPanel(
                         max=daemon_max
                         label=Signal::derive(|| "App memory".to_string())
                         detail=daemon_detail
-                        color="var(--color-electric-purple)"
+                        color="var(--color-accent)"
                     />
                     <ProgressRing
                         value=Memo::new(move |_| f64::from(canvas_kb.get()))
@@ -398,7 +398,7 @@ pub(super) fn MemoryAndDevicesPanel(
                     <StatMini
                         label="LEDs"
                         value=Memo::new(move |_| total_leds.get().to_string())
-                        color="var(--color-neon-cyan)"
+                        color="var(--color-cyan)"
                     />
                     <StatMini
                         label="Errors"

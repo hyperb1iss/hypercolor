@@ -354,7 +354,7 @@ pub fn PreviewCabinet(
                                     <div class="flex items-center gap-1.5 shrink-0">
                                         {is_calibration.then(|| view! {
                                             <span
-                                                class="inline-flex items-center gap-1 text-[9px] font-mono px-1.5 py-0.5 rounded-full bg-neon-cyan/14 text-neon-cyan backdrop-blur-sm"
+                                                class="inline-flex items-center gap-1 text-[9px] font-mono px-1.5 py-0.5 rounded-full bg-cyan/14 text-cyan backdrop-blur-sm"
                                                 title="Layout setup and calibration tool"
                                             >
                                                 <Icon icon=LuRadar width="11px" height="11px" />

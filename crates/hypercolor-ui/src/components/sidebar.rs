@@ -447,7 +447,7 @@ pub fn Sidebar() -> impl IntoView {
                             {move || if !output_paused.get() {
                                 view! {
                                     <button
-                                        class="p-1.5 rounded-lg text-neon-cyan hover:text-neon-cyan hover:bg-neon-cyan/[0.08] player-btn"
+                                        class="p-1.5 rounded-lg text-cyan hover:text-cyan hover:bg-cyan/[0.08] player-btn"
                                         title="Pause all output"
                                         aria-label="Pause all output"
                                         on:click=move |_| fx.stop_effect()
@@ -458,7 +458,7 @@ pub fn Sidebar() -> impl IntoView {
                             } else {
                                 view! {
                                     <button
-                                        class="p-1.5 rounded-lg text-neon-cyan/40 hover:text-neon-cyan hover:bg-neon-cyan/[0.06] player-btn"
+                                        class="p-1.5 rounded-lg text-cyan/40 hover:text-cyan hover:bg-cyan/[0.06] player-btn"
                                         title="Resume all output"
                                         aria-label="Resume all output"
                                         on:click=move |_| fx.resume_effect()
