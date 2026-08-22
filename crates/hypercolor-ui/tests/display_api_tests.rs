@@ -1,11 +1,11 @@
 use hypercolor_types::canvas::srgb_to_linear;
 use hypercolor_types::control::ControlValue;
 use hypercolor_types::effect::{ControlDefinition, ControlKind, ControlType, GradientStop};
+use hypercolor_ui::api::layers::control_patch_request;
 use hypercolor_ui::api::{
     ComponentBinding, DisplayFaceResponse, DisplayFaceScope, PairDeviceRequest,
     SetDisplayFaceRequest,
 };
-use hypercolor_ui::api::layers::control_patch_request;
 use hypercolor_ui::control_value_json::{
     controls_to_json, hex_to_rgba, hex_to_rgba_json, json_to_control_value,
 };
@@ -371,10 +371,7 @@ fn optimistic_control_updates_apply_raw_values() {
 fn live_color_edit_stays_typed_through_the_patch_request() {
     let controls = vec![color_control("accent")];
     let raw = serde_json::json!([0.25, 0.5, 0.75, 1.0]);
-    let admitted = normalize_raw_control_updates(
-        &controls,
-        &[("accent".to_owned(), raw.clone())],
-    );
+    let admitted = normalize_raw_control_updates(&controls, &[("accent".to_owned(), raw.clone())]);
 
     assert!(matches!(
         admitted.get("accent"),
@@ -395,10 +392,7 @@ fn preference_restore_reuses_canonical_color_values_without_json_reparsing() {
         "accent".to_owned(),
         ControlValue::linear_color([0.125, 0.25, 0.5, 1.0]),
     )]);
-    let next = std::collections::HashMap::from([(
-        "speed".to_owned(),
-        ControlValue::Float(0.75),
-    )]);
+    let next = std::collections::HashMap::from([("speed".to_owned(), ControlValue::Float(0.75))]);
 
     merge_control_values(&mut values, &next);
 
