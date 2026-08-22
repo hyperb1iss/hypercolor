@@ -5,6 +5,7 @@ set dotenv-load := false
 set positional-arguments := true
 
 workspace_args := "--workspace"
+test_features := "--features hypercolor-daemon/persistence-test-hooks"
 daemon_bind := env_var_or_default("HYPERCOLOR_DAEMON_BIND", "127.0.0.1:9420")
 
 # Bundled effects live where they are installed, which for a dev build would be
@@ -179,11 +180,11 @@ python-verify: python-lint python-fmt-check python-typecheck python-ws-protocol-
 # Run all tests
 [unix]
 test *args='':
-    ./scripts/cargo-cache-build.sh cargo test {{ workspace_args }} {{ args }}
+    ./scripts/cargo-cache-build.sh cargo test {{ workspace_args }} {{ test_features }} {{ args }}
 
 [windows]
 test *args='':
-    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo test {{ workspace_args }} {{ args }}
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo test {{ workspace_args }} {{ test_features }} {{ args }}
 
 # Run process-global allocation counters without concurrent test threads
 [unix]
@@ -201,20 +202,20 @@ alloc-contracts:
 # Run tests for a specific crate (iteration-shaped: keeps incremental rebuilds)
 [unix]
 test-crate crate *args='':
-    HYPERCOLOR_ITERATE=1 ./scripts/cargo-cache-build.sh cargo test -p {{ crate }} {{ args }}
+    HYPERCOLOR_ITERATE=1 ./scripts/cargo-cache-build.sh cargo test -p {{ crate }} {{ if crate == "hypercolor-daemon" { "--features persistence-test-hooks" } else { "" } }} {{ args }}
 
 [windows]
 test-crate crate *args='':
-    HYPERCOLOR_ITERATE=1 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo test -p {{ crate }} {{ args }}
+    HYPERCOLOR_ITERATE=1 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo test -p {{ crate }} {{ if crate == "hypercolor-daemon" { "--features persistence-test-hooks" } else { "" } }} {{ args }}
 
 # Run a specific test by name (iteration-shaped: keeps incremental rebuilds)
 [unix]
 test-one name *args='':
-    HYPERCOLOR_ITERATE=1 ./scripts/cargo-cache-build.sh cargo test {{ workspace_args }} {{ name }} {{ args }}
+    HYPERCOLOR_ITERATE=1 ./scripts/cargo-cache-build.sh cargo test {{ workspace_args }} {{ test_features }} {{ name }} {{ args }}
 
 [windows]
 test-one name *args='':
-    HYPERCOLOR_ITERATE=1 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo test {{ workspace_args }} {{ name }} {{ args }}
+    HYPERCOLOR_ITERATE=1 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo test {{ workspace_args }} {{ test_features }} {{ name }} {{ args }}
 
 # Manually run the Cinder/Leptos extension design audit snapshot generator
 cinder-audit:
@@ -306,11 +307,11 @@ bench-compare name:
 # Run clippy with deny warnings
 [unix]
 lint *args='':
-    ./scripts/cargo-cache-build.sh cargo clippy {{ workspace_args }} --all-targets -- -D warnings {{ args }}
+    ./scripts/cargo-cache-build.sh cargo clippy {{ workspace_args }} {{ test_features }} --all-targets -- -D warnings {{ args }}
 
 [windows]
 lint *args='':
-    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo clippy {{ workspace_args }} --all-targets -- -D warnings {{ args }}
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo clippy {{ workspace_args }} {{ test_features }} --all-targets -- -D warnings {{ args }}
 
 # Fix clippy suggestions automatically
 [unix]

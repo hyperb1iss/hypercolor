@@ -583,7 +583,7 @@ jobs:
         run: >-
           ./scripts/cargo-cache-build.sh
           cargo nextest run --locked -p hypercolor-daemon --no-default-features
-          --features builtin-drivers --test-threads=1
+          --features builtin-drivers,persistence-test-hooks --test-threads=1
 
       - name: Run daemon doc tests
         if: matrix.suite == 'daemon'
@@ -797,7 +797,7 @@ jobs:
       - name: Run daemon input and capture integration tests
         run: >-
           cargo nextest run --locked -p hypercolor-daemon --no-default-features
-          --features builtin-drivers --test-threads=1
+          --features builtin-drivers,persistence-test-hooks --test-threads=1
 
   # ── Cargo Deny ─────────────────────────────────────────────────
   rust-deny:
