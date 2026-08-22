@@ -1361,7 +1361,7 @@ fn stage_workspace_publication(
                 .ok_or(CpuPublicationFanoutError::InvalidEffectiveZoneShape)?;
             let rows = std::num::NonZeroU32::new(staged.rows())
                 .ok_or(CpuPublicationFanoutError::InvalidEffectiveZoneShape)?;
-            publication.set_effective_zone_shape(columns, rows)?;
+            publication.set_effective_zone_layout(columns, rows, staged.bars())?;
         }
     }
     Ok(())
@@ -1420,7 +1420,7 @@ fn stage_prereduced_publication(
                 .ok_or(CpuPublicationFanoutError::InvalidEffectiveZoneShape)?;
             let rows = std::num::NonZeroU32::new(staged.rows())
                 .ok_or(CpuPublicationFanoutError::InvalidEffectiveZoneShape)?;
-            publication.set_effective_zone_shape(columns, rows)?;
+            publication.set_effective_zone_layout(columns, rows, staged.bars())?;
         }
     }
     Ok(())

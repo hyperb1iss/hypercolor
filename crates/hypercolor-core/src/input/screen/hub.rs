@@ -16,7 +16,7 @@ use super::plan::{
 };
 use super::{
     CaptureColorSpace, CaptureColorimetry, CaptureEpoch, CapturePixelFormat, CaptureSourceId,
-    CaptureTransferFunction, PixelExtent, PlatformGpuApi, PlatformGpuSurface,
+    CaptureTransferFunction, LetterboxBars, PixelExtent, PlatformGpuApi, PlatformGpuSurface,
     ResolvedScreenPublicationDescriptor, ScreenByteLease, ScreenPublicationExecutor,
     ScreenPublicationKind, ScreenPublicationResidency,
 };
@@ -259,6 +259,7 @@ impl<'a> ScreenNativeWorkPayload<'a> {
 pub struct ScreenZonesPayload<'a> {
     columns: NonZeroU32,
     rows: NonZeroU32,
+    bars: LetterboxBars,
     colorimetry: ScreenPublicationColorimetry,
     colors: &'a [[u8; 3]],
 }
@@ -285,6 +286,7 @@ impl<'a> ScreenZonesPayload<'a> {
         Ok(Self {
             columns,
             rows,
+            bars: LetterboxBars::default(),
             colorimetry,
             colors,
         })
@@ -300,6 +302,12 @@ impl<'a> ScreenZonesPayload<'a> {
     #[must_use]
     pub const fn rows(self) -> NonZeroU32 {
         self.rows
+    }
+
+    /// Bars removed from the requested grid.
+    #[must_use]
+    pub const fn bars(self) -> LetterboxBars {
+        self.bars
     }
 
     /// Exact target encoding and transfer contract.
@@ -593,6 +601,7 @@ enum ScreenPublicationStorage {
     Zones {
         columns: NonZeroU32,
         rows: NonZeroU32,
+        bars: LetterboxBars,
         color_count: usize,
         colorimetry: ScreenPublicationColorimetry,
         colors: Box<[[u8; 3]]>,
@@ -634,6 +643,7 @@ impl ScreenPublicationStorage {
                 Ok(Self::Zones {
                     columns,
                     rows,
+                    bars: LetterboxBars::default(),
                     color_count: len,
                     colorimetry: descriptor_colorimetry(descriptor),
                     colors: try_zeroed_color_slice(len)?,
@@ -677,6 +687,7 @@ impl ScreenPublicationStorage {
                 Self::Zones {
                     columns,
                     rows,
+                    bars,
                     color_count,
                     colors,
                     ..
@@ -685,6 +696,7 @@ impl ScreenPublicationStorage {
             ) => {
                 *columns = payload.columns();
                 *rows = payload.rows();
+                *bars = payload.bars();
                 *color_count = payload.colors().len();
                 colors[..*color_count].copy_from_slice(payload.colors());
             }
@@ -706,14 +718,18 @@ impl ScreenPublicationStorage {
         }
     }
 
-    fn set_effective_zone_shape(
+    fn set_effective_zone_layout(
         &mut self,
+        maximum_columns: NonZeroU32,
+        maximum_rows: NonZeroU32,
         columns: NonZeroU32,
         rows: NonZeroU32,
+        bars: LetterboxBars,
     ) -> Result<(), ScreenPublicationHubError> {
         let Self::Zones {
             columns: effective_columns,
             rows: effective_rows,
+            bars: effective_bars,
             color_count,
             colors,
             ..
@@ -724,6 +740,7 @@ impl ScreenPublicationStorage {
                 observed: ScreenPayloadKind::Zones,
             });
         };
+        validate_effective_zone_layout(maximum_columns, maximum_rows, columns, rows, bars)?;
         let count = zone_count(columns, rows)?;
         if count > colors.len() {
             return Err(
@@ -736,16 +753,17 @@ impl ScreenPublicationStorage {
         }
         *effective_columns = columns;
         *effective_rows = rows;
+        *effective_bars = bars;
         *color_count = count;
         Ok(())
     }
 
-    fn reset_effective_shape(
+    fn reset_effective_layout(
         &mut self,
         descriptor: &ResolvedScreenPublicationDescriptor,
     ) -> Result<(), ScreenPublicationHubError> {
         if let ScreenPublicationKind::Zones { columns, rows } = descriptor.kind() {
-            self.set_effective_zone_shape(columns, rows)?;
+            self.set_effective_zone_layout(columns, rows, columns, rows, LetterboxBars::default())?;
         }
         Ok(())
     }
@@ -804,12 +822,14 @@ impl ScreenPublicationStorage {
             Self::Zones {
                 columns,
                 rows,
+                bars,
                 color_count,
                 colorimetry,
                 colors,
             } => ScreenBranchPayload::Zones(ScreenZonesPayload {
                 columns: *columns,
                 rows: *rows,
+                bars: *bars,
                 colorimetry: *colorimetry,
                 colors: &colors[..*color_count],
             }),
@@ -1930,7 +1950,7 @@ impl ScreenPublicationHub {
         Arc::get_mut(&mut publication)
             .expect("reserved publication has unique ownership")
             .storage
-            .reset_effective_shape(&publisher.branch.descriptor)?;
+            .reset_effective_layout(&publisher.branch.descriptor)?;
         Ok(PreparedScreenPublication {
             branch: Arc::clone(&publisher.branch),
             binding: publisher.binding.clone(),
@@ -2533,16 +2553,19 @@ impl PreparedScreenPublication {
     /// Select the compact row-major prefix published by a dynamic zone crop.
     ///
     /// The reserved allocation remains descriptor-sized. Only the effective
-    /// shape and its exact color prefix become visible after finalization.
+    /// layout, removed bars, and exact color prefix become visible after
+    /// finalization.
     ///
     /// # Errors
     ///
     /// Rejects surface reservations, lost unique ownership, arithmetic
-    /// overflow, or a shape larger than the admitted descriptor capacity.
-    pub fn set_effective_zone_shape(
+    /// overflow, a shape larger than the admitted descriptor capacity, or
+    /// bars that do not produce the effective shape.
+    pub fn set_effective_zone_layout(
         &mut self,
         columns: NonZeroU32,
         rows: NonZeroU32,
+        bars: LetterboxBars,
     ) -> Result<(), ScreenPublicationHubError> {
         let expected = descriptor_payload_kind(&self.branch.descriptor);
         let (maximum_columns, maximum_rows) = match self.branch.descriptor.kind() {
@@ -2554,19 +2577,13 @@ impl PreparedScreenPublication {
                 });
             }
         };
-        if columns > maximum_columns || rows > maximum_rows {
-            return Err(
-                ScreenPublicationHubError::EffectiveZoneShapeExceedsDescriptor {
-                    maximum_columns,
-                    maximum_rows,
-                    observed_columns: columns,
-                    observed_rows: rows,
-                },
-            );
-        }
-        self.publication_mut()?
-            .storage
-            .set_effective_zone_shape(columns, rows)
+        self.publication_mut()?.storage.set_effective_zone_layout(
+            maximum_columns,
+            maximum_rows,
+            columns,
+            rows,
+            bars,
+        )
     }
 }
 
@@ -2976,6 +2993,22 @@ pub enum ScreenPublicationHubError {
         /// Requested effective rows.
         observed_rows: NonZeroU32,
     },
+    /// Dynamic crop bars do not produce the submitted effective shape.
+    #[error(
+        "effective zone layout is incoherent: requested {requested_columns}x{requested_rows}, observed {observed_columns}x{observed_rows} with bars {bars:?}"
+    )]
+    EffectiveZoneLayoutMismatch {
+        /// Descriptor-requested columns.
+        requested_columns: NonZeroU32,
+        /// Descriptor-requested rows.
+        requested_rows: NonZeroU32,
+        /// Submitted effective columns.
+        observed_columns: NonZeroU32,
+        /// Submitted effective rows.
+        observed_rows: NonZeroU32,
+        /// Submitted dynamic crop bars.
+        bars: LetterboxBars,
+    },
     /// Dynamic crop color prefix exceeds the admitted zone allocation.
     #[error("effective zone shape {columns}x{rows} exceeds admitted color capacity {capacity}")]
     EffectiveZoneShapeExceedsCapacity {
@@ -3267,6 +3300,45 @@ fn surface_byte_len(extent: PixelExtent) -> Result<usize, ScreenPublicationHubEr
         })
         .and_then(|pixels| pixels.checked_mul(SURFACE_PIXEL_BYTES as usize))
         .ok_or(ScreenPublicationHubError::PayloadShapeOverflow)
+}
+
+fn validate_effective_zone_layout(
+    requested_columns: NonZeroU32,
+    requested_rows: NonZeroU32,
+    observed_columns: NonZeroU32,
+    observed_rows: NonZeroU32,
+    bars: LetterboxBars,
+) -> Result<(), ScreenPublicationHubError> {
+    if observed_columns > requested_columns || observed_rows > requested_rows {
+        return Err(
+            ScreenPublicationHubError::EffectiveZoneShapeExceedsDescriptor {
+                maximum_columns: requested_columns,
+                maximum_rows: requested_rows,
+                observed_columns,
+                observed_rows,
+            },
+        );
+    }
+    let expected_columns = requested_columns
+        .get()
+        .checked_sub(bars.left)
+        .and_then(|columns| columns.checked_sub(bars.right));
+    let expected_rows = requested_rows
+        .get()
+        .checked_sub(bars.top)
+        .and_then(|rows| rows.checked_sub(bars.bottom));
+    if expected_columns != Some(observed_columns.get())
+        || expected_rows != Some(observed_rows.get())
+    {
+        return Err(ScreenPublicationHubError::EffectiveZoneLayoutMismatch {
+            requested_columns,
+            requested_rows,
+            observed_columns,
+            observed_rows,
+            bars,
+        });
+    }
+    Ok(())
 }
 
 fn zone_count(columns: NonZeroU32, rows: NonZeroU32) -> Result<usize, ScreenPublicationHubError> {
