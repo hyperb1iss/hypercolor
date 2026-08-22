@@ -119,7 +119,7 @@ async fn clear_active_scene_effect_groups(
 ) -> Result<Option<EffectErrorFallbackApplied>, crate::domain::DomainError> {
     let effect = resolve_effect_ref_for_fallback(state, effect_id).await;
 
-    let mut mutation = state.scene_manager.begin_mutation().await;
+    let mut mutation = state.domains.scene.begin_mutation().await;
     mutation.active_scene_for_runtime_mutation("applying an effect error fallback")?;
     let zone_ids = mutation
         .scenes()

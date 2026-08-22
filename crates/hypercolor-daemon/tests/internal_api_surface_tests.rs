@@ -117,6 +117,25 @@ fn transports_use_the_effect_domain_authority() {
 }
 
 #[test]
+fn transports_use_the_scene_domain_mutation_authority() {
+    let offenders = daemon_sources()
+        .into_iter()
+        .filter(|(path, _)| {
+            path.components()
+                .any(|component| component.as_os_str() == "api" || component.as_os_str() == "mcp")
+        })
+        .filter(|(_, source)| source.contains("scene_manager.begin_mutation"))
+        .map(|(path, _)| path.display().to_string())
+        .collect::<Vec<_>>();
+
+    assert!(
+        offenders.is_empty(),
+        "transport adapters bypassed SceneContext:\n{}",
+        offenders.join("\n")
+    );
+}
+
+#[test]
 fn display_worker_delegates_delivery_policy_to_the_core_lane() {
     let worker = std::fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("src/display_output/worker.rs"),

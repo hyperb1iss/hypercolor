@@ -1832,7 +1832,7 @@ mod zone_layout_preview_race_tests {
             (zone_id, layout, next)
         };
         let next_scene_id = next.id;
-        let mut mutation = state.scene_manager.begin_mutation().await;
+        let mut mutation = state.domains.scene.begin_mutation().await;
         mutation
             .create_scene(next)
             .expect("next scene should be created");
