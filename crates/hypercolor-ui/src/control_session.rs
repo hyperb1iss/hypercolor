@@ -180,11 +180,17 @@ pub fn use_control_patch_session(config: ControlPatchConfig) -> ControlPatchSess
         let patch = Arc::clone(&patch);
         spawn_mutation(
             async move {
-                loop {
+                'batches: loop {
                     if target.get_untracked().as_deref() != Some(batch.target.as_str()) {
-                        optimistic.fail_flush();
-                        recover.run(());
-                        return Ok(());
+                        let Some(next) = next_batch_after_target_change(
+                            optimistic,
+                            target.get_untracked(),
+                            recover,
+                        ) else {
+                            return Ok(());
+                        };
+                        batch = next;
+                        continue 'batches;
                     }
                     let mut retried = false;
                     loop {
@@ -193,12 +199,19 @@ pub fn use_control_patch_session(config: ControlPatchConfig) -> ControlPatchSess
                             batch.values.clone(),
                             version.get_untracked(),
                         )
-                        .await?;
+                        .await;
                         if target.get_untracked().as_deref() != Some(batch.target.as_str()) {
-                            optimistic.fail_flush();
-                            recover.run(());
-                            return Ok(());
+                            let Some(next) = next_batch_after_target_change(
+                                optimistic,
+                                target.get_untracked(),
+                                recover,
+                            ) else {
+                                return Ok(());
+                            };
+                            batch = next;
+                            continue 'batches;
                         }
+                        let outcome = outcome?;
                         match reconcile_outcome(&outcome, retried) {
                             ReconcileAction::Adopt { new_version } => {
                                 if let Some(next) = new_version {
@@ -272,5 +285,25 @@ pub fn use_control_patch_session(config: ControlPatchConfig) -> ControlPatchSess
         flush_now,
         clear_pending,
         version,
+    }
+}
+
+fn next_batch_after_target_change(
+    optimistic: OptimisticControlSession,
+    active_target: Option<String>,
+    recover: Callback<()>,
+) -> Option<crate::optimistic_controls::ControlMutationBatch> {
+    let Some(active_target) = active_target else {
+        optimistic.fail_flush();
+        recover.run(());
+        return None;
+    };
+    match optimistic.retire_flush_for(&active_target) {
+        Ok(next) => next,
+        Err(()) => {
+            optimistic.fail_flush();
+            recover.run(());
+            None
+        }
     }
 }

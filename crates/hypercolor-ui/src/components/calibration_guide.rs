@@ -219,10 +219,12 @@ pub fn CalibrationGuide(
                                 return;
                             };
                             let target_zone = zones_ctx.focused_zone_id_untracked();
-                            let Some(expected_revision) = zones_ctx.effect_revision_untracked(
-                                &active_effect_id,
-                                target_zone.as_deref(),
-                            ) else {
+                            let Some((observed_target, expected_revision)) = zones_ctx
+                                .effect_target_untracked(
+                                    &active_effect_id,
+                                    target_zone.as_deref(),
+                                )
+                            else {
                                 toasts::toast_error("Calibration effect is no longer active");
                                 return;
                             };
@@ -232,12 +234,13 @@ pub fn CalibrationGuide(
                                 match api::apply_effect_preset(
                                     &active_effect_id,
                                     &preset_id,
-                                    target_zone.as_deref(),
+                                    Some(&observed_target.zone_id),
                                     expected_revision,
                                 )
                                 .await
                                 {
-                                    Ok(()) => {
+                                    Ok(target) => {
+                                        fx.adopt_replacement_target(&observed_target, target);
                                         fx.refresh_active_effect();
                                         toasts::toast_success(&format!("Loaded {preset_name}"));
                                     }

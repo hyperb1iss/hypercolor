@@ -449,7 +449,10 @@ pub fn PreviewCabinet(
                                     effect_id=effect_id
                                     control_values=control_values
                                     accent_rgb=accent_signal
-                                    on_preset_applied=Callback::new(move |()| fx.refresh_active_effect())
+                                    on_preset_applied=Callback::new(move |(observed, replacement)| {
+                                        fx.adopt_replacement_target(&observed, replacement);
+                                        fx.refresh_active_effect();
+                                    })
                                     active_preset_id_signal=active_preset_id_signal
                                 />
                             }.into_any()

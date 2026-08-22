@@ -67,6 +67,14 @@ impl ControlMutationQueue {
         }
     }
 
+    fn retire_flush_for(
+        &mut self,
+        active_target: &str,
+    ) -> Result<Option<ControlMutationBatch>, ()> {
+        self.in_flight = false;
+        self.start_flush_for(active_target)
+    }
+
     fn take_pending_for_retry(&mut self, target: &str) -> ControlValueMap {
         match self.pending.take() {
             Some(batch) if batch.target == target => batch.values,
@@ -141,6 +149,15 @@ impl OptimisticControlSession {
         self.queue
             .try_update_value(ControlMutationQueue::complete_flush)
             .flatten()
+    }
+
+    pub(crate) fn retire_flush_for(
+        self,
+        active_target: &str,
+    ) -> Result<Option<ControlMutationBatch>, ()> {
+        self.queue
+            .try_update_value(|queue| queue.retire_flush_for(active_target))
+            .unwrap_or(Ok(None))
     }
 
     pub(crate) fn take_pending_for_retry(self, target: &str) -> ControlValueMap {
@@ -277,6 +294,36 @@ mod tests {
         let second = queue.complete_flush().expect("newest edit should drain");
         assert_eq!(second.values.len(), 1);
         assert_eq!(second.values.get("speed"), Some(&ControlValue::Float(0.75)));
+    }
+
+    #[test]
+    fn retiring_suspended_a_preserves_and_drains_queued_b_exactly_once() {
+        let mut queue = ControlMutationQueue::default();
+        queue.insert(
+            "zone:layer-a".to_owned(),
+            "speed".to_owned(),
+            ControlValue::Float(0.25),
+        );
+        let first = queue
+            .start_flush_for("zone:layer-a")
+            .expect("A owns the queue")
+            .expect("A should start");
+        queue.insert(
+            "zone:layer-b".to_owned(),
+            "speed".to_owned(),
+            ControlValue::Float(0.75),
+        );
+
+        let second = queue
+            .retire_flush_for("zone:layer-b")
+            .expect("B owns the queued replacement")
+            .expect("B must survive A retirement");
+
+        assert_eq!(first.target, "zone:layer-a");
+        assert_eq!(second.target, "zone:layer-b");
+        assert_eq!(second.values.get("speed"), Some(&ControlValue::Float(0.75)));
+        assert!(queue.complete_flush().is_none());
+        assert_eq!(queue.start_flush_for("zone:layer-b"), Ok(None));
     }
 
     #[test]

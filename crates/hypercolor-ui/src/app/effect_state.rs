@@ -17,6 +17,7 @@ use super::EffectsContext;
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct ActiveEffectSnapshot {
     id: Option<String>,
+    target: Option<api::EffectLayerTarget>,
     name: Option<String>,
     category: String,
     controls: Vec<ControlDefinition>,
@@ -125,12 +126,18 @@ pub(super) fn apply_active_effect_snapshot(ctx: &EffectsContext, active: api::Pr
     let api::PrimaryEffectView {
         id,
         zone_id,
+        layer_id,
         name,
         controls,
         control_values,
         active_preset_id,
         scene_revision,
     } = active;
+    let target = api::EffectLayerTarget {
+        effect_id: id.clone(),
+        zone_id,
+        layer_id,
+    };
     let category = ctx
         .effect_summary(&id)
         .map(|effect| effect.category.as_str().to_owned())
@@ -142,6 +149,9 @@ pub(super) fn apply_active_effect_snapshot(ctx: &EffectsContext, active: api::Pr
     ctx.set_active_control_values.set(control_values.clone());
     ctx.set_active_preset_id.set(active_preset_id.clone());
     ctx.set_is_playing.set(true);
+    if ctx.active_effect_target.get_untracked().as_ref() != Some(&target) {
+        ctx.set_active_effect_target.set(Some(target.clone()));
+    }
     if ctx.active_effect_id.get_untracked().as_deref() != Some(id.as_str()) {
         ctx.set_active_effect_id.set(Some(id.clone()));
     }
@@ -180,7 +190,7 @@ pub(super) fn apply_active_effect_snapshot(ctx: &EffectsContext, active: api::Pr
             let daemon_json = controls_to_json(&control_values);
             let needs_restore = prefs.preset_id != active_preset_id || stored_json != daemon_json;
             if needs_restore {
-                restore_effect_preferences(*ctx, id, zone_id, scene_revision, prefs);
+                restore_effect_preferences(*ctx, target, scene_revision, prefs);
                 return;
             }
         }
@@ -204,15 +214,15 @@ pub(super) fn apply_active_effect_snapshot(ctx: &EffectsContext, active: api::Pr
 /// Restores a remembered preset and its exact derived control snapshot.
 fn restore_effect_preferences(
     ctx: EffectsContext,
-    effect_id: String,
-    zone_id: String,
+    mut target: api::EffectLayerTarget,
     scene_revision: u64,
     prefs: EffectPreferences,
 ) {
     leptos::task::spawn_local(async move {
-        if ctx.active_effect_id.get_untracked().as_deref() != Some(effect_id.as_str()) {
+        if ctx.active_effect_target.get_untracked().as_ref() != Some(&target) {
             return;
         }
+        let effect_id = target.effect_id.clone();
 
         let resolved_preset_id = prefs
             .preset_id
@@ -220,25 +230,37 @@ fn restore_effect_preferences(
             .filter(|preset_id| uuid::Uuid::parse_str(preset_id).is_ok())
             .map(str::to_owned);
         if let Some(preset_id) = resolved_preset_id.as_ref() {
-            if let Err(error) =
-                api::apply_effect_preset(&effect_id, preset_id, Some(&zone_id), scene_revision)
-                    .await
+            match api::apply_effect_preset(
+                &effect_id,
+                preset_id,
+                Some(&target.zone_id),
+                scene_revision,
+            )
+            .await
             {
-                crate::toasts::toast_error(&format!("Couldn't restore preset: {error}"));
-                ctx.refresh_active_effect();
-                return;
-            }
-            if ctx.active_effect_id.get_untracked().as_deref() != Some(effect_id.as_str()) {
-                return;
+                Ok(replacement) => {
+                    if ctx.active_effect_target.get_untracked().as_ref() != Some(&target) {
+                        return;
+                    }
+                    ctx.set_active_effect_target.set(Some(replacement.clone()));
+                    target = replacement;
+                }
+                Err(error) => {
+                    crate::toasts::toast_error(&format!("Couldn't restore preset: {error}"));
+                    ctx.refresh_active_effect();
+                    return;
+                }
             }
         }
 
         if !prefs.control_values.is_empty() {
-            if let Err(error) = api::update_effect_controls(&effect_id, &prefs.control_values).await
-            {
+            if ctx.active_effect_target.get_untracked().as_ref() != Some(&target) {
+                return;
+            }
+            if let Err(error) = patch_restored_controls(&target, &prefs.control_values).await {
                 crate::toasts::toast_error(&format!("Couldn't restore saved controls: {error}"));
             }
-            if ctx.active_effect_id.get_untracked().as_deref() != Some(effect_id.as_str()) {
+            if ctx.active_effect_target.get_untracked().as_ref() != Some(&target) {
                 return;
             }
         }
@@ -262,8 +284,36 @@ fn restore_effect_preferences(
     });
 }
 
+async fn patch_restored_controls(
+    target: &api::EffectLayerTarget,
+    controls: &HashMap<String, ControlValue>,
+) -> Result<(), String> {
+    patch_restored_controls_with(target, controls, |zone_id, layer_id, controls| async move {
+        api::patch_layer_controls(&zone_id, &layer_id, &controls).await
+    })
+    .await
+}
+
+async fn patch_restored_controls_with<Patch, PatchFuture>(
+    target: &api::EffectLayerTarget,
+    controls: &HashMap<String, ControlValue>,
+    patch: Patch,
+) -> Result<(), String>
+where
+    Patch: FnOnce(String, String, HashMap<String, ControlValue>) -> PatchFuture,
+    PatchFuture: std::future::Future<Output = Result<(), String>>,
+{
+    patch(
+        target.zone_id.clone(),
+        target.layer_id.clone(),
+        controls.clone(),
+    )
+    .await
+}
+
 pub(super) fn clear_active_effect_state(ctx: &EffectsContext) {
     ctx.set_active_effect_id.set(None);
+    ctx.set_active_effect_target.set(None);
     ctx.set_active_effect_name.set(None);
     ctx.set_active_controls.set(Vec::new());
     ctx.set_active_control_values.set(HashMap::new());
@@ -310,6 +360,7 @@ pub(super) fn effect_error_toast_message(
 pub(super) fn capture_active_effect_state(ctx: &EffectsContext) -> ActiveEffectSnapshot {
     ActiveEffectSnapshot {
         id: ctx.active_effect_id.get_untracked(),
+        target: ctx.active_effect_target.get_untracked(),
         name: ctx.active_effect_name.get_untracked(),
         category: ctx.active_effect_category.get_untracked(),
         controls: ctx.active_controls.get_untracked(),
@@ -322,6 +373,7 @@ pub(super) fn restore_active_effect_state(ctx: &EffectsContext, snapshot: Active
     match snapshot.id {
         Some(id) => {
             ctx.set_active_effect_id.set(Some(id));
+            ctx.set_active_effect_target.set(snapshot.target);
             ctx.set_active_effect_name.set(snapshot.name);
             ctx.set_active_effect_category.set(snapshot.category);
             ctx.set_active_controls.set(snapshot.controls);
@@ -329,5 +381,76 @@ pub(super) fn restore_active_effect_state(ctx: &EffectsContext, snapshot: Active
             ctx.set_active_preset_id.set(snapshot.preset_id);
         }
         None => clear_active_effect_state(ctx),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::rc::Rc;
+    use std::task::{Context, Poll, Waker};
+
+    use hypercolor_types::control::ControlValue;
+
+    use super::patch_restored_controls_with;
+    use crate::api::EffectLayerTarget;
+
+    struct SuspendedPatch {
+        current_layer: Rc<RefCell<String>>,
+        replacement_layer: String,
+        suspended: bool,
+    }
+
+    impl Future for SuspendedPatch {
+        type Output = Result<(), String>;
+
+        fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+            if !self.suspended {
+                self.suspended = true;
+                self.current_layer.replace(self.replacement_layer.clone());
+                cx.waker().wake_by_ref();
+                return Poll::Pending;
+            }
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[test]
+    fn suspended_same_effect_restoration_keeps_the_observed_layer_target() {
+        let old_layer = "00000000-0000-0000-0000-000000000003";
+        let new_layer = "00000000-0000-0000-0000-000000000004";
+        let target = EffectLayerTarget {
+            effect_id: "00000000-0000-0000-0000-00000000000a".to_owned(),
+            zone_id: "00000000-0000-0000-0000-000000000002".to_owned(),
+            layer_id: old_layer.to_owned(),
+        };
+        let current_layer = Rc::new(RefCell::new(old_layer.to_owned()));
+        let addressed_layer = Rc::new(RefCell::new(None::<String>));
+        let patch_current_layer = Rc::clone(&current_layer);
+        let patch_addressed_layer = Rc::clone(&addressed_layer);
+        let controls =
+            std::collections::HashMap::from([("speed".to_owned(), ControlValue::Float(0.5))]);
+        let future = patch_restored_controls_with(&target, &controls, move |_, layer_id, _| {
+            patch_addressed_layer.replace(Some(layer_id));
+            SuspendedPatch {
+                current_layer: patch_current_layer,
+                replacement_layer: new_layer.to_owned(),
+                suspended: false,
+            }
+        });
+        let mut future = std::pin::pin!(future);
+        let waker = Waker::noop();
+        let mut context = Context::from_waker(waker);
+
+        assert!(matches!(future.as_mut().poll(&mut context), Poll::Pending));
+        assert_eq!(current_layer.borrow().as_str(), new_layer);
+        assert_eq!(addressed_layer.borrow().as_deref(), Some(old_layer));
+        assert!(matches!(
+            future.as_mut().poll(&mut context),
+            Poll::Ready(Ok(()))
+        ));
+        assert_eq!(addressed_layer.borrow().as_deref(), Some(old_layer));
     }
 }

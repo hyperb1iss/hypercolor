@@ -250,7 +250,7 @@ pub(super) fn ViewportPicker(
                         ViewportDesignerMode::ScreenCast => ModeDraft::ScreenCast,
                     };
                     let context = ViewportDesignerContext {
-                        effect_id: effect.id.clone(),
+                        target: effect.target(),
                         effect_name: effect.name.clone(),
                         initial_draft: ViewportDraft {
                             common: ViewportDraftCommon {

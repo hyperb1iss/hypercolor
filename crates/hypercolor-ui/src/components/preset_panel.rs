@@ -89,7 +89,7 @@ pub fn PresetToolbar(
     accent_rgb: Signal<String>,
     /// Callback fired after a preset is applied (so parent can refresh controls).
     #[prop(into)]
-    on_preset_applied: Callback<()>,
+    on_preset_applied: Callback<(api::EffectLayerTarget, api::EffectLayerTarget)>,
     /// The active preset ID from the engine (restored on effect switch).
     #[prop(into, optional)]
     active_preset_id_signal: Option<Signal<Option<String>>>,
@@ -188,8 +188,8 @@ pub fn PresetToolbar(
             return;
         };
         let target_zone = zones_ctx.focused_zone_id_untracked();
-        let Some(expected_revision) =
-            zones_ctx.effect_revision_untracked(&active_effect_id, target_zone.as_deref())
+        let Some((observed_target, expected_revision)) =
+            zones_ctx.effect_target_untracked(&active_effect_id, target_zone.as_deref())
         else {
             set_selected_id.set(previous_selection);
             toasts::toast_error("The selected effect is no longer active");
@@ -201,14 +201,8 @@ pub fn PresetToolbar(
             set_selected_id.set(None);
             let on_applied = on_preset_applied;
             leptos::task::spawn_local(async move {
-                match api::reset_effect_controls(
-                    &active_effect_id,
-                    target_zone.as_deref(),
-                    expected_revision,
-                )
-                .await
-                {
-                    Ok(()) => on_applied.run(()),
+                match api::reset_effect_controls(&observed_target, expected_revision).await {
+                    Ok(target) => on_applied.run((observed_target, target)),
                     Err(error) => {
                         set_selected_id.set(previous_selection);
                         toasts::toast_error(&format!("Failed to reset controls: {error}"));
@@ -225,16 +219,16 @@ pub fn PresetToolbar(
             match api::apply_effect_preset(
                 &active_effect_id,
                 &val,
-                target_zone.as_deref(),
+                Some(&observed_target.zone_id),
                 expected_revision,
             )
             .await
             {
-                Ok(()) => {
+                Ok(target) => {
                     if target_zone.is_some() {
                         zones_ctx.refresh.run(());
                     }
-                    on_applied.run(());
+                    on_applied.run((observed_target, target));
                 }
                 Err(error) => {
                     set_selected_id.set(previous_selection);
@@ -280,8 +274,9 @@ pub fn PresetToolbar(
         let controls_json = controls_to_json(&values);
         let refresh = refresh_presets;
         let target_zone = zones_ctx.focused_zone_id_untracked();
-        let Some(expected_revision) =
-            zones_ctx.effect_revision_untracked(&eid, target_zone.as_deref())
+        let on_applied = on_preset_applied;
+        let Some((observed_target, expected_revision)) =
+            zones_ctx.effect_target_untracked(&eid, target_zone.as_deref())
         else {
             toasts::toast_error("The selected effect is no longer active");
             return;
@@ -301,14 +296,15 @@ pub fn PresetToolbar(
                     match api::apply_effect_preset(
                         &eid,
                         &created_id,
-                        target_zone.as_deref(),
+                        Some(&observed_target.zone_id),
                         expected_revision,
                     )
                     .await
                     {
-                        Ok(()) => {
+                        Ok(target) => {
                             set_selected_id.set(Some(created_id));
                             toasts::toast_success("Preset created");
+                            on_applied.run((observed_target, target));
                             refresh();
                         }
                         Err(error) => {

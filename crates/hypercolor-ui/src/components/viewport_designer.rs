@@ -13,7 +13,7 @@
 //! spec sketches (overlay.rs, controls_bar.rs, etc.).
 //!
 //! Related files:
-//!   - `api::effects::update_effect_controls` for the layer PATCH path
+//!   - `api::patch_layer_controls` for the layer PATCH path
 //!   - `components::control_panel::viewport_picker` for the inline
 //!     quick-adjust picker the modal complements (not replaces)
 
@@ -28,7 +28,7 @@ use hypercolor_leptos_ext::events::{Change, Input};
 use hypercolor_types::control::ControlValue;
 use hypercolor_types::viewport::{FitMode, MIN_VIEWPORT_EDGE, ViewportRect};
 
-use crate::api::effects::update_effect_controls;
+use crate::api::EffectLayerTarget;
 use crate::toasts::{toast_error, toast_success};
 
 /// Authoring mode the modal was opened against.
@@ -100,7 +100,7 @@ impl ViewportDraft {
 /// toggle, and the effect-specific mode.
 #[derive(Clone, Debug)]
 pub struct ViewportDesignerContext {
-    pub effect_id: String,
+    pub target: EffectLayerTarget,
     pub effect_name: String,
     pub initial_draft: ViewportDraft,
 }
@@ -124,7 +124,7 @@ pub fn ViewportDesignerModal(
     // the cancel revert path — it must never change for the life of
     // the modal.
     let initial = context.initial_draft.clone();
-    let effect_id = context.effect_id.clone();
+    let target = context.target.clone();
     let (draft, set_draft) = signal(initial.clone());
     let open_time_draft = initial.clone();
 
@@ -141,17 +141,17 @@ pub fn ViewportDesignerModal(
     // throttled flows layer in once the shell is proven.
     let apply_pending = RwSignal::new(false);
     let apply = Callback::new({
-        let effect_id = effect_id.clone();
+        let target = target.clone();
         move |_: ()| {
             if apply_pending.get() {
                 return;
             }
             apply_pending.set(true);
-            let effect_id = effect_id.clone();
+            let target = target.clone();
             leptos::task::spawn_local(async move {
                 let snapshot = draft.get_untracked();
                 let controls = draft_to_controls(&snapshot);
-                let outcome = update_effect_controls(&effect_id, &controls).await;
+                let outcome = apply_viewport_controls(&target, &controls).await;
                 apply_pending.set(false);
                 match outcome {
                     Ok(()) => {
@@ -289,6 +289,33 @@ pub fn ViewportDesignerModal(
             </div>
         </Portal>
     }
+}
+
+async fn apply_viewport_controls(
+    target: &EffectLayerTarget,
+    controls: &HashMap<String, ControlValue>,
+) -> Result<(), String> {
+    apply_viewport_controls_with(target, controls, |zone_id, layer_id, controls| async move {
+        crate::api::patch_layer_controls(&zone_id, &layer_id, &controls).await
+    })
+    .await
+}
+
+async fn apply_viewport_controls_with<Patch, PatchFuture>(
+    target: &EffectLayerTarget,
+    controls: &HashMap<String, ControlValue>,
+    patch: Patch,
+) -> Result<(), String>
+where
+    Patch: FnOnce(String, String, HashMap<String, ControlValue>) -> PatchFuture,
+    PatchFuture: std::future::Future<Output = Result<(), String>>,
+{
+    patch(
+        target.zone_id.clone(),
+        target.layer_id.clone(),
+        controls.clone(),
+    )
+    .await
 }
 
 /// Web Viewport stub pane. Wave 1 MVP: numeric rect inputs, scroll_y
@@ -582,5 +609,73 @@ fn fit_mode_label(fit: FitMode) -> &'static str {
         FitMode::Stretch => "Stretch",
         FitMode::Tile => "Tile",
         FitMode::Mirror => "Mirror",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::rc::Rc;
+    use std::task::{Context, Poll, Waker};
+
+    use super::apply_viewport_controls_with;
+    use crate::api::EffectLayerTarget;
+
+    struct SuspendedPatch {
+        current_layer: Rc<RefCell<String>>,
+        replacement_layer: String,
+        suspended: bool,
+    }
+
+    impl Future for SuspendedPatch {
+        type Output = Result<(), String>;
+
+        fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+            if !self.suspended {
+                self.suspended = true;
+                self.current_layer.replace(self.replacement_layer.clone());
+                cx.waker().wake_by_ref();
+                return Poll::Pending;
+            }
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[test]
+    fn suspended_same_effect_viewport_apply_keeps_the_opened_layer_target() {
+        let old_layer = "00000000-0000-0000-0000-000000000003";
+        let new_layer = "00000000-0000-0000-0000-000000000004";
+        let target = EffectLayerTarget {
+            effect_id: "00000000-0000-0000-0000-00000000000a".to_owned(),
+            zone_id: "00000000-0000-0000-0000-000000000002".to_owned(),
+            layer_id: old_layer.to_owned(),
+        };
+        let current_layer = Rc::new(RefCell::new(old_layer.to_owned()));
+        let addressed_layer = Rc::new(RefCell::new(None::<String>));
+        let patch_current_layer = Rc::clone(&current_layer);
+        let patch_addressed_layer = Rc::clone(&addressed_layer);
+        let controls = std::collections::HashMap::new();
+        let future = apply_viewport_controls_with(&target, &controls, move |_, layer_id, _| {
+            patch_addressed_layer.replace(Some(layer_id));
+            SuspendedPatch {
+                current_layer: patch_current_layer,
+                replacement_layer: new_layer.to_owned(),
+                suspended: false,
+            }
+        });
+        let mut future = std::pin::pin!(future);
+        let waker = Waker::noop();
+        let mut context = Context::from_waker(waker);
+
+        assert!(matches!(future.as_mut().poll(&mut context), Poll::Pending));
+        assert_eq!(current_layer.borrow().as_str(), new_layer);
+        assert_eq!(addressed_layer.borrow().as_deref(), Some(old_layer));
+        assert!(matches!(
+            future.as_mut().poll(&mut context),
+            Poll::Ready(Ok(()))
+        ));
+        assert_eq!(addressed_layer.borrow().as_deref(), Some(old_layer));
     }
 }

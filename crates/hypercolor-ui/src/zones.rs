@@ -82,18 +82,22 @@ impl ZonesContext {
         })
     }
 
-    /// Scene revision that owns the requested effect at the write target.
-    pub fn effect_revision_untracked(&self, effect_id: &str, zone_id: Option<&str>) -> Option<u64> {
+    /// Immutable effect-layer identity and scene revision at the write target.
+    pub fn effect_target_untracked(
+        &self,
+        effect_id: &str,
+        zone_id: Option<&str>,
+    ) -> Option<(api::EffectLayerTarget, u64)> {
         self.active_scene
-            .with_untracked(|scene| effect_revision_in_scene(scene.as_ref()?, effect_id, zone_id))
+            .with_untracked(|scene| effect_target_in_scene(scene.as_ref()?, effect_id, zone_id))
     }
 }
 
-fn effect_revision_in_scene(
+fn effect_target_in_scene(
     scene: &api::SceneDocument,
     effect_id: &str,
     zone_id: Option<&str>,
-) -> Option<u64> {
+) -> Option<(api::EffectLayerTarget, u64)> {
     let zone = match zone_id {
         Some(zone_id) => scene
             .zones
@@ -110,13 +114,23 @@ fn effect_revision_in_scene(
                     .find(|zone| zone.role != ZoneRole::Display)
             }),
     }?;
-    let current_effect_id = zone.layers.iter().rev().find_map(|layer| {
-        let LayerSource::Effect { effect_id, .. } = &layer.source else {
-            return None;
+    let layer = zone.layers.iter().rev().find(|layer| {
+        let LayerSource::Effect {
+            effect_id: current, ..
+        } = &layer.source
+        else {
+            return false;
         };
-        Some(effect_id.to_string())
+        current.to_string() == effect_id
     })?;
-    (current_effect_id == effect_id).then_some(scene.revision)
+    Some((
+        api::EffectLayerTarget {
+            effect_id: effect_id.to_owned(),
+            zone_id: zone.id.to_string(),
+            layer_id: layer.id.to_string(),
+        },
+        scene.revision,
+    ))
 }
 
 /// One LED zone's active-effect state — the per-zone answer to "what is

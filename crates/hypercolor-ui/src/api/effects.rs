@@ -29,11 +29,43 @@ pub use hypercolor_types::api::scene::ApplyEffectRequest as ApplyEffectBody;
 pub struct PrimaryEffectView {
     pub id: String,
     pub zone_id: String,
+    pub layer_id: String,
     pub name: String,
     pub controls: Vec<ControlDefinition>,
     pub control_values: HashMap<String, ControlValue>,
     pub active_preset_id: Option<String>,
     pub scene_revision: u64,
+}
+
+/// Immutable identity of one effect layer observed or created by the UI.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EffectLayerTarget {
+    pub effect_id: String,
+    pub zone_id: String,
+    pub layer_id: String,
+}
+
+impl EffectLayerTarget {
+    #[must_use]
+    pub fn session_key(&self) -> String {
+        format!("{}:{}", self.zone_id, self.layer_id)
+    }
+
+    #[must_use]
+    pub fn session_ids(key: &str) -> Option<(&str, &str)> {
+        key.split_once(':')
+    }
+}
+
+impl PrimaryEffectView {
+    #[must_use]
+    pub fn target(&self) -> EffectLayerTarget {
+        EffectLayerTarget {
+            effect_id: self.id.clone(),
+            zone_id: self.zone_id.clone(),
+            layer_id: self.layer_id.clone(),
+        }
+    }
 }
 
 // ── Fetch Functions ─────────────────────────────────────────────────────────
@@ -47,14 +79,14 @@ pub async fn fetch_effects() -> Result<Vec<EffectSummary>, String> {
 /// Project the primary zone's top effect layer from the live scene tree.
 pub async fn fetch_primary_effect_view() -> Result<Option<PrimaryEffectView>, String> {
     let scene: SceneDocument = client::fetch_json("/api/v1/scene").await?;
-    let Some((zone_id, _, effect_id, values, _, preset_id)) = effect_target(&scene, None, None)
-    else {
+    let Some((zone_id, layer_id, effect_id, values, _, preset_id)) = effect_target(&scene) else {
         return Ok(None);
     };
     let detail = fetch_effect_detail(&effect_id.to_string()).await?;
     Ok(Some(PrimaryEffectView {
         id: effect_id,
         zone_id,
+        layer_id,
         name: detail.name,
         controls: detail.controls,
         control_values: values,
@@ -95,7 +127,7 @@ pub async fn apply_effect_preset(
     preset_id: &str,
     zone_id: Option<&str>,
     expected_revision: u64,
-) -> Result<(), String> {
+) -> Result<EffectLayerTarget, String> {
     let path = format!(
         "/api/v1/effects/{}/presets/{}/apply",
         path_segment(effect_id),
@@ -112,7 +144,7 @@ pub async fn apply_effect_preset(
         zone,
         ..ApplyEffectBody::default()
     };
-    apply_effect_preset_with(expected_revision, move |revision| async move {
+    apply_effect_preset_with(effect_id, expected_revision, move |revision| async move {
         client::send_json_versioned::<_, ApplyEffectResponse>(
             Method::POST,
             &path,
@@ -120,22 +152,24 @@ pub async fn apply_effect_preset(
             Some(revision),
         )
         .await
-        .map(|outcome| outcome.map(|_| ()))
         .map_err(Into::into)
     })
     .await
 }
 
 async fn apply_effect_preset_with<Send, SendFuture>(
+    effect_id: &str,
     expected_revision: u64,
     send: Send,
-) -> Result<(), String>
+) -> Result<EffectLayerTarget, String>
 where
     Send: FnOnce(u64) -> SendFuture,
-    SendFuture: Future<Output = Result<client::MutationOutcome<()>, String>>,
+    SendFuture: Future<Output = Result<client::MutationOutcome<ApplyEffectResponse>, String>>,
 {
     match send(expected_revision).await? {
-        client::MutationOutcome::Applied(()) => Ok(()),
+        client::MutationOutcome::Applied(response) => {
+            effect_target_from_apply(effect_id, &response)
+        }
         client::MutationOutcome::Stale { current } => Err(format!(
             "Scene changed from revision {expected_revision} to {current} before preset apply"
         )),
@@ -144,14 +178,30 @@ where
 
 /// Apply an effect by ID or name. Pass `None` for a bare start; pass
 /// `Some(body)` to deliver preferences atomically.
-pub async fn apply_effect(id: &str, body: Option<&ApplyEffectBody>) -> Result<(), String> {
+pub async fn apply_effect(
+    id: &str,
+    body: Option<&ApplyEffectBody>,
+) -> Result<EffectLayerTarget, String> {
     let path = format!("/api/v1/effects/{}/apply", path_segment(id));
-    match body {
-        Some(body) => client::post_json_discard(&path, body)
+    let body = body.cloned().unwrap_or_default();
+    apply_effect_with(id, || async {
+        client::post_json::<_, ApplyEffectResponse>(&path, &body)
             .await
-            .map_err(Into::into),
-        None => client::post_empty(&path).await.map_err(Into::into),
-    }
+            .map_err(Into::into)
+    })
+    .await
+}
+
+async fn apply_effect_with<Send, SendFuture>(
+    effect_id: &str,
+    send: Send,
+) -> Result<EffectLayerTarget, String>
+where
+    Send: FnOnce() -> SendFuture,
+    SendFuture: Future<Output = Result<ApplyEffectResponse, String>>,
+{
+    let response = send().await?;
+    effect_target_from_apply(effect_id, &response)
 }
 
 /// Stop the currently active effect.
@@ -161,48 +211,11 @@ pub async fn stop_effect() -> Result<(), String> {
         .map_err(Into::into)
 }
 
-/// Patch controls on the live layer running a specific effect.
-pub async fn update_effect_controls(
-    effect_id: &str,
-    controls: &HashMap<String, ControlValue>,
-) -> Result<(), String> {
-    update_effect_controls_with(
-        effect_id,
-        async {
-            client::fetch_json("/api/v1/scene")
-                .await
-                .map_err(Into::into)
-        },
-        |zone_id, layer_id| async move {
-            patch_controls(&zone_id, &layer_id, controls, Vec::new()).await
-        },
-    )
-    .await
-}
-
-async fn update_effect_controls_with<SceneFuture, Patch, PatchFuture>(
-    effect_id: &str,
-    scene: SceneFuture,
-    patch: Patch,
-) -> Result<(), String>
-where
-    SceneFuture: Future<Output = Result<SceneDocument, String>>,
-    Patch: FnOnce(String, String) -> PatchFuture,
-    PatchFuture: Future<Output = Result<(), String>>,
-{
-    let scene = scene.await?;
-    let Some((zone_id, layer_id, _, _, _, _)) = effect_target(&scene, None, Some(effect_id)) else {
-        return Err("The requested effect is not present in the live scene".to_owned());
-    };
-    patch(zone_id, layer_id).await
-}
-
 /// Reset one observed effect layer to its defaults.
 pub async fn reset_effect_controls(
-    effect_id: &str,
-    zone_id: Option<&str>,
+    target: &EffectLayerTarget,
     expected_revision: u64,
-) -> Result<(), String> {
+) -> Result<EffectLayerTarget, String> {
     let scene: SceneDocument = client::fetch_json("/api/v1/scene").await?;
     if scene.revision != expected_revision {
         return Err(format!(
@@ -210,29 +223,27 @@ pub async fn reset_effect_controls(
             scene.revision
         ));
     }
-    let Some((target_zone_id, target_layer_id, _, _, _, _)) =
-        effect_target(&scene, zone_id, Some(effect_id))
-    else {
-        return Err("The requested effect is not present in the live scene".to_owned());
-    };
     let zone = scene
         .zones
         .iter()
-        .find(|zone| zone.id.to_string() == target_zone_id)
-        .expect("effect target zone came from this scene");
+        .find(|zone| zone.id.to_string() == target.zone_id)
+        .ok_or_else(|| "The observed effect zone is no longer present".to_owned())?;
     let layer = zone
         .layers
         .iter()
-        .find(|layer| layer.id.to_string() == target_layer_id)
-        .expect("effect target layer came from this scene");
+        .find(|layer| layer.id.to_string() == target.layer_id)
+        .ok_or_else(|| "The observed effect layer is no longer present".to_owned())?;
     let LayerSource::Effect {
         effect_id,
         control_bindings,
         ..
     } = &layer.source
     else {
-        unreachable!("the selected layer is an effect layer");
+        return Err("The observed layer no longer runs an effect".to_owned());
     };
+    if effect_id.to_string() != target.effect_id {
+        return Err("The observed layer no longer runs the requested effect".to_owned());
+    }
     let detail = fetch_effect_detail(&effect_id.to_string()).await?;
     let values: std::collections::HashMap<_, _> = detail
         .controls
@@ -262,7 +273,7 @@ pub async fn reset_effect_controls(
     .await
     .map_err(String::from)?;
     match outcome {
-        client::MutationOutcome::Applied(_) => Ok(()),
+        client::MutationOutcome::Applied(zone) => effect_target_from_zone(&target.effect_id, &zone),
         client::MutationOutcome::Stale { current } => Err(format!(
             "Scene changed from revision {expected_revision} to {current} before controls reset"
         )),
@@ -278,34 +289,17 @@ type EffectTarget = (
     Option<String>,
 );
 
-fn effect_target(
-    scene: &SceneDocument,
-    zone_id: Option<&str>,
-    effect_id: Option<&str>,
-) -> Option<EffectTarget> {
-    if let Some(zone_id) = zone_id {
-        return scene
-            .zones
-            .iter()
-            .find(|zone| zone.id.to_string() == zone_id)
-            .and_then(|zone| effect_target_in_zone(zone, effect_id));
-    }
+fn effect_target(scene: &SceneDocument) -> Option<EffectTarget> {
     scene
         .zones
         .iter()
         .find(|zone| zone.role == ZoneRole::Primary)
-        .and_then(|zone| effect_target_in_zone(zone, effect_id))
-        .or_else(|| {
-            scene
-                .zones
-                .iter()
-                .find_map(|zone| effect_target_in_zone(zone, effect_id))
-        })
+        .and_then(effect_target_in_zone)
+        .or_else(|| scene.zones.iter().find_map(effect_target_in_zone))
 }
 
 fn effect_target_in_zone(
     zone: &hypercolor_types::api::scene::ZoneResource,
-    effect_id: Option<&str>,
 ) -> Option<EffectTarget> {
     zone.layers.iter().rev().find_map(|layer| {
         let LayerSource::Effect {
@@ -317,9 +311,6 @@ fn effect_target_in_zone(
         else {
             return None;
         };
-        if effect_id.is_some_and(|expected| current_effect_id.to_string() != expected) {
-            return None;
-        }
         Some((
             zone.id.to_string(),
             layer.id.to_string(),
@@ -331,23 +322,34 @@ fn effect_target_in_zone(
     })
 }
 
-async fn patch_controls(
-    zone_id: &str,
-    layer_id: &str,
-    controls: &HashMap<String, ControlValue>,
-    clear_bindings: Vec<String>,
-) -> Result<(), String> {
-    let path = format!(
-        "/api/v1/scene/zones/{}/layers/{}/controls",
-        path_segment(zone_id),
-        path_segment(layer_id)
-    );
-    client::patch_json_discard(
-        &path,
-        &super::layers::control_patch_request(controls, clear_bindings),
-    )
-    .await
-    .map_err(Into::into)
+fn effect_target_from_apply(
+    effect_id: &str,
+    response: &ApplyEffectResponse,
+) -> Result<EffectLayerTarget, String> {
+    effect_target_from_zone(effect_id, &response.zone)
+}
+
+fn effect_target_from_zone(
+    effect_id: &str,
+    zone: &ZoneResource,
+) -> Result<EffectLayerTarget, String> {
+    let layer = zone
+        .layers
+        .iter()
+        .rev()
+        .find(|layer| {
+            matches!(
+                &layer.source,
+                LayerSource::Effect { effect_id: current, .. }
+                    if current.to_string() == effect_id
+            )
+        })
+        .ok_or_else(|| "Effect apply response did not contain the created layer".to_owned())?;
+    Ok(EffectLayerTarget {
+        effect_id: effect_id.to_owned(),
+        zone_id: zone.id.to_string(),
+        layer_id: layer.id.to_string(),
+    })
 }
 
 pub async fn upload_effect(file: File) -> Result<InstalledEffectResponse, String> {
@@ -398,99 +400,57 @@ pub async fn upload_effect(file: File) -> Result<InstalledEffectResponse, String
 
 #[cfg(test)]
 mod tests {
-    use std::cell::{Cell, RefCell};
+    use std::cell::RefCell;
     use std::future::Future;
     use std::pin::Pin;
     use std::rc::Rc;
     use std::task::{Context, Poll, Waker};
 
-    use hypercolor_types::api::scene::SceneDocument;
+    use hypercolor_types::api::scene::{
+        ApplyEffectResponse, SceneDocument, SideEffectOutcome, TransitionType,
+    };
 
-    use super::{apply_effect_preset_with, update_effect_controls_with};
+    use super::{apply_effect_preset_with, apply_effect_with};
     use crate::api::MutationOutcome;
 
-    struct SuspendedSceneFetch {
-        scene: Option<SceneDocument>,
+    struct SuspendedApply {
+        response: Option<ApplyEffectResponse>,
+        observed_layer: Rc<RefCell<String>>,
+        next_layer: String,
         suspended: bool,
     }
 
-    impl Future for SuspendedSceneFetch {
-        type Output = Result<SceneDocument, String>;
+    impl Future for SuspendedApply {
+        type Output = Result<ApplyEffectResponse, String>;
 
         fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
             if !self.suspended {
                 self.suspended = true;
+                self.observed_layer.replace(self.next_layer.clone());
                 cx.waker().wake_by_ref();
                 return Poll::Pending;
             }
-            Poll::Ready(Ok(self.scene.take().expect("scene is returned once")))
+            Poll::Ready(Ok(self.response.take().expect("response is returned once")))
         }
     }
 
     struct SuspendedPresetApply {
-        active_effect: Rc<RefCell<String>>,
-        revision: Rc<Cell<u64>>,
-        expected_revision: u64,
-        suspended: bool,
+        apply: SuspendedApply,
     }
 
     impl Future for SuspendedPresetApply {
-        type Output = Result<MutationOutcome<()>, String>;
+        type Output = Result<MutationOutcome<ApplyEffectResponse>, String>;
 
-        fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-            if !self.suspended {
-                self.suspended = true;
-                self.active_effect.replace("effect-b".to_owned());
-                self.revision.set(8);
-                cx.waker().wake_by_ref();
-                return Poll::Pending;
+        fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+            match Pin::new(&mut self.get_mut().apply).poll(cx) {
+                Poll::Pending => Poll::Pending,
+                Poll::Ready(Ok(response)) => Poll::Ready(Ok(MutationOutcome::Applied(response))),
+                Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
             }
-            if self.expected_revision != self.revision.get() {
-                return Poll::Ready(Ok(MutationOutcome::Stale {
-                    current: self.revision.get(),
-                }));
-            }
-            self.active_effect.replace("effect-a".to_owned());
-            Poll::Ready(Ok(MutationOutcome::Applied(())))
         }
     }
 
-    #[test]
-    fn suspended_preset_apply_cannot_replace_a_newer_effect() {
-        let active_effect = Rc::new(RefCell::new("effect-a".to_owned()));
-        let revision = Rc::new(Cell::new(7_u64));
-        let request_active_effect = Rc::clone(&active_effect);
-        let request_revision = Rc::clone(&revision);
-        let future = apply_effect_preset_with(7, move |expected_revision| SuspendedPresetApply {
-            active_effect: request_active_effect,
-            revision: request_revision,
-            expected_revision,
-            suspended: false,
-        });
-        let mut future = std::pin::pin!(future);
-        let waker = Waker::noop();
-        let mut context = Context::from_waker(waker);
-
-        assert!(matches!(future.as_mut().poll(&mut context), Poll::Pending));
-        assert_eq!(active_effect.borrow().as_str(), "effect-b");
-        let Poll::Ready(result) = future.as_mut().poll(&mut context) else {
-            panic!("preset apply should resolve on its second poll");
-        };
-        assert_eq!(
-            result,
-            Err("Scene changed from revision 7 to 8 before preset apply".to_owned())
-        );
-        assert_eq!(
-            active_effect.borrow().as_str(),
-            "effect-b",
-            "stale A preset must never replace B"
-        );
-    }
-
-    #[test]
-    fn suspended_scene_fetch_never_retargets_restored_controls() {
-        let effect_a = "00000000-0000-0000-0000-00000000000a";
-        let effect_b = "00000000-0000-0000-0000-00000000000b";
+    fn apply_response(effect_id: &str, layer_ids: &[&str]) -> ApplyEffectResponse {
         let scene: SceneDocument = serde_json::from_value(serde_json::json!({
             "id": "00000000-0000-0000-0000-000000000001",
             "name": "live",
@@ -504,40 +464,73 @@ mod tests {
                 "enabled": true,
                 "brightness": 1.0,
                 "members": [],
-                "layers": [{
-                    "id": "00000000-0000-0000-0000-000000000003",
-                    "source": {
-                        "type": "effect",
-                        "effect_id": effect_b,
-                        "controls": {}
-                    }
-                }]
+                "layers": layer_ids.iter().map(|layer_id| serde_json::json!({
+                    "id": layer_id,
+                    "source": {"type": "effect", "effect_id": effect_id, "controls": {}}
+                })).collect::<Vec<_>>()
             }]
         }))
-        .expect("scene B fixture should deserialize");
-        let patch_count = Cell::new(0_u8);
-        let fetch = SuspendedSceneFetch {
-            scene: Some(scene),
-            suspended: false,
-        };
-        let future = update_effect_controls_with(effect_a, fetch, |_, _| {
-            patch_count.set(patch_count.get() + 1);
-            std::future::ready(Ok(()))
-        });
+        .expect("apply response fixture should deserialize");
+        ApplyEffectResponse {
+            zone: scene.zones[0].clone(),
+            transition: TransitionType::Cut,
+            output: SideEffectOutcome::applied(),
+        }
+    }
+
+    fn poll_twice<T>(future: impl Future<Output = T>) -> T {
         let mut future = std::pin::pin!(future);
         let waker = Waker::noop();
         let mut context = Context::from_waker(waker);
-
         assert!(matches!(future.as_mut().poll(&mut context), Poll::Pending));
-        assert_eq!(patch_count.get(), 0, "GET suspension must not patch B");
-        let Poll::Ready(result) = future.as_mut().poll(&mut context) else {
-            panic!("scene fetch should resolve on its second poll");
+        let Poll::Ready(output) = future.as_mut().poll(&mut context) else {
+            panic!("suspended request should resolve on its second poll");
         };
-        assert_eq!(
-            result,
-            Err("The requested effect is not present in the live scene".to_owned())
-        );
-        assert_eq!(patch_count.get(), 0, "A preferences must never patch B");
+        output
+    }
+
+    #[test]
+    fn direct_same_effect_reapply_returns_the_new_layer_identity() {
+        let effect = "00000000-0000-0000-0000-00000000000a";
+        let old_layer = "00000000-0000-0000-0000-000000000003";
+        let new_layer = "00000000-0000-0000-0000-000000000004";
+        let observed_layer = Rc::new(RefCell::new(old_layer.to_owned()));
+        let request_observed_layer = Rc::clone(&observed_layer);
+        let result = poll_twice(apply_effect_with(effect, move || SuspendedApply {
+            response: Some(apply_response(effect, &[old_layer, new_layer])),
+            observed_layer: request_observed_layer,
+            next_layer: new_layer.to_owned(),
+            suspended: false,
+        }))
+        .expect("same-effect reapply should return its layer target");
+
+        assert_eq!(observed_layer.borrow().as_str(), new_layer);
+        assert_eq!(result.effect_id, effect);
+        assert_eq!(result.layer_id, new_layer);
+    }
+
+    #[test]
+    fn preset_same_effect_apply_returns_the_replacement_layer_identity() {
+        let effect = "00000000-0000-0000-0000-00000000000a";
+        let old_layer = "00000000-0000-0000-0000-000000000003";
+        let new_layer = "00000000-0000-0000-0000-000000000004";
+        let observed_layer = Rc::new(RefCell::new(old_layer.to_owned()));
+        let request_observed_layer = Rc::clone(&observed_layer);
+        let result = poll_twice(apply_effect_preset_with(effect, 7, move |_| {
+            SuspendedPresetApply {
+                apply: SuspendedApply {
+                    response: Some(apply_response(effect, &[old_layer, new_layer])),
+                    observed_layer: request_observed_layer,
+                    next_layer: new_layer.to_owned(),
+                    suspended: false,
+                },
+            }
+        }))
+        .expect("preset apply should return its replacement target");
+
+        assert_eq!(observed_layer.borrow().as_str(), new_layer);
+        assert_eq!(result.effect_id, effect);
+        assert_eq!(result.layer_id, new_layer);
     }
 
     #[test]

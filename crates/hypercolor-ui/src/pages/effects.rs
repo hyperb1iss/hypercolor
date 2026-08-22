@@ -185,23 +185,28 @@ pub fn EffectsPage() -> impl IntoView {
     ));
     let preferences_store = use_context::<crate::preferences::PreferencesStore>();
     let patch: ControlPatchFn = Arc::new(
-        move |effect_id: String,
+        move |target_key: String,
               payload: crate::optimistic_controls::ControlValueMap,
               _version: Option<u64>|
               -> ControlPatchFuture {
             Box::pin(async move {
-                api::update_effect_controls(&effect_id, &payload).await?;
+                let (zone_id, layer_id) = api::EffectLayerTarget::session_ids(&target_key)
+                    .ok_or_else(|| "Invalid effect layer target".to_owned())?;
+                api::patch_layer_controls(zone_id, layer_id, &payload).await?;
                 Ok(api::MutationOutcome::Applied(None))
             })
         },
     );
     let on_committed = preferences_store.map(|store| {
-        Callback::new(move |effect_id: String| {
-            if fx.active_effect_id.get_untracked().as_deref() != Some(effect_id.as_str()) {
+        Callback::new(move |target_key: String| {
+            let Some(target) = fx.active_effect_target.get_untracked() else {
+                return;
+            };
+            if target.session_key() != target_key {
                 return;
             }
             if let Err(error) = store.save(
-                effect_id,
+                target.effect_id,
                 crate::preferences::EffectPreferences {
                     preset_id: fx.active_preset_id.get_untracked(),
                     control_values: fx.active_control_values.get_untracked(),
@@ -214,7 +219,11 @@ pub fn EffectsPage() -> impl IntoView {
         })
     });
     let control_session = use_control_patch_session(ControlPatchConfig {
-        target: Signal::derive(move || fx.active_effect_id.get()),
+        target: Signal::derive(move || {
+            fx.active_effect_target
+                .get()
+                .map(|target| target.session_key())
+        }),
         defs: Signal::derive(move || fx.active_controls.get()),
         set_values: fx.set_active_control_values,
         initial_version: None,
