@@ -9,6 +9,7 @@ use hypercolor_core::input::{
     INPUT_EVENT_RING_CAPACITY, InputData, InputSource, MotionAggregate,
 };
 use hypercolor_types::event::{InputButtonState, InputEvent};
+use hypercolor_types::event::{PointerScrollPhase, PointerScrollUnit};
 
 fn started_source() -> (BrowserInputSource, BrowserInputHandle) {
     let mut source = BrowserInputSource::new();
@@ -36,6 +37,16 @@ fn press(key: &str) -> BrowserInputEdge {
     BrowserInputEdge::Key {
         key: key.to_owned(),
         state: InputButtonState::Pressed,
+    }
+}
+
+fn line_scroll(delta_line120: i64) -> BrowserInputEdge {
+    BrowserInputEdge::Scroll {
+        delta_x_q16_16: 0,
+        delta_y_q16_16: delta_line120 << 16,
+        unit: PointerScrollUnit::Line120,
+        phase: PointerScrollPhase::None,
+        momentum_phase: PointerScrollPhase::None,
     }
 }
 
@@ -72,8 +83,8 @@ fn shared_sampling_reuses_browser_snapshot_pool_and_drains_directly() {
         .attach(child_key(1, "shared-sample"))
         .expect("preview should attach");
     attachment
-        .inject([BrowserInputEdge::Wheel { delta_hi_res: 120 }])
-        .expect("wheel should inject");
+        .inject([line_scroll(120)])
+        .expect("scroll should inject");
     let mut events = Vec::with_capacity(4);
 
     let first = source
@@ -83,14 +94,11 @@ fn shared_sampling_reuses_browser_snapshot_pool_and_drains_directly() {
     let first_ptr = Arc::as_ptr(&first);
     assert!(matches!(
         events.as_slice(),
-        [exact, shadow]
+        [exact]
             if matches!(
                 exact.event,
                 InputEvent::PointerScroll { delta_y_q16_16, .. }
                     if delta_y_q16_16 == 120 * hypercolor_core::input::Q16_16_SCALE
-            ) && matches!(
-                shadow.event,
-                InputEvent::MouseWheel { delta_hi_res: 120, .. }
             )
     ));
     drop(first);
@@ -104,8 +112,8 @@ fn shared_sampling_reuses_browser_snapshot_pool_and_drains_directly() {
     drop(second);
 
     attachment
-        .inject([BrowserInputEdge::Wheel { delta_hi_res: -30 }])
-        .expect("second wheel should inject");
+        .inject([line_scroll(-30)])
+        .expect("second scroll should inject");
     let third = source
         .sample_shared_and_drain_into(1.0 / 60.0, &mut events)
         .expect("shared sample should succeed")
@@ -114,14 +122,11 @@ fn shared_sampling_reuses_browser_snapshot_pool_and_drains_directly() {
     assert_eq!(Arc::as_ptr(&third), first_ptr);
     assert!(matches!(
         events.as_slice(),
-        [exact, shadow]
+        [exact]
             if matches!(
                 exact.event,
                 InputEvent::PointerScroll { delta_y_q16_16, .. }
                     if delta_y_q16_16 == -30 * hypercolor_core::input::Q16_16_SCALE
-            ) && matches!(
-                shadow.event,
-                InputEvent::MouseWheel { delta_hi_res: -30, .. }
             )
     ));
 }
@@ -271,29 +276,28 @@ fn bounded_child_history_is_non_destructive_for_independent_consumers() {
     let attachment = handle.attach(child_key(4, "events")).expect("attach");
     let slot = attachment.slot();
     attachment
-        .inject((0..3).map(|delta_hi_res| BrowserInputEdge::Wheel { delta_hi_res }))
+        .inject((0..3).map(line_scroll))
         .expect("initial inject");
 
     let mut fast_events = Vec::new();
     let fast_cursor = slot.read_events_since(0, &mut fast_events).next_cursor;
-    assert_eq!(fast_cursor, 5);
+    assert_eq!(fast_cursor, 3);
     attachment
         .inject(
-            (0..INPUT_EVENT_RING_CAPACITY + 5).map(|index| BrowserInputEdge::Wheel {
-                delta_hi_res: i32::try_from(index).expect("test index fits i32"),
-            }),
+            (0..INPUT_EVENT_RING_CAPACITY + 5)
+                .map(|index| line_scroll(i64::try_from(index).expect("test index fits i64"))),
         )
         .expect("overflow inject");
 
     let mut slow_events = Vec::new();
     let slow = slot.read_events_since(0, &mut slow_events);
     assert_eq!(slow_events.len(), INPUT_EVENT_RING_CAPACITY);
-    assert_eq!(slow.dropped, 270);
+    assert_eq!(slow.dropped, 8);
 
     fast_events.clear();
     let fast = slot.read_events_since(fast_cursor, &mut fast_events);
     assert_eq!(fast_events.len(), INPUT_EVENT_RING_CAPACITY);
-    assert_eq!(fast.dropped, 265);
+    assert_eq!(fast.dropped, 5);
 
     let mut replay = Vec::new();
     let replay_read = slot.read_events_since(0, &mut replay);
@@ -368,20 +372,20 @@ fn compatibility_aggregate_accumulates_superseded_motion_publications() {
 fn fast_aggregate_consumer_is_not_charged_for_replaced_history() {
     let (mut source, handle) = started_source();
     let attachment = handle.attach(child_key(14, "fast")).expect("attach");
-    for delta_hi_res in 0..INPUT_EVENT_RING_CAPACITY + 5 {
+    for delta_line120 in 0..INPUT_EVENT_RING_CAPACITY + 5 {
         attachment
-            .inject([BrowserInputEdge::Wheel {
-                delta_hi_res: i32::try_from(delta_hi_res).expect("test delta fits i32"),
-            }])
-            .expect("wheel inject");
+            .inject([line_scroll(
+                i64::try_from(delta_line120).expect("test delta fits i64"),
+            )])
+            .expect("scroll inject");
         let (sample, events) = source.sample_and_drain_with_delta_secs(0.0);
         let InputData::Interaction(sample) = sample.expect("aggregate sample") else {
             panic!("expected interaction sample");
         };
-        assert_eq!(events.len(), if delta_hi_res == 0 { 1 } else { 2 });
+        assert_eq!(events.len(), 1);
         assert_eq!(
-            sample.batch.wheel_hi_res,
-            i32::try_from(delta_hi_res).expect("test delta fits i32")
+            sample.batch.scroll.line120_y_q16_16,
+            i64::try_from(delta_line120).expect("test delta fits i64") << 16
         );
         assert_eq!(sample.batch.dropped_events, 0);
     }

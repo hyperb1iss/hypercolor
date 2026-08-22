@@ -69,20 +69,8 @@ export interface MouseScrollInputEvent extends MouseInputEventBase {
     momentumPhase: MouseScrollPhase
 }
 
-/**
- * One ordered legacy vertical wheel event.
- *
- * @deprecated Consume the adjacent `scroll` event instead. This member remains
- * available through the next API major.
- */
-export interface MouseWheelInputEvent extends MouseInputEventBase {
-    kind: 'wheel'
-    /** Integral vertical wheel delta in 1/120-notch units. */
-    delta: number
-}
-
 /** Mouse event ordered by `seq` and stamped with monotonic capture time. */
-export type MouseInputEvent = MouseButtonInputEvent | MouseScrollInputEvent | MouseWheelInputEvent
+export type MouseInputEvent = MouseButtonInputEvent | MouseScrollInputEvent
 
 /** Exact two-axis scroll totals for the current frame. */
 export interface MouseScrollState {
@@ -120,13 +108,11 @@ export interface MouseInputState {
     mode: MouseMode
     /** True when pointer coordinates are meaningful (`mode !== 'none'`). */
     available: boolean
-    /** Accumulated integral vertical wheel delta in 1/120-notch units. */
-    wheel: number
     /** Exact two-axis scroll accumulated independently by coordinate unit. */
     scroll: MouseScrollState
     /** Normalized pointer motion magnitude per second. */
     velocity: number
-    /** Ordered button, scroll, and compatibility wheel events captured this frame. */
+    /** Ordered button and exact scroll events captured this frame. */
     events: MouseInputEvent[]
 }
 

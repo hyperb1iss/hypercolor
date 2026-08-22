@@ -235,10 +235,6 @@ impl InteractionData {
             self.mouse.mode = other.mouse.mode;
             self.mouse.injected = other.mouse.injected;
         }
-        self.batch.wheel_hi_res = self
-            .batch
-            .wheel_hi_res
-            .saturating_add(other.batch.wheel_hi_res);
         self.batch.scroll.absorb(other.batch.scroll);
         self.batch.motion.dx += other.batch.motion.dx;
         self.batch.motion.dy += other.batch.motion.dy;
@@ -279,10 +275,6 @@ impl InteractionData {
             self.mouse.mode = other.mouse.mode;
             self.mouse.injected = other.mouse.injected;
         }
-        self.batch.wheel_hi_res = self
-            .batch
-            .wheel_hi_res
-            .saturating_add(other.batch.wheel_hi_res);
         self.batch.scroll.absorb(other.batch.scroll);
         self.batch.motion.dx += other.batch.motion.dx;
         self.batch.motion.dy += other.batch.motion.dy;
@@ -418,10 +410,8 @@ fn takes_pointer_from(current: &MouseData, incoming: &MouseData) -> bool {
 /// per hardware event.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct InteractionBatch {
-    /// Ordered key/button/wheel edges, capture-timestamped and sequenced.
+    /// Ordered key, button, and scroll edges, capture-timestamped and sequenced.
     pub events: Vec<TimedInputEvent>,
-    /// Accumulated wheel travel since last frame, in 1/120-notch units.
-    pub wheel_hi_res: i32,
     /// Exact two-axis scroll totals since the previous frame.
     pub scroll: ScrollAggregate,
     /// Aggregate pointer motion since last frame.
@@ -444,7 +434,6 @@ impl InteractionBatch {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.events.is_empty()
-            && self.wheel_hi_res == 0
             && self.scroll == ScrollAggregate::default()
             && self.motion == MotionAggregate::default()
             && self.dropped_events == 0
@@ -471,7 +460,6 @@ impl InteractionBatch {
                 .saturating_add(u32::try_from(overflow).unwrap_or(u32::MAX));
         }
 
-        self.wheel_hi_res = self.wheel_hi_res.saturating_add(prior.wheel_hi_res);
         self.scroll.absorb(prior.scroll);
         self.motion.dx += prior.motion.dx;
         self.motion.dy += prior.motion.dy;

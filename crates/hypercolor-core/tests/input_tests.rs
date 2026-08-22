@@ -3029,8 +3029,8 @@ fn interaction_dirty_check_tracks_generation_and_batch() {
 
     let mut batch = InteractionBatch::default();
     assert!(batch.is_empty());
-    batch.wheel_hi_res = 120;
-    assert!(!batch.is_empty(), "wheel travel is renderer-visible");
+    batch.scroll.line120_y_q16_16 = 120 << 16;
+    assert!(!batch.is_empty(), "scroll travel is renderer-visible");
 }
 
 #[test]
@@ -3054,13 +3054,19 @@ fn batch_absorb_prior_preserves_order_and_sums() {
 
     let mut current = InteractionBatch {
         events: vec![timed(3), timed(4)],
-        wheel_hi_res: 120,
+        scroll: hypercolor_core::input::ScrollAggregate {
+            line120_y_q16_16: 120 << 16,
+            ..Default::default()
+        },
         dropped_events: 1,
         ..Default::default()
     };
     let prior = InteractionBatch {
         events: vec![timed(1), timed(2)],
-        wheel_hi_res: -360,
+        scroll: hypercolor_core::input::ScrollAggregate {
+            line120_y_q16_16: -360 << 16,
+            ..Default::default()
+        },
         dropped_events: 2,
         ..Default::default()
     };
@@ -3068,7 +3074,7 @@ fn batch_absorb_prior_preserves_order_and_sums() {
     current.absorb_prior(prior);
     let seqs = current.events.iter().map(|e| e.seq).collect::<Vec<_>>();
     assert_eq!(seqs, [1, 2, 3, 4]);
-    assert_eq!(current.wheel_hi_res, -240);
+    assert_eq!(current.scroll.line120_y_q16_16, -240 << 16);
     assert_eq!(current.dropped_events, 3);
 
     let mut overflowing = InteractionBatch::default();

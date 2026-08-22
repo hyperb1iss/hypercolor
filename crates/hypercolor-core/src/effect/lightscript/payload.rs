@@ -159,7 +159,6 @@ impl LightScriptInteractionPayload {
                 nx: sanitize_norm(interaction.mouse.norm_x),
                 ny: sanitize_norm(interaction.mouse.norm_y),
                 mode: pointer_mode_name(interaction.mouse.mode),
-                wheel: interaction.batch.wheel_hi_res,
                 scroll: LightScriptScrollPayload {
                     line120_x: crate::input::q16_16_to_f64(
                         interaction.batch.scroll.line120_x_q16_16,
@@ -202,8 +201,6 @@ pub(super) struct LightScriptMousePayload {
     pub(super) nx: f32,
     pub(super) ny: f32,
     pub(super) mode: &'static str,
-    #[serde(skip_serializing_if = "is_zero_i32")]
-    pub(super) wheel: i32,
     pub(super) scroll: LightScriptScrollPayload,
     pub(super) velocity: f32,
 }
@@ -229,8 +226,6 @@ pub(super) struct LightScriptInputEventPayload {
     pub(super) button: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) state: Option<&'static str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) delta: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) delta_x: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -258,7 +253,6 @@ impl LightScriptInputEventPayload {
             key: None,
             button: None,
             state: None,
-            delta: None,
             delta_x: None,
             delta_y: None,
             unit: None,
@@ -280,10 +274,6 @@ impl LightScriptInputEventPayload {
                 payload.kind = "button";
                 payload.button = Some(button.clone());
                 payload.state = Some(button_state_name(*state));
-            }
-            InputEvent::MouseWheel { delta_hi_res, .. } => {
-                payload.kind = "wheel";
-                payload.delta = Some(*delta_hi_res);
             }
             InputEvent::PointerScroll {
                 delta_x_q16_16,
@@ -355,10 +345,6 @@ fn sanitize_norm(value: f32) -> f32 {
     } else {
         0.0
     }
-}
-
-fn is_zero_i32(value: &i32) -> bool {
-    *value == 0
 }
 
 fn is_zero_u32(value: &u32) -> bool {
@@ -704,7 +690,6 @@ mod tests {
                     nx: 0.25,
                     ny: 0.75,
                     mode: "virtual",
-                    wheel: 120,
                     scroll: LightScriptScrollPayload::default(),
                     velocity: 0.5,
                 },
@@ -819,12 +804,11 @@ mod interaction_payload_v2_tests {
     };
 
     #[test]
-    fn interaction_payload_carries_events_wheel_and_velocity() {
+    fn interaction_payload_carries_exact_scroll_events_and_velocity() {
         let mut interaction = InteractionData::default();
         interaction.mouse.norm_x = 0.5;
         interaction.mouse.norm_y = 2.0; // clamped
         interaction.mouse.mode = PointerMode::Virtual;
-        interaction.batch.wheel_hi_res = -240;
         interaction.batch.scroll = ScrollAggregate {
             line120_x_q16_16: 32_768,
             line120_y_q16_16: -131_072,
@@ -864,16 +848,6 @@ mod interaction_payload_v2_tests {
                 repeat_count: 1,
             },
             TimedInputEvent {
-                event: InputEvent::MouseWheel {
-                    source_id: "ptr".into(),
-                    delta_hi_res: -240,
-                },
-                at_ms: 105,
-                seq: 11,
-                physical_code: None,
-                repeat_count: 1,
-            },
-            TimedInputEvent {
                 event: InputEvent::MidiRealtime {
                     source_id: "midi".into(),
                     message: hypercolor_types::event::MidiRealtimeMessage::Clock,
@@ -891,7 +865,6 @@ mod interaction_payload_v2_tests {
         assert_eq!(value["mouse"]["nx"], serde_json::json!(0.5));
         assert_eq!(value["mouse"]["ny"], serde_json::json!(1.0));
         assert_eq!(value["mouse"]["mode"], serde_json::json!("virtual"));
-        assert_eq!(value["mouse"]["wheel"], serde_json::json!(-240));
         assert_eq!(value["mouse"]["scroll"]["line120X"], 0.5);
         assert_eq!(value["mouse"]["scroll"]["line120Y"], -2.0);
         assert_eq!(value["mouse"]["scroll"]["pixelX"], 1.5);
@@ -900,7 +873,7 @@ mod interaction_payload_v2_tests {
         assert_eq!(value["dropped"], serde_json::json!(2));
 
         let events = value["events"].as_array().expect("events array");
-        assert_eq!(events.len(), 3, "MIDI edges stay off the effect contract");
+        assert_eq!(events.len(), 2, "MIDI edges stay off the effect contract");
         assert_eq!(events[0]["kind"], serde_json::json!("key"));
         assert_eq!(events[0]["physicalCode"], serde_json::json!("evdev:key:30"));
         assert_eq!(events[0]["repeatCount"], serde_json::json!(3));
@@ -914,8 +887,6 @@ mod interaction_payload_v2_tests {
         assert_eq!(events[1]["unit"], "pixels");
         assert_eq!(events[1]["phase"], "changed");
         assert_eq!(events[1]["momentumPhase"], "began");
-        assert_eq!(events[2]["kind"], serde_json::json!("wheel"));
-        assert_eq!(events[2]["delta"], serde_json::json!(-240));
     }
 
     #[test]
@@ -925,7 +896,6 @@ mod interaction_payload_v2_tests {
         let value = serde_json::to_value(&payload).expect("payload serializes");
         assert!(value.get("events").is_none());
         assert!(value.get("dropped").is_none());
-        assert!(value["mouse"].get("wheel").is_none());
         assert_eq!(value["mouse"]["mode"], serde_json::json!("none"));
     }
 }

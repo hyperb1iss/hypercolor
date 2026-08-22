@@ -674,7 +674,7 @@ impl FrameInputs {
 
     fn clear_transient_interaction(&mut self) {
         self.interaction.batch.events.clear();
-        self.interaction.batch.wheel_hi_res = 0;
+        self.interaction.batch.scroll = hypercolor_core::input::ScrollAggregate::default();
         self.interaction.batch.motion = MotionAggregate::default();
         self.interaction.batch.window_secs = 0.0;
         self.interaction.batch.dropped_events = 0;
@@ -2363,7 +2363,9 @@ mod tests {
         SpatialEngine, SpatialSamplingCapacity, SpatialSamplingWorkspaceUsage,
     };
     use hypercolor_types::config::{InteractionRoutePolicy, RenderAccelerationMode};
-    use hypercolor_types::event::{InputButtonState, InputEvent, TimedInputEvent};
+    use hypercolor_types::event::{
+        InputButtonState, InputEvent, PointerScrollPhase, PointerScrollUnit, TimedInputEvent,
+    };
     use hypercolor_types::sensor::SystemSnapshot;
     use hypercolor_types::spatial::{
         EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
@@ -2899,7 +2901,7 @@ mod tests {
     }
 
     #[test]
-    fn browser_transients_and_wheel_are_delivered_once_across_superseded_publications() {
+    fn browser_transients_and_scroll_are_delivered_once_across_superseded_publications() {
         let mut manager = InputManager::new();
         let browser_source = BrowserInputSource::new();
         let browser = browser_source.handle();
@@ -2938,7 +2940,13 @@ mod tests {
                     norm_x: 0.3,
                     norm_y: 0.4,
                 },
-                BrowserInputEdge::Wheel { delta_hi_res: 120 },
+                BrowserInputEdge::Scroll {
+                    delta_x_q16_16: 0,
+                    delta_y_q16_16: 120 * Q16_16_SCALE,
+                    unit: PointerScrollUnit::Line120,
+                    phase: PointerScrollPhase::None,
+                    momentum_phase: PointerScrollPhase::None,
+                },
             ])
             .expect("first transient batch should publish");
         preview
@@ -2947,27 +2955,22 @@ mod tests {
                     norm_x: 0.5,
                     norm_y: 0.6,
                 },
-                BrowserInputEdge::Wheel { delta_hi_res: -40 },
+                BrowserInputEdge::Scroll {
+                    delta_x_q16_16: 0,
+                    delta_y_q16_16: -40 * Q16_16_SCALE,
+                    unit: PointerScrollUnit::Line120,
+                    phase: PointerScrollPhase::None,
+                    momentum_phase: PointerScrollPhase::None,
+                },
             ])
             .expect("superseding transient batch should publish");
         resolve_authoritative(&mut routes, &graph, &event_bus, &mut inputs);
 
         assert!((inputs.interaction.batch.motion.dx - 0.4).abs() < 0.000_1);
         assert!((inputs.interaction.batch.motion.dy - 0.4).abs() < 0.000_1);
-        assert_eq!(inputs.interaction.batch.wheel_hi_res, 80);
         assert_eq!(
             inputs.interaction.batch.scroll.line120_y_q16_16,
             80 * Q16_16_SCALE
-        );
-        assert_eq!(
-            inputs
-                .interaction
-                .batch
-                .events
-                .iter()
-                .filter(|event| matches!(event.event, InputEvent::MouseWheel { .. }))
-                .count(),
-            2
         );
         assert_eq!(
             inputs
@@ -2979,21 +2982,8 @@ mod tests {
                 .count(),
             2
         );
-        assert!(
-            inputs
-                .interaction
-                .batch
-                .events
-                .chunks_exact(2)
-                .all(
-                    |pair| matches!(pair[0].event, InputEvent::PointerScroll { .. })
-                        && matches!(pair[1].event, InputEvent::MouseWheel { .. })
-                )
-        );
-
         resolve_authoritative(&mut routes, &graph, &event_bus, &mut inputs);
         assert_eq!(inputs.interaction.batch.motion, MotionAggregate::default());
-        assert_eq!(inputs.interaction.batch.wheel_hi_res, 0);
         assert_eq!(inputs.interaction.batch.scroll, ScrollAggregate::default());
         assert!(inputs.interaction.batch.events.is_empty());
     }

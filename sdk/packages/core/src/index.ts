@@ -141,7 +141,6 @@ export type {
     MouseScrollPhase,
     MouseScrollState,
     MouseScrollUnit,
-    MouseWheelInputEvent,
     PressEnvelopeOptions,
     TypingRateOptions,
 } from './input'

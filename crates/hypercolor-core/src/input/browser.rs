@@ -24,10 +24,7 @@ use crate::input::routing::{
     ReusedInteractionRouteRead,
 };
 use crate::input::traits::{InputData, InputSource, InteractionData, MotionAggregate, PointerMode};
-use crate::input::{
-    InteractionSourceOrigin, LegacyWheelProjector, SourceKind, SourceStatusHandle,
-    SourceStatusReporter,
-};
+use crate::input::{InteractionSourceOrigin, SourceKind, SourceStatusHandle, SourceStatusReporter};
 use hypercolor_types::event::{
     InputButtonState, InputEvent, PointerScrollPhase, PointerScrollUnit, TimedInputEvent,
 };
@@ -52,8 +49,6 @@ pub enum BrowserInputEdge {
     },
     /// The pointer moved to a normalized `[0, 1]²` position.
     Move { norm_x: f32, norm_y: f32 },
-    /// The wheel moved, in 1/120-notch hi-res units.
-    Wheel { delta_hi_res: i32 },
     /// Exact two-axis scroll motion.
     Scroll {
         delta_x_q16_16: i64,
@@ -169,7 +164,6 @@ struct BrowserChildState {
     pressed_keys: BTreeSet<String>,
     held_buttons: BTreeSet<String>,
     cursor: Option<(f32, f32)>,
-    legacy_wheel_projector: LegacyWheelProjector,
     generation: u64,
 }
 
@@ -337,7 +331,6 @@ impl BrowserInputChildSlot {
         state.pressed_keys.clear();
         state.held_buttons.clear();
         state.cursor = None;
-        state.legacy_wheel_projector.reset();
         state.generation = state
             .generation
             .checked_add(1)
@@ -840,9 +833,6 @@ impl BrowserInputSource {
         self.retain_active_aggregate_cursors(&registry);
         for event in &events[first_event..] {
             match &event.event {
-                InputEvent::MouseWheel { delta_hi_res, .. } => {
-                    data.batch.wheel_hi_res = data.batch.wheel_hi_res.saturating_add(*delta_hi_res);
-                }
                 InputEvent::PointerScroll {
                     delta_x_q16_16,
                     delta_y_q16_16,
@@ -1204,17 +1194,6 @@ fn fold_child_edge(
             }
             state.cursor = Some(position);
         }
-        BrowserInputEdge::Wheel { delta_hi_res } => fold_scroll_edge(
-            state,
-            source_id,
-            0,
-            i64::from(delta_hi_res) << 16,
-            PointerScrollUnit::Line120,
-            PointerScrollPhase::None,
-            PointerScrollPhase::None,
-            at_ms,
-            events,
-        ),
         BrowserInputEdge::Scroll {
             delta_x_q16_16,
             delta_y_q16_16,
@@ -1222,7 +1201,6 @@ fn fold_child_edge(
             phase,
             momentum_phase,
         } => fold_scroll_edge(
-            state,
             source_id,
             delta_x_q16_16,
             delta_y_q16_16,
@@ -1237,7 +1215,6 @@ fn fold_child_edge(
 
 #[expect(clippy::too_many_arguments)]
 fn fold_scroll_edge(
-    state: &mut BrowserChildState,
     source_id: &str,
     delta_x_q16_16: i64,
     delta_y_q16_16: i64,
@@ -1255,21 +1232,6 @@ fn fold_scroll_edge(
             unit,
             phase,
             momentum_phase,
-        },
-        at_ms,
-    ));
-
-    if unit != PointerScrollUnit::Line120 {
-        return;
-    }
-    let delta_hi_res = state.legacy_wheel_projector.project(delta_y_q16_16);
-    if delta_hi_res == 0 {
-        return;
-    }
-    events.push(timed_event(
-        InputEvent::MouseWheel {
-            source_id: source_id.to_owned(),
-            delta_hi_res,
         },
         at_ms,
     ));
@@ -1358,6 +1320,16 @@ fn lock_or_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn line_scroll(delta_line120: i64) -> BrowserInputEdge {
+        BrowserInputEdge::Scroll {
+            delta_x_q16_16: 0,
+            delta_y_q16_16: delta_line120 << 16,
+            unit: PointerScrollUnit::Line120,
+            phase: PointerScrollPhase::None,
+            momentum_phase: PointerScrollPhase::None,
+        }
+    }
 
     fn attachment(
         handle: &BrowserInputHandle,
@@ -1468,17 +1440,17 @@ mod tests {
     }
 
     #[test]
-    fn legacy_wheel_edges_emit_exact_scroll_then_compatibility_shadow() {
+    fn line_scroll_preserves_exact_units() {
         let mut source = BrowserInputSource::new();
         source.start().expect("start");
         let handle = source.handle();
         let attachment = attachment(&handle, 1, "browser-1");
 
         attachment
-            .inject([BrowserInputEdge::Wheel { delta_hi_res: -240 }])
-            .expect("wheel should inject");
+            .inject([line_scroll(-240)])
+            .expect("scroll should inject");
         let events = source.drain_events();
-        assert_eq!(events.len(), 2);
+        assert_eq!(events.len(), 1);
         assert!(matches!(
             events[0].event,
             InputEvent::PointerScroll {
@@ -1490,17 +1462,10 @@ mod tests {
                 ..
             } if delta_y_q16_16 == -240 * crate::input::Q16_16_SCALE
         ));
-        assert!(matches!(
-            events[1].event,
-            InputEvent::MouseWheel {
-                delta_hi_res: -240,
-                ..
-            }
-        ));
     }
 
     #[test]
-    fn exact_pixel_scroll_preserves_axes_and_phases_without_legacy_shadow() {
+    fn exact_pixel_scroll_preserves_axes_and_phases() {
         let mut source = BrowserInputSource::new();
         source.start().expect("start");
         let handle = source.handle();
@@ -1540,42 +1505,6 @@ mod tests {
             data.batch.scroll.pixel_y_q16_16,
             -7 * crate::input::Q16_16_SCALE
         );
-        assert_eq!(data.batch.wheel_hi_res, 0);
-    }
-
-    #[test]
-    fn reconnect_discards_fractional_legacy_projection_state() {
-        let mut source = BrowserInputSource::new();
-        source.start().expect("start");
-        let handle = source.handle();
-        let half_line = BrowserInputEdge::Scroll {
-            delta_x_q16_16: 0,
-            delta_y_q16_16: crate::input::Q16_16_SCALE / 2,
-            unit: PointerScrollUnit::Line120,
-            phase: PointerScrollPhase::None,
-            momentum_phase: PointerScrollPhase::None,
-        };
-
-        let first_attachment = attachment(&handle, 1, "browser-1");
-        first_attachment
-            .inject([half_line.clone()])
-            .expect("first scroll should inject");
-        let first = source.drain_events();
-        assert_eq!(first.len(), 1);
-        assert!(matches!(first[0].event, InputEvent::PointerScroll { .. }));
-
-        assert!(first_attachment.close());
-        assert!(source.drain_events().is_empty());
-        let reconnected_attachment = attachment(&handle, 1, "browser-1");
-        reconnected_attachment
-            .inject([half_line])
-            .expect("reconnected scroll should inject");
-        let reconnected = source.drain_events();
-        assert_eq!(reconnected.len(), 1);
-        assert!(matches!(
-            reconnected[0].event,
-            InputEvent::PointerScroll { .. }
-        ));
     }
 
     #[test]
@@ -1587,8 +1516,8 @@ mod tests {
         let attachment = attachment(&handle, 1, "browser-1");
 
         attachment
-            .inject((0..10).map(|delta_hi_res| BrowserInputEdge::Wheel { delta_hi_res }))
-            .expect("wheel burst should inject");
+            .inject((0..10).map(line_scroll))
+            .expect("scroll burst should inject");
 
         let (data, events) = source.sample_and_drain_with_delta_secs(0.0);
         let InputData::Interaction(data) = data.expect("sample") else {
@@ -1598,28 +1527,14 @@ mod tests {
         assert!(matches!(
             events[0].event,
             InputEvent::PointerScroll { delta_y_q16_16, .. }
-                if delta_y_q16_16 == 8 * crate::input::Q16_16_SCALE
-        ));
-        assert!(matches!(
-            events[1].event,
-            InputEvent::MouseWheel {
-                delta_hi_res: 8,
-                ..
-            }
-        ));
-        assert!(matches!(
-            events[2].event,
-            InputEvent::PointerScroll { delta_y_q16_16, .. }
-                if delta_y_q16_16 == 9 * crate::input::Q16_16_SCALE
+                if delta_y_q16_16 == 6 * crate::input::Q16_16_SCALE
         ));
         assert!(matches!(
             events[3].event,
-            InputEvent::MouseWheel {
-                delta_hi_res: 9,
-                ..
-            }
+            InputEvent::PointerScroll { delta_y_q16_16, .. }
+                if delta_y_q16_16 == 9 * crate::input::Q16_16_SCALE
         ));
-        assert_eq!(data.batch.dropped_events, 15);
+        assert_eq!(data.batch.dropped_events, 6);
 
         let next = drain_snapshot(&mut source);
         assert_eq!(next.batch.dropped_events, 0);
@@ -1633,15 +1548,15 @@ mod tests {
         let handle = source.handle();
         let attachment = attachment(&handle, 1, "browser-1");
         attachment
-            .inject([BrowserInputEdge::Wheel { delta_hi_res: 120 }])
-            .expect("wheel should inject");
+            .inject([line_scroll(120)])
+            .expect("scroll should inject");
 
         let (data, events) = source.sample_and_drain_with_delta_secs(0.0);
         let InputData::Interaction(data) = data.expect("sample") else {
             panic!("expected interaction data");
         };
         assert!(events.is_empty());
-        assert_eq!(data.batch.dropped_events, 2);
+        assert_eq!(data.batch.dropped_events, 1);
     }
 
     #[test]

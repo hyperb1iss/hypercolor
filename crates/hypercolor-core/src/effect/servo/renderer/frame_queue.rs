@@ -422,7 +422,6 @@ fn normalize_queued_interaction(interaction: &mut crate::input::InteractionData)
                     } => Some(key.clone()),
                     InputEvent::Key { .. }
                     | InputEvent::MouseButton { .. }
-                    | InputEvent::MouseWheel { .. }
                     | InputEvent::PointerScroll { .. }
                     | InputEvent::MidiNote { .. }
                     | InputEvent::MidiControlChange { .. }

@@ -308,26 +308,20 @@ availability, empty keyboard, idle mouse). The snapshot carries:
   like `"A"` and `"KeyA"`), `recent` (newly pressed since last frame), and
   `events` (ordered `KeyInputEvent`s).
 - `mouse: MouseInputState`: `x`/`y` in platform pixels, `nx`/`ny` normalized to
-  `[0, 1]`, `down`, `buttons`, `wheel` (accumulated notches this frame),
-  `velocity`, `mode`, and ordered `events` (`MouseInputEvent`s).
+  `[0, 1]`, `down`, `buttons`, exact two-axis `scroll` totals, `velocity`,
+  `mode`, `available`, and ordered `events` (`MouseInputEvent`s).
 - Lifecycle fields from `InputAvailability`: `declared`, `routed`, `healthy`,
   `fresh`, and `degraded`.
 - `dropped`: count of input events dropped this frame due to overflow.
-
-{% <callout type="warning"> %}
-`InputData.available` is **deprecated**. It now means exactly
-`routed && healthy`, and the alias will be removed in SDK 0.4.0. Read the
-explicit lifecycle fields (`declared`, `routed`, `healthy`, `fresh`,
-`degraded`) instead.
-{% </callout> %}
 
 Events carry a monotonic capture timestamp (`atMs`), a strictly increasing
 `seq`, the producing `source` device, an optional backend-neutral
 `physicalCode`, and a `repeatCount` collapsing equivalent ordered events.
 `KeyInputEvent` adds `key` and `state` (`KeyEventState`:
-`'pressed' | 'released' | 'repeated'`); `MouseInputEvent` covers both button
-events (`button`, `state`) and wheel events (`delta` in notches). `MouseMode`
-is `'none' | 'absolute' | 'virtual'`.
+`'pressed' | 'released' | 'repeated'`); `MouseInputEvent` covers button events
+(`button`, `state`) and exact scroll events (`deltaX`, `deltaY`, `unit`,
+`phase`, `momentumPhase`). `MouseMode` is
+`'none' | 'absolute' | 'virtual'`.
 
 `EngineKeyboard` and `EngineMouse` describe the injected globals themselves,
 including the helper methods the runtime pre-installs: `isKeyDown(key)`,

@@ -40,7 +40,7 @@ pub use macos::{MacosHostInputFixture, MacosInputFixtureBackend};
 pub use media::MediaSource;
 pub use net::NetSource;
 pub use screen::{ScreenCaptureDemand, ScreenPublicationDemandSnapshot};
-pub use scroll::{LegacyWheelProjector, Q16_16_SCALE, q16_16_to_f64};
+pub use scroll::{Q16_16_SCALE, q16_16_to_f64};
 pub use sensor::SensorPoller;
 pub use status::{
     MacosArchitecture, MacosAuthorizationState, MacosCapabilityOwner, MacosDaemonOwnerConflict,

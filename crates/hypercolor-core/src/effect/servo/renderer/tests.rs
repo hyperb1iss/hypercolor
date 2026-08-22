@@ -15,7 +15,9 @@ use hypercolor_types::config::ServoGpuImportMode;
 use hypercolor_types::effect::{
     ControlDefinition, ControlType, EffectCategory, EffectId, EffectSource,
 };
-use hypercolor_types::event::{InputButtonState, InputEvent, TimedInputEvent};
+use hypercolor_types::event::{
+    InputButtonState, InputEvent, PointerScrollPhase, PointerScrollUnit, TimedInputEvent,
+};
 use hypercolor_types::sensor::SystemSnapshot;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, LazyLock, Mutex};
@@ -121,6 +123,20 @@ fn timed_event(event: InputEvent, seq: u64) -> TimedInputEvent {
         physical_code: None,
         repeat_count: 1,
     }
+}
+
+fn timed_line_scroll(source_id: &str, delta_line120: i64, seq: u64) -> TimedInputEvent {
+    timed_event(
+        InputEvent::PointerScroll {
+            source_id: source_id.into(),
+            delta_x_q16_16: 0,
+            delta_y_q16_16: delta_line120 << 16,
+            unit: PointerScrollUnit::Line120,
+            phase: PointerScrollPhase::None,
+            momentum_phase: PointerScrollPhase::None,
+        },
+        seq,
+    )
 }
 
 fn custom_audio(rms_level: f32) -> AudioData {
@@ -1420,16 +1436,10 @@ fn queued_frames_append_event_batches_from_superseded_inputs() {
             },
             2,
         ),
-        timed_event(
-            InputEvent::MouseWheel {
-                source_id: "test".into(),
-                delta_hi_res: 120,
-            },
-            3,
-        ),
+        timed_line_scroll("test", 120, 3),
         timed_key("test", "a", InputButtonState::Released, 4, 1),
     ];
-    first_interaction.batch.wheel_hi_res = 120;
+    first_interaction.batch.scroll.line120_y_q16_16 = 120 << 16;
     let mut second_interaction = custom_interaction(&[], &[]);
     second_interaction.batch.events = vec![
         timed_key("test", "a", InputButtonState::Pressed, 5, 4),
@@ -1441,15 +1451,9 @@ fn queued_frames_append_event_batches_from_superseded_inputs() {
             },
             6,
         ),
-        timed_event(
-            InputEvent::MouseWheel {
-                source_id: "test".into(),
-                delta_hi_res: -240,
-            },
-            7,
-        ),
+        timed_line_scroll("test", -240, 7),
     ];
-    second_interaction.batch.wheel_hi_res = -240;
+    second_interaction.batch.scroll.line120_y_q16_16 = -240 << 16;
 
     let first = frame_input_with(1.0 / 30.0, 1, &audio, &first_interaction, 320, 200);
     let second = frame_input_with(1.0 / 30.0, 2, &audio, &second_interaction, 320, 200);
@@ -1480,7 +1484,11 @@ fn queued_frames_append_event_batches_from_superseded_inputs() {
         "repeat multiplicity survives coalescing"
     );
     assert_eq!(interaction.keyboard.recent_keys, ["a", "a"]);
-    assert_eq!(interaction.batch.wheel_hi_res, -120, "wheel travel sums");
+    assert_eq!(
+        interaction.batch.scroll.line120_y_q16_16,
+        -120 << 16,
+        "scroll travel sums"
+    );
 }
 
 #[test]
@@ -1581,15 +1589,9 @@ fn queue_saturation_preserves_runtime_deltas_until_admission() {
             },
             2,
         ),
-        timed_event(
-            InputEvent::MouseWheel {
-                source_id: "host-v1".into(),
-                delta_hi_res: 120,
-            },
-            3,
-        ),
+        timed_line_scroll("host-v1", 120, 3),
     ];
-    old_source.batch.wheel_hi_res = 120;
+    old_source.batch.scroll.line120_y_q16_16 = 120 << 16;
     let old_frame = frame_input_with(1.0 / 60.0, 3, &audio, &old_source, 320, 200);
 
     let error = renderer
@@ -1640,7 +1642,7 @@ fn queue_saturation_preserves_runtime_deltas_until_admission() {
             .collect::<Vec<_>>(),
         [1, 2, 3, 4, 5, 6]
     );
-    assert_eq!(interaction.batch.wheel_hi_res, 120);
+    assert_eq!(interaction.batch.scroll.line120_y_q16_16, 120 << 16);
     assert_eq!(interaction.mouse.buttons, ["right"]);
     assert!(interaction.mouse.injected);
     assert!(render_rx.try_recv().is_err());

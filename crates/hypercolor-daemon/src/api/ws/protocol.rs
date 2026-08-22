@@ -486,8 +486,6 @@ pub(crate) const MAX_PREVIEW_PUBLICATION_BYTES: usize =
 pub(super) const MAX_INPUT_INJECT_EVENTS: usize = 256;
 /// Maximum UTF-8 byte length of an injected key or button name.
 pub(super) const MAX_INPUT_NAME_BYTES: usize = 128;
-/// Largest accepted browser wheel delta, equivalent to 100 notches.
-pub(super) const MAX_INPUT_WHEEL_DELTA: i32 = 120 * 100;
 /// Largest accepted exact browser scroll delta on either axis.
 pub(super) const MAX_INPUT_SCROLL_Q16_16: i64 = (120_i64 * 100) << 16;
 
@@ -575,10 +573,6 @@ pub(super) enum BrowserInputEdgeWire {
         #[serde(deserialize_with = "deserialize_finite_coordinate")]
         ny: f32,
     },
-    Wheel {
-        #[serde(deserialize_with = "deserialize_wheel_delta")]
-        delta_hi_res: i32,
-    },
     Scroll {
         #[serde(deserialize_with = "deserialize_scroll_delta")]
         delta_x_q16_16: i64,
@@ -657,7 +651,6 @@ impl BrowserInputEdgeWire {
                 norm_x: nx,
                 norm_y: ny,
             },
-            Self::Wheel { delta_hi_res } => BrowserInputEdge::Wheel { delta_hi_res },
             Self::Scroll {
                 delta_x_q16_16,
                 delta_y_q16_16,
@@ -857,20 +850,6 @@ where
             &value,
             &["left", "right", "middle"],
         ))
-    }
-}
-
-fn deserialize_wheel_delta<'de, D>(deserializer: D) -> Result<i32, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let value = i32::deserialize(deserializer)?;
-    if value.unsigned_abs() <= MAX_INPUT_WHEEL_DELTA.unsigned_abs() {
-        Ok(value)
-    } else {
-        Err(de::Error::custom(format_args!(
-            "browser input wheel delta must be within ±{MAX_INPUT_WHEEL_DELTA}"
-        )))
     }
 }
 

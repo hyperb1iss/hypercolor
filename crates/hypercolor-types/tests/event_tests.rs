@@ -1249,16 +1249,6 @@ fn mouse_input_events_round_trip_through_json() {
     let json = serde_json::to_string(&timed).expect("serialize timed event");
     let restored: TimedInputEvent = serde_json::from_str(&json).expect("deserialize timed event");
     assert_eq!(restored, timed);
-
-    let wheel = InputEvent::MouseWheel {
-        source_id: "host:/dev/input/event4".into(),
-        delta_hi_res: -240,
-    };
-    let json = serde_json::to_string(&wheel).expect("serialize wheel");
-    assert!(json.contains("\"kind\":\"mouse_wheel\""));
-    let restored: InputEvent = serde_json::from_str(&json).expect("deserialize wheel");
-    assert_eq!(restored, wheel);
-    assert_eq!(restored.source_id(), "host:/dev/input/event4");
 }
 
 #[test]

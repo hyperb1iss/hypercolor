@@ -51,7 +51,6 @@ fn edges_serialize_to_daemon_wire_shape() {
             state: InputEdgeState::Released,
         },
         InputInjectEdge::Move { nx: 0.25, ny: 1.0 },
-        InputInjectEdge::Wheel { delta_hi_res: -120 },
         InputInjectEdge::Scroll {
             delta_x_q16_16: 98_304,
             delta_y_q16_16: -131_072,
@@ -70,7 +69,6 @@ fn edges_serialize_to_daemon_wire_shape() {
                 { "kind": "key", "key": "a", "state": "pressed" },
                 { "kind": "button", "button": "left", "state": "released" },
                 { "kind": "move", "nx": 0.25, "ny": 1.0 },
-                { "kind": "wheel", "delta_hi_res": -120 },
                 {
                     "kind": "scroll",
                     "delta_x_q16_16": 98304,

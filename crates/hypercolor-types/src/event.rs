@@ -247,7 +247,7 @@ pub enum MidiRealtimeMessage {
     Stop,
 }
 
-/// A discrete host input event from keyboard or MIDI sources.
+/// An ordered host input edge from keyboard, pointer, or MIDI sources.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum InputEvent {
@@ -263,12 +263,6 @@ pub enum InputEvent {
         source_id: String,
         button: String,
         state: InputButtonState,
-    },
-
-    /// A host pointer wheel moved, in 1/120-notch hi-res units.
-    MouseWheel {
-        source_id: String,
-        delta_hi_res: i32,
     },
 
     /// Two-axis pointer scroll with exact signed Q16.16 deltas.
@@ -319,7 +313,6 @@ impl InputEvent {
         match self {
             Self::Key { source_id, .. }
             | Self::MouseButton { source_id, .. }
-            | Self::MouseWheel { source_id, .. }
             | Self::PointerScroll { source_id, .. }
             | Self::MidiNote { source_id, .. }
             | Self::MidiControlChange { source_id, .. }

@@ -1,27 +1,5 @@
-use hypercolor_core::input::{LegacyWheelProjector, Q16_16_SCALE, ScrollAggregate, q16_16_to_f64};
+use hypercolor_core::input::{Q16_16_SCALE, ScrollAggregate, q16_16_to_f64};
 use hypercolor_types::event::PointerScrollUnit;
-
-#[test]
-fn legacy_projection_carries_signed_fractional_remainders() {
-    let mut projector = LegacyWheelProjector::default();
-
-    assert_eq!(projector.project(Q16_16_SCALE / 3), 0);
-    assert_eq!(projector.project(Q16_16_SCALE / 3), 0);
-    assert_eq!(projector.project(Q16_16_SCALE / 3 + 1), 1);
-    assert_eq!(projector.remainder_q16_16(), 0);
-
-    assert_eq!(projector.project(-Q16_16_SCALE / 2), 0);
-    assert_eq!(projector.project(-Q16_16_SCALE / 2), -1);
-    assert_eq!(projector.remainder_q16_16(), 0);
-}
-
-#[test]
-fn legacy_projection_reset_discards_pre_gap_fraction() {
-    let mut projector = LegacyWheelProjector::default();
-    assert_eq!(projector.project(Q16_16_SCALE - 1), 0);
-    projector.reset();
-    assert_eq!(projector.project(1), 0);
-}
 
 #[test]
 fn scroll_aggregate_keeps_units_and_axes_independent() {

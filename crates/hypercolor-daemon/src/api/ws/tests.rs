@@ -75,7 +75,7 @@ use super::preview_encode::{
 use super::protocol::{
     ActiveFramesConfig, BrowserInputEdgeWire, ClientMessage, FrameZoneSelection,
     InputButtonStateWire, MAX_INPUT_INJECT_EVENTS, MAX_INPUT_NAME_BYTES, MAX_INPUT_SCROLL_Q16_16,
-    MAX_INPUT_WHEEL_DELTA, ServerMessage, SubscriptionState, TopicSelection, WsProtocolError,
+    ServerMessage, SubscriptionState, TopicSelection, WsProtocolError,
     deserialize_finite_coordinate, event_message_parts, json_payload_manifest, parse_selectors,
     parse_subscriptions, should_relay_event, validate_interactive_preview_id,
     validate_interactive_preview_shape, ws_capabilities,
@@ -3837,7 +3837,7 @@ fn default_subscription_excludes_input_events() {
 }
 
 #[test]
-fn input_inject_message_parses_all_edge_kinds() {
+fn input_inject_message_parses_all_exact_edge_kinds() {
     use hypercolor_core::input::BrowserInputEdge;
     use hypercolor_types::event::{InputButtonState, PointerScrollPhase, PointerScrollUnit};
 
@@ -3848,7 +3848,6 @@ fn input_inject_message_parses_all_edge_kinds() {
             {"kind": "key", "key": "a", "state": "pressed"},
             {"kind": "button", "button": "left", "state": "released"},
             {"kind": "move", "nx": 0.5, "ny": 0.25},
-            {"kind": "wheel", "delta_hi_res": -240},
             {
                 "kind": "scroll",
                 "delta_x_q16_16": 98304,
@@ -3872,7 +3871,7 @@ fn input_inject_message_parses_all_edge_kinds() {
         panic!("expected InputInject");
     };
     assert_eq!(preview_id, "main");
-    assert_eq!(events.len(), 6);
+    assert_eq!(events.len(), 5);
 
     let edges: Vec<BrowserInputEdge> = events
         .into_iter()
@@ -3899,9 +3898,8 @@ fn input_inject_message_parses_all_edge_kinds() {
             norm_y: 0.25,
         }
     );
-    assert_eq!(edges[3], BrowserInputEdge::Wheel { delta_hi_res: -240 });
     assert_eq!(
-        edges[4],
+        edges[3],
         BrowserInputEdge::Scroll {
             delta_x_q16_16: 98_304,
             delta_y_q16_16: -131_072,
@@ -3911,7 +3909,7 @@ fn input_inject_message_parses_all_edge_kinds() {
         }
     );
     assert_eq!(
-        edges[5],
+        edges[4],
         BrowserInputEdge::Scroll {
             delta_x_q16_16: 0,
             delta_y_q16_16: 65_536,
@@ -3925,7 +3923,7 @@ fn input_inject_message_parses_all_edge_kinds() {
 #[test]
 fn input_inject_rejects_batches_before_the_bounded_vector_can_grow() {
     let events = std::iter::repeat_n(
-        r#"{"kind":"wheel","delta_hi_res":1}"#,
+        r#"{"kind":"move","nx":0.5,"ny":0.5}"#,
         MAX_INPUT_INJECT_EVENTS + 1,
     )
     .collect::<Vec<_>>()
@@ -3938,7 +3936,7 @@ fn input_inject_rejects_batches_before_the_bounded_vector_can_grow() {
     assert!(error.to_string().contains("at most"));
 
     let exact_events = std::iter::repeat_n(
-        r#"{"kind":"wheel","delta_hi_res":1}"#,
+        r#"{"kind":"move","nx":0.5,"ny":0.5}"#,
         MAX_INPUT_INJECT_EVENTS,
     )
     .collect::<Vec<_>>()
@@ -3954,7 +3952,7 @@ fn input_inject_rejects_batches_before_the_bounded_vector_can_grow() {
 }
 
 #[test]
-fn input_inject_rejects_invalid_names_buttons_coordinates_and_wheel_deltas() {
+fn input_inject_rejects_invalid_names_buttons_coordinates_and_scroll_deltas() {
     use serde::de::value::{Error as ValueError, F32Deserializer};
 
     let long_name = "a".repeat(MAX_INPUT_NAME_BYTES + 1);
@@ -4016,21 +4014,6 @@ fn input_inject_rejects_invalid_names_buttons_coordinates_and_wheel_deltas() {
         assert!(
             serde_json::from_value::<ClientMessage>(payload).is_err(),
             "out-of-range normalized coordinate must be rejected"
-        );
-    }
-
-    for delta in [
-        MAX_INPUT_WHEEL_DELTA.saturating_add(1),
-        MAX_INPUT_WHEEL_DELTA.saturating_neg().saturating_sub(1),
-    ] {
-        let payload = serde_json::json!({
-            "type": "input_inject",
-            "preview_id": "main",
-            "events": [{"kind": "wheel", "delta_hi_res": delta}]
-        });
-        assert!(
-            serde_json::from_value::<ClientMessage>(payload).is_err(),
-            "amplified wheel delta must be rejected"
         );
     }
 

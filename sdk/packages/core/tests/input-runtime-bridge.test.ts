@@ -68,14 +68,12 @@ describe('LightScript input availability bridge', () => {
                         source: 'mouse0',
                         unit: 'pixels',
                     },
-                    { atMs: 1003, delta: -240, kind: 'wheel', repeatCount: 1, seq: 4, source: 'mouse0' },
                 ],
                 keyboard: { keys: ['a'], recent: ['a'] },
                 mouse: {
                     buttons: ['left'],
                     mode: 'virtual',
                     scroll: { line120X: 0.5, line120Y: -2, pixelX: 1.5, pixelY: -0.25 },
-                    wheel: -240,
                 },
             },
             timing: { deltaSecs: 1 / 60, frameNumber: 8, timeSecs: 1 },
@@ -119,10 +117,8 @@ describe('LightScript input availability bridge', () => {
                 source: 'mouse0',
                 unit: 'pixels',
             },
-            { atMs: 1003, delta: -240, kind: 'wheel', repeatCount: 1, seq: 4, source: 'mouse0' },
         ])
         expect(input.mouse.scroll).toEqual({ line120X: 0.5, line120Y: -2, pixelX: 1.5, pixelY: -0.25 })
-        expect(input.mouse.wheel).toBe(-240)
     })
 
     test('keeps an idle source healthy and routed', () => {

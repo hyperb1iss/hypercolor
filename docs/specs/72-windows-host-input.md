@@ -144,7 +144,11 @@ pub enum RawInputEvent {
         pressed: bool,      // raw hardware edge; repeat is derived in core
     },
     Button { source_id: Arc<str>, button: RawButton, pressed: bool },
-    Wheel { source_id: Arc<str>, delta_hi_res: i32 },
+    Scroll {
+        source_id: Arc<str>,
+        delta_x_q16_16: i64,
+        delta_y_q16_16: i64,
+    },
     /// Relative counts from a normal mouse.
     MotionRelative { source_id: Arc<str>, dx: i32, dy: i32 },
     /// Absolute position from a tablet / RDP / VM pointer, already normalized
@@ -256,12 +260,10 @@ summing `dx`/`dy` and accumulating `distance` per event — the same arithmetic
 in, so two equal-and-opposite deltas correctly produce zero net displacement
 with non-zero distance, and a fast shake still reports velocity.
 
-**No horizontal wheel.** `InputEvent::MouseWheel` (`event.rs:227`) carries only
-`delta_hi_res` with no axis, and the LightScript payload has no axis either.
-`RI_MOUSE_HWHEEL` is therefore **dropped**, not folded into the vertical
-channel. Reporting horizontal scroll as vertical would be a silent lie to every
-effect. Adding an axis is a shared-contract change across types, WS protocol,
-and SDK, and it belongs in its own spec.
+**Both scroll axes stay exact.** `RI_MOUSE_WHEEL` and `RI_MOUSE_HWHEEL` map to
+the vertical and horizontal axes of `InputEvent::PointerScroll`, respectively.
+The event retains signed Q16.16 `Line120` units through the shared types,
+LightScript payload, WebSocket protocol, and SDK.
 
 **The sink takes a batch, not one event.** This is the whole point of the
 buffered read and it is easy to get wrong. `evdev.rs:522` acquires
@@ -776,11 +778,10 @@ input a shockwave effect is built for. Note the honest limit: a click that
 begins and ends entirely between two hardware polls may never be reported at
 all, and no decoding policy recovers it.
 
-**Wheel** needs no unit conversion, which is a pleasant coincidence worth
-recording: `InputEvent::MouseWheel::delta_hi_res` is in 1/120-notch units
-because that is evdev's `REL_WHEEL_HI_RES` unit, and Windows' `WHEEL_DELTA` is
-also 120 per notch. High-resolution Windows wheels report sub-120 values
-natively. Direct pass-through.
+**Scroll** needs only the canonical Q16.16 representation. Windows'
+`WHEEL_DELTA` and evdev's `REL_WHEEL_HI_RES` both use 120 units per notch, so
+the signed raw value shifts directly into `Line120` without rescaling.
+High-resolution Windows devices preserve sub-120 values natively.
 
 The trap: `usButtonData` is declared `u16` but carries a **signed** value.
 Scroll-down arrives as `0xFF88`. It must be reinterpreted as `i16` before

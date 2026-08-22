@@ -173,7 +173,6 @@
       engine.mouse.ny = finiteNumber(mouse.ny, 0);
       engine.mouse.mode = typeof mouse.mode === 'string' ? mouse.mode : 'none';
       engine.mouse.available = engine.mouse.mode !== 'none';
-      engine.mouse.wheel = finiteNumber(mouse.wheel, 0);
       const scroll = typeof mouse.scroll === 'object' && mouse.scroll !== null ? mouse.scroll : {};
       engine.mouse.scroll = {
         line120X: finiteNumber(scroll.line120X, 0),
@@ -202,9 +201,6 @@
           keyEvents.push(entry);
         } else if (entry.kind === 'button') {
           entry.button = typeof event.button === 'string' ? event.button : '';
-          mouseEvents.push(entry);
-        } else if (entry.kind === 'wheel') {
-          entry.delta = finiteNumber(event.delta, 0);
           mouseEvents.push(entry);
         } else if (entry.kind === 'scroll') {
           entry.deltaX = finiteNumber(event.deltaX, 0);

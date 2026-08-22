@@ -94,7 +94,7 @@ interface HypercolorEngine {
 
     /** Keyboard state, recent presses, and ordered key events. */
     keyboard?: EngineKeyboard
-    /** Mouse/pointer state and ordered button/wheel events. */
+    /** Mouse/pointer state and ordered button/scroll events. */
     mouse?: EngineMouse
     /** Count of input events dropped this frame due to overflow. */
     inputDropped?: number

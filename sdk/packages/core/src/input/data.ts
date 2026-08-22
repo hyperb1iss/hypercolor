@@ -86,7 +86,6 @@ function readMouse(raw: any): MouseInputState {
         ny: clamp01(finiteNumber(raw.ny, 0)),
         scroll: readMouseScroll(raw.scroll),
         velocity: finiteNumber(raw.velocity, 0),
-        wheel: finiteNumber(raw.wheel, 0),
         x: Math.trunc(finiteNumber(raw.x, 0)),
         y: Math.trunc(finiteNumber(raw.y, 0)),
     }
@@ -103,7 +102,6 @@ function createIdleMouse(): MouseInputState {
         ny: 0,
         scroll: createIdleScroll(),
         velocity: 0,
-        wheel: 0,
         x: 0,
         y: 0,
     }
@@ -145,17 +143,6 @@ function readMouseEvents(raw: unknown): MouseInputEvent[] {
                 seq: finiteNumber(entry.seq, 0),
                 source: typeof entry.source === 'string' ? entry.source : '',
                 state: entry.state === 'released' || entry.state === 'repeated' ? entry.state : 'pressed',
-            }
-            if (typeof entry.physicalCode === 'string') event.physicalCode = entry.physicalCode
-            events.push(event)
-        } else if (entry.kind === 'wheel') {
-            const event: MouseInputEvent = {
-                atMs: finiteNumber(entry.atMs, 0),
-                delta: finiteNumber(entry.delta, 0),
-                kind: 'wheel',
-                repeatCount: positiveInteger(entry.repeatCount, 1),
-                seq: finiteNumber(entry.seq, 0),
-                source: typeof entry.source === 'string' ? entry.source : '',
             }
             if (typeof entry.physicalCode === 'string') event.physicalCode = entry.physicalCode
             events.push(event)

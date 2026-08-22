@@ -244,7 +244,7 @@ fn a_click_in_one_batch_leaves_nothing_held() {
 }
 
 #[test]
-fn vertical_scroll_emits_exact_event_then_legacy_shadow() {
+fn vertical_scroll_emits_exact_event() {
     let mut input = WindowsHostInput::new(true, true);
     let (_, events) = fold(
         &mut input,
@@ -263,20 +263,10 @@ fn vertical_scroll_emits_exact_event_then_legacy_shadow() {
             ..
         } if *delta_y_q16_16 == -120 * Q16_16_SCALE
     ));
-    assert!(matches!(
-        &events[1].event,
-        InputEvent::MouseWheel {
-            delta_hi_res: -120,
-            ..
-        }
-    ));
+    assert_eq!(events.len(), 1);
     assert_eq!(
         events[0].physical_code.as_deref(),
         Some("windows:RI_MOUSE_WHEEL")
-    );
-    assert_eq!(
-        events[1].physical_code.as_deref(),
-        Some("windows:legacy-wheel-shadow")
     );
 }
 
