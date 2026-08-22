@@ -223,20 +223,9 @@ async function runAdd(args: string[], context: CliContext): Promise<number> {
     return 0
 }
 
-async function runDev(_args: string[], context: CliContext): Promise<number> {
-    context.stdout.error(
-        'hypercolor dev has been removed. Use build, validate, and install against the real daemon/app preview instead.',
-    )
-    context.stdout.error('Try: bun run build && bun run ship:daemon')
-    return 1
-}
-
-const NOT_IMPLEMENTED = new Set<string>()
-
 const COMMANDS = new Map<string, CommandHandler>([
     ['add', runAdd],
     ['build', runBuild],
-    ['dev', runDev],
     ['install', runInstall],
     ['validate', runValidate],
 ])
@@ -245,7 +234,6 @@ function printHelp(context: CliContext): void {
     context.stdout.log(`hypercolor <command>
 
 Commands:
-  dev        Deprecated. Use build/install against the real daemon preview
   build      Build effect entrypoints into HTML artifacts
   validate   Validate built HTML artifacts
   install    Install HTML artifacts into the user effects directory
@@ -261,11 +249,6 @@ export async function main(
     if (!command || command === '--help' || command === 'help') {
         printHelp(context)
         return 0
-    }
-
-    if (NOT_IMPLEMENTED.has(command)) {
-        context.stdout.error(`The "${command}" command is not implemented yet.`)
-        return 1
     }
 
     const handler = COMMANDS.get(command)
