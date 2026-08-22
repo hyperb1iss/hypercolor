@@ -1,7 +1,6 @@
 //! Spatial layout ownership and durable activation workflow.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -10,11 +9,12 @@ use hypercolor_types::scene::SceneId;
 use hypercolor_types::spatial::SpatialLayout;
 use tokio::sync::RwLock;
 
-use crate::domain::context::{DeviceContext, RuntimeSessionService};
+use crate::domain::context::{
+    DeviceContext, RuntimeSessionPersistenceError, RuntimeSessionService,
+};
 use crate::domain::scene::SceneService;
 use crate::domain::spatial::SpatialService;
-use crate::persistence::{AtomicFileWriter, AtomicWriteOutcome};
-use crate::runtime_state::RuntimeSessionError;
+use crate::persistence::AtomicWriteOutcome;
 use crate::scene_transactions::{
     LayoutPersistenceOutcome, LayoutPersistencePhase, LayoutUpdateError, LayoutUpdateGuard,
     PreparedLayoutUpdate, SceneActivationGuard, SceneTransactionQueue,
@@ -37,7 +37,6 @@ pub struct LayoutContext {
     spatial: SpatialService,
     scenes: SceneService,
     transactions: SceneTransactionQueue,
-    runtime_state_path: PathBuf,
     runtime_session: RuntimeSessionService,
     devices: DeviceContext,
 }
@@ -48,7 +47,6 @@ impl LayoutContext {
         spatial: SpatialService,
         scenes: SceneService,
         transactions: SceneTransactionQueue,
-        runtime_state_path: PathBuf,
         runtime_session: RuntimeSessionService,
         devices: DeviceContext,
     ) -> Self {
@@ -57,7 +55,6 @@ impl LayoutContext {
             spatial,
             scenes,
             transactions,
-            runtime_state_path,
             runtime_session,
             devices,
         }
@@ -104,10 +101,7 @@ impl LayoutContext {
         layout: SpatialLayout,
     ) -> Result<(), LayoutUpdateError> {
         let prepared = PreparedLayoutUpdate::try_new(layout)?;
-        let persistence = LayoutPersistenceContext {
-            runtime_state_path: self.runtime_state_path.clone(),
-            runtime_session: self.runtime_session.clone(),
-        };
+        let runtime_session = self.runtime_session.clone();
         apply_prepared_layout_update_under_guard_with_persistence(
             self.spatial.clone(),
             self.scenes.clone(),
@@ -115,8 +109,8 @@ impl LayoutContext {
             guard,
             prepared,
             move |phase| {
-                let persistence = persistence.clone();
-                async move { persist_layout_runtime_phase(&persistence, phase).await }
+                let runtime_session = runtime_session.clone();
+                async move { persist_layout_runtime_phase(&runtime_session, phase).await }
             },
         )
         .await
@@ -138,11 +132,9 @@ impl LayoutContext {
     /// Reconcile device connectivity and the runtime snapshot after activation.
     pub(crate) async fn converge_persisted_update(&self) -> LayoutPersistenceStatus {
         self.devices.sync_connectivity().await;
-        let persistence = LayoutPersistenceContext {
-            runtime_state_path: self.runtime_state_path.clone(),
-            runtime_session: self.runtime_session.clone(),
-        };
-        match persist_layout_runtime_phase(&persistence, LayoutPersistencePhase::Converge).await {
+        match persist_layout_runtime_phase(&self.runtime_session, LayoutPersistencePhase::Converge)
+            .await
+        {
             LayoutPersistenceOutcome::Written => LayoutPersistenceStatus::Synchronized,
             LayoutPersistenceOutcome::Superseded => {
                 tracing::warn!("layout committed but convergence persistence was superseded");
@@ -160,42 +152,33 @@ impl LayoutContext {
     }
 }
 
-#[derive(Clone)]
-struct LayoutPersistenceContext {
-    runtime_state_path: PathBuf,
-    runtime_session: RuntimeSessionService,
-}
-
 async fn persist_layout_runtime_phase(
-    context: &LayoutPersistenceContext,
+    runtime_session: &RuntimeSessionService,
     phase: LayoutPersistencePhase,
 ) -> LayoutPersistenceOutcome {
-    let writer = match AtomicFileWriter::new(&context.runtime_state_path) {
-        Ok(writer) => writer,
-        Err(error) => return LayoutPersistenceOutcome::BeforeAdmission(error.to_string()),
-    };
-    let pending = match crate::runtime_state::reserve_save(&context.runtime_state_path) {
-        Ok(pending) => pending,
-        Err(error) => return LayoutPersistenceOutcome::BeforeAdmission(error.to_string()),
-    };
     let requires_durable_completion = matches!(
         &phase,
         LayoutPersistencePhase::Rollback | LayoutPersistencePhase::Converge
     );
-    let mut snapshot = context.runtime_session.snapshot().await;
-    if let LayoutPersistencePhase::Precommit(candidate) = phase {
-        snapshot.active_layout_id = Some(candidate.layout.id);
-        if candidate.active_scene_id == Some(SceneId::DEFAULT) {
-            snapshot.default_scene_groups = candidate.active_render_groups.to_vec();
-        }
-    }
-    let outcome = match crate::runtime_state::save_reserved(pending, &snapshot) {
+    let outcome = match runtime_session
+        .persist_snapshot_with(move |snapshot| {
+            if let LayoutPersistencePhase::Precommit(candidate) = phase {
+                snapshot.active_layout_id = Some(candidate.layout.id);
+                if candidate.active_scene_id == Some(SceneId::DEFAULT) {
+                    snapshot.default_scene_groups = candidate.active_render_groups.to_vec();
+                }
+            }
+        })
+        .await
+    {
         Ok(AtomicWriteOutcome::Written) => LayoutPersistenceOutcome::Written,
         Ok(AtomicWriteOutcome::Superseded) => LayoutPersistenceOutcome::Superseded,
-        Err(error @ RuntimeSessionError::Persist { .. }) => {
+        Err(RuntimeSessionPersistenceError::RetryArmed(error)) => {
             LayoutPersistenceOutcome::RetryArmed(error.to_string())
         }
-        Err(error) => LayoutPersistenceOutcome::BeforeAdmission(error.to_string()),
+        Err(RuntimeSessionPersistenceError::BeforeAdmission(error)) => {
+            LayoutPersistenceOutcome::BeforeAdmission(error.to_string())
+        }
     };
     if requires_durable_completion
         && matches!(
@@ -203,17 +186,19 @@ async fn persist_layout_runtime_phase(
             LayoutPersistenceOutcome::Superseded | LayoutPersistenceOutcome::RetryArmed(_)
         )
     {
-        return flush_layout_runtime_persistence(writer).await;
+        return flush_layout_runtime_persistence(runtime_session).await;
     }
     outcome
 }
 
-async fn flush_layout_runtime_persistence(writer: AtomicFileWriter) -> LayoutPersistenceOutcome {
-    match tokio::task::spawn_blocking(move || writer.flush(LAYOUT_DURABILITY_TIMEOUT)).await {
-        Ok(Ok(_)) => LayoutPersistenceOutcome::Written,
-        Ok(Err(error)) => LayoutPersistenceOutcome::RetryArmed(error.to_string()),
-        Err(error) => LayoutPersistenceOutcome::RetryArmed(format!(
-            "layout persistence flush task failed: {error}"
-        )),
+async fn flush_layout_runtime_persistence(
+    runtime_session: &RuntimeSessionService,
+) -> LayoutPersistenceOutcome {
+    match runtime_session
+        .flush_persistence(LAYOUT_DURABILITY_TIMEOUT)
+        .await
+    {
+        Ok(()) => LayoutPersistenceOutcome::Written,
+        Err(error) => LayoutPersistenceOutcome::RetryArmed(error.to_string()),
     }
 }

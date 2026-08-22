@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use hypercolor_core::asset::AssetLibrary;
 use hypercolor_core::bus::HypercolorBus;
@@ -15,7 +16,7 @@ use hypercolor_types::device::{DeviceInfo, DriverModuleKind, DriverTransportKind
 use hypercolor_types::layer::{LayerSource, SceneLayer};
 use hypercolor_types::scene::{Scene, SceneId, Zone, ZoneId};
 use hypercolor_types::spatial::{EdgeBehavior, Output, SamplingMode, SpatialLayout};
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
 
 use crate::domain::DomainError;
 use crate::domain::commit::SceneCommit;
@@ -30,6 +31,7 @@ use crate::domain::scene_tree::SceneTreeContext;
 use crate::domain::spatial::SpatialService;
 use crate::network::DaemonDriverHost;
 use crate::output_power::OutputPower;
+use crate::persistence::{AtomicFileWriter, AtomicWriteOutcome};
 use crate::runtime_state::{self, RuntimeSessionSnapshot};
 use crate::{discovery, layout_auto_exclusions};
 
@@ -110,14 +112,49 @@ pub struct RuntimeSessionService {
     output_power: OutputPower,
     driver_host: Arc<DaemonDriverHost>,
     driver_registry: Arc<DriverModuleRegistry>,
+    identity_publication_gate: Arc<RwLock<()>>,
+    #[cfg(all(test, feature = "persistence-test-hooks"))]
+    save_admission_test_barrier:
+        Arc<std::sync::Mutex<Option<Arc<RuntimeSessionSaveAdmissionTestBarrier>>>>,
+}
+
+#[cfg(all(test, feature = "persistence-test-hooks"))]
+pub(crate) struct RuntimeSessionSaveAdmissionTestBarrier {
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
+
+pub(crate) struct RuntimeSessionEffectIdMigrationAdmission {
+    runtime_session: RuntimeSessionService,
+    publication_guard: OwnedRwLockWriteGuard<()>,
 }
 
 pub(crate) struct RuntimeSessionEffectIdMigration {
     pending: runtime_state::PreparedRuntimeSnapshotSave,
+    publication_guard: OwnedRwLockWriteGuard<()>,
 }
 
 pub(crate) struct AdmittedRuntimeSessionEffectIdMigration {
     pending: runtime_state::AdmittedRuntimeSnapshotSave,
+    publication_guard: OwnedRwLockWriteGuard<()>,
+}
+
+pub(crate) struct PersistedRuntimeSessionEffectIdMigration {
+    _publication_guard: OwnedRwLockWriteGuard<()>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum RuntimeSessionPersistenceError {
+    #[error("{0}")]
+    BeforeAdmission(runtime_state::RuntimeSessionError),
+    #[error("{0}")]
+    RetryArmed(runtime_state::RuntimeSessionError),
+}
+
+struct RuntimeSessionSave {
+    pending: runtime_state::RuntimeSnapshotSave,
+    snapshot: RuntimeSessionSnapshot,
+    publication_guard: OwnedRwLockReadGuard<()>,
 }
 
 impl RuntimeSessionService {
@@ -136,6 +173,9 @@ impl RuntimeSessionService {
             output_power,
             driver_host,
             driver_registry,
+            identity_publication_gate: Arc::new(RwLock::new(())),
+            #[cfg(all(test, feature = "persistence-test-hooks"))]
+            save_admission_test_barrier: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -154,24 +194,22 @@ impl RuntimeSessionService {
         snapshot
     }
 
-    pub(crate) fn prepare_effect_id_migration(
+    pub(crate) async fn begin_effect_id_migration(
         &self,
-        manager: &SceneManager,
-    ) -> Result<RuntimeSessionEffectIdMigration, DomainError> {
-        let mut snapshot = runtime_state::snapshot_from_scene_manager(manager);
-        snapshot.active_layout_id = Some(self.spatial.layout().id.clone());
-        snapshot.manual_paused = self.output_power.snapshot().manually_paused();
-        let pending = runtime_state::reserve_save(&self.path)
-            .map_err(|error| DomainError::Internal(error.into()))?;
-        let pending = runtime_state::prepare_reserved(pending, &snapshot)
-            .map_err(|error| DomainError::Internal(error.into()))?;
-        Ok(RuntimeSessionEffectIdMigration { pending })
+    ) -> RuntimeSessionEffectIdMigrationAdmission {
+        let publication_guard = Arc::clone(&self.identity_publication_gate)
+            .write_owned()
+            .await;
+        RuntimeSessionEffectIdMigrationAdmission {
+            runtime_session: self.clone(),
+            publication_guard,
+        }
     }
 
     /// Persist the current scene store before the runtime-session pointer.
     pub async fn save(&self) {
-        let pending_save = match runtime_state::reserve_save(&self.path) {
-            Ok(pending_save) => pending_save,
+        let save = match self.prepare_save().await {
+            Ok(save) => save,
             Err(error) => {
                 tracing::warn!(
                     path = %self.path.display(),
@@ -181,13 +219,12 @@ impl RuntimeSessionService {
                 return;
             }
         };
-        let snapshot = self.snapshot().await;
 
         if let Err(error) = self.save_scene_store_snapshot().await {
             tracing::warn!(%error, "Failed to persist scene store before runtime snapshot save");
         }
 
-        if let Err(error) = runtime_state::save_reserved(pending_save, &snapshot) {
+        if let Err(error) = save.commit() {
             tracing::warn!(
                 path = %self.path.display(),
                 %error,
@@ -196,8 +233,110 @@ impl RuntimeSessionService {
         }
     }
 
+    pub(crate) async fn persist_snapshot(
+        &self,
+    ) -> Result<AtomicWriteOutcome, RuntimeSessionPersistenceError> {
+        self.persist_snapshot_with(|_| {}).await
+    }
+
+    pub(crate) async fn persist_snapshot_with<F>(
+        &self,
+        update: F,
+    ) -> Result<AtomicWriteOutcome, RuntimeSessionPersistenceError>
+    where
+        F: FnOnce(&mut RuntimeSessionSnapshot),
+    {
+        let mut save = self
+            .prepare_save()
+            .await
+            .map_err(RuntimeSessionPersistenceError::BeforeAdmission)?;
+        update(&mut save.snapshot);
+        save.commit().map_err(|error| match error {
+            error @ runtime_state::RuntimeSessionError::Persist { .. } => {
+                RuntimeSessionPersistenceError::RetryArmed(error)
+            }
+            error => RuntimeSessionPersistenceError::BeforeAdmission(error),
+        })
+    }
+
+    pub(crate) async fn flush_persistence(&self, timeout: Duration) -> anyhow::Result<()> {
+        let _publication_guard = Arc::clone(&self.identity_publication_gate)
+            .read_owned()
+            .await;
+        let writer = AtomicFileWriter::new(&self.path)?;
+        tokio::task::spawn_blocking(move || writer.flush(timeout)).await??;
+        Ok(())
+    }
+
+    async fn prepare_save(&self) -> Result<RuntimeSessionSave, runtime_state::RuntimeSessionError> {
+        #[cfg(all(test, feature = "persistence-test-hooks"))]
+        self.pause_before_save_admission_for_test().await;
+        let publication_guard = Arc::clone(&self.identity_publication_gate)
+            .read_owned()
+            .await;
+        let pending = runtime_state::reserve_save(&self.path)?;
+        let snapshot = self.snapshot().await;
+        Ok(RuntimeSessionSave {
+            pending,
+            snapshot,
+            publication_guard,
+        })
+    }
+
     async fn save_scene_store_snapshot(&self) -> anyhow::Result<()> {
         self.scenes.save_snapshot().await
+    }
+
+    #[cfg(all(test, feature = "persistence-test-hooks"))]
+    pub(crate) fn pause_next_save_before_admission_for_test(
+        &self,
+    ) -> Arc<RuntimeSessionSaveAdmissionTestBarrier> {
+        let barrier = Arc::new(RuntimeSessionSaveAdmissionTestBarrier {
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+        });
+        *self
+            .save_admission_test_barrier
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&barrier));
+        barrier
+    }
+
+    #[cfg(all(test, feature = "persistence-test-hooks"))]
+    async fn pause_before_save_admission_for_test(&self) {
+        let barrier = self
+            .save_admission_test_barrier
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(barrier) = barrier {
+            barrier.entered.notify_one();
+            barrier.release.notified().await;
+        }
+    }
+}
+
+impl RuntimeSessionSave {
+    fn commit(self) -> Result<AtomicWriteOutcome, runtime_state::RuntimeSessionError> {
+        let Self {
+            pending,
+            snapshot,
+            publication_guard,
+        } = self;
+        let outcome = runtime_state::save_reserved(pending, &snapshot);
+        drop(publication_guard);
+        outcome
+    }
+}
+
+#[cfg(all(test, feature = "persistence-test-hooks"))]
+impl RuntimeSessionSaveAdmissionTestBarrier {
+    pub(crate) async fn wait_until_entered(&self) {
+        self.entered.notified().await;
+    }
+
+    pub(crate) fn release(&self) {
+        self.release.notify_one();
     }
 }
 
@@ -205,13 +344,23 @@ impl RuntimeSessionEffectIdMigration {
     pub(crate) fn admit(self) -> AdmittedRuntimeSessionEffectIdMigration {
         AdmittedRuntimeSessionEffectIdMigration {
             pending: self.pending.admit(),
+            publication_guard: self.publication_guard,
         }
     }
 }
 
 impl AdmittedRuntimeSessionEffectIdMigration {
-    pub(crate) fn persist(self) -> crate::domain::effect::IdentityMigrationPersistence {
-        match self.pending.commit_stage_aware() {
+    pub(crate) fn persist(
+        self,
+    ) -> (
+        PersistedRuntimeSessionEffectIdMigration,
+        crate::domain::effect::IdentityMigrationPersistence,
+    ) {
+        let Self {
+            pending,
+            publication_guard,
+        } = self;
+        let persistence = match pending.commit_stage_aware() {
             crate::persistence::AtomicWriteCommitResult::DurableWritten => {
                 crate::domain::effect::IdentityMigrationPersistence::Written
             }
@@ -222,7 +371,36 @@ impl AdmittedRuntimeSessionEffectIdMigration {
             | crate::persistence::AtomicWriteCommitResult::ReplacementVisibleButNotDurable(error) => {
                 crate::domain::effect::IdentityMigrationPersistence::Retrying(error.to_string())
             }
-        }
+        };
+        (
+            PersistedRuntimeSessionEffectIdMigration {
+                _publication_guard: publication_guard,
+            },
+            persistence,
+        )
+    }
+}
+
+impl RuntimeSessionEffectIdMigrationAdmission {
+    pub(crate) fn prepare(
+        self,
+        manager: &SceneManager,
+    ) -> Result<RuntimeSessionEffectIdMigration, DomainError> {
+        let Self {
+            runtime_session,
+            publication_guard,
+        } = self;
+        let mut snapshot = runtime_state::snapshot_from_scene_manager(manager);
+        snapshot.active_layout_id = Some(runtime_session.spatial.layout().id.clone());
+        snapshot.manual_paused = runtime_session.output_power.snapshot().manually_paused();
+        let pending = runtime_state::reserve_save(&runtime_session.path)
+            .map_err(|error| DomainError::Internal(error.into()))?;
+        let pending = runtime_state::prepare_reserved(pending, &snapshot)
+            .map_err(|error| DomainError::Internal(error.into()))?;
+        Ok(RuntimeSessionEffectIdMigration {
+            pending,
+            publication_guard,
+        })
     }
 }
 

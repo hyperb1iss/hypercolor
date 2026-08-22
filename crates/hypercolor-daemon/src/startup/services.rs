@@ -786,7 +786,6 @@ impl DaemonState {
             spatial_engine.clone(),
             scene_manager.clone(),
             scene_transactions.clone(),
-            runtime_state_path.clone(),
             runtime_session.clone(),
             devices.clone(),
         );

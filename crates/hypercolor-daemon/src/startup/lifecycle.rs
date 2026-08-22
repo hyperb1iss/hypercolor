@@ -438,23 +438,11 @@ impl DaemonState {
     }
 
     async fn persist_runtime_session_snapshot(&self) -> Result<AtomicWriteOutcome> {
-        let pending_save = runtime_state::reserve_save(&self.runtime_state_path)?;
-        let mut snapshot = {
-            let scene_manager = self.scene_manager.snapshot().await;
-            runtime_state::snapshot_from_scene_manager(&scene_manager)
-        };
-
-        {
-            let spatial = self.spatial_engine.snapshot();
-            snapshot.active_layout_id = Some(spatial.layout().id.clone());
-        }
-        snapshot.manual_paused = self.output_power.snapshot().manually_paused();
-        self.driver_host
-            .driver_inventory()
-            .refresh(self.driver_registry.as_ref(), self.driver_host.as_ref())
-            .await;
-
-        runtime_state::save_reserved(pending_save, &snapshot).map_err(Into::into)
+        self.domains
+            .runtime_session
+            .persist_snapshot()
+            .await
+            .map_err(Into::into)
     }
 
     async fn persist_scene_store_snapshot(&self) -> Result<AtomicWriteOutcome> {

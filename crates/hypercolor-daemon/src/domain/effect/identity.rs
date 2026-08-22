@@ -16,6 +16,7 @@ use crate::display_preferences::{
     PersistedDisplayPreferencesEffectIdMigration,
 };
 use crate::domain::DomainError;
+use crate::domain::context::PersistedRuntimeSessionEffectIdMigration;
 use crate::domain::effect::IdentityMigrationPersistence;
 use crate::domain::scene::SceneEffectIdMigrationPublication;
 use crate::library::{AdmittedLibraryEffectIdMigration, LibraryEffectIdMigrationPublication};
@@ -44,6 +45,7 @@ struct EffectIdMigrationPublication<'a> {
     display: Option<DisplayPreferencesEffectIdMigrationPublication>,
     library: Option<Box<dyn LibraryEffectIdMigrationPublication>>,
     active_playlist: ActivePlaylistEffectIdMigrationPublication,
+    runtime: PersistedRuntimeSessionEffectIdMigration,
 }
 
 struct EffectIdMigrationPublicationParts {
@@ -51,6 +53,7 @@ struct EffectIdMigrationPublicationParts {
     display: Option<DisplayPreferencesEffectIdMigrationPublication>,
     library: Option<Box<dyn LibraryEffectIdMigrationPublication>>,
     active_playlist: ActivePlaylistEffectIdMigrationPublication,
+    runtime: PersistedRuntimeSessionEffectIdMigration,
 }
 
 pub(crate) fn remap_effect_id(effect_id: &mut EffectId, migrations: &EffectIdMigrations) -> bool {
@@ -144,14 +147,16 @@ async fn apply_registry_update(
     }
 
     let (parts, scene_migrated) = loop {
+        let runtime = state
+            .domains
+            .runtime_session
+            .begin_effect_id_migration()
+            .await;
         let scene = state
             .scene_manager
             .prepare_effect_id_migration(&migrations)
             .await?;
-        let runtime = state
-            .domains
-            .runtime_session
-            .prepare_effect_id_migration(scene.candidate())?;
+        let runtime = runtime.prepare(scene.candidate())?;
         let display = state
             .display_preferences
             .read()
@@ -173,7 +178,7 @@ async fn apply_registry_update(
         let mut library = library.map(crate::library::LibraryEffectIdMigration::admit);
 
         let (persisted_scene, scene_persistence) = scene.persist();
-        let runtime_persistence = runtime.persist();
+        let (persisted_runtime, runtime_persistence) = runtime.persist();
         let (persisted_display, display_persistence) = persist_display_migration(display);
         let library_persistence = library
             .as_mut()
@@ -203,6 +208,7 @@ async fn apply_registry_update(
         let Ok(parts) = EffectIdMigrationPublicationParts::prepare(
             state,
             persisted_scene,
+            persisted_runtime,
             persisted_display,
             library,
             active_playlist,
@@ -325,6 +331,7 @@ impl EffectIdMigrationPublicationParts {
     async fn prepare(
         state: &AppState,
         scene: crate::domain::scene::PersistedSceneEffectIdMigration,
+        runtime: PersistedRuntimeSessionEffectIdMigration,
         display: Option<PersistedDisplayPreferencesEffectIdMigration>,
         library: Option<Box<dyn AdmittedLibraryEffectIdMigration>>,
         active_playlist: ActivePlaylistEffectIdMigration,
@@ -359,6 +366,7 @@ impl EffectIdMigrationPublicationParts {
             display,
             library,
             active_playlist,
+            runtime,
         })
     }
 
@@ -372,6 +380,7 @@ impl EffectIdMigrationPublicationParts {
             display: self.display,
             library: self.library,
             active_playlist: self.active_playlist,
+            runtime: self.runtime,
         }
     }
 }
@@ -386,16 +395,25 @@ impl EffectIdMigrationPublication<'_> {
         usize,
         usize,
     ) {
-        let library_migrated = match self.library {
+        let Self {
+            registry,
+            scene,
+            display,
+            library,
+            active_playlist,
+            runtime,
+        } = self;
+        let library_migrated = match library {
             Some(library) => library.publish().await,
             None => 0,
         };
-        if let Some(display) = self.display {
+        if let Some(display) = display {
             display.publish();
         }
-        let active_playlist_migrated = self.active_playlist.publish();
-        let scene_commit = state.scene_manager.publish_effect_id_migration(self.scene);
-        let report = self.registry.publish();
+        let active_playlist_migrated = active_playlist.publish();
+        let scene_commit = state.scene_manager.publish_effect_id_migration(scene);
+        let report = registry.publish();
+        drop(runtime);
         (
             report,
             scene_commit,

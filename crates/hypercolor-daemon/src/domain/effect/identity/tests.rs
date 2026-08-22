@@ -1005,7 +1005,7 @@ async fn scene_effect_writes_reject_unknown_and_retired_ids() {
 
 #[cfg(feature = "persistence-test-hooks")]
 #[tokio::test]
-async fn revision_neutral_snapshot_save_cannot_overtake_identity_publication() {
+async fn runtime_save_cannot_overtake_identity_publication() {
     let temp = TempDir::new().expect("tempdir");
     let fixture = late_migration_fixture(&temp).await;
     let state = Arc::new(fixture.state);
@@ -1013,7 +1013,10 @@ async fn revision_neutral_snapshot_save_cannot_overtake_identity_publication() {
         .domains
         .effects
         .pause_next_identity_publication_for_test();
-    let snapshot_barrier = state.scene_manager.pause_next_persistence_for_test();
+    let save_barrier = state
+        .domains
+        .runtime_session
+        .pause_next_save_before_admission_for_test();
     let revision = state.scene_manager.revision();
 
     let migration = {
@@ -1023,16 +1026,16 @@ async fn revision_neutral_snapshot_save_cannot_overtake_identity_publication() {
     publication_barrier.wait_until_entered().await;
     assert_eq!(state.scene_manager.revision(), revision);
 
-    let snapshot_save = {
+    let runtime_save = {
         let state = Arc::clone(&state);
-        tokio::spawn(async move { state.scene_manager.save_snapshot().await })
+        tokio::spawn(async move { state.domains.runtime_session.save().await })
     };
-    snapshot_barrier.wait_until_entered().await;
-    snapshot_barrier.release();
+    save_barrier.wait_until_entered().await;
+    save_barrier.release();
     tokio::task::yield_now().await;
     assert!(
-        !snapshot_save.is_finished(),
-        "a revision-neutral snapshot must wait for identity publication"
+        !runtime_save.is_finished(),
+        "a runtime save must wait for identity publication admission"
     );
     assert_eq!(state.scene_manager.revision(), revision);
 
@@ -1041,10 +1044,9 @@ async fn revision_neutral_snapshot_save_cannot_overtake_identity_publication() {
         .await
         .expect("migration task should not panic")
         .expect("migration should publish");
-    snapshot_save
+    runtime_save
         .await
-        .expect("snapshot task should not panic")
-        .expect("snapshot should persist after publication");
+        .expect("runtime save task should not panic");
 
     let durable = crate::scene_store::SceneStore::load(&state.data_dir.join("scenes.json"))
         .expect("scene store should load after the race");
@@ -1052,6 +1054,16 @@ async fn revision_neutral_snapshot_save_cannot_overtake_identity_publication() {
         durable
             .list()
             .flat_map(|scene| &scene.zones)
+            .flat_map(hypercolor_types::scene::Zone::effect_ids)
+            .all(|effect_id| effect_id == fixture.canonical_id)
+    );
+    let runtime = crate::runtime_state::load(&state.runtime_state_path)
+        .expect("runtime state should load after the race")
+        .expect("runtime state should exist after the race");
+    assert!(
+        runtime
+            .default_scene_groups
+            .iter()
             .flat_map(hypercolor_types::scene::Zone::effect_ids)
             .all(|effect_id| effect_id == fixture.canonical_id)
     );

@@ -167,7 +167,7 @@ fn registry_refreshes_share_the_effect_domain_identity_authority() {
     };
     let effect_api = source("api/effects.rs");
     assert!(effect_api.contains("domain::effect::rescan_registry"));
-    assert!(effect_api.contains("domain::effect::reload_registry_file"));
+    assert!(effect_api.contains("domain::effect::install_registry_file"));
     assert!(!effect_api.contains("domains.effects.rescan()"));
     assert!(!effect_api.contains("domains.effects.register("));
 
@@ -182,6 +182,45 @@ fn registry_refreshes_share_the_effect_domain_identity_authority() {
     assert!(startup.contains("pub playlist_runtime: Arc<Mutex<PlaylistRuntimeState>>"));
     let library = source("lib.rs");
     assert!(!library.contains("mod effect_id_migration"));
+}
+
+#[test]
+fn runtime_state_writers_share_the_runtime_session_authority() {
+    let sources = daemon_sources();
+    let bypasses = sources
+        .iter()
+        .filter(|(path, _)| {
+            !path.ends_with("domain/context.rs")
+                && !path.ends_with("runtime_state.rs")
+                && !path.ends_with("startup/services.rs")
+        })
+        .filter(|(_, source)| {
+            source.contains("runtime_state::reserve_save")
+                || source.contains("runtime_state::save_reserved")
+        })
+        .map(|(path, _)| path.display().to_string())
+        .collect::<Vec<_>>();
+    assert!(
+        bypasses.is_empty(),
+        "runtime-state writers bypassed RuntimeSessionService:\n{}",
+        bypasses.join("\n")
+    );
+    let source = |suffix: &str| {
+        sources
+            .iter()
+            .find(|(path, _)| path.ends_with(suffix))
+            .map(|(_, source)| source.as_str())
+            .unwrap_or_else(|| panic!("missing daemon source {suffix}"))
+    };
+    let layout = source("domain/layout.rs");
+    assert!(layout.contains("persist_snapshot_with"));
+    assert!(!layout.contains("runtime_state::reserve_save"));
+    assert!(!layout.contains("runtime_state::save_reserved"));
+
+    let lifecycle = source("startup/lifecycle.rs");
+    assert!(lifecycle.contains(".runtime_session\n            .persist_snapshot()"));
+    assert!(!lifecycle.contains("runtime_state::reserve_save"));
+    assert!(!lifecycle.contains("runtime_state::save_reserved"));
 }
 
 #[test]
