@@ -1675,8 +1675,8 @@ pub struct SceneActivated {
 }
 
 /// Activate a scene: validate its media admission, switch the exclusive
-/// current scene, apply soft admission, then persist and reconcile
-/// connectivity.
+/// current scene, apply soft admission, reconcile connectivity, then
+/// persist the converged runtime projection.
 ///
 /// # Errors
 ///
@@ -1725,12 +1725,12 @@ pub async fn activate_scene(
         .await;
     let layout = apply_activation_layout(ctx, layout_guard, layout_id).await;
     let brightness = apply_activation_brightness(ctx, activation_brightness).await;
-    ctx.scene.save_runtime_session().await;
 
     // Which scene is active decides which devices are worth connecting.
     ctx.layout
         .sync_runtime_connectivity(ctx.scene.layout_runtime())
         .await;
+    ctx.scene.save_runtime_session().await;
 
     Ok(SceneActivated {
         scene_id: command.scene_id,
