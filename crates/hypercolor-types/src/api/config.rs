@@ -27,6 +27,26 @@ pub struct ConfigKeyResponse {
     pub value: serde_json::Value,
 }
 
+/// Outcome of a config write, key reset, or whole-config reset.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct ConfigMutationResponse {
+    /// The mutated key, or null for a whole-config reset.
+    pub key: Option<String>,
+    /// The effective value after the write, rendered like any read.
+    /// Null for a whole-config reset, whose payload spans every key.
+    pub value: Option<serde_json::Value>,
+    /// Whether the daemon re-applied the change to a running subsystem.
+    pub live: bool,
+    /// Whether the registry classifies this key as boot-frozen, so the
+    /// persisted value only takes effect at the next daemon start.
+    pub requires_restart: bool,
+    /// Restart-classified roots whose persisted value now differs from
+    /// the one the daemon booted with.
+    pub pending_restart: Vec<String>,
+    /// The config file the write landed in.
+    pub path: String,
+}
+
 /// Query parameters shared by every config mutation route.
 ///
 /// Live application is the default: a client that wants the value on

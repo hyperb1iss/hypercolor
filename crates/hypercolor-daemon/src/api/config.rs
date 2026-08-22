@@ -6,9 +6,7 @@ use anyhow::Context;
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::response::{IntoResponse, Response};
-use serde::Serialize;
 use tracing::{info, warn};
-use utoipa::ToSchema;
 
 use hypercolor_core::config::canonical_audio_device_id;
 use hypercolor_core::engine::FpsTier;
@@ -30,7 +28,9 @@ use crate::api::security::RequestAuthContext;
 use crate::app_state::AppState;
 use crate::domain::{DomainError, ResourceKind};
 
-pub use hypercolor_types::api::config::{ConfigApplyQuery, ConfigDocument, ConfigKeyResponse};
+pub use hypercolor_types::api::config::{
+    ConfigApplyQuery, ConfigDocument, ConfigKeyResponse, ConfigMutationResponse,
+};
 
 /// Render an internal config failure.
 ///
@@ -42,26 +42,6 @@ fn internal_config_error(message: impl Into<String>) -> Response {
 use crate::scene_transactions::{
     PreparedLayoutUpdate, SceneTransaction, apply_prepared_layout_update_under_guard,
 };
-
-/// The outcome of a config write, reset, or whole-config reset.
-#[derive(Debug, Serialize, ToSchema)]
-pub struct ConfigMutationResponse {
-    /// The mutated key, or null for a whole-config reset.
-    pub key: Option<String>,
-    /// The effective value after the write, rendered like any read.
-    /// Null for a whole-config reset, whose payload spans every key.
-    pub value: Option<serde_json::Value>,
-    /// Whether the daemon re-applied the change to a running subsystem.
-    pub live: bool,
-    /// Whether the registry classifies this key as boot-frozen, so the
-    /// persisted value only takes effect at the next daemon start.
-    pub requires_restart: bool,
-    /// Restart-classified roots whose persisted value now differs from
-    /// the one the daemon booted with.
-    pub pending_restart: Vec<String>,
-    /// The config file the write landed in.
-    pub path: String,
-}
 
 /// `GET /api/v1/config` — the effective config, rendered for reading.
 pub async fn show_config(State(state): State<Arc<AppState>>) -> Response {
