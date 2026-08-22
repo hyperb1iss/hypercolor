@@ -41,7 +41,8 @@ use crate::device_settings::DeviceSettingsStore;
 use crate::display_frames::DisplayFrameRuntime;
 use crate::display_preferences::DisplayPreferencesStore;
 use crate::domain::context::{
-    DeviceContext, DomainContextResources, DomainContexts, RuntimeSessionService, SceneContext,
+    DeviceContext, DomainContextResources, DomainContexts, RuntimeSessionProjection,
+    RuntimeSessionService, SceneContext,
 };
 use crate::domain::layout::{LayoutContext, LayoutContextResources};
 use crate::domain::output::OutputContext;
@@ -414,7 +415,7 @@ impl AppState {
         let render_loop = Arc::new(RwLock::new(RenderLoop::new(60)));
         let configured_max_fps_tier = ConfiguredFpsTier::new(FpsTier::Full);
         let spatial_engine = SpatialService::new(
-            SpatialEngine::try_new(default_layout)
+            SpatialEngine::try_new(default_layout.clone())
                 .expect("empty default spatial layout should always be addressable"),
         );
         let backend_manager = Arc::new(Mutex::new(BackendManager::new()));
@@ -450,9 +451,9 @@ impl AppState {
         let simulated_displays = Arc::new(RwLock::new(simulated_displays));
         let simulated_display_runtime = Arc::new(RwLock::new(SimulatedDisplayRuntime::new()));
         let display_frames = Arc::new(RwLock::new(DisplayFrameRuntime::new()));
-        let layouts = Arc::new(RwLock::new(HashMap::new()));
+        let layouts = HashMap::from([(default_layout.id.clone(), default_layout)]);
         let layouts_path = data_dir.join("layouts.json");
-        let layout_auto_exclusions = Arc::new(RwLock::new(HashMap::new()));
+        let layout_auto_exclusions = HashMap::new();
         let layout_auto_exclusions_path = data_dir.join("layout-auto-exclusions.json");
         let logical_devices = Arc::new(RwLock::new(HashMap::new()));
         let logical_devices_path = data_dir.join("logical-devices.json");
@@ -473,22 +474,35 @@ impl AppState {
                 .expect("default app state should build driver module registry"),
             )
         });
+        let runtime_projection = RuntimeSessionProjection::new(
+            scene_manager.clone(),
+            spatial_engine.clone(),
+            power_state.clone(),
+        );
+        let layout = LayoutContext::new(
+            LayoutContextResources::new(
+                layouts,
+                layouts_path,
+                layout_auto_exclusions,
+                layout_auto_exclusions_path,
+            ),
+            spatial_engine.clone(),
+            scene_manager.clone(),
+            scene_transactions.clone(),
+            runtime_state_path.clone(),
+            runtime_projection.clone(),
+        );
         let discovery_runtime = crate::discovery::DiscoveryRuntime {
             device_registry: device_registry.clone(),
             backend_manager: Arc::clone(&backend_manager),
             lifecycle_manager: Arc::clone(&lifecycle_manager),
             reconnect_tasks: Arc::clone(&reconnect_tasks),
             event_bus: Arc::clone(&event_bus),
-            spatial_engine: spatial_engine.clone(),
-            scene_manager: scene_manager.clone(),
-            layouts: Arc::clone(&layouts),
-            layouts_path: layouts_path.clone(),
-            layout_auto_exclusions: Arc::clone(&layout_auto_exclusions),
+            layout: layout.clone(),
             logical_devices: Arc::clone(&logical_devices),
             attachment_registry: Arc::clone(&attachment_registry),
             attachment_profiles: Arc::clone(&attachment_profiles),
             device_settings: Arc::clone(&device_settings),
-            scene_transactions: scene_transactions.clone(),
             runtime_state_path: runtime_state_path.clone(),
             device_aliases_path,
             usb_protocol_configs: usb_protocol_configs.clone(),
@@ -503,6 +517,7 @@ impl AppState {
             Arc::clone(&driver_registry),
             config_manager.clone(),
         ));
+        layout.bind_driver_host(&driver_host);
         {
             let mut manager = backend_manager.try_lock().expect(
                 "default app state should register the simulator backend without contention",
@@ -514,20 +529,13 @@ impl AppState {
         }
         let runtime_session = RuntimeSessionService::new(
             runtime_state_path.clone(),
-            scene_manager.clone(),
-            spatial_engine.clone(),
-            power_state.clone(),
-            Arc::clone(&driver_host),
-            Arc::clone(&driver_registry),
+            runtime_projection,
+            &driver_host,
         );
         let devices = DeviceContext::new(
-            device_registry.clone(),
-            Arc::clone(&lifecycle_manager),
             Arc::clone(&driver_host),
             Arc::clone(&driver_registry),
             config_manager.clone(),
-            Arc::clone(&layout_auto_exclusions),
-            layout_auto_exclusions_path.clone(),
         );
         let scene = SceneContext::new(
             scene_manager.clone(),
@@ -535,21 +543,7 @@ impl AppState {
             Arc::clone(&asset_library),
             config_manager.clone(),
             Arc::clone(&render_loop),
-            devices.clone(),
-        );
-        let layout = LayoutContext::new(
-            LayoutContextResources {
-                layouts: Arc::clone(&layouts),
-                layouts_path: layouts_path.clone(),
-                layout_auto_exclusions: Arc::clone(&layout_auto_exclusions),
-                layout_auto_exclusions_path: layout_auto_exclusions_path.clone(),
-            },
-            spatial_engine.clone(),
-            scene_manager.clone(),
-            scene_transactions.clone(),
-            runtime_state_path.clone(),
-            runtime_session.clone(),
-            devices.clone(),
+            layout.clone(),
         );
         let output_power_transition = Arc::new(Mutex::new(()));
         let start_time = Instant::now();

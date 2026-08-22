@@ -40,10 +40,10 @@ use hypercolor_core::input::{
 };
 use hypercolor_core::types::event::InputButtonState;
 use hypercolor_daemon::api;
-#[cfg(feature = "persistence-test-hooks")]
-use hypercolor_daemon::api::layouts::{LayoutMutationTestOperation, LayoutMutationTestPoint};
 use hypercolor_daemon::api::local::TrustedLocalApi;
 use hypercolor_daemon::app_state::AppState;
+#[cfg(feature = "persistence-test-hooks")]
+use hypercolor_daemon::domain::layout::{LayoutMutationTestOperation, LayoutMutationTestPoint};
 #[cfg(feature = "persistence-test-hooks")]
 use hypercolor_daemon::library::JsonLibraryStore;
 #[cfg(feature = "persistence-test-hooks")]
@@ -191,6 +191,24 @@ fn isolated_state_with_driver_registry(
     std::fs::create_dir_all(&data_dir).expect("temp data dir should be created");
     let state = AppState::new_with_runtime_overrides(data_dir, None, Some(driver_registry));
     (state, tempdir)
+}
+
+async fn create_stored_layout(state: &AppState, name: &str) -> SpatialLayout {
+    let created = state
+        .domains
+        .layout
+        .create(hypercolor_types::api::layouts::CreateLayoutRequest {
+            name: name.to_owned(),
+            ..Default::default()
+        })
+        .await
+        .expect("test layout should create");
+    state
+        .domains
+        .layout
+        .resolve(&created.id)
+        .await
+        .expect("created test layout should resolve")
 }
 
 struct ObservableInputSource {
@@ -1236,7 +1254,6 @@ async fn run_one_layout_publication_with_gate(
     .expect("layout publication worker should finish");
 }
 
-#[cfg(feature = "persistence-test-hooks")]
 async fn run_layout_publications(
     state: Arc<AppState>,
     expected_count: usize,
@@ -1292,8 +1309,10 @@ async fn seed_stale_auto_layout_zone(state: &AppState, device_id: &DeviceId) -> 
     let layout_device_id =
         DeviceLifecycleManager::canonical_layout_device_id(&tracked.info, fingerprint.as_ref());
     let mut layout = state.spatial_engine.snapshot().layout().as_ref().clone();
+    layout.id = format!("stale-auto-layout-{device_id}");
+    "Stale Auto Layout".clone_into(&mut layout.name);
     assert_eq!(
-        hypercolor_daemon::discovery::append_auto_layout_zones_for_device(
+        hypercolor_daemon::domain::layout::append_auto_layout_zones_for_device(
             &mut layout,
             &layout_device_id,
             &tracked.info,
@@ -1308,7 +1327,7 @@ async fn seed_stale_auto_layout_zone(state: &AppState, device_id: &DeviceId) -> 
     "Stale Auto Layout Zone".clone_into(&mut stale_zone.name);
     let mut repair_probe = layout.clone();
     assert_eq!(
-        hypercolor_daemon::discovery::reconcile_auto_layout_zones_for_device(
+        hypercolor_daemon::domain::layout::reconcile_auto_layout_zones_for_device(
             &mut repair_probe,
             &layout_device_id,
             &tracked.info,
@@ -1316,7 +1335,7 @@ async fn seed_stale_auto_layout_zone(state: &AppState, device_id: &DeviceId) -> 
         1,
         "seeded auto-layout zone should require repair"
     );
-    state.spatial_engine.update_layout(layout);
+    state.domains.layout.test_fixture().replace_current(layout);
     layout_device_id
 }
 
@@ -2565,20 +2584,6 @@ async fn config_set_render_canvas_updates_active_layout_dimensions() {
     let mut state = isolated_state();
     state.config_manager = Some(config_manager);
 
-    let active_layout = {
-        let spatial = state.spatial_engine.snapshot();
-        spatial.layout().as_ref().clone()
-    };
-    {
-        let mut layouts = state
-            .domains
-            .layout
-            .catalog_for_test()
-            .try_write()
-            .expect("layout store should not be contended");
-        layouts.insert(active_layout.id.clone(), active_layout.clone());
-    }
-
     let state = Arc::new(state);
     let app = test_app_with_state(Arc::clone(&state));
     let mut applied_layouts = Vec::new();
@@ -2608,9 +2613,11 @@ async fn config_set_render_canvas_updates_active_layout_dimensions() {
     }
 
     {
-        let layouts = state.domains.layout.catalog_for_test().read().await;
-        let saved = layouts
-            .get("default")
+        let saved = state
+            .domains
+            .layout
+            .resolve("default")
+            .await
             .expect("active layout should remain persisted");
         assert_eq!(saved.canvas_width, 1024);
         assert_eq!(saved.canvas_height, 768);
@@ -4027,7 +4034,11 @@ async fn insert_test_asus_smbus_device(state: &Arc<AppState>, name: &str) -> Dev
 ///
 /// This ensures that `sync_active_layout_connectivity` won't disconnect the
 /// device because the active layout has a zone referencing it.
-async fn set_layout_targeting_device(state: &AppState, layout_device_id: &str, led_count: u32) {
+async fn set_layout_targeting_device(
+    state: &Arc<AppState>,
+    layout_device_id: &str,
+    led_count: u32,
+) {
     let layout = SpatialLayout {
         id: "test-layout".into(),
         name: "Test Layout".into(),
@@ -4065,7 +4076,20 @@ async fn set_layout_targeting_device(state: &AppState, layout_device_id: &str, l
         spaces: None,
         version: 1,
     };
-    state.spatial_engine.update_layout(layout);
+    let publisher = tokio::spawn(run_layout_publications(Arc::clone(state), 1));
+    state
+        .domains
+        .layout
+        .preview(layout)
+        .await
+        .expect("test layout should publish");
+    assert_eq!(
+        publisher
+            .await
+            .expect("layout publication worker should not panic")
+            .len(),
+        1
+    );
 }
 
 // ── Devices ──────────────────────────────────────────────────────────────
@@ -7712,7 +7736,14 @@ async fn layout_crud_lifecycle() {
 
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
-    assert_eq!(json["data"]["total"], 1);
+    assert_eq!(json["data"]["total"], 2);
+    assert!(
+        json["data"]["items"]
+            .as_array()
+            .expect("layout items should be an array")
+            .iter()
+            .any(|layout| layout["id"] == layout_id)
+    );
 
     // Update layout
     let app = test_app_with_state(Arc::clone(&state));
@@ -7925,18 +7956,7 @@ async fn layout_apply_converges_a_concurrent_driver_runtime_update() {
         .expect("runtime cache test driver should register");
     let (state, _tmp) = isolated_state_with_driver_registry(Arc::new(registry));
     let state = Arc::new(state);
-    let candidate = SpatialLayout {
-        id: "converged-layout".to_owned(),
-        name: "Converged Layout".to_owned(),
-        ..state.spatial_engine.snapshot().layout().as_ref().clone()
-    };
-    state
-        .domains
-        .layout
-        .catalog_for_test()
-        .write()
-        .await
-        .insert(candidate.id.clone(), candidate.clone());
+    let candidate = create_stored_layout(&state, "Converged Layout").await;
     let app = test_app_with_state(Arc::clone(&state));
     let update_revision = Arc::clone(&revision);
 
@@ -7990,18 +8010,7 @@ async fn layout_apply_returns_conflict_when_precommit_is_superseded() {
     let (state, _tmp) = isolated_state_with_driver_registry(Arc::new(registry));
     let initial_layout_id = state.spatial_engine.snapshot().layout().id.clone();
     let state = Arc::new(state);
-    let candidate = SpatialLayout {
-        id: "superseded-layout".to_owned(),
-        name: "Superseded Layout".to_owned(),
-        ..state.spatial_engine.snapshot().layout().as_ref().clone()
-    };
-    state
-        .domains
-        .layout
-        .catalog_for_test()
-        .write()
-        .await
-        .insert(candidate.id.clone(), candidate.clone());
+    let candidate = create_stored_layout(&state, "Superseded Layout").await;
     let runtime_state_path = state.runtime_state_path.clone();
     let concurrent_layout_id = initial_layout_id.clone();
     let superseding_write = tokio::spawn(async move {
@@ -8058,18 +8067,7 @@ async fn layout_apply_maps_renderer_rejections_to_explicit_statuses() {
     ];
     for (rejection, expected_status) in cases {
         let (state, _tmp) = test_state_with_temp_layout_and_runtime_store();
-        let candidate = SpatialLayout {
-            id: "rejected-apply".to_owned(),
-            name: "Rejected Apply".to_owned(),
-            ..state.spatial_engine.snapshot().layout().as_ref().clone()
-        };
-        state
-            .domains
-            .layout
-            .catalog_for_test()
-            .write()
-            .await
-            .insert(candidate.id.clone(), candidate.clone());
+        let candidate = create_stored_layout(&state, "Rejected Apply").await;
         let app = test_app_with_state(Arc::clone(&state));
 
         let response = request_with_layout_rejection(
@@ -8141,18 +8139,7 @@ async fn layout_apply_maps_persistence_failure_to_internal_error() {
     let state =
         AppState::new_with_composition_overrides(data_dir, None, None, Some(PathBuf::new()));
     let state = Arc::new(state);
-    let candidate = SpatialLayout {
-        id: "persistence-failure".to_owned(),
-        name: "Persistence Failure".to_owned(),
-        ..state.spatial_engine.snapshot().layout().as_ref().clone()
-    };
-    state
-        .domains
-        .layout
-        .catalog_for_test()
-        .write()
-        .await
-        .insert(candidate.id.clone(), candidate.clone());
+    let candidate = create_stored_layout(&state, "Persistence Failure").await;
     let app = test_app_with_state(Arc::clone(&state));
 
     let (response, _) = request_with_layout_ack(
@@ -8181,7 +8168,8 @@ async fn layout_apply_returns_accepted_when_convergence_retry_is_armed() {
     state
         .domains
         .layout
-        .catalog_for_test()
+        .test_fixture()
+        .catalog()
         .write()
         .await
         .insert(candidate.id.clone(), candidate.clone());
@@ -8228,7 +8216,8 @@ async fn concurrent_apply_and_delete_cannot_activate_a_removed_layout() {
     state
         .domains
         .layout
-        .catalog_for_test()
+        .test_fixture()
+        .catalog()
         .write()
         .await
         .insert(candidate.id.clone(), candidate.clone());
@@ -8258,7 +8247,7 @@ async fn concurrent_apply_and_delete_cannot_activate_a_removed_layout() {
     });
     first_entered.notified().await;
     let delete_id = candidate.id.clone();
-    let before_delete_guard = state.domains.layout.test_hooks().install(
+    let before_delete_guard = state.domains.layout.test_fixture().hooks().install(
         LayoutMutationTestPoint::BeforeGuard,
         LayoutMutationTestOperation::Delete,
         &delete_id,
@@ -8280,7 +8269,8 @@ async fn concurrent_apply_and_delete_cannot_activate_a_removed_layout() {
         state
             .domains
             .layout
-            .catalog_for_test()
+            .test_fixture()
+            .catalog()
             .read()
             .await
             .contains_key(&candidate.id)
@@ -8304,7 +8294,8 @@ async fn concurrent_apply_and_delete_cannot_activate_a_removed_layout() {
         !state
             .domains
             .layout
-            .catalog_for_test()
+            .test_fixture()
+            .catalog()
             .read()
             .await
             .contains_key(&candidate.id)
@@ -8402,7 +8393,7 @@ async fn concurrent_active_and_fallback_deletes_cannot_publish_removed_fallback(
         ..active.clone()
     };
     {
-        let mut layouts = state.domains.layout.catalog_for_test().write().await;
+        let mut layouts = state.domains.layout.test_fixture().catalog().write().await;
         layouts.insert(active.id.clone(), active.clone());
         layouts.insert(fallback.id.clone(), fallback.clone());
     }
@@ -8432,7 +8423,7 @@ async fn concurrent_active_and_fallback_deletes_cannot_publish_removed_fallback(
     });
     first_entered.notified().await;
     let fallback_id = fallback.id.clone();
-    let before_fallback_guard = state.domains.layout.test_hooks().install(
+    let before_fallback_guard = state.domains.layout.test_fixture().hooks().install(
         LayoutMutationTestPoint::BeforeGuard,
         LayoutMutationTestOperation::Delete,
         &fallback_id,
@@ -8454,7 +8445,8 @@ async fn concurrent_active_and_fallback_deletes_cannot_publish_removed_fallback(
         state
             .domains
             .layout
-            .catalog_for_test()
+            .test_fixture()
+            .catalog()
             .read()
             .await
             .contains_key(&fallback.id)
@@ -8484,7 +8476,8 @@ async fn concurrent_active_and_fallback_deletes_cannot_publish_removed_fallback(
         !state
             .domains
             .layout
-            .catalog_for_test()
+            .test_fixture()
+            .catalog()
             .read()
             .await
             .contains_key(&fallback.id)
@@ -8532,8 +8525,16 @@ async fn layout_preview_never_persists_runtime_state() {
 #[tokio::test]
 async fn layout_store_write_failure_rolls_back_create() {
     let (state, _tmp) = test_state_with_temp_layout_and_runtime_store();
+    let initial_layouts = state
+        .domains
+        .layout
+        .test_fixture()
+        .catalog()
+        .read()
+        .await
+        .clone();
     let cleanup = InjectedWriterCleanup::new(
-        AtomicFileWriter::new(state.domains.layout.catalog_path_for_test())
+        AtomicFileWriter::new(state.domains.layout.test_fixture().catalog_path())
             .expect("layout writer should initialize"),
     );
     cleanup.writer().set_injected_replace_failures(1);
@@ -8552,19 +8553,14 @@ async fn layout_store_write_failure_rolls_back_create() {
         .expect("failed to execute request");
 
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-    assert!(
-        state
-            .domains
-            .layout
-            .catalog_for_test()
-            .read()
-            .await
-            .is_empty()
+    assert_eq!(
+        *state.domains.layout.test_fixture().catalog().read().await,
+        initial_layouts
     );
-    assert!(
-        hypercolor_daemon::layout_store::load(state.domains.layout.catalog_path_for_test())
-            .expect("layout store should load")
-            .is_empty()
+    assert_eq!(
+        hypercolor_daemon::layout_store::load(state.domains.layout.test_fixture().catalog_path())
+            .expect("layout store should load"),
+        initial_layouts
     );
     cleanup.reset_and_flush();
 }
@@ -8581,13 +8577,14 @@ async fn layout_store_write_failure_rolls_back_update() {
     state
         .domains
         .layout
-        .catalog_for_test()
+        .test_fixture()
+        .catalog()
         .write()
         .await
         .insert(stored.id.clone(), stored.clone());
     persist_current_layouts_for_test(&state).await;
     let cleanup = InjectedWriterCleanup::new(
-        AtomicFileWriter::new(state.domains.layout.catalog_path_for_test())
+        AtomicFileWriter::new(state.domains.layout.test_fixture().catalog_path())
             .expect("layout writer should initialize"),
     );
     cleanup.writer().set_injected_replace_failures(1);
@@ -8607,11 +8604,11 @@ async fn layout_store_write_failure_rolls_back_update() {
 
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(
-        state.domains.layout.catalog_for_test().read().await[&stored.id].name,
+        state.domains.layout.test_fixture().catalog().read().await[&stored.id].name,
         stored.name
     );
     let persisted =
-        hypercolor_daemon::layout_store::load(state.domains.layout.catalog_path_for_test())
+        hypercolor_daemon::layout_store::load(state.domains.layout.test_fixture().catalog_path())
             .expect("layout store should load");
     assert_eq!(persisted[&stored.id].name, stored.name);
     cleanup.reset_and_flush();
@@ -8629,13 +8626,14 @@ async fn layout_store_write_failure_rolls_back_inactive_delete() {
     state
         .domains
         .layout
-        .catalog_for_test()
+        .test_fixture()
+        .catalog()
         .write()
         .await
         .insert(stored.id.clone(), stored.clone());
     persist_current_layouts_for_test(&state).await;
     let cleanup = InjectedWriterCleanup::new(
-        AtomicFileWriter::new(state.domains.layout.catalog_path_for_test())
+        AtomicFileWriter::new(state.domains.layout.test_fixture().catalog_path())
             .expect("layout writer should initialize"),
     );
     cleanup.writer().set_injected_replace_failures(1);
@@ -8657,14 +8655,15 @@ async fn layout_store_write_failure_rolls_back_inactive_delete() {
         state
             .domains
             .layout
-            .catalog_for_test()
+            .test_fixture()
+            .catalog()
             .read()
             .await
             .get(&stored.id),
         Some(&stored)
     );
     let persisted =
-        hypercolor_daemon::layout_store::load(state.domains.layout.catalog_path_for_test())
+        hypercolor_daemon::layout_store::load(state.domains.layout.test_fixture().catalog_path())
             .expect("layout store should load");
     assert_eq!(persisted.get(&stored.id), Some(&stored));
     cleanup.reset_and_flush();
@@ -8681,13 +8680,13 @@ async fn layout_store_write_failure_rolls_back_active_delete() {
         ..active.clone()
     };
     {
-        let mut layouts = state.domains.layout.catalog_for_test().write().await;
+        let mut layouts = state.domains.layout.test_fixture().catalog().write().await;
         layouts.insert(active.id.clone(), active.clone());
         layouts.insert(fallback.id.clone(), fallback);
     }
     persist_current_layouts_for_test(&state).await;
     let cleanup = InjectedWriterCleanup::new(
-        AtomicFileWriter::new(state.domains.layout.catalog_path_for_test())
+        AtomicFileWriter::new(state.domains.layout.test_fixture().catalog_path())
             .expect("layout writer should initialize"),
     );
     cleanup.writer().set_injected_replace_failures(1);
@@ -8711,14 +8710,15 @@ async fn layout_store_write_failure_rolls_back_active_delete() {
         state
             .domains
             .layout
-            .catalog_for_test()
+            .test_fixture()
+            .catalog()
             .read()
             .await
             .get(&active.id),
         Some(&active)
     );
     let persisted =
-        hypercolor_daemon::layout_store::load(state.domains.layout.catalog_path_for_test())
+        hypercolor_daemon::layout_store::load(state.domains.layout.test_fixture().catalog_path())
             .expect("layout store should load");
     assert_eq!(persisted.get(&active.id), Some(&active));
     let runtime = runtime_state::load(&state.runtime_state_path)
@@ -8735,7 +8735,7 @@ async fn layout_store_write_failure_rolls_back_active_delete() {
 #[tokio::test]
 async fn layout_mutation_cancellation_finishes_create() {
     let (state, _tmp) = test_state_with_temp_layout_and_runtime_store();
-    let barrier = state.domains.layout.test_hooks().install(
+    let barrier = state.domains.layout.test_fixture().hooks().install(
         LayoutMutationTestPoint::AfterMemoryMutation,
         LayoutMutationTestOperation::Create,
         "Cancellation Create",
@@ -8757,7 +8757,8 @@ async fn layout_mutation_cancellation_finishes_create() {
     let created_id = state
         .domains
         .layout
-        .catalog_for_test()
+        .test_fixture()
+        .catalog()
         .read()
         .await
         .values()
@@ -8774,7 +8775,12 @@ async fn layout_mutation_cancellation_finishes_create() {
             .is_cancelled()
     );
     barrier.release();
-    let layouts_path = state.domains.layout.catalog_path_for_test().to_path_buf();
+    let layouts_path = state
+        .domains
+        .layout
+        .test_fixture()
+        .catalog_path()
+        .to_path_buf();
     let durable_id = created_id.clone();
     wait_for_async_condition(move || {
         let layouts_path = layouts_path.clone();
@@ -8790,7 +8796,8 @@ async fn layout_mutation_cancellation_finishes_create() {
         state
             .domains
             .layout
-            .catalog_for_test()
+            .test_fixture()
+            .catalog()
             .read()
             .await
             .contains_key(&created_id)
@@ -8809,12 +8816,13 @@ async fn layout_mutation_cancellation_finishes_update() {
     state
         .domains
         .layout
-        .catalog_for_test()
+        .test_fixture()
+        .catalog()
         .write()
         .await
         .insert(stored.id.clone(), stored.clone());
     persist_current_layouts_for_test(&state).await;
-    let barrier = state.domains.layout.test_hooks().install(
+    let barrier = state.domains.layout.test_fixture().hooks().install(
         LayoutMutationTestPoint::AfterMemoryMutation,
         LayoutMutationTestOperation::Update,
         &stored.id,
@@ -8843,7 +8851,12 @@ async fn layout_mutation_cancellation_finishes_update() {
             .is_cancelled()
     );
     barrier.release();
-    let layouts_path = state.domains.layout.catalog_path_for_test().to_path_buf();
+    let layouts_path = state
+        .domains
+        .layout
+        .test_fixture()
+        .catalog_path()
+        .to_path_buf();
     let durable_id = stored.id.clone();
     wait_for_async_condition(move || {
         let layouts_path = layouts_path.clone();
@@ -8859,7 +8872,7 @@ async fn layout_mutation_cancellation_finishes_update() {
     .await;
 
     assert_eq!(
-        state.domains.layout.catalog_for_test().read().await[&stored.id].name,
+        state.domains.layout.test_fixture().catalog().read().await[&stored.id].name,
         "After Cancellation Update"
     );
 }
@@ -8876,7 +8889,8 @@ async fn layout_mutation_cancellation_finishes_apply_convergence() {
     state
         .domains
         .layout
-        .catalog_for_test()
+        .test_fixture()
+        .catalog()
         .write()
         .await
         .insert(candidate.id.clone(), candidate.clone());
@@ -8944,7 +8958,7 @@ async fn layout_mutation_cancellation_finishes_delete() {
         ..active.clone()
     };
     {
-        let mut layouts = state.domains.layout.catalog_for_test().write().await;
+        let mut layouts = state.domains.layout.test_fixture().catalog().write().await;
         layouts.insert(active.id.clone(), active.clone());
         layouts.insert(fallback.id.clone(), fallback.clone());
     }
@@ -8993,7 +9007,8 @@ async fn layout_mutation_cancellation_finishes_delete() {
             if state
                 .domains
                 .layout
-                .catalog_for_test()
+                .test_fixture()
+                .catalog()
                 .read()
                 .await
                 .contains_key(&removed_id)
@@ -9001,11 +9016,12 @@ async fn layout_mutation_cancellation_finishes_delete() {
             {
                 return false;
             }
-            let layouts_are_durable =
-                hypercolor_daemon::layout_store::load(state.domains.layout.catalog_path_for_test())
-                    .is_ok_and(|layouts| {
-                        !layouts.contains_key(&removed_id) && layouts.contains_key(&durable_id)
-                    });
+            let layouts_are_durable = hypercolor_daemon::layout_store::load(
+                state.domains.layout.test_fixture().catalog_path(),
+            )
+            .is_ok_and(|layouts| {
+                !layouts.contains_key(&removed_id) && layouts.contains_key(&durable_id)
+            });
             let runtime_is_durable = runtime_state::load(&state.runtime_state_path)
                 .ok()
                 .flatten()
@@ -9034,12 +9050,12 @@ async fn layout_mutation_cancellation_finishes_preview_connectivity_sync() {
         name: "Cancellation Preview".to_owned(),
         ..state.spatial_engine.snapshot().layout().as_ref().clone()
     };
-    let after_renderer = state.domains.layout.test_hooks().install(
+    let after_renderer = state.domains.layout.test_fixture().hooks().install(
         LayoutMutationTestPoint::AfterRendererMutation,
         LayoutMutationTestOperation::Preview,
         &preview.id,
     );
-    let after_workflow = state.domains.layout.test_hooks().install(
+    let after_workflow = state.domains.layout.test_fixture().hooks().install(
         LayoutMutationTestPoint::AfterWorkflow,
         LayoutMutationTestOperation::Preview,
         &preview.id,
@@ -9111,22 +9127,26 @@ async fn assert_auto_layout_store_failure_rolls_back(saved_layout_present: bool)
         state
             .domains
             .layout
-            .catalog_for_test()
+            .test_fixture()
+            .catalog()
             .write()
             .await
             .insert(active.id.clone(), active.clone());
     }
     persist_current_layouts_for_test(&state).await;
     let cleanup = InjectedWriterCleanup::new(
-        AtomicFileWriter::new(state.domains.layout.catalog_path_for_test())
+        AtomicFileWriter::new(state.domains.layout.test_fixture().catalog_path())
             .expect("layout writer should initialize"),
     );
     cleanup.writer().set_injected_replace_failures(1);
     let renderer = tokio::spawn(run_layout_publications(Arc::clone(&state), 2));
 
-    let mut runtime = state.driver_host.discovery_runtime();
-    runtime.layouts_path = state.domains.layout.catalog_path_for_test().to_path_buf();
-    hypercolor_daemon::discovery::sync_active_layout_for_renderable_devices(&runtime, None).await;
+    let runtime = state.driver_host.discovery_runtime();
+    runtime
+        .layout
+        .test_fixture()
+        .sync_active_layout_for_renderable_devices(runtime.clone(), None)
+        .await;
 
     let applied = renderer
         .await
@@ -9135,14 +9155,14 @@ async fn assert_auto_layout_store_failure_rolls_back(saved_layout_present: bool)
     assert!(!applied[0].zones.is_empty());
     assert_eq!(applied[1], active);
     assert_eq!(state.spatial_engine.snapshot().layout().as_ref(), &active);
-    let layouts = state.domains.layout.catalog_for_test().read().await;
+    let layouts = state.domains.layout.test_fixture().catalog().read().await;
     assert_eq!(
         layouts.get(&active.id),
         saved_layout_present.then_some(&active)
     );
     drop(layouts);
     let persisted =
-        hypercolor_daemon::layout_store::load(state.domains.layout.catalog_path_for_test())
+        hypercolor_daemon::layout_store::load(state.domains.layout.test_fixture().catalog_path())
             .expect("layout store should load");
     let persisted_active = persisted.get(&active.id).map(|layout| {
         hypercolor_core::spatial::SpatialEngine::try_new(layout.clone())
@@ -9178,7 +9198,8 @@ async fn layout_mutation_cancellation_finishes_config_canvas_resize() {
     state
         .domains
         .layout
-        .catalog_for_test()
+        .test_fixture()
+        .catalog()
         .write()
         .await
         .insert(active.id.clone(), active.clone());
@@ -9191,12 +9212,12 @@ async fn layout_mutation_cancellation_finishes_config_canvas_resize() {
         .daemon
         .canvas_height;
     let reference = format!("1024x{configured_height}");
-    let after_memory = state.domains.layout.test_hooks().install(
+    let after_memory = state.domains.layout.test_fixture().hooks().install(
         LayoutMutationTestPoint::AfterMemoryMutation,
         LayoutMutationTestOperation::ConfigResize,
         &reference,
     );
-    let after_workflow = state.domains.layout.test_hooks().install(
+    let after_workflow = state.domains.layout.test_fixture().hooks().install(
         LayoutMutationTestPoint::AfterWorkflow,
         LayoutMutationTestOperation::ConfigResize,
         &reference,
@@ -9224,11 +9245,11 @@ async fn layout_mutation_cancellation_finishes_config_canvas_resize() {
     after_memory.release();
     after_workflow.wait_until_entered().await;
     assert_eq!(
-        state.domains.layout.catalog_for_test().read().await[&active.id].canvas_width,
+        state.domains.layout.test_fixture().catalog().read().await[&active.id].canvas_width,
         1024
     );
     assert_eq!(
-        hypercolor_daemon::layout_store::load(state.domains.layout.catalog_path_for_test())
+        hypercolor_daemon::layout_store::load(state.domains.layout.test_fixture().catalog_path())
             .expect("layout store should load")[&active.id]
             .canvas_width,
         1024
@@ -9260,17 +9281,18 @@ async fn layout_mutation_cancellation_finishes_simulator_pruning() {
     state
         .domains
         .layout
-        .catalog_for_test()
+        .test_fixture()
+        .catalog()
         .write()
         .await
         .insert(stored.id.clone(), stored.clone());
     persist_current_layouts_for_test(&state).await;
-    let after_memory = state.domains.layout.test_hooks().install(
+    let after_memory = state.domains.layout.test_fixture().hooks().install(
         LayoutMutationTestPoint::AfterMemoryMutation,
         LayoutMutationTestOperation::SimulatorPrune,
         device_id.to_string(),
     );
-    let after_workflow = state.domains.layout.test_hooks().install(
+    let after_workflow = state.domains.layout.test_fixture().hooks().install(
         LayoutMutationTestPoint::AfterWorkflow,
         LayoutMutationTestOperation::SimulatorPrune,
         device_id.to_string(),
@@ -9299,12 +9321,12 @@ async fn layout_mutation_cancellation_finishes_simulator_pruning() {
     after_memory.release();
     after_workflow.wait_until_entered().await;
     assert!(
-        state.domains.layout.catalog_for_test().read().await[&stored.id]
+        state.domains.layout.test_fixture().catalog().read().await[&stored.id]
             .zones
             .is_empty()
     );
     assert!(
-        hypercolor_daemon::layout_store::load(state.domains.layout.catalog_path_for_test())
+        hypercolor_daemon::layout_store::load(state.domains.layout.test_fixture().catalog_path())
             .expect("layout store should load")[&stored.id]
             .zones
             .is_empty()
@@ -9328,17 +9350,18 @@ async fn layout_update_compensation_cannot_erase_config_canvas_resize() {
     state
         .domains
         .layout
-        .catalog_for_test()
+        .test_fixture()
+        .catalog()
         .write()
         .await
         .insert(active.id.clone(), active.clone());
     persist_current_layouts_for_test(&state).await;
     let cleanup = InjectedWriterCleanup::new(
-        AtomicFileWriter::new(state.domains.layout.catalog_path_for_test())
+        AtomicFileWriter::new(state.domains.layout.test_fixture().catalog_path())
             .expect("layout writer should initialize"),
     );
     cleanup.writer().set_injected_replace_failures(1);
-    let update_after_memory = state.domains.layout.test_hooks().install(
+    let update_after_memory = state.domains.layout.test_fixture().hooks().install(
         LayoutMutationTestPoint::AfterMemoryMutation,
         LayoutMutationTestOperation::Update,
         &active.id,
@@ -9351,12 +9374,12 @@ async fn layout_update_compensation_cannot_erase_config_canvas_resize() {
         .daemon
         .canvas_height;
     let resize_reference = format!("1024x{configured_height}");
-    let resize_before_guard = state.domains.layout.test_hooks().install(
+    let resize_before_guard = state.domains.layout.test_fixture().hooks().install(
         LayoutMutationTestPoint::BeforeGuard,
         LayoutMutationTestOperation::ConfigResize,
         &resize_reference,
     );
-    let resize_after_memory = state.domains.layout.test_hooks().install(
+    let resize_after_memory = state.domains.layout.test_fixture().hooks().install(
         LayoutMutationTestPoint::AfterMemoryMutation,
         LayoutMutationTestOperation::ConfigResize,
         &resize_reference,
@@ -9397,7 +9420,7 @@ async fn layout_update_compensation_cannot_erase_config_canvas_resize() {
     );
     resize_after_memory.wait_until_entered().await;
     {
-        let layouts = state.domains.layout.catalog_for_test().read().await;
+        let layouts = state.domains.layout.test_fixture().catalog().read().await;
         assert_eq!(layouts[&active.id].name, active.name);
         assert_eq!(layouts[&active.id].canvas_width, 1024);
     }
@@ -9407,7 +9430,7 @@ async fn layout_update_compensation_cannot_erase_config_canvas_resize() {
         StatusCode::OK
     );
     let persisted =
-        hypercolor_daemon::layout_store::load(state.domains.layout.catalog_path_for_test())
+        hypercolor_daemon::layout_store::load(state.domains.layout.test_fixture().catalog_path())
             .expect("layout store should load");
     assert_eq!(persisted[&active.id].name, active.name);
     assert_eq!(persisted[&active.id].canvas_width, 1024);
@@ -9438,27 +9461,28 @@ async fn layout_update_compensation_cannot_erase_simulator_pruning() {
     state
         .domains
         .layout
-        .catalog_for_test()
+        .test_fixture()
+        .catalog()
         .write()
         .await
         .insert(stored.id.clone(), stored.clone());
     persist_current_layouts_for_test(&state).await;
     let cleanup = InjectedWriterCleanup::new(
-        AtomicFileWriter::new(state.domains.layout.catalog_path_for_test())
+        AtomicFileWriter::new(state.domains.layout.test_fixture().catalog_path())
             .expect("layout writer should initialize"),
     );
     cleanup.writer().set_injected_replace_failures(1);
-    let update_after_memory = state.domains.layout.test_hooks().install(
+    let update_after_memory = state.domains.layout.test_fixture().hooks().install(
         LayoutMutationTestPoint::AfterMemoryMutation,
         LayoutMutationTestOperation::Update,
         &stored.id,
     );
-    let prune_before_guard = state.domains.layout.test_hooks().install(
+    let prune_before_guard = state.domains.layout.test_fixture().hooks().install(
         LayoutMutationTestPoint::BeforeGuard,
         LayoutMutationTestOperation::SimulatorPrune,
         device_id.to_string(),
     );
-    let prune_after_memory = state.domains.layout.test_hooks().install(
+    let prune_after_memory = state.domains.layout.test_fixture().hooks().install(
         LayoutMutationTestPoint::AfterMemoryMutation,
         LayoutMutationTestOperation::SimulatorPrune,
         device_id.to_string(),
@@ -9500,7 +9524,7 @@ async fn layout_update_compensation_cannot_erase_simulator_pruning() {
     );
     prune_after_memory.wait_until_entered().await;
     {
-        let layouts = state.domains.layout.catalog_for_test().read().await;
+        let layouts = state.domains.layout.test_fixture().catalog().read().await;
         assert_eq!(layouts[&stored.id].name, stored.name);
         assert!(layouts[&stored.id].zones.is_empty());
     }
@@ -9513,13 +9537,14 @@ async fn layout_update_compensation_cannot_erase_simulator_pruning() {
         StatusCode::OK
     );
     let persisted =
-        hypercolor_daemon::layout_store::load(state.domains.layout.catalog_path_for_test())
+        hypercolor_daemon::layout_store::load(state.domains.layout.test_fixture().catalog_path())
             .expect("layout store should load");
     assert_eq!(persisted[&stored.id].name, stored.name);
     assert!(persisted[&stored.id].zones.is_empty());
     cleanup.reset_and_flush();
 }
 
+#[cfg(feature = "persistence-test-hooks")]
 #[tokio::test]
 async fn layout_delete_rolls_back_when_the_fallback_plan_is_rejected() {
     let state = Arc::new(isolated_state());
@@ -9534,7 +9559,7 @@ async fn layout_delete_rolls_back_when_the_fallback_plan_is_rejected() {
     invalid.id = "invalid-fallback".to_owned();
     invalid.name = "Invalid Fallback".to_owned();
     {
-        let mut layouts = state.domains.layout.catalog_for_test().write().await;
+        let mut layouts = state.domains.layout.test_fixture().catalog().write().await;
         layouts.insert(active.id.clone(), active.clone());
         layouts.insert(invalid.id.clone(), invalid.clone());
     }
@@ -9553,7 +9578,7 @@ async fn layout_delete_rolls_back_when_the_fallback_plan_is_rejected() {
 
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(state.spatial_engine.snapshot().layout().as_ref(), &active);
-    let layouts = state.domains.layout.catalog_for_test().read().await;
+    let layouts = state.domains.layout.test_fixture().catalog().read().await;
     assert_eq!(layouts.get(&active.id), Some(&active));
     assert_eq!(layouts.get(&invalid.id), Some(&invalid));
     assert!(state.scene_transactions.drain().is_empty());
@@ -9600,15 +9625,7 @@ async fn layout_create_validates_input() {
 #[tokio::test]
 async fn layout_update_rejects_negative_output_sampling_radii_without_mutating() {
     let state = Arc::new(isolated_state());
-    let mut stored = layout_with_sampling_modes(SamplingMode::Bilinear, SamplingMode::Bilinear);
-    stored.zones.clear();
-    state
-        .domains
-        .layout
-        .catalog_for_test()
-        .write()
-        .await
-        .insert(stored.id.clone(), stored.clone());
+    let stored = create_stored_layout(&state, "Negative Radius Target").await;
 
     let invalid = layout_with_sampling_modes(
         SamplingMode::Bilinear,
@@ -9636,7 +9653,12 @@ async fn layout_update_rejects_negative_output_sampling_radii_without_mutating()
     let json = body_json(response).await;
     assert_eq!(json["error"]["code"], "validation_error");
     assert!(
-        state.domains.layout.catalog_for_test().read().await[&stored.id]
+        state
+            .domains
+            .layout
+            .resolve(&stored.id)
+            .await
+            .expect("stored layout should resolve")
             .zones
             .is_empty()
     );
@@ -9645,15 +9667,7 @@ async fn layout_update_rejects_negative_output_sampling_radii_without_mutating()
 #[tokio::test]
 async fn layout_update_rejects_unaddressable_gaussian_without_mutating() {
     let state = Arc::new(isolated_state());
-    let mut stored = layout_with_sampling_modes(SamplingMode::Bilinear, SamplingMode::Bilinear);
-    stored.zones.clear();
-    state
-        .domains
-        .layout
-        .catalog_for_test()
-        .write()
-        .await
-        .insert(stored.id.clone(), stored.clone());
+    let stored = create_stored_layout(&state, "Gaussian Radius Target").await;
     let invalid = layout_with_sampling_modes(
         SamplingMode::Bilinear,
         SamplingMode::GaussianArea {
@@ -9679,7 +9693,12 @@ async fn layout_update_rejects_unaddressable_gaussian_without_mutating() {
 
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(
-        state.domains.layout.catalog_for_test().read().await[&stored.id],
+        state
+            .domains
+            .layout
+            .resolve(&stored.id)
+            .await
+            .expect("stored layout should resolve"),
         stored
     );
     assert!(state.scene_transactions.drain().is_empty());
@@ -9688,14 +9707,7 @@ async fn layout_update_rejects_unaddressable_gaussian_without_mutating() {
 #[tokio::test]
 async fn layout_update_rejects_invalid_geometry_without_mutating() {
     let state = Arc::new(isolated_state());
-    let stored = layout_with_sampling_modes(SamplingMode::Bilinear, SamplingMode::Bilinear);
-    state
-        .domains
-        .layout
-        .catalog_for_test()
-        .write()
-        .await
-        .insert(stored.id.clone(), stored.clone());
+    let stored = create_stored_layout(&state, "Invalid Geometry Target").await;
 
     let app = test_app_with_state(Arc::clone(&state));
     let response = app
@@ -9719,7 +9731,12 @@ async fn layout_update_rejects_invalid_geometry_without_mutating() {
 
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(
-        state.domains.layout.catalog_for_test().read().await[&stored.id],
+        state
+            .domains
+            .layout
+            .resolve(&stored.id)
+            .await
+            .expect("stored layout should resolve"),
         stored
     );
 }
@@ -9873,9 +9890,12 @@ fn simulator_target_output(device_id: DeviceId) -> Output {
 
 #[cfg(feature = "persistence-test-hooks")]
 async fn persist_current_layouts_for_test(state: &Arc<AppState>) {
-    let layouts = state.domains.layout.catalog_for_test().read().await;
-    hypercolor_daemon::layout_store::save(state.domains.layout.catalog_path_for_test(), &layouts)
-        .expect("test layout store should persist");
+    let layouts = state.domains.layout.test_fixture().catalog().read().await;
+    hypercolor_daemon::layout_store::save(
+        state.domains.layout.test_fixture().catalog_path(),
+        &layouts,
+    )
+    .expect("test layout store should persist");
 }
 
 fn test_state_with_temp_output_store() -> (Arc<AppState>, tempfile::TempDir) {

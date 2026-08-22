@@ -326,7 +326,12 @@ async fn set_active_layout_for_device(state: &Arc<AppState>, device_id: DeviceId
         version: 1,
     };
 
-    state.spatial_engine.update_layout(layout);
+    state
+        .domains
+        .layout
+        .preview(layout)
+        .await
+        .expect("attachment test layout should publish");
 }
 
 async fn register_recording_backend(

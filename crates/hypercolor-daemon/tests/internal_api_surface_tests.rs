@@ -138,6 +138,60 @@ fn layout_transport_uses_the_layout_domain_authority() {
         assert!(!app_state.contains(retired_field), "found {retired_field}");
     }
 
+    let discovery = source("discovery/mod.rs");
+    assert!(discovery.contains("pub layout: LayoutContext"));
+    for bypass in [
+        "pub spatial_engine:",
+        "pub scene_manager:",
+        "pub layouts:",
+        "pub layouts_path:",
+        "pub layout_auto_exclusions:",
+        "pub scene_transactions:",
+    ] {
+        assert!(
+            !discovery.contains(bypass),
+            "discovery runtime exposes {bypass}"
+        );
+    }
+
+    let startup = source("startup/mod.rs");
+    for bypass in [
+        "pub layouts:",
+        "pub layouts_path:",
+        "pub layout_auto_exclusions:",
+        "pub layout_auto_exclusions_path:",
+    ] {
+        assert!(!startup.contains(bypass), "daemon state exposes {bypass}");
+    }
+
+    let contexts = source("domain/context.rs");
+    let device_context = contexts
+        .split_once("pub struct DeviceContext")
+        .map(|(_, tail)| tail)
+        .expect("device context should exist");
+    for layout_authority in [
+        "layout_auto_exclusions",
+        "resolved_layout_device_id",
+        "layout_outputs_for",
+        "connected_display_surface_layouts",
+        "sync_connectivity",
+        "reconcile_zone_auto_exclusions",
+        "remove_zone_auto_exclusions",
+    ] {
+        assert!(
+            !device_context.contains(layout_authority),
+            "device context retains layout authority: {layout_authority}"
+        );
+    }
+
+    let layout_domain = source("domain/layout.rs");
+    assert!(!layout_domain.contains("catalog_for_test"));
+    assert!(!layout_domain.contains("catalog_path_for_test"));
+    assert!(
+        layout_domain
+            .contains("#[cfg(feature = \"persistence-test-hooks\")]\npub struct LayoutTestFixture")
+    );
+
     let adapter = source("api/layouts.rs");
     for bypass in [
         "state.layouts",
@@ -152,4 +206,8 @@ fn layout_transport_uses_the_layout_domain_authority() {
         );
     }
     assert!(adapter.contains("state.domains.layout"));
+    assert!(!adapter.contains("pub use crate::domain::layout"));
+
+    let websocket = source("api/ws/session.rs");
+    assert!(!websocket.contains("crate::api::layouts"));
 }

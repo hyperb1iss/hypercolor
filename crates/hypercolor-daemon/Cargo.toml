@@ -17,6 +17,18 @@ name = "persistence_flush_tests"
 required-features = ["persistence-test-hooks"]
 
 [[test]]
+name = "discovery_tests"
+required-features = ["persistence-test-hooks"]
+
+[[test]]
+name = "render_thread_tests"
+required-features = ["persistence-test-hooks"]
+
+[[test]]
+name = "display_output_tests"
+required-features = ["persistence-test-hooks"]
+
+[[test]]
 name = "macos_tcc_canary_tests"
 required-features = ["macos-tcc-canary"]
 

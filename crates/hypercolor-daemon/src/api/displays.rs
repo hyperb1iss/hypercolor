@@ -977,7 +977,7 @@ fn display_zone_has_face_assignment(group: &Zone) -> bool {
 pub(crate) async fn sync_connected_display_surfaces(state: &AppState) {
     let displays = state
         .domains
-        .devices
+        .layout
         .connected_display_surface_layouts()
         .await;
     if let Err(error) =

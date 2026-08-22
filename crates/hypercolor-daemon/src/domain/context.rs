@@ -6,17 +6,16 @@ use std::sync::Arc;
 use hypercolor_core::asset::AssetLibrary;
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::config::ConfigManager;
-use hypercolor_core::device::{DeviceLifecycleManager, DeviceRegistry};
 use hypercolor_core::effect::EffectRegistry;
 use hypercolor_core::engine::RenderLoop;
 use hypercolor_core::scene::SceneManager;
 use hypercolor_network::DriverModuleRegistry;
-use hypercolor_types::device::{DeviceInfo, DriverModuleKind, DriverTransportKind};
+use hypercolor_types::device::{DriverModuleKind, DriverTransportKind};
 use hypercolor_types::layer::{LayerSource, SceneLayer};
-use hypercolor_types::scene::{Scene, SceneId, Zone, ZoneId};
-use hypercolor_types::spatial::{EdgeBehavior, Output, SamplingMode, SpatialLayout};
-use tokio::sync::{Mutex, RwLock, watch};
+use hypercolor_types::scene::{Scene, SceneId};
+use tokio::sync::{RwLock, watch};
 
+use crate::discovery;
 use crate::domain::DomainError;
 use crate::domain::commit::SceneCommit;
 use crate::domain::effect::EffectContext;
@@ -31,7 +30,6 @@ use crate::domain::spatial::SpatialService;
 use crate::network::DaemonDriverHost;
 use crate::runtime_state::{self, RuntimeSessionSnapshot};
 use crate::session::{OutputPowerState, current_global_brightness};
-use crate::{discovery, layout_auto_exclusions};
 
 /// Complete daemon domain graph assembled once by the composition root.
 #[derive(Clone)]
@@ -78,7 +76,7 @@ impl DomainContexts {
         let scene_tree = SceneTreeContext::new(
             scene.clone(),
             effects.clone(),
-            devices.clone(),
+            layout.clone(),
             output.clone(),
         );
         let scene_library = SceneLibraryContext::new(
@@ -104,34 +102,31 @@ impl DomainContexts {
 #[derive(Clone)]
 pub struct RuntimeSessionService {
     path: PathBuf,
+    projection: RuntimeSessionProjection,
+    driver_host: std::sync::Weak<DaemonDriverHost>,
+}
+
+#[derive(Clone)]
+pub(crate) struct RuntimeSessionProjection {
     scenes: SceneService,
     spatial: SpatialService,
     power: watch::Sender<OutputPowerState>,
-    driver_host: Arc<DaemonDriverHost>,
-    driver_registry: Arc<DriverModuleRegistry>,
 }
 
-impl RuntimeSessionService {
+impl RuntimeSessionProjection {
     pub(crate) fn new(
-        path: PathBuf,
         scenes: SceneService,
         spatial: SpatialService,
         power: watch::Sender<OutputPowerState>,
-        driver_host: Arc<DaemonDriverHost>,
-        driver_registry: Arc<DriverModuleRegistry>,
     ) -> Self {
         Self {
-            path,
             scenes,
             spatial,
             power,
-            driver_host,
-            driver_registry,
         }
     }
 
-    /// Capture the complete durable runtime-session projection.
-    pub async fn snapshot(&self) -> RuntimeSessionSnapshot {
+    pub(crate) async fn snapshot(&self) -> RuntimeSessionSnapshot {
         let mut snapshot = {
             let manager = self.scenes.snapshot().await;
             runtime_state::snapshot_from_scene_manager(&manager)
@@ -139,10 +134,29 @@ impl RuntimeSessionService {
         snapshot.active_layout_id = Some(self.spatial.layout().id.clone());
         snapshot.global_brightness = current_global_brightness(&self.power);
         snapshot.manual_paused = self.power.borrow().manually_paused();
-        self.driver_host
-            .driver_inventory()
-            .refresh(self.driver_registry.as_ref(), self.driver_host.as_ref())
-            .await;
+        snapshot
+    }
+}
+
+impl RuntimeSessionService {
+    pub(crate) fn new(
+        path: PathBuf,
+        projection: RuntimeSessionProjection,
+        driver_host: &Arc<DaemonDriverHost>,
+    ) -> Self {
+        Self {
+            path,
+            projection,
+            driver_host: Arc::downgrade(driver_host),
+        }
+    }
+
+    /// Capture the complete durable runtime-session projection.
+    pub async fn snapshot(&self) -> RuntimeSessionSnapshot {
+        let snapshot = self.projection.snapshot().await;
+        if let Some(driver_host) = self.driver_host.upgrade() {
+            driver_host.refresh_driver_inventory().await;
+        }
         snapshot
     }
 
@@ -175,7 +189,7 @@ impl RuntimeSessionService {
     }
 
     async fn save_scene_store_snapshot(&self) -> anyhow::Result<()> {
-        self.scenes.save_snapshot().await
+        self.projection.scenes.save_snapshot().await
     }
 }
 
@@ -187,7 +201,7 @@ pub struct SceneContext {
     asset_library: Arc<RwLock<AssetLibrary>>,
     config_manager: Option<Arc<ConfigManager>>,
     render_loop: Arc<RwLock<RenderLoop>>,
-    devices: DeviceContext,
+    layout: LayoutContext,
 }
 
 impl SceneContext {
@@ -197,7 +211,7 @@ impl SceneContext {
         asset_library: Arc<RwLock<AssetLibrary>>,
         config_manager: Option<Arc<ConfigManager>>,
         render_loop: Arc<RwLock<RenderLoop>>,
-        devices: DeviceContext,
+        layout: LayoutContext,
     ) -> Self {
         Self {
             scenes,
@@ -205,7 +219,7 @@ impl SceneContext {
             asset_library,
             config_manager,
             render_loop,
-            devices,
+            layout,
         }
     }
 
@@ -259,10 +273,10 @@ impl SceneContext {
         self.runtime_session.save().await;
     }
 
-    /// Device lifecycle authority needed after scene targeting changes.
+    /// Layout connectivity authority needed after scene targeting changes.
     #[must_use]
-    pub const fn devices(&self) -> &DeviceContext {
-        &self.devices
+    pub const fn layout(&self) -> &LayoutContext {
+        &self.layout
     }
 
     /// Resolve the current media producer policy and asset vocabulary.
@@ -336,115 +350,25 @@ impl SceneContext {
     }
 }
 
-/// Device lifecycle and discovery-layout reconciliation authority.
+/// Device lifecycle operations that do not own layout policy.
 #[derive(Clone)]
 pub struct DeviceContext {
-    device_registry: DeviceRegistry,
-    lifecycle_manager: Arc<Mutex<DeviceLifecycleManager>>,
     driver_host: Arc<DaemonDriverHost>,
     driver_registry: Arc<DriverModuleRegistry>,
     config_manager: Option<Arc<ConfigManager>>,
-    layout_auto_exclusions: Arc<RwLock<layout_auto_exclusions::LayoutAutoExclusionStore>>,
-    layout_auto_exclusions_path: PathBuf,
 }
 
 impl DeviceContext {
     pub(crate) fn new(
-        device_registry: DeviceRegistry,
-        lifecycle_manager: Arc<Mutex<DeviceLifecycleManager>>,
         driver_host: Arc<DaemonDriverHost>,
         driver_registry: Arc<DriverModuleRegistry>,
         config_manager: Option<Arc<ConfigManager>>,
-        layout_auto_exclusions: Arc<RwLock<layout_auto_exclusions::LayoutAutoExclusionStore>>,
-        layout_auto_exclusions_path: PathBuf,
     ) -> Self {
         Self {
-            device_registry,
-            lifecycle_manager,
             driver_host,
             driver_registry,
             config_manager,
-            layout_auto_exclusions,
-            layout_auto_exclusions_path,
         }
-    }
-
-    /// Resolve the stable layout identity for a tracked device.
-    pub async fn resolved_layout_device_id(&self, device_info: &DeviceInfo) -> String {
-        if let Some(layout_device_id) = {
-            let lifecycle = self.lifecycle_manager.lock().await;
-            lifecycle
-                .layout_device_id_for(device_info.id)
-                .map(ToOwned::to_owned)
-        } {
-            return layout_device_id;
-        }
-
-        let fingerprint = self
-            .device_registry
-            .fingerprint_for_id(&device_info.id)
-            .await;
-        DeviceLifecycleManager::canonical_layout_device_id(device_info, fingerprint.as_ref())
-    }
-
-    /// Mint the canonical auto-layout outputs for one connected device.
-    pub async fn layout_outputs_for(&self, requested_layout_id: &str) -> Vec<Output> {
-        let tracked = self.device_registry.list().await;
-        for device in &tracked {
-            let layout_device_id = self.resolved_layout_device_id(&device.info).await;
-            if layout_device_id != requested_layout_id {
-                continue;
-            }
-            let mut scratch = SpatialLayout {
-                id: format!("mint-{layout_device_id}"),
-                name: device.info.name.clone(),
-                description: None,
-                canvas_width: 1,
-                canvas_height: 1,
-                zones: Vec::new(),
-                default_sampling_mode: SamplingMode::Bilinear,
-                default_edge_behavior: EdgeBehavior::Clamp,
-                spaces: None,
-                version: 1,
-            };
-            let _minted = discovery::auto_layout::append_auto_layout_zones_for_device(
-                &mut scratch,
-                &layout_device_id,
-                &device.info,
-            );
-            return scratch.zones;
-        }
-        Vec::new()
-    }
-
-    /// Resolve native display canvases for every renderable device.
-    pub async fn connected_display_surface_layouts(
-        &self,
-    ) -> Vec<(hypercolor_types::device::DeviceId, String, SpatialLayout)> {
-        self.device_registry
-            .list()
-            .await
-            .into_iter()
-            .filter(|tracked| tracked.state.is_renderable())
-            .filter_map(|tracked| {
-                let surface = crate::domain::display::display_surface_info(&tracked.info)?;
-                Some((
-                    tracked.info.id,
-                    tracked.info.name.clone(),
-                    crate::domain::display::display_face_layout(
-                        tracked.info.id,
-                        tracked.info.name.as_str(),
-                        surface,
-                    ),
-                ))
-            })
-            .collect()
-    }
-
-    /// Re-evaluate device eligibility after scene targeting changes.
-    pub async fn sync_connectivity(&self) {
-        let runtime = self.driver_host.discovery_runtime();
-        discovery::sync_active_layout_connectivity(&runtime, None).await;
     }
 
     /// Schedule discovery after released output ownership becomes available.
@@ -499,83 +423,5 @@ impl DeviceContext {
     /// Release network output ownership after an effect stop.
     pub async fn release_renderable_network_devices(&self) -> usize {
         discovery::release_renderable_network_devices(&self.driver_host.discovery_runtime()).await
-    }
-
-    /// Reconcile discovery exclusions after zone layouts change.
-    pub async fn reconcile_zone_auto_exclusions(
-        &self,
-        scene_id: SceneId,
-        previous_zones: &[Zone],
-        updated_zones: &[Zone],
-    ) {
-        let changed = {
-            let mut exclusions = self.layout_auto_exclusions.write().await;
-            let mut changed = false;
-            for previous_zone in previous_zones {
-                let Some(updated_zone) = updated_zones
-                    .iter()
-                    .find(|zone| zone.id == previous_zone.id)
-                else {
-                    continue;
-                };
-                if previous_zone.layout.zones == updated_zone.layout.zones {
-                    continue;
-                }
-
-                let key = layout_auto_exclusions::LayoutAutoExclusionKey::zone(
-                    scene_id,
-                    previous_zone.id,
-                );
-                let current = exclusions.get(&key).cloned().unwrap_or_default();
-                let next = layout_auto_exclusions::reconcile_layout_device_exclusions(
-                    &previous_zone.layout.zones,
-                    &updated_zone.layout.zones,
-                    &current,
-                );
-                if next == current {
-                    continue;
-                }
-                if next.is_empty() {
-                    exclusions.remove(&key);
-                } else {
-                    exclusions.insert(key, next);
-                }
-                changed = true;
-            }
-            changed
-        };
-
-        if changed {
-            self.persist_layout_auto_exclusions().await;
-        }
-    }
-
-    /// Drop discovery exclusions owned by a removed zone.
-    pub async fn remove_zone_auto_exclusions(&self, scene_id: SceneId, zone_id: ZoneId) {
-        let removed = {
-            let mut exclusions = self.layout_auto_exclusions.write().await;
-            exclusions
-                .remove(&layout_auto_exclusions::LayoutAutoExclusionKey::zone(
-                    scene_id, zone_id,
-                ))
-                .is_some()
-        };
-
-        if removed {
-            self.persist_layout_auto_exclusions().await;
-        }
-    }
-
-    async fn persist_layout_auto_exclusions(&self) {
-        let exclusions = self.layout_auto_exclusions.read().await;
-        if let Err(error) =
-            layout_auto_exclusions::save(&self.layout_auto_exclusions_path, &exclusions)
-        {
-            tracing::warn!(
-                path = %self.layout_auto_exclusions_path.display(),
-                %error,
-                "Failed to persist layout auto-exclusion store"
-            );
-        }
     }
 }

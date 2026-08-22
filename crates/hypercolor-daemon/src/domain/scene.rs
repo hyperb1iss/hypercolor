@@ -1689,11 +1689,7 @@ pub async fn activate_scene(
     command: ActivateScene,
 ) -> Result<SceneActivated, DomainError> {
     let media_admission = ctx.scene.media_admission_context().await;
-    let display_surfaces = ctx
-        .scene
-        .devices()
-        .connected_display_surface_layouts()
-        .await;
+    let display_surfaces = ctx.layout.connected_display_surface_layouts().await;
     let _activation_guard = ctx.layout.acquire_scene_activation_guard().await;
     let layout_guard = ctx.layout.acquire_update_guard().await;
 
@@ -1729,7 +1725,7 @@ pub async fn activate_scene(
     ctx.scene.save_runtime_session().await;
 
     // Which scene is active decides which devices are worth connecting.
-    ctx.scene.devices().sync_connectivity().await;
+    ctx.layout.sync_connectivity().await;
 
     Ok(SceneActivated {
         scene_id: command.scene_id,
@@ -2031,7 +2027,7 @@ pub async fn replace_scene(
     mutation.retire_scene_previews(updated.id);
     let commit = ctx.scene.commit(mutation).await?;
     ctx.scene.save_runtime_session().await;
-    ctx.scene.devices().sync_connectivity().await;
+    ctx.layout.sync_connectivity().await;
 
     Ok(SceneWritten {
         scene: updated,
@@ -2273,7 +2269,7 @@ pub async fn delete_scene(
     drop(layout_guard);
     ctx.scene.save_runtime_session().await;
     if is_active {
-        ctx.scene.devices().sync_connectivity().await;
+        ctx.layout.sync_connectivity().await;
     }
 
     Ok(SceneDeleted {
@@ -2304,7 +2300,7 @@ pub async fn deactivate_scene(ctx: &SceneLibraryContext) -> Result<SceneDeactiva
     ctx.scene.save_runtime_session().await;
 
     // Which scene is active decides which devices are worth connecting.
-    ctx.scene.devices().sync_connectivity().await;
+    ctx.layout.sync_connectivity().await;
 
     Ok(SceneDeactivated {
         previous_scene,

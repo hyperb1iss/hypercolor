@@ -865,11 +865,13 @@ async fn scene_display_write_cadence_for_format(color_format: DeviceColorFormat)
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    spatial_engine.update_layout(layout_with_zones(vec![display_zone(
-        logical_id.as_str(),
-        NormalizedPosition::new(0.5, 0.5),
-        NormalizedPosition::new(1.0, 1.0),
-    )]));
+    spatial_engine
+        .test_fixture()
+        .replace(layout_with_zones(vec![display_zone(
+            logical_id.as_str(),
+            NormalizedPosition::new(0.5, 0.5),
+            NormalizedPosition::new(1.0, 1.0),
+        )]));
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(
@@ -1042,11 +1044,13 @@ async fn automatic_display_output_mirrors_canvas_to_layout_mapped_display_device
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    spatial_engine.update_layout(layout_with_zones(vec![display_zone(
-        logical_id.as_str(),
-        NormalizedPosition::new(0.5, 0.5),
-        NormalizedPosition::new(1.0, 1.0),
-    )]));
+    spatial_engine
+        .test_fixture()
+        .replace(layout_with_zones(vec![display_zone(
+            logical_id.as_str(),
+            NormalizedPosition::new(0.5, 0.5),
+            NormalizedPosition::new(1.0, 1.0),
+        )]));
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
@@ -1110,20 +1114,22 @@ async fn automatic_display_output_uses_device_display_sinks_without_cross_device
     let fast_sink = Arc::new(RecordingDisplaySink::new(Duration::ZERO));
     let fallback_write_count = Arc::new(AtomicUsize::new(0));
 
-    spatial_engine.update_layout(layout_with_zones(vec![
-        display_zone_with_id(
-            "zone-slow-display",
-            slow_logical_id.as_str(),
-            NormalizedPosition::new(0.25, 0.5),
-            NormalizedPosition::new(0.5, 1.0),
-        ),
-        display_zone_with_id(
-            "zone-fast-display",
-            fast_logical_id.as_str(),
-            NormalizedPosition::new(0.75, 0.5),
-            NormalizedPosition::new(0.5, 1.0),
-        ),
-    ]));
+    spatial_engine
+        .test_fixture()
+        .replace(layout_with_zones(vec![
+            display_zone_with_id(
+                "zone-slow-display",
+                slow_logical_id.as_str(),
+                NormalizedPosition::new(0.25, 0.5),
+                NormalizedPosition::new(0.5, 1.0),
+            ),
+            display_zone_with_id(
+                "zone-fast-display",
+                fast_logical_id.as_str(),
+                NormalizedPosition::new(0.75, 0.5),
+                NormalizedPosition::new(0.5, 1.0),
+            ),
+        ]));
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(MultiDisplaySinkBackend::new(
@@ -1214,20 +1220,22 @@ async fn automatic_display_output_aborts_stale_blocked_worker_without_stalling_o
     let fast_sink = Arc::new(RecordingDisplaySink::new(Duration::ZERO));
     let fallback_write_count = Arc::new(AtomicUsize::new(0));
 
-    spatial_engine.update_layout(layout_with_zones(vec![
-        display_zone_with_id(
-            "zone-slow-display",
-            slow_logical_id.as_str(),
-            NormalizedPosition::new(0.25, 0.5),
-            NormalizedPosition::new(0.5, 1.0),
-        ),
-        display_zone_with_id(
-            "zone-fast-display",
-            fast_logical_id.as_str(),
-            NormalizedPosition::new(0.75, 0.5),
-            NormalizedPosition::new(0.5, 1.0),
-        ),
-    ]));
+    spatial_engine
+        .test_fixture()
+        .replace(layout_with_zones(vec![
+            display_zone_with_id(
+                "zone-slow-display",
+                slow_logical_id.as_str(),
+                NormalizedPosition::new(0.25, 0.5),
+                NormalizedPosition::new(0.5, 1.0),
+            ),
+            display_zone_with_id(
+                "zone-fast-display",
+                fast_logical_id.as_str(),
+                NormalizedPosition::new(0.75, 0.5),
+                NormalizedPosition::new(0.5, 1.0),
+            ),
+        ]));
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(MultiDisplaySinkBackend::new(
@@ -1325,11 +1333,13 @@ async fn automatic_display_output_promotes_backend_writer_to_display_sink_after_
     let display_sink_lookup_count = Arc::new(AtomicUsize::new(0));
     let sinks_available = Arc::new(AtomicBool::new(false));
 
-    spatial_engine.update_layout(layout_with_zones(vec![display_zone(
-        logical_id.as_str(),
-        NormalizedPosition::new(0.5, 0.5),
-        NormalizedPosition::new(1.0, 1.0),
-    )]));
+    spatial_engine
+        .test_fixture()
+        .replace(layout_with_zones(vec![display_zone(
+            logical_id.as_str(),
+            NormalizedPosition::new(0.5, 0.5),
+            NormalizedPosition::new(1.0, 1.0),
+        )]));
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(
@@ -1454,11 +1464,13 @@ async fn automatic_display_output_reacquires_display_sink_after_sink_error() {
     let fallback_write_count = Arc::new(AtomicUsize::new(0));
     let display_sink_lookup_count = Arc::new(AtomicUsize::new(0));
 
-    spatial_engine.update_layout(layout_with_zones(vec![display_zone(
-        logical_id.as_str(),
-        NormalizedPosition::new(0.5, 0.5),
-        NormalizedPosition::new(1.0, 1.0),
-    )]));
+    spatial_engine
+        .test_fixture()
+        .replace(layout_with_zones(vec![display_zone(
+            logical_id.as_str(),
+            NormalizedPosition::new(0.5, 0.5),
+            NormalizedPosition::new(1.0, 1.0),
+        )]));
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(
@@ -1548,11 +1560,13 @@ async fn automatic_display_output_sends_raw_rgb_for_rgb_display_zones() {
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    spatial_engine.update_layout(layout_with_zones(vec![display_zone(
-        logical_id.as_str(),
-        NormalizedPosition::new(0.5, 0.5),
-        NormalizedPosition::new(1.0, 1.0),
-    )]));
+    spatial_engine
+        .test_fixture()
+        .replace(layout_with_zones(vec![display_zone(
+            logical_id.as_str(),
+            NormalizedPosition::new(0.5, 0.5),
+            NormalizedPosition::new(1.0, 1.0),
+        )]));
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
@@ -1620,11 +1634,13 @@ async fn rgb_display_preview_subscriber_stays_attached_without_worker_restart() 
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    spatial_engine.update_layout(layout_with_zones(vec![display_zone(
-        logical_id.as_str(),
-        NormalizedPosition::new(0.5, 0.5),
-        NormalizedPosition::new(1.0, 1.0),
-    )]));
+    spatial_engine
+        .test_fixture()
+        .replace(layout_with_zones(vec![display_zone(
+            logical_id.as_str(),
+            NormalizedPosition::new(0.5, 0.5),
+            NormalizedPosition::new(1.0, 1.0),
+        )]));
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
@@ -1718,11 +1734,13 @@ async fn automatic_display_output_subscribes_to_authoritative_scene_canvas_not_p
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    spatial_engine.update_layout(layout_with_zones(vec![display_zone(
-        logical_id.as_str(),
-        NormalizedPosition::new(0.5, 0.5),
-        NormalizedPosition::new(1.0, 1.0),
-    )]));
+    spatial_engine
+        .test_fixture()
+        .replace(layout_with_zones(vec![display_zone(
+            logical_id.as_str(),
+            NormalizedPosition::new(0.5, 0.5),
+            NormalizedPosition::new(1.0, 1.0),
+        )]));
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
@@ -1788,11 +1806,13 @@ async fn automatic_display_output_skips_simulators_without_display_preview_subsc
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    spatial_engine.update_layout(layout_with_zones(vec![display_zone(
-        logical_id.as_str(),
-        NormalizedPosition::new(0.5, 0.5),
-        NormalizedPosition::new(1.0, 1.0),
-    )]));
+    spatial_engine
+        .test_fixture()
+        .replace(layout_with_zones(vec![display_zone(
+            logical_id.as_str(),
+            NormalizedPosition::new(0.5, 0.5),
+            NormalizedPosition::new(1.0, 1.0),
+        )]));
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(
@@ -1858,11 +1878,13 @@ async fn automatic_display_output_reacts_when_simulator_preview_subscriber_appea
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    spatial_engine.update_layout(layout_with_zones(vec![display_zone(
-        logical_id.as_str(),
-        NormalizedPosition::new(0.5, 0.5),
-        NormalizedPosition::new(1.0, 1.0),
-    )]));
+    spatial_engine
+        .test_fixture()
+        .replace(layout_with_zones(vec![display_zone(
+            logical_id.as_str(),
+            NormalizedPosition::new(0.5, 0.5),
+            NormalizedPosition::new(1.0, 1.0),
+        )]));
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(
@@ -2047,11 +2069,13 @@ async fn automatic_display_output_uses_layout_zone_viewport() {
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    spatial_engine.update_layout(layout_with_zones(vec![display_zone(
-        logical_id.as_str(),
-        NormalizedPosition::new(0.25, 0.5),
-        NormalizedPosition::new(0.5, 1.0),
-    )]));
+    spatial_engine
+        .test_fixture()
+        .replace(layout_with_zones(vec![display_zone(
+            logical_id.as_str(),
+            NormalizedPosition::new(0.25, 0.5),
+            NormalizedPosition::new(0.5, 1.0),
+        )]));
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
@@ -2136,11 +2160,13 @@ async fn automatic_display_output_uses_logical_device_viewport_alias() {
         );
     }
 
-    spatial_engine.update_layout(layout_with_zones(vec![display_zone(
-        logical_id.as_str(),
-        NormalizedPosition::new(0.25, 0.5),
-        NormalizedPosition::new(0.5, 1.0),
-    )]));
+    spatial_engine
+        .test_fixture()
+        .replace(layout_with_zones(vec![display_zone(
+            logical_id.as_str(),
+            NormalizedPosition::new(0.25, 0.5),
+            NormalizedPosition::new(0.5, 1.0),
+        )]));
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
@@ -2207,12 +2233,14 @@ async fn automatic_display_output_defaults_mixed_devices_to_full_canvas_without_
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    spatial_engine.update_layout(layout_with_zones(vec![led_zone(
-        logical_id.as_str(),
-        "Pads",
-        NormalizedPosition::new(0.25, 0.5),
-        NormalizedPosition::new(0.5, 1.0),
-    )]));
+    spatial_engine
+        .test_fixture()
+        .replace(layout_with_zones(vec![led_zone(
+            logical_id.as_str(),
+            "Pads",
+            NormalizedPosition::new(0.25, 0.5),
+            NormalizedPosition::new(0.5, 1.0),
+        )]));
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
@@ -3263,11 +3291,13 @@ async fn automatic_display_output_drops_stale_frames_for_slow_displays() {
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    spatial_engine.update_layout(layout_with_zones(vec![display_zone(
-        logical_id.as_str(),
-        NormalizedPosition::new(0.5, 0.5),
-        NormalizedPosition::new(1.0, 1.0),
-    )]));
+    spatial_engine
+        .test_fixture()
+        .replace(layout_with_zones(vec![display_zone(
+            logical_id.as_str(),
+            NormalizedPosition::new(0.5, 0.5),
+            NormalizedPosition::new(1.0, 1.0),
+        )]));
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(
@@ -3359,11 +3389,13 @@ async fn automatic_display_output_uses_latest_pending_frame_for_paced_writes() {
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    spatial_engine.update_layout(layout_with_zones(vec![display_zone(
-        logical_id.as_str(),
-        NormalizedPosition::new(0.5, 0.5),
-        NormalizedPosition::new(1.0, 1.0),
-    )]));
+    spatial_engine
+        .test_fixture()
+        .replace(layout_with_zones(vec![display_zone(
+            logical_id.as_str(),
+            NormalizedPosition::new(0.5, 0.5),
+            NormalizedPosition::new(1.0, 1.0),
+        )]));
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
@@ -3451,11 +3483,13 @@ async fn automatic_display_output_keeps_paced_writes_moving_while_scene_keeps_ch
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    spatial_engine.update_layout(layout_with_zones(vec![display_zone(
-        logical_id.as_str(),
-        NormalizedPosition::new(0.5, 0.5),
-        NormalizedPosition::new(1.0, 1.0),
-    )]));
+    spatial_engine
+        .test_fixture()
+        .replace(layout_with_zones(vec![display_zone(
+            logical_id.as_str(),
+            NormalizedPosition::new(0.5, 0.5),
+            NormalizedPosition::new(1.0, 1.0),
+        )]));
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
@@ -3533,11 +3567,13 @@ async fn automatic_display_output_keeps_preview_frame_when_backend_write_fails()
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    spatial_engine.update_layout(layout_with_zones(vec![display_zone(
-        logical_id.as_str(),
-        NormalizedPosition::new(0.5, 0.5),
-        NormalizedPosition::new(1.0, 1.0),
-    )]));
+    spatial_engine
+        .test_fixture()
+        .replace(layout_with_zones(vec![display_zone(
+            logical_id.as_str(),
+            NormalizedPosition::new(0.5, 0.5),
+            NormalizedPosition::new(1.0, 1.0),
+        )]));
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(FailingDisplayBackend::new(device_id)));
@@ -3601,11 +3637,13 @@ async fn automatic_display_output_retries_unchanged_frame_after_transient_write_
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    spatial_engine.update_layout(layout_with_zones(vec![display_zone(
-        logical_id.as_str(),
-        NormalizedPosition::new(0.5, 0.5),
-        NormalizedPosition::new(1.0, 1.0),
-    )]));
+    spatial_engine
+        .test_fixture()
+        .replace(layout_with_zones(vec![display_zone(
+            logical_id.as_str(),
+            NormalizedPosition::new(0.5, 0.5),
+            NormalizedPosition::new(1.0, 1.0),
+        )]));
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(
@@ -3689,11 +3727,13 @@ async fn static_hold_failure_retries_unchanged_payload_after_frame_refresh() {
     let sink = Arc::new(RecordingDisplaySink::new(Duration::ZERO));
     let fallback_write_count = Arc::new(AtomicUsize::new(0));
 
-    spatial_engine.update_layout(layout_with_zones(vec![display_zone(
-        logical_id.as_str(),
-        NormalizedPosition::new(0.5, 0.5),
-        NormalizedPosition::new(1.0, 1.0),
-    )]));
+    spatial_engine
+        .test_fixture()
+        .replace(layout_with_zones(vec![display_zone(
+            logical_id.as_str(),
+            NormalizedPosition::new(0.5, 0.5),
+            NormalizedPosition::new(1.0, 1.0),
+        )]));
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(MultiDisplaySinkBackend::new(
@@ -3778,11 +3818,13 @@ async fn automatic_display_output_skips_unchanged_frames() {
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    spatial_engine.update_layout(layout_with_zones(vec![display_zone(
-        logical_id.as_str(),
-        NormalizedPosition::new(0.5, 0.5),
-        NormalizedPosition::new(1.0, 1.0),
-    )]));
+    spatial_engine
+        .test_fixture()
+        .replace(layout_with_zones(vec![display_zone(
+            logical_id.as_str(),
+            NormalizedPosition::new(0.5, 0.5),
+            NormalizedPosition::new(1.0, 1.0),
+        )]));
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
@@ -3865,11 +3907,13 @@ async fn automatic_display_output_skips_metadata_only_owned_surface_updates() {
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    spatial_engine.update_layout(layout_with_zones(vec![display_zone(
-        logical_id.as_str(),
-        NormalizedPosition::new(0.5, 0.5),
-        NormalizedPosition::new(1.0, 1.0),
-    )]));
+    spatial_engine
+        .test_fixture()
+        .replace(layout_with_zones(vec![display_zone(
+            logical_id.as_str(),
+            NormalizedPosition::new(0.5, 0.5),
+            NormalizedPosition::new(1.0, 1.0),
+        )]));
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
@@ -3940,11 +3984,13 @@ async fn automatic_display_output_applies_device_brightness_before_encoding() {
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    spatial_engine.update_layout(layout_with_zones(vec![display_zone(
-        logical_id.as_str(),
-        NormalizedPosition::new(0.5, 0.5),
-        NormalizedPosition::new(1.0, 1.0),
-    )]));
+    spatial_engine
+        .test_fixture()
+        .replace(layout_with_zones(vec![display_zone(
+            logical_id.as_str(),
+            NormalizedPosition::new(0.5, 0.5),
+            NormalizedPosition::new(1.0, 1.0),
+        )]));
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
@@ -4033,11 +4079,13 @@ async fn automatic_display_output_skips_repeated_zero_brightness_frames() {
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    spatial_engine.update_layout(layout_with_zones(vec![display_zone(
-        logical_id.as_str(),
-        NormalizedPosition::new(0.5, 0.5),
-        NormalizedPosition::new(1.0, 1.0),
-    )]));
+    spatial_engine
+        .test_fixture()
+        .replace(layout_with_zones(vec![display_zone(
+            logical_id.as_str(),
+            NormalizedPosition::new(0.5, 0.5),
+            NormalizedPosition::new(1.0, 1.0),
+        )]));
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
@@ -4108,11 +4156,13 @@ async fn automatic_display_output_refreshes_cached_targets_when_layout_changes()
     let device_id = DeviceId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    spatial_engine.update_layout(layout_with_zones(vec![display_zone(
-        logical_id.as_str(),
-        NormalizedPosition::new(0.25, 0.5),
-        NormalizedPosition::new(0.5, 1.0),
-    )]));
+    spatial_engine
+        .test_fixture()
+        .replace(layout_with_zones(vec![display_zone(
+            logical_id.as_str(),
+            NormalizedPosition::new(0.25, 0.5),
+            NormalizedPosition::new(0.5, 1.0),
+        )]));
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
@@ -4159,11 +4209,13 @@ async fn automatic_display_output_refreshes_cached_targets_when_layout_changes()
         "expected initial viewport to be red, got {first_pixel:?}"
     );
 
-    spatial_engine.update_layout(layout_with_zones(vec![display_zone(
-        logical_id.as_str(),
-        NormalizedPosition::new(0.75, 0.5),
-        NormalizedPosition::new(0.5, 1.0),
-    )]));
+    spatial_engine
+        .test_fixture()
+        .replace(layout_with_zones(vec![display_zone(
+            logical_id.as_str(),
+            NormalizedPosition::new(0.75, 0.5),
+            NormalizedPosition::new(0.5, 1.0),
+        )]));
 
     event_bus
         .scene_canvas_sender()
@@ -4191,11 +4243,13 @@ async fn automatic_display_output_refreshes_cached_targets_when_display_face_rou
     let group_id = ZoneId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
-    spatial_engine.update_layout(layout_with_zones(vec![display_zone(
-        logical_id.as_str(),
-        NormalizedPosition::new(0.5, 0.5),
-        NormalizedPosition::new(1.0, 1.0),
-    )]));
+    spatial_engine
+        .test_fixture()
+        .replace(layout_with_zones(vec![display_zone(
+            logical_id.as_str(),
+            NormalizedPosition::new(0.5, 0.5),
+            NormalizedPosition::new(1.0, 1.0),
+        )]));
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
@@ -4275,11 +4329,13 @@ async fn automatic_display_output_refreshes_static_hold_frames_while_sleeping() 
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
     let (power_tx, power_state) = watch::channel(OutputPowerState::default());
 
-    spatial_engine.update_layout(layout_with_zones(vec![display_zone(
-        logical_id.as_str(),
-        NormalizedPosition::new(0.5, 0.5),
-        NormalizedPosition::new(1.0, 1.0),
-    )]));
+    spatial_engine
+        .test_fixture()
+        .replace(layout_with_zones(vec![display_zone(
+            logical_id.as_str(),
+            NormalizedPosition::new(0.5, 0.5),
+            NormalizedPosition::new(1.0, 1.0),
+        )]));
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(

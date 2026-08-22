@@ -1,27 +1,35 @@
 //! Spatial layout catalog, mutation, activation, and durability authority.
 
+mod auto_layout;
 mod workflows;
 
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
+#[cfg(feature = "persistence-test-hooks")]
+use std::path::Path;
+use std::path::PathBuf;
 #[cfg(feature = "persistence-test-hooks")]
 use std::sync::Mutex as StdMutex;
+use std::sync::{Arc, OnceLock, Weak};
 use std::time::Duration;
 
+use hypercolor_core::device::DeviceLifecycleManager;
+use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::api::layouts::LayoutSummary;
 use hypercolor_types::canvas::SurfaceDescriptor;
-use hypercolor_types::scene::SceneId;
-use hypercolor_types::spatial::{Output, SamplingMode, SpatialLayout};
+use hypercolor_types::device::{DeviceId, DeviceInfo};
+use hypercolor_types::scene::{SceneId, Zone, ZoneId};
+use hypercolor_types::spatial::{EdgeBehavior, Output, SamplingMode, SpatialLayout};
 use tokio::sync::RwLock;
 #[cfg(feature = "persistence-test-hooks")]
-use tokio::sync::{Notify, Semaphore};
+use tokio::sync::{Notify, Semaphore, watch};
 
-use crate::domain::context::{DeviceContext, RuntimeSessionService};
+use crate::discovery::DiscoveryRuntime;
+use crate::domain::context::RuntimeSessionProjection;
 use crate::domain::scene::SceneService;
 use crate::domain::spatial::SpatialService;
 use crate::domain::{DomainError, ResourceKind};
 use crate::layout_auto_exclusions;
+use crate::network::DaemonDriverHost;
 use crate::persistence::{AtomicFileWriter, AtomicWriteOutcome};
 use crate::runtime_state::RuntimeSessionError;
 use crate::scene_transactions::{
@@ -31,6 +39,10 @@ use crate::scene_transactions::{
 };
 
 const LAYOUT_DURABILITY_TIMEOUT: Duration = Duration::from_secs(5);
+
+pub use auto_layout::{
+    append_auto_layout_zones_for_device, reconcile_auto_layout_zones_for_device,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LayoutPersistenceStatus {
@@ -86,6 +98,75 @@ impl LayoutMutationTestBarrier {
 #[derive(Debug, Clone, Default)]
 pub struct LayoutMutationTestHooks {
     barriers: Arc<StdMutex<HashMap<LayoutMutationTestKey, Arc<LayoutMutationTestBarrier>>>>,
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+pub struct LayoutTestFixture<'a> {
+    context: &'a LayoutContext,
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+impl<'a> LayoutTestFixture<'a> {
+    #[must_use]
+    pub fn hooks(&self) -> &'a LayoutMutationTestHooks {
+        &self.context.test_hooks
+    }
+
+    #[must_use]
+    pub fn catalog(&self) -> &'a RwLock<HashMap<String, SpatialLayout>> {
+        &self.context.layouts
+    }
+
+    #[must_use]
+    pub fn catalog_path(&self) -> &'a Path {
+        &self.context.layouts_path
+    }
+
+    #[must_use]
+    pub fn auto_exclusions(&self) -> &'a RwLock<layout_auto_exclusions::LayoutAutoExclusionStore> {
+        &self.context.layout_auto_exclusions
+    }
+
+    pub fn replace_current(&self, layout: SpatialLayout) {
+        let spatial = SpatialEngine::try_new(layout)
+            .expect("layout fixture should receive a valid spatial layout");
+        self.context.spatial.replace(spatial);
+    }
+
+    pub async fn active_primary_ids(&self) -> (SceneId, ZoneId) {
+        let scenes = self.context.scenes.snapshot().await;
+        let scene = scenes
+            .active_scene()
+            .expect("layout fixture should have an active scene");
+        let zone = scene
+            .primary_zone()
+            .expect("layout fixture active scene should have a primary zone");
+        (scene.id, zone.id)
+    }
+
+    pub fn bind_driver_host(&self, driver_host: &Arc<DaemonDriverHost>) {
+        self.context.bind_driver_host(driver_host);
+    }
+
+    pub async fn sync_active_layout_for_renderable_devices(
+        &self,
+        runtime: DiscoveryRuntime,
+        limit_to_devices: Option<HashSet<DeviceId>>,
+    ) {
+        self.context
+            .sync_active_layout_for_renderable_devices(runtime, limit_to_devices)
+            .await;
+    }
+
+    pub async fn sync_connectivity(
+        &self,
+        runtime: DiscoveryRuntime,
+        limit_to_devices: Option<HashSet<DeviceId>>,
+    ) {
+        self.context
+            .sync_discovery_connectivity(runtime, limit_to_devices)
+            .await;
+    }
 }
 
 #[cfg(feature = "persistence-test-hooks")]
@@ -149,10 +230,83 @@ impl LayoutMutationTestHooks {
 }
 
 pub(crate) struct LayoutContextResources {
-    pub layouts: Arc<RwLock<HashMap<String, SpatialLayout>>>,
-    pub layouts_path: PathBuf,
-    pub layout_auto_exclusions: Arc<RwLock<layout_auto_exclusions::LayoutAutoExclusionStore>>,
-    pub layout_auto_exclusions_path: PathBuf,
+    layouts: HashMap<String, SpatialLayout>,
+    layouts_path: PathBuf,
+    layout_auto_exclusions: layout_auto_exclusions::LayoutAutoExclusionStore,
+    layout_auto_exclusions_path: PathBuf,
+}
+
+impl LayoutContextResources {
+    pub(crate) fn new(
+        layouts: HashMap<String, SpatialLayout>,
+        layouts_path: PathBuf,
+        layout_auto_exclusions: layout_auto_exclusions::LayoutAutoExclusionStore,
+        layout_auto_exclusions_path: PathBuf,
+    ) -> Self {
+        Self {
+            layouts,
+            layouts_path,
+            layout_auto_exclusions,
+            layout_auto_exclusions_path,
+        }
+    }
+
+    pub(crate) fn load(
+        layouts_path: PathBuf,
+        layout_auto_exclusions_path: PathBuf,
+        default_layout: &SpatialLayout,
+    ) -> Self {
+        let mut layouts = crate::layout_store::load(&layouts_path).unwrap_or_else(|error| {
+            tracing::warn!(
+                path = %layouts_path.display(),
+                %error,
+                "Failed to load persisted layouts; starting with empty store"
+            );
+            HashMap::new()
+        });
+        if crate::layout_store::ensure_default_layout(&mut layouts, default_layout) {
+            if let Err(error) = crate::layout_store::save(&layouts_path, &layouts) {
+                tracing::warn!(
+                    path = %layouts_path.display(),
+                    %error,
+                    "Failed to persist inserted default layout"
+                );
+            } else {
+                tracing::info!(
+                    path = %layouts_path.display(),
+                    "Inserted missing default layout into persisted layout store"
+                );
+            }
+        }
+        let layout_auto_exclusions = layout_auto_exclusions::load(&layout_auto_exclusions_path)
+            .unwrap_or_else(|error| {
+                tracing::warn!(
+                    path = %layout_auto_exclusions_path.display(),
+                    %error,
+                    "Failed to load layout auto-exclusions; starting with empty store"
+                );
+                HashMap::new()
+            });
+        tracing::info!(
+            path = %layouts_path.display(),
+            count = layouts.len(),
+            "Layout store ready"
+        );
+        tracing::info!(
+            path = %layout_auto_exclusions_path.display(),
+            "Layout auto-exclusion store ready"
+        );
+        Self::new(
+            layouts,
+            layouts_path,
+            layout_auto_exclusions,
+            layout_auto_exclusions_path,
+        )
+    }
+
+    pub(crate) fn catalog(&self) -> &HashMap<String, SpatialLayout> {
+        &self.layouts
+    }
 }
 
 #[derive(Clone)]
@@ -165,8 +319,8 @@ pub struct LayoutContext {
     scenes: SceneService,
     transactions: SceneTransactionQueue,
     runtime_state_path: PathBuf,
-    runtime_session: RuntimeSessionService,
-    devices: DeviceContext,
+    runtime_projection: RuntimeSessionProjection,
+    driver_host: Arc<OnceLock<Weak<DaemonDriverHost>>>,
     #[cfg(feature = "persistence-test-hooks")]
     test_hooks: LayoutMutationTestHooks,
 }
@@ -178,23 +332,84 @@ impl LayoutContext {
         scenes: SceneService,
         transactions: SceneTransactionQueue,
         runtime_state_path: PathBuf,
-        runtime_session: RuntimeSessionService,
-        devices: DeviceContext,
+        runtime_projection: RuntimeSessionProjection,
     ) -> Self {
         Self {
-            layouts: resources.layouts,
+            layouts: Arc::new(RwLock::new(resources.layouts)),
             layouts_path: resources.layouts_path,
-            layout_auto_exclusions: resources.layout_auto_exclusions,
+            layout_auto_exclusions: Arc::new(RwLock::new(resources.layout_auto_exclusions)),
             layout_auto_exclusions_path: resources.layout_auto_exclusions_path,
             spatial,
             scenes,
             transactions,
             runtime_state_path,
-            runtime_session,
-            devices,
+            runtime_projection,
+            driver_host: Arc::new(OnceLock::new()),
             #[cfg(feature = "persistence-test-hooks")]
             test_hooks: LayoutMutationTestHooks::default(),
         }
+    }
+
+    #[cfg(feature = "persistence-test-hooks")]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the fixture mirrors the production composition boundary"
+    )]
+    pub fn new_test_context(
+        layouts: HashMap<String, SpatialLayout>,
+        layouts_path: PathBuf,
+        layout_auto_exclusions: layout_auto_exclusions::LayoutAutoExclusionStore,
+        layout_auto_exclusions_path: PathBuf,
+        spatial: SpatialService,
+        scenes: SceneService,
+        transactions: SceneTransactionQueue,
+        runtime_state_path: PathBuf,
+    ) -> Self {
+        let (power, _) = watch::channel(crate::session::OutputPowerState::default());
+        let projection = RuntimeSessionProjection::new(scenes.clone(), spatial.clone(), power);
+        Self::new(
+            LayoutContextResources {
+                layouts,
+                layouts_path,
+                layout_auto_exclusions,
+                layout_auto_exclusions_path,
+            },
+            spatial,
+            scenes,
+            transactions,
+            runtime_state_path,
+            projection,
+        )
+    }
+
+    pub(crate) fn bind_driver_host(&self, driver_host: &Arc<DaemonDriverHost>) {
+        self.driver_host
+            .set(Arc::downgrade(driver_host))
+            .expect("layout driver host should bind exactly once");
+    }
+
+    fn discovery_runtime(&self) -> DiscoveryRuntime {
+        self.driver_host
+            .get()
+            .and_then(Weak::upgrade)
+            .expect("layout driver host should be bound before domain use")
+            .discovery_runtime()
+    }
+
+    pub(crate) async fn restore_startup_layout(
+        &self,
+        layout_id: &str,
+    ) -> Result<Option<SpatialLayout>, DomainError> {
+        let Some(layout) = self.layouts.read().await.get(layout_id).cloned() else {
+            return Ok(None);
+        };
+        let prepared = SpatialEngine::try_new(layout.clone())
+            .map_err(|error| DomainError::validation(error.to_string()))?;
+        self.spatial.replace(prepared);
+        let mut mutation = self.scenes.begin_mutation().await;
+        mutation.sync_primary_layout(&layout);
+        self.scenes.commit_mutation(mutation).await?;
+        Ok(Some(layout))
     }
 
     pub(crate) async fn acquire_scene_activation_guard(&self) -> SceneActivationGuard {
@@ -213,7 +428,8 @@ impl LayoutContext {
         let prepared = PreparedLayoutUpdate::try_new(layout)?;
         let persistence = LayoutPersistenceContext {
             runtime_state_path: self.runtime_state_path.clone(),
-            runtime_session: self.runtime_session.clone(),
+            runtime_projection: self.runtime_projection.clone(),
+            driver_host: self.driver_host.get().cloned(),
         };
         apply_prepared_layout_update_under_guard_with_persistence(
             self.spatial.clone(),
@@ -242,10 +458,11 @@ impl LayoutContext {
     }
 
     pub(crate) async fn converge_persisted_update(&self) -> LayoutPersistenceStatus {
-        self.devices.sync_connectivity().await;
+        self.sync_connectivity().await;
         let persistence = LayoutPersistenceContext {
             runtime_state_path: self.runtime_state_path.clone(),
-            runtime_session: self.runtime_session.clone(),
+            runtime_projection: self.runtime_projection.clone(),
+            driver_host: self.driver_host.get().cloned(),
         };
         match persist_layout_runtime_phase(&persistence, LayoutPersistencePhase::Converge).await {
             LayoutPersistenceOutcome::Written => LayoutPersistenceStatus::Synchronized,
@@ -264,9 +481,410 @@ impl LayoutContext {
         }
     }
 
+    /// Resolve the stable layout identity for a tracked device.
+    pub async fn resolved_layout_device_id(&self, device_info: &DeviceInfo) -> String {
+        let runtime = self.discovery_runtime();
+        if let Some(layout_device_id) = {
+            let lifecycle = runtime.lifecycle_manager.lock().await;
+            lifecycle
+                .layout_device_id_for(device_info.id)
+                .map(ToOwned::to_owned)
+        } {
+            return layout_device_id;
+        }
+
+        let fingerprint = runtime
+            .device_registry
+            .fingerprint_for_id(&device_info.id)
+            .await;
+        DeviceLifecycleManager::canonical_layout_device_id(device_info, fingerprint.as_ref())
+    }
+
+    /// Mint the canonical auto-layout outputs for one connected device.
+    pub async fn layout_outputs_for(&self, requested_layout_id: &str) -> Vec<Output> {
+        let runtime = self.discovery_runtime();
+        let tracked = runtime.device_registry.list().await;
+        for device in &tracked {
+            let layout_device_id = self.resolved_layout_device_id(&device.info).await;
+            if layout_device_id != requested_layout_id {
+                continue;
+            }
+            let mut scratch = SpatialLayout {
+                id: format!("mint-{layout_device_id}"),
+                name: device.info.name.clone(),
+                description: None,
+                canvas_width: 1,
+                canvas_height: 1,
+                zones: Vec::new(),
+                default_sampling_mode: SamplingMode::Bilinear,
+                default_edge_behavior: EdgeBehavior::Clamp,
+                spaces: None,
+                version: 1,
+            };
+            let _minted =
+                append_auto_layout_zones_for_device(&mut scratch, &layout_device_id, &device.info);
+            return scratch.zones;
+        }
+        Vec::new()
+    }
+
+    /// Resolve native display canvases for every renderable device.
+    pub async fn connected_display_surface_layouts(
+        &self,
+    ) -> Vec<(DeviceId, String, SpatialLayout)> {
+        self.discovery_runtime()
+            .device_registry
+            .list()
+            .await
+            .into_iter()
+            .filter(|tracked| tracked.state.is_renderable())
+            .filter_map(|tracked| {
+                let surface = crate::domain::display::display_surface_info(&tracked.info)?;
+                Some((
+                    tracked.info.id,
+                    tracked.info.name.clone(),
+                    crate::domain::display::display_face_layout(
+                        tracked.info.id,
+                        tracked.info.name.as_str(),
+                        surface,
+                    ),
+                ))
+            })
+            .collect()
+    }
+
+    pub(crate) async fn active_layout_targets_enabled_device(
+        &self,
+        runtime: &DiscoveryRuntime,
+        physical_id: DeviceId,
+        layout_device_id: &str,
+    ) -> bool {
+        let candidate_ids = {
+            let logical_store = runtime.logical_devices.read().await;
+            let mut candidates =
+                crate::logical_devices::list_for_physical(&logical_store, physical_id)
+                    .into_iter()
+                    .filter(|entry| entry.enabled)
+                    .map(|entry| entry.id)
+                    .collect::<HashSet<_>>();
+
+            if logical_store
+                .get(layout_device_id)
+                .is_none_or(|entry| entry.enabled)
+            {
+                candidates.insert(layout_device_id.to_owned());
+            }
+            candidates
+        };
+
+        if self
+            .current()
+            .zones
+            .iter()
+            .any(|zone| candidate_ids.contains(&zone.device_id))
+        {
+            return true;
+        }
+
+        self.scenes
+            .snapshot()
+            .await
+            .active_render_groups()
+            .iter()
+            .flat_map(|group| group.layout.zones.iter())
+            .any(|zone| candidate_ids.contains(&zone.device_id))
+    }
+
+    /// Re-evaluate device eligibility after scene targeting changes.
+    pub async fn sync_connectivity(&self) {
+        let runtime = self.discovery_runtime();
+        self.sync_discovery_connectivity(runtime, None).await;
+    }
+
+    pub(crate) async fn sync_discovery_connectivity(
+        &self,
+        runtime: DiscoveryRuntime,
+        limit_to_devices: Option<HashSet<DeviceId>>,
+    ) {
+        let context = self.clone();
+        if let Err(error) = tokio::spawn(async move {
+            context
+                .sync_connectivity_workflow(&runtime, limit_to_devices.as_ref())
+                .await;
+        })
+        .await
+        {
+            tracing::warn!(%error, "layout connectivity workflow failed");
+        }
+    }
+
+    async fn sync_connectivity_workflow(
+        &self,
+        runtime: &DiscoveryRuntime,
+        limit_to_devices: Option<&HashSet<DeviceId>>,
+    ) {
+        for tracked in runtime.device_registry.list().await {
+            let device_id = tracked.info.id;
+            if limit_to_devices.is_some_and(|allowed| !allowed.contains(&device_id)) {
+                continue;
+            }
+
+            let fingerprint = runtime.device_registry.fingerprint_for_id(&device_id).await;
+            let connect_behavior = crate::discovery::desired_connect_behavior(
+                runtime,
+                device_id,
+                &tracked.info,
+                fingerprint.as_ref(),
+                tracked.connect_behavior,
+                tracked.user_settings.enabled,
+            )
+            .await;
+            let actions = {
+                let mut lifecycle = runtime.lifecycle_manager.lock().await;
+                lifecycle.on_discovered_with_behavior(
+                    device_id,
+                    &tracked.info,
+                    fingerprint.as_ref(),
+                    connect_behavior,
+                )
+            };
+            if actions.is_empty() {
+                continue;
+            }
+
+            crate::discovery::execute_lifecycle_actions(runtime.clone(), actions).await;
+            crate::discovery::sync_registry_state(runtime, device_id).await;
+        }
+
+        self.sync_active_layout_workflow(runtime, limit_to_devices)
+            .await;
+    }
+
+    pub(crate) async fn sync_active_layout_for_renderable_devices(
+        &self,
+        runtime: DiscoveryRuntime,
+        limit_to_devices: Option<HashSet<DeviceId>>,
+    ) {
+        let context = self.clone();
+        if let Err(error) = tokio::spawn(async move {
+            context
+                .sync_active_layout_workflow(&runtime, limit_to_devices.as_ref())
+                .await;
+        })
+        .await
+        {
+            tracing::warn!(%error, "auto-layout repair workflow failed");
+        }
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "layout reconciliation keeps the full discovery-driven repair flow in one place"
+    )]
+    async fn sync_active_layout_workflow(
+        &self,
+        runtime: &DiscoveryRuntime,
+        limit_to_devices: Option<&HashSet<DeviceId>>,
+    ) {
+        let tracked_devices = runtime.device_registry.list().await;
+        let logical_store = runtime.logical_devices.read().await.clone();
+        let lifecycle_layout_ids = {
+            let lifecycle = runtime.lifecycle_manager.lock().await;
+            tracked_devices
+                .iter()
+                .map(|tracked| {
+                    let device_id = tracked.info.id;
+                    let layout_id = lifecycle
+                        .layout_device_id_for(device_id)
+                        .map(ToOwned::to_owned);
+                    (device_id, layout_id)
+                })
+                .collect::<HashMap<_, _>>()
+        };
+        let mut canonical_layout_ids = HashMap::with_capacity(tracked_devices.len());
+        for tracked in &tracked_devices {
+            let device_id = tracked.info.id;
+            let layout_device_id =
+                if let Some(Some(layout_device_id)) = lifecycle_layout_ids.get(&device_id) {
+                    layout_device_id.clone()
+                } else {
+                    let fingerprint = runtime.device_registry.fingerprint_for_id(&device_id).await;
+                    DeviceLifecycleManager::canonical_layout_device_id(
+                        &tracked.info,
+                        fingerprint.as_ref(),
+                    )
+                };
+            canonical_layout_ids.insert(device_id, layout_device_id);
+        }
+
+        let guard = self.acquire_update_guard().await;
+        let original_layout = self.current();
+        let mut layout = original_layout.clone();
+        let excluded_layout_device_ids = {
+            let exclusion_keys = self.active_auto_exclusion_keys(&layout).await;
+            let store = self.layout_auto_exclusions.read().await;
+            exclusion_keys
+                .iter()
+                .filter_map(|key| store.get(key))
+                .flat_map(|device_ids| device_ids.iter().cloned())
+                .collect::<HashSet<_>>()
+        };
+        let inactive_ids = {
+            let manager = runtime.backend_manager.lock().await;
+            manager
+                .connected_devices_without_layout_targets(&layout)
+                .into_iter()
+                .map(|(_, device_id)| device_id)
+                .collect::<HashSet<_>>()
+        };
+
+        let mut repaired_devices = Vec::new();
+        let mut repaired_zone_count = 0_usize;
+        for tracked in tracked_devices {
+            let device_id = tracked.info.id;
+            if !tracked.state.is_renderable()
+                || limit_to_devices.is_some_and(|allowed| !allowed.contains(&device_id))
+            {
+                continue;
+            }
+            let layout_device_id = canonical_layout_ids
+                .get(&device_id)
+                .expect("tracked device should have a canonical layout id")
+                .clone();
+            let default_enabled = logical_store
+                .get(&layout_device_id)
+                .is_none_or(|entry| entry.enabled);
+            if !default_enabled || excluded_layout_device_ids.contains(&layout_device_id) {
+                continue;
+            }
+
+            let repaired = reconcile_auto_layout_zones_for_device(
+                &mut layout,
+                &layout_device_id,
+                &tracked.info,
+            );
+            if repaired > 0 {
+                repaired_zone_count = repaired_zone_count.saturating_add(repaired);
+                repaired_devices.push(format!("{} ({device_id})", tracked.info.name));
+            }
+            if inactive_ids.contains(&device_id) {
+                tracing::debug!(
+                    device_id = %device_id,
+                    layout_device_id = %layout_device_id,
+                    "leaving layout-inactive device unmapped until explicitly targeted"
+                );
+            }
+        }
+
+        if repaired_devices.is_empty() {
+            return;
+        }
+
+        let prepared = match PreparedLayoutUpdate::try_new(layout.clone()) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                tracing::warn!(%error, "rejected auto-layout repair before persistence");
+                return;
+            }
+        };
+        if let Err(error) = crate::scene_transactions::apply_prepared_layout_update_under_guard(
+            self.spatial.clone(),
+            self.scenes.clone(),
+            self.transactions.clone(),
+            &guard,
+            prepared,
+        )
+        .await
+        {
+            tracing::warn!(%error, "rejected auto-layout repair before persistence");
+            return;
+        }
+
+        let (previous_saved_layout, snapshot) = {
+            let mut layouts = self.layouts.write().await;
+            let previous = layouts.insert(layout.id.clone(), layout.clone());
+            (previous, layouts.clone())
+        };
+        if let Err(error) = self.save_catalog_snapshot(snapshot).await {
+            let rollback_layout = previous_saved_layout
+                .as_ref()
+                .cloned()
+                .unwrap_or(original_layout);
+            let rollback_snapshot = {
+                let mut layouts = self.layouts.write().await;
+                if let Some(previous) = previous_saved_layout {
+                    layouts.insert(layout.id.clone(), previous);
+                } else {
+                    layouts.remove(&layout.id);
+                }
+                layouts.clone()
+            };
+            let layout_store_rollback = self.save_catalog_snapshot(rollback_snapshot).await.err();
+            let renderer_rollback = match PreparedLayoutUpdate::try_new(rollback_layout) {
+                Ok(prepared) => {
+                    crate::scene_transactions::apply_prepared_layout_update_under_guard(
+                        self.spatial.clone(),
+                        self.scenes.clone(),
+                        self.transactions.clone(),
+                        &guard,
+                        prepared,
+                    )
+                    .await
+                    .err()
+                    .map(|error| error.to_string())
+                }
+                Err(error) => Some(error.to_string()),
+            };
+            tracing::warn!(
+                path = %self.layouts_path.display(),
+                %error,
+                layout_store_rollback = ?layout_store_rollback,
+                renderer_rollback = ?renderer_rollback,
+                "failed to persist auto-updated layout store; restored previous layout"
+            );
+            return;
+        }
+
+        tracing::info!(
+            layout_id = %layout.id,
+            repaired_device_count = repaired_devices.len(),
+            repaired_zone_count,
+            repaired_devices = ?repaired_devices,
+            "reconciled existing auto-layout zones in the active layout"
+        );
+    }
+
+    async fn active_auto_exclusion_keys(
+        &self,
+        layout: &SpatialLayout,
+    ) -> Vec<layout_auto_exclusions::LayoutAutoExclusionKey> {
+        let mut keys = vec![layout_auto_exclusions::LayoutAutoExclusionKey::layout(
+            layout.id.as_str(),
+        )];
+        let manager = self.scenes.snapshot().await;
+        if let Some(scene) = manager.active_scene()
+            && let Some(group) = scene.primary_zone()
+        {
+            keys.push(layout_auto_exclusions::LayoutAutoExclusionKey::zone(
+                scene.id, group.id,
+            ));
+        }
+        keys
+    }
+
     async fn persist_catalog(&self) -> anyhow::Result<()> {
-        let layouts = self.layouts.read().await;
-        crate::layout_store::save(&self.layouts_path, &layouts)
+        let snapshot = self.layouts.read().await.clone();
+        self.save_catalog_snapshot(snapshot).await
+    }
+
+    async fn save_catalog_snapshot(
+        &self,
+        snapshot: HashMap<String, SpatialLayout>,
+    ) -> anyhow::Result<()> {
+        let path = self.layouts_path.clone();
+        tokio::task::spawn_blocking(move || crate::layout_store::save(&path, &snapshot))
+            .await
+            .map_err(|error| anyhow::anyhow!("layout store task failed: {error}"))?
     }
 
     pub(crate) async fn persist_catalog_best_effort(&self) {
@@ -324,10 +942,106 @@ impl LayoutContext {
         }
     }
 
+    /// Reconcile discovery exclusions after zone layouts change.
+    pub async fn reconcile_zone_auto_exclusions(
+        &self,
+        scene_id: SceneId,
+        previous_zones: &[Zone],
+        updated_zones: &[Zone],
+    ) {
+        let context = self.clone();
+        let previous_zones = previous_zones.to_vec();
+        let updated_zones = updated_zones.to_vec();
+        if let Err(error) = tokio::spawn(async move {
+            context
+                .reconcile_zone_auto_exclusions_workflow(scene_id, &previous_zones, &updated_zones)
+                .await;
+        })
+        .await
+        {
+            tracing::warn!(%error, "zone layout exclusion reconciliation failed");
+        }
+    }
+
+    async fn reconcile_zone_auto_exclusions_workflow(
+        &self,
+        scene_id: SceneId,
+        previous_zones: &[Zone],
+        updated_zones: &[Zone],
+    ) {
+        let changed = {
+            let mut exclusions = self.layout_auto_exclusions.write().await;
+            let mut changed = false;
+            for previous_zone in previous_zones {
+                let Some(updated_zone) = updated_zones
+                    .iter()
+                    .find(|zone| zone.id == previous_zone.id)
+                else {
+                    continue;
+                };
+                if previous_zone.layout.zones == updated_zone.layout.zones {
+                    continue;
+                }
+
+                let key = layout_auto_exclusions::LayoutAutoExclusionKey::zone(
+                    scene_id,
+                    previous_zone.id,
+                );
+                let current = exclusions.get(&key).cloned().unwrap_or_default();
+                let next = layout_auto_exclusions::reconcile_layout_device_exclusions(
+                    &previous_zone.layout.zones,
+                    &updated_zone.layout.zones,
+                    &current,
+                );
+                if next == current {
+                    continue;
+                }
+                if next.is_empty() {
+                    exclusions.remove(&key);
+                } else {
+                    exclusions.insert(key, next);
+                }
+                changed = true;
+            }
+            changed
+        };
+
+        if changed {
+            self.persist_layout_auto_exclusions().await;
+        }
+    }
+
+    /// Drop discovery exclusions owned by a removed zone.
+    pub async fn remove_zone_auto_exclusions(&self, scene_id: SceneId, zone_id: ZoneId) {
+        let context = self.clone();
+        if let Err(error) = tokio::spawn(async move {
+            let removed = {
+                let mut exclusions = context.layout_auto_exclusions.write().await;
+                exclusions
+                    .remove(&layout_auto_exclusions::LayoutAutoExclusionKey::zone(
+                        scene_id, zone_id,
+                    ))
+                    .is_some()
+            };
+            if removed {
+                context.persist_layout_auto_exclusions().await;
+            }
+        })
+        .await
+        {
+            tracing::warn!(%error, "zone layout exclusion removal failed");
+        }
+    }
+
     async fn persist_layout_auto_exclusions(&self) {
-        let exclusions = self.layout_auto_exclusions.read().await;
-        if let Err(error) =
-            layout_auto_exclusions::save(&self.layout_auto_exclusions_path, &exclusions)
+        let snapshot = self.layout_auto_exclusions.read().await.clone();
+        let path = self.layout_auto_exclusions_path.clone();
+        let result =
+            tokio::task::spawn_blocking(move || layout_auto_exclusions::save(&path, &snapshot))
+                .await;
+        if let Err(error) = result
+            .map_err(|error| anyhow::anyhow!("layout exclusion store task failed: {error}"))
+            .and_then(|result| result)
         {
             tracing::warn!(
                 path = %self.layout_auto_exclusions_path.display(),
@@ -338,14 +1052,14 @@ impl LayoutContext {
     }
 
     #[cfg(feature = "persistence-test-hooks")]
-    /// Expose cancellation barriers to persistence integration tests.
-    pub fn test_hooks(&self) -> &LayoutMutationTestHooks {
-        &self.test_hooks
+    /// Create the explicit non-production layout fixture capability.
+    pub fn test_fixture(&self) -> LayoutTestFixture<'_> {
+        LayoutTestFixture { context: self }
     }
 
     #[cfg(feature = "persistence-test-hooks")]
     /// Wait at one installed persistence integration barrier.
-    pub async fn wait_test_hook(
+    pub(crate) async fn wait_test_hook(
         &self,
         point: LayoutMutationTestPoint,
         operation: LayoutMutationTestOperation,
@@ -361,19 +1075,6 @@ impl LayoutContext {
         _operation: LayoutMutationTestOperation,
         _reference: &str,
     ) {
-    }
-
-    #[doc(hidden)]
-    /// Expose the catalog only to integration fixtures that seed invalid state.
-    pub fn catalog_for_test(&self) -> &RwLock<HashMap<String, SpatialLayout>> {
-        &self.layouts
-    }
-
-    #[doc(hidden)]
-    /// Expose the catalog path to durability failure-injection fixtures.
-    #[must_use]
-    pub fn catalog_path_for_test(&self) -> &Path {
-        &self.layouts_path
     }
 }
 
@@ -543,7 +1244,8 @@ fn layout_update_domain_error(error: LayoutUpdateError) -> DomainError {
 #[derive(Clone)]
 struct LayoutPersistenceContext {
     runtime_state_path: PathBuf,
-    runtime_session: RuntimeSessionService,
+    runtime_projection: RuntimeSessionProjection,
+    driver_host: Option<Weak<DaemonDriverHost>>,
 }
 
 async fn persist_layout_runtime_phase(
@@ -562,7 +1264,10 @@ async fn persist_layout_runtime_phase(
         &phase,
         LayoutPersistencePhase::Rollback | LayoutPersistencePhase::Converge
     );
-    let mut snapshot = context.runtime_session.snapshot().await;
+    let mut snapshot = context.runtime_projection.snapshot().await;
+    if let Some(driver_host) = context.driver_host.as_ref().and_then(Weak::upgrade) {
+        driver_host.refresh_driver_inventory().await;
+    }
     if let LayoutPersistencePhase::Precommit(candidate) = phase {
         snapshot.active_layout_id = Some(candidate.layout.id);
         if candidate.active_scene_id == Some(SceneId::DEFAULT) {

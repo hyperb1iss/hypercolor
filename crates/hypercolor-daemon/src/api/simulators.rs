@@ -215,8 +215,8 @@ async fn delete_simulated_display_workflow(state: Arc<AppState>, device_id: Devi
         .domains
         .layout
         .wait_test_hook(
-            crate::api::layouts::LayoutMutationTestPoint::AfterWorkflow,
-            crate::api::layouts::LayoutMutationTestOperation::SimulatorPrune,
+            crate::domain::layout::LayoutMutationTestPoint::AfterWorkflow,
+            crate::domain::layout::LayoutMutationTestOperation::SimulatorPrune,
             &device_id.to_string(),
         )
         .await;

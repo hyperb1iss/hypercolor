@@ -13,7 +13,7 @@ fn isolated_state() -> (Arc<AppState>, tempfile::TempDir) {
 
 #[tokio::test]
 async fn catalog_create_and_update_share_one_durable_transaction() {
-    let (state, _tempdir) = isolated_state();
+    let (state, tempdir) = isolated_state();
 
     let created = state
         .domains
@@ -46,7 +46,7 @@ async fn catalog_create_and_update_share_one_durable_transaction() {
     assert_eq!(updated.canvas_width, 800);
 
     let persisted =
-        hypercolor_daemon::layout_store::load(state.domains.layout.catalog_path_for_test())
+        hypercolor_daemon::layout_store::load(&tempdir.path().join("data/layouts.json"))
             .expect("layout catalog should load");
     assert_eq!(persisted[&created.id].name, "Editing Suite");
     assert_eq!(persisted[&created.id].canvas_width, 800);
@@ -55,18 +55,36 @@ async fn catalog_create_and_update_share_one_durable_transaction() {
 #[tokio::test]
 async fn catalog_identity_resolution_rejects_ambiguous_names() {
     let (state, _tempdir) = isolated_state();
-    let current = state.domains.layout.current();
-    let mut first = current.clone();
-    first.id = "layout_first".to_owned();
-    first.name = "Desk".to_owned();
-    let mut second = current;
-    second.id = "layout_second".to_owned();
-    second.name = "desk".to_owned();
-    {
-        let mut catalog = state.domains.layout.catalog_for_test().write().await;
-        catalog.insert(first.id.clone(), first.clone());
-        catalog.insert(second.id.clone(), second);
-    }
+    let first = state
+        .domains
+        .layout
+        .create(CreateLayoutRequest {
+            name: "Desk".to_owned(),
+            ..CreateLayoutRequest::default()
+        })
+        .await
+        .expect("first layout should create");
+    let second = state
+        .domains
+        .layout
+        .create(CreateLayoutRequest {
+            name: "Other".to_owned(),
+            ..CreateLayoutRequest::default()
+        })
+        .await
+        .expect("second layout should create");
+    state
+        .domains
+        .layout
+        .update(
+            second.id,
+            UpdateLayoutRequest {
+                name: Some("desk".to_owned()),
+                ..UpdateLayoutRequest::default()
+            },
+        )
+        .await
+        .expect("second layout should update");
 
     assert_eq!(
         state
@@ -88,14 +106,15 @@ async fn catalog_identity_resolution_rejects_ambiguous_names() {
 async fn catalog_list_marks_and_filters_the_active_layout() {
     let (state, _tempdir) = isolated_state();
     let active = state.domains.layout.current();
-    let mut inactive = active.clone();
-    inactive.id = "layout_inactive".to_owned();
-    inactive.name = "Inactive".to_owned();
-    {
-        let mut catalog = state.domains.layout.catalog_for_test().write().await;
-        catalog.insert(active.id.clone(), active.clone());
-        catalog.insert(inactive.id.clone(), inactive);
-    }
+    state
+        .domains
+        .layout
+        .create(CreateLayoutRequest {
+            name: "Inactive".to_owned(),
+            ..CreateLayoutRequest::default()
+        })
+        .await
+        .expect("inactive layout should create");
 
     let result = state.domains.layout.list(50, 0, true).await;
     assert_eq!(result.total, 1);

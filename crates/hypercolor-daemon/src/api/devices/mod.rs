@@ -816,7 +816,7 @@ pub(super) async fn ensure_default_logical_entry(
 ) -> String {
     let fallback_layout_id = state
         .domains
-        .devices
+        .layout
         .resolved_layout_device_id(device_info)
         .await;
 

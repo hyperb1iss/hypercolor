@@ -154,10 +154,7 @@ impl DiscoveryWorkerContext {
         &self,
         config: &HypercolorConfig,
     ) -> BTreeMap<String, Vec<String>> {
-        let layout = {
-            let spatial = self.discovery.spatial_engine.snapshot();
-            spatial.layout().as_ref().clone()
-        };
+        let layout = self.discovery.layout.current();
         let routing = {
             let manager = self.discovery.backend_manager.lock().await;
             manager.routing_snapshot()

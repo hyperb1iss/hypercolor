@@ -15,7 +15,6 @@ use hypercolor_core::device::manager::{
     BackendRoutingDebugSnapshot, LayoutRoutingDebugEntry, OrphanedQueueDebugEntry,
 };
 use hypercolor_core::engine::RenderLoopState;
-use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_daemon::api::system::get_status;
 use hypercolor_daemon::app_state::AppState;
 use hypercolor_daemon::daemon::{
@@ -23,7 +22,6 @@ use hypercolor_daemon::daemon::{
     effective_startup_bind_targets, serve_api_listeners_with_shutdown_timeout,
     validate_network_bind_auth,
 };
-use hypercolor_daemon::discovery;
 use hypercolor_daemon::session::current_global_brightness;
 use hypercolor_daemon::startup::{
     DaemonState, collect_unmapped_driver_layout_targets, collect_unmapped_prefixed_layout_targets,
@@ -1413,7 +1411,6 @@ async fn daemon_start_restores_persisted_active_layout_from_disk() {
     )
     .expect("initialization should succeed");
 
-    assert_eq!(state.layouts_path, guard.layouts_path());
     assert_eq!(state.runtime_state_path, guard.runtime_state_path());
 
     state.start().await.expect("start should succeed");
@@ -1494,11 +1491,11 @@ async fn daemon_initialize_inserts_missing_default_layout_into_store() {
     let persisted = layout_store::load(&guard.layouts_path()).expect("layout store should load");
     assert!(persisted.contains_key("default"));
     assert!(persisted.contains_key("layout_custom"));
-    assert_eq!(state.layouts_path, guard.layouts_path());
-
-    let in_memory = state.layouts.read().await;
-    let default_layout = in_memory
-        .get("default")
+    let default_layout = state
+        .domains
+        .layout
+        .resolve("default")
+        .await
         .expect("default layout should be present in memory");
     assert_eq!(default_layout.name, "Default Layout");
     assert_eq!(default_layout.canvas_width, config.daemon.canvas_width);
@@ -1918,8 +1915,10 @@ async fn paused_startup_seeds_and_reasserts_late_connected_device_output() {
             .await,
         "late device should enter connected state"
     );
-    state.spatial_engine.replace(
-        SpatialEngine::try_new(SpatialLayout {
+    state
+        .domains
+        .layout
+        .preview(SpatialLayout {
             id: "late-paused-layout".to_owned(),
             name: "Late Paused Layout".to_owned(),
             description: None,
@@ -1931,8 +1930,8 @@ async fn paused_startup_seeds_and_reasserts_late_connected_device_output() {
             spaces: None,
             version: 1,
         })
-        .expect("late-connect layout should be valid"),
-    );
+        .await
+        .expect("late-connect layout should be valid");
     {
         let mut manager = state.backend_manager.lock().await;
         manager.register_backend(Arc::new(StaticHoldRecordingBackend {
@@ -2222,7 +2221,7 @@ fn append_auto_layout_zones_for_device_adds_default_strip_zone() {
         version: 1,
     };
 
-    let added = discovery::append_auto_layout_zones_for_device(
+    let added = hypercolor_daemon::domain::layout::append_auto_layout_zones_for_device(
         &mut layout,
         "fixture-strip:desk-strip",
         &info,
@@ -2285,7 +2284,11 @@ fn append_auto_layout_zones_for_device_skips_display_only_devices() {
         version: 1,
     };
 
-    let added = discovery::append_auto_layout_zones_for_device(&mut layout, "usb:lcd-panel", &info);
+    let added = hypercolor_daemon::domain::layout::append_auto_layout_zones_for_device(
+        &mut layout,
+        "usb:lcd-panel",
+        &info,
+    );
 
     assert_eq!(added, 0);
     assert!(layout.zones.is_empty());
@@ -2437,7 +2440,7 @@ fn append_auto_layout_zones_uses_device_declared_compact_custom_geometry() {
         version: 1,
     };
 
-    let added = discovery::append_auto_layout_zones_for_device(
+    let added = hypercolor_daemon::domain::layout::append_auto_layout_zones_for_device(
         &mut layout,
         "usb:driver:compact:test",
         &info,
@@ -2492,7 +2495,7 @@ fn append_auto_layout_zones_uses_device_declared_asymmetric_custom_geometry() {
         version: 1,
     };
 
-    let added = discovery::append_auto_layout_zones_for_device(
+    let added = hypercolor_daemon::domain::layout::append_auto_layout_zones_for_device(
         &mut layout,
         "usb:driver:asymmetric:test",
         &info,
@@ -2556,7 +2559,7 @@ fn append_auto_layout_zones_preserves_device_declared_colocated_ring_geometry() 
         version: 1,
     };
 
-    let added = discovery::append_auto_layout_zones_for_device(
+    let added = hypercolor_daemon::domain::layout::append_auto_layout_zones_for_device(
         &mut layout,
         "usb:driver:stacked-rings:test",
         &info,
@@ -2679,8 +2682,11 @@ fn append_auto_layout_zones_for_dense_matrix_device_clamps_height_without_panick
         version: 1,
     };
 
-    let added =
-        discovery::append_auto_layout_zones_for_device(&mut layout, "usb:2982:1967:test", &info);
+    let added = hypercolor_daemon::domain::layout::append_auto_layout_zones_for_device(
+        &mut layout,
+        "usb:2982:1967:test",
+        &info,
+    );
 
     assert_eq!(added, 6);
     assert_eq!(layout.zones.len(), 6);
@@ -2757,7 +2763,7 @@ fn reconcile_auto_layout_zones_for_device_updates_existing_custom_auto_zone() {
         version: 1,
     };
 
-    let repaired = discovery::reconcile_auto_layout_zones_for_device(
+    let repaired = hypercolor_daemon::domain::layout::reconcile_auto_layout_zones_for_device(
         &mut layout,
         "usb:driver:compact:test",
         &info,
@@ -2867,7 +2873,7 @@ fn reconcile_auto_layout_zones_repairs_device_declared_geometry_without_touching
         version: 1,
     };
 
-    let repaired = discovery::reconcile_auto_layout_zones_for_device(
+    let repaired = hypercolor_daemon::domain::layout::reconcile_auto_layout_zones_for_device(
         &mut layout,
         "usb:driver:stacked-rings:test",
         &info,
@@ -2993,8 +2999,11 @@ fn reconcile_auto_layout_zones_for_device_removes_stale_auto_zones() {
         version: 1,
     };
 
-    let repaired =
-        discovery::reconcile_auto_layout_zones_for_device(&mut layout, "usb:prism-s:test", &info);
+    let repaired = hypercolor_daemon::domain::layout::reconcile_auto_layout_zones_for_device(
+        &mut layout,
+        "usb:prism-s:test",
+        &info,
+    );
 
     assert_eq!(repaired, 2);
     assert_eq!(layout.zones.len(), 1);

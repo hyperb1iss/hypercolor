@@ -59,12 +59,12 @@ use super::relays::{
     publish_subscriptions,
 };
 use super::topics::{RelayContext, spawn_relays};
-use crate::api::layouts::validate_layout_sampling_radii;
 use crate::api::local::{
     TrustedLocalSocketTransport, TrustedLocalWebSocket, trusted_local_socket_pair,
 };
 use crate::api::security::RequestAuthContext;
 use crate::app_state::AppState;
+use crate::domain::layout::validate_layout_sampling_radii;
 use crate::interaction_routing::{
     AuthoritativeClaimError, AuthoritativeClaimOutcome, InteractionRoutingControl,
 };

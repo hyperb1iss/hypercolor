@@ -301,7 +301,7 @@ impl LayoutContext {
         })
     }
 
-    pub(crate) async fn preview(
+    pub async fn preview(
         &self,
         layout: SpatialLayout,
     ) -> Result<PreviewLayoutResponse, DomainError> {
@@ -345,7 +345,7 @@ impl LayoutContext {
             &reference,
         )
         .await;
-        self.devices.sync_connectivity().await;
+        self.sync_connectivity().await;
         self.wait_test_hook(
             LayoutMutationTestPoint::AfterWorkflow,
             LayoutMutationTestOperation::Preview,

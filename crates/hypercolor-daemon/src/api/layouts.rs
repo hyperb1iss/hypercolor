@@ -17,13 +17,6 @@ pub use hypercolor_types::api::layouts::{
     LayoutListResponse, LayoutSummary, PreviewLayoutResponse, UpdateLayoutRequest,
 };
 
-pub(crate) use crate::domain::layout::validate_layout_sampling_radii;
-#[cfg(feature = "persistence-test-hooks")]
-pub use crate::domain::layout::{
-    LayoutMutationTestBarrier, LayoutMutationTestHooks, LayoutMutationTestOperation,
-    LayoutMutationTestPoint,
-};
-
 pub async fn list_layouts(
     State(state): State<Arc<AppState>>,
     Query(query): Query<LayoutListQuery>,

@@ -659,19 +659,16 @@ async fn activation_commits_before_layout_failure_and_still_applies_brightness()
 #[tokio::test]
 async fn activation_applies_a_named_layout_without_reentering_its_guard() {
     let (state, _tempdir) = isolated_state();
-    let layout_id = LayoutId::new("activation-layout").expect("valid layout id");
-    let layout = SpatialLayout {
-        id: layout_id.to_string(),
-        name: "Activation Layout".to_owned(),
-        ..state.spatial_engine.snapshot().layout().as_ref().clone()
-    };
-    state
+    let created = state
         .domains
         .layout
-        .catalog_for_test()
-        .write()
+        .create(hypercolor_types::api::layouts::CreateLayoutRequest {
+            name: "Activation Layout".to_owned(),
+            ..Default::default()
+        })
         .await
-        .insert(layout.id.clone(), layout);
+        .expect("activation layout should create");
+    let layout_id = LayoutId::new(created.id).expect("valid layout id");
 
     let mut scene = named_scene("layout scene");
     scene.layout_id = Some(layout_id.clone());

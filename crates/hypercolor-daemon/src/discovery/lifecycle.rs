@@ -12,9 +12,7 @@ use hypercolor_types::event::{DisconnectReason, HypercolorEvent};
 use tracing::{debug, warn};
 
 use super::DiscoveryRuntime;
-use super::auto_layout::sync_active_layout_for_renderable_devices;
 use super::device_helpers::{
-    active_layout_targets_enabled_device,
     connect_backend_device_with_timeout as connect_backend_device_with_backend_timeout,
     desired_connect_behavior, device_log_label, disconnect_backend_device,
     ensure_default_logical_for_device, format_error_chain, lifecycle_policy_for_device,
@@ -87,7 +85,10 @@ pub async fn apply_user_enabled_state(
     sync_registry_state(runtime, device_id).await;
 
     if !enabled {
-        sync_active_layout_for_renderable_devices(runtime, None).await;
+        runtime
+            .layout
+            .sync_active_layout_for_renderable_devices(runtime.clone(), None)
+            .await;
     }
 
     Ok(UserEnabledStateResult::Applied)
@@ -143,7 +144,11 @@ pub async fn activate_pairable_device(
     )
     .await;
 
-    if !active_layout_targets_enabled_device(runtime, device_id, &layout_device_id).await {
+    if !runtime
+        .layout
+        .active_layout_targets_enabled_device(runtime, device_id, &layout_device_id)
+        .await
+    {
         return Ok(false);
     }
 
@@ -179,7 +184,10 @@ pub async fn activate_pairable_device(
     sync_registry_state(runtime, device_id).await;
 
     let activated_only = HashSet::from([device_id]);
-    sync_active_layout_for_renderable_devices(runtime, Some(&activated_only)).await;
+    runtime
+        .layout
+        .sync_active_layout_for_renderable_devices(runtime.clone(), Some(activated_only))
+        .await;
     publish_device_connected(runtime, backend_id, device_id).await;
     Ok(true)
 }
@@ -207,7 +215,10 @@ pub async fn disconnect_tracked_device(
 
     execute_lifecycle_actions(runtime.clone(), actions).await;
     sync_registry_state(runtime, device_id).await;
-    sync_active_layout_for_renderable_devices(runtime, None).await;
+    runtime
+        .layout
+        .sync_active_layout_for_renderable_devices(runtime.clone(), None)
+        .await;
 
     if was_renderable {
         runtime
@@ -254,7 +265,10 @@ pub async fn release_renderable_devices(runtime: &DiscoveryRuntime) -> usize {
         released = released.saturating_add(1);
     }
 
-    sync_active_layout_for_renderable_devices(runtime, None).await;
+    runtime
+        .layout
+        .sync_active_layout_for_renderable_devices(runtime.clone(), None)
+        .await;
     released
 }
 
@@ -300,7 +314,10 @@ pub async fn release_renderable_network_devices(runtime: &DiscoveryRuntime) -> u
     }
 
     if released > 0 {
-        sync_active_layout_for_renderable_devices(runtime, None).await;
+        runtime
+            .layout
+            .sync_active_layout_for_renderable_devices(runtime.clone(), None)
+            .await;
     }
     released
 }
@@ -428,11 +445,13 @@ pub(crate) async fn execute_lifecycle_actions(
                         sync_registry_state(&runtime, device_id).await;
                         if connected {
                             let connected_only = HashSet::from([device_id]);
-                            sync_active_layout_for_renderable_devices(
-                                &runtime,
-                                Some(&connected_only),
-                            )
-                            .await;
+                            runtime
+                                .layout
+                                .sync_active_layout_for_renderable_devices(
+                                    runtime.clone(),
+                                    Some(connected_only),
+                                )
+                                .await;
                             publish_device_connected(&runtime, &backend_id, device_id).await;
                         }
                     }
@@ -754,11 +773,13 @@ fn spawn_reconnect_task(runtime: &DiscoveryRuntime, device_id: DeviceId, delay: 
                 sync_registry_state(&runtime_for_task, device_id).await;
                 if reconnected {
                     let reconnect_only = HashSet::from([device_id]);
-                    sync_active_layout_for_renderable_devices(
-                        &runtime_for_task,
-                        Some(&reconnect_only),
-                    )
-                    .await;
+                    runtime_for_task
+                        .layout
+                        .sync_active_layout_for_renderable_devices(
+                            runtime_for_task.clone(),
+                            Some(reconnect_only),
+                        )
+                        .await;
                     publish_device_connected(&runtime_for_task, &backend_id, device_id).await;
                 }
             }

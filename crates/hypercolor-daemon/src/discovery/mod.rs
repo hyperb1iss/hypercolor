@@ -1,6 +1,5 @@
 //! Shared device discovery runtime for daemon startup and API-triggered scans.
 
-pub(crate) mod auto_layout;
 mod device_helpers;
 mod lifecycle;
 mod scan;
@@ -21,24 +20,18 @@ use hypercolor_driver_api::CredentialStore;
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::device::{DeviceId, DeviceInfo};
-use hypercolor_types::spatial::SpatialLayout;
 use tokio::runtime::Handle;
 use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
 
 use crate::attachment_profiles::ComponentProfileStore;
 use crate::device_settings::DeviceSettingsStore;
-use crate::domain::scene::SceneService;
-use crate::domain::spatial::SpatialService;
-use crate::layout_auto_exclusions;
+use crate::domain::layout::LayoutContext;
 use crate::logical_devices::LogicalDevice;
-use crate::scene_transactions::SceneTransactionQueue;
 
-pub use auto_layout::{
-    append_auto_layout_zones_for_device, reconcile_auto_layout_zones_for_device,
-    sync_active_layout_connectivity, sync_active_layout_for_renderable_devices,
+pub(crate) use device_helpers::{
+    apply_persisted_device_settings, desired_connect_behavior, sync_registry_state,
 };
-pub(crate) use device_helpers::{apply_persisted_device_settings, sync_registry_state};
 pub use hypercolor_types::api::devices::{DiscoveryScanResult, DiscoveryScannerResult};
 pub(crate) use lifecycle::execute_lifecycle_actions;
 pub(crate) use lifecycle::handle_async_write_failures;
@@ -74,21 +67,8 @@ pub struct DiscoveryRuntime {
     /// Event bus for discovery/lifecycle events.
     pub event_bus: Arc<HypercolorBus>,
 
-    /// Active spatial layout used by the render loop.
-    pub spatial_engine: SpatialService,
-
-    /// Scene manager used to keep primary-group layouts aligned with the
-    /// active spatial layout.
-    pub scene_manager: SceneService,
-
-    /// Persisted layout store shared with the runtime/API.
-    pub layouts: Arc<RwLock<HashMap<String, SpatialLayout>>>,
-
-    /// Persistent path for the layout store.
-    pub layouts_path: PathBuf,
-
-    /// Discovery auto-sync exclusions keyed by legacy layout or scene zone.
-    pub layout_auto_exclusions: Arc<RwLock<layout_auto_exclusions::LayoutAutoExclusionStore>>,
+    /// Narrow layout authority used for identity and discovery convergence.
+    pub layout: LayoutContext,
 
     /// Logical device segmentation store.
     pub logical_devices: Arc<RwLock<HashMap<String, LogicalDevice>>>,
@@ -101,9 +81,6 @@ pub struct DiscoveryRuntime {
 
     /// Persisted global and per-device output settings.
     pub device_settings: Arc<RwLock<DeviceSettingsStore>>,
-
-    /// Frame-boundary scene changes mirrored into the render thread.
-    pub scene_transactions: SceneTransactionQueue,
 
     /// Persistent JSON file for startup runtime session state.
     pub runtime_state_path: PathBuf,
