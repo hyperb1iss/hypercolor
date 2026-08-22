@@ -700,16 +700,11 @@ impl EffectMetadata {
             .find(|control| control.control_id().eq_ignore_ascii_case(id))
     }
 
-    /// Match either the display name or a stable source-stem alias.
+    /// Match the display name using its human-readable normalized form.
     #[must_use]
     pub fn matches_lookup(&self, id_or_name: &str) -> bool {
         let lookup_key = effect_lookup_key(id_or_name);
-        self.name.eq_ignore_ascii_case(id_or_name)
-            || effect_lookup_key(&self.name) == lookup_key
-            || self
-                .source
-                .source_stem()
-                .is_some_and(|stem| effect_lookup_key(stem) == lookup_key)
+        self.name.eq_ignore_ascii_case(id_or_name) || effect_lookup_key(&self.name) == lookup_key
     }
 }
 

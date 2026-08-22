@@ -229,7 +229,7 @@ fn effect_source_source_stem_uses_file_stem() {
 }
 
 #[test]
-fn effect_metadata_matches_display_name_and_native_source_alias() {
+fn effect_metadata_matches_normalized_display_name() {
     let metadata = EffectMetadata {
         id: EffectId::new(Uuid::now_v7()),
         name: "Solid Color".to_owned(),
@@ -257,10 +257,10 @@ fn effect_metadata_matches_display_name_and_native_source_alias() {
 }
 
 #[test]
-fn effect_metadata_lookup_treats_html_and_native_slugs_equivalently() {
+fn effect_metadata_lookup_does_not_admit_source_stem_aliases() {
     let metadata = EffectMetadata {
         id: EffectId::new(Uuid::now_v7()),
-        name: "Audio Pulse".to_owned(),
+        name: "Sound Reactive Pulse".to_owned(),
         author: "Hypercolor".to_owned(),
         version: "0.1.0".to_owned(),
         description: "test effect".to_owned(),
@@ -277,9 +277,12 @@ fn effect_metadata_lookup_treats_html_and_native_slugs_equivalently() {
         license: Some("Apache-2.0".to_owned()),
     };
 
-    assert!(metadata.matches_lookup("audio_pulse"));
-    assert!(metadata.matches_lookup("audio-pulse"));
-    assert!(metadata.matches_lookup("audio pulse"));
+    assert!(metadata.matches_lookup("sound_reactive_pulse"));
+    assert!(metadata.matches_lookup("sound-reactive-pulse"));
+    assert!(metadata.matches_lookup("sound reactive pulse"));
+    assert!(!metadata.matches_lookup("audio_pulse"));
+    assert!(!metadata.matches_lookup("audio-pulse"));
+    assert!(!metadata.matches_lookup("audio pulse"));
 }
 
 // ── EffectState ───────────────────────────────────────────────────────────
