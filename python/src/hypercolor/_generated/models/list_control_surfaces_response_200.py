@@ -18,7 +18,7 @@ T = TypeVar("T", bound="ListControlSurfacesResponse200")
 class ListControlSurfacesResponse200:
     """
     Attributes:
-        data (ControlSurfaceListResponse):
+        data (ControlSurfaceListResponse): Response body for `GET /api/v1/control-surfaces`.
         meta (ResponseMeta): Response metadata included in every envelope.
     """
 
