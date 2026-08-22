@@ -596,10 +596,10 @@ mod tests {
 
     use hypercolor_core::engine::FpsTier;
     use hypercolor_core::input::ScreenData;
-    use hypercolor_core::types::canvas::{
+    use hypercolor_types::canvas::{
         Canvas, PublishedSurface, RenderSurfacePool, Rgba, SurfaceDescriptor, SurfaceResourceError,
     };
-    use hypercolor_core::types::event::ZoneColors;
+    use hypercolor_types::event::ZoneColors;
 
     use super::frame_policy::SkipDecision;
     use super::screen_canvas::screen_data_to_surface;

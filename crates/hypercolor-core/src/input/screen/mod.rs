@@ -164,11 +164,11 @@ pub use windows::{CaptureSourceSink, ResolvedCaptureSource, WindowsScreenCapture
 
 use crate::input::traits::{InputData, InputSource, ScreenData, ScreenZoneColors};
 use crate::input::{SourceKind, SourceStatusHandle, SourceStatusReporter};
-use crate::types::canvas::{
+use hypercolor_types::canvas::{
     DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, PublishedSurface, RenderSurfacePool,
     SurfaceDescriptor, SurfaceResourceError, SurfaceResourceOwner,
 };
-use crate::types::event::ZoneColors;
+use hypercolor_types::event::ZoneColors;
 use std::fmt::Write as _;
 use std::mem::size_of;
 use std::num::NonZeroU32;

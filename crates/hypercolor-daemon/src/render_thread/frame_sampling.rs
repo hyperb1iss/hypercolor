@@ -13,9 +13,9 @@ use hypercolor_core::spatial::generate_positions;
 #[cfg(test)]
 use hypercolor_core::spatial::is_led_sampled_zone;
 use hypercolor_core::spatial::{PreparedZonePlan, SpatialEngine};
-use hypercolor_core::types::canvas::{Canvas, Rgb};
+use hypercolor_types::canvas::{Canvas, Rgb};
 #[cfg(test)]
-use hypercolor_core::types::event::FrameData;
+use hypercolor_types::event::FrameData;
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::scene::ColorInterpolation;
 #[cfg(test)]

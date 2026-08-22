@@ -6,7 +6,7 @@ use anyhow::Result;
 use tracing::debug;
 use tracing::warn;
 
-use hypercolor_core::types::canvas::PublishedSurface;
+use hypercolor_types::canvas::PublishedSurface;
 use hypercolor_types::event::{EffectDegradationState, HypercolorEvent};
 use hypercolor_types::scene::ZoneId;
 
@@ -857,7 +857,7 @@ mod tests;
 
 #[cfg(test)]
 mod h21_tests {
-    use hypercolor_core::types::canvas::Canvas;
+    use hypercolor_types::canvas::Canvas;
 
     use super::{ProducerFrame, ProducerQueue, synchronize_screen_invalidation_epoch};
 

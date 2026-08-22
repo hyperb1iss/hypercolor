@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use hypercolor_core::types::canvas::BYTES_PER_PIXEL;
+use hypercolor_types::canvas::BYTES_PER_PIXEL;
 use thiserror::Error;
 
 use super::source::write_rgba_texture;

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use hypercolor_core::device::BackendManager;
 use hypercolor_core::spatial::{SpatialEngine, SpatialPlanError};
-use hypercolor_core::types::canvas::Canvas;
+use hypercolor_types::canvas::Canvas;
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::scene::{UnassignedBehavior, Zone, ZoneId};
 use hypercolor_types::spatial::{Output, SpatialLayout};
@@ -244,7 +244,7 @@ mod tests {
     use std::sync::Arc;
 
     use hypercolor_core::device::{BackendManager, SegmentRange};
-    use hypercolor_core::types::canvas::Canvas;
+    use hypercolor_types::canvas::Canvas;
     use hypercolor_types::device::DeviceId;
     use hypercolor_types::scene::{UnassignedBehavior, Zone, ZoneId, ZoneRole};
     use hypercolor_types::spatial::{

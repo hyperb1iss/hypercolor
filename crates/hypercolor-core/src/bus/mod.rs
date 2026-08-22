@@ -27,11 +27,11 @@ use serde::{Serialize, Serializer};
 use tokio::sync::{broadcast, watch};
 
 use crate::input::{SourceFreshness, SourceKind, SourceState, SourceStatus};
-use crate::types::canvas::{Canvas, PublishedSurface};
-use crate::types::device::{DeviceId, DisplayFrameFormat};
-use crate::types::event::{FrameData, HypercolorEvent, SpectrumData};
-use crate::types::scene::{DisplayFaceBlendMode, DisplayFaceTarget, SceneId, ZoneId};
-use crate::types::spatial::{EdgeBehavior, NormalizedPosition};
+use hypercolor_types::canvas::{Canvas, PublishedSurface};
+use hypercolor_types::device::{DeviceId, DisplayFrameFormat};
+use hypercolor_types::event::{FrameData, HypercolorEvent, SpectrumData};
+use hypercolor_types::scene::{DisplayFaceBlendMode, DisplayFaceTarget, SceneId, ZoneId};
+use hypercolor_types::spatial::{EdgeBehavior, NormalizedPosition};
 
 // ── Constants ────────────────────────────────────────────────────────────
 

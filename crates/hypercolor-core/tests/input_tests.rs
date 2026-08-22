@@ -24,8 +24,8 @@ use hypercolor_core::input::{
     SourceState, SourceStatusError, SourceStatusHandle, SourceStatusReporter, SourceStatusWriter,
     SourceTimestampField, TerminalFailureLatch, classify_source_resource_scan,
 };
-use hypercolor_core::types::audio::{AudioData, AudioPipelineConfig, AudioSourceType};
-use hypercolor_core::types::event::{InputButtonState, InputEvent, TimedInputEvent, ZoneColors};
+use hypercolor_types::audio::{AudioData, AudioPipelineConfig, AudioSourceType};
+use hypercolor_types::event::{InputButtonState, InputEvent, TimedInputEvent, ZoneColors};
 use std::collections::VecDeque;
 #[cfg(target_os = "linux")]
 use std::fs;
@@ -1797,7 +1797,7 @@ fn manager_drains_discrete_input_events_from_all_sources() {
     mgr.add_source(Box::new(EventfulSource::new(vec![
         InputEvent::MidiRealtime {
             source_id: "midi:clock".into(),
-            message: hypercolor_core::types::event::MidiRealtimeMessage::Clock,
+            message: hypercolor_types::event::MidiRealtimeMessage::Clock,
         },
     ])));
     mgr.start_all().expect("eventful sources should start");
@@ -3004,7 +3004,7 @@ fn manager_tracks_and_removes_host_capture_sources() {
 #[test]
 fn interaction_dirty_check_tracks_generation_and_batch() {
     use hypercolor_core::input::{InteractionBatch, InteractionData};
-    use hypercolor_core::types::event::{InputButtonState, TimedInputEvent};
+    use hypercolor_types::event::{InputButtonState, TimedInputEvent};
 
     let mut data = InteractionData::default();
     assert!(data.is_dirty_against(None), "first sight is always dirty");
@@ -3036,7 +3036,7 @@ fn interaction_dirty_check_tracks_generation_and_batch() {
 #[test]
 fn batch_absorb_prior_preserves_order_and_sums() {
     use hypercolor_core::input::InteractionBatch;
-    use hypercolor_core::types::event::TimedInputEvent;
+    use hypercolor_types::event::TimedInputEvent;
 
     fn timed(seq: u64) -> TimedInputEvent {
         TimedInputEvent {

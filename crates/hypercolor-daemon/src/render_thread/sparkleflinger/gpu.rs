@@ -53,9 +53,6 @@ use hypercolor_core::input::screen::{
     ScreenPublicationKind, ScreenReductionFilter, ScreenResourceApi, ScreenSourceReflection,
 };
 use hypercolor_core::spatial::PreparedZonePlan;
-use hypercolor_core::types::canvas::{
-    BYTES_PER_PIXEL, Canvas, PublishedSurface, SurfaceStateCounts,
-};
 #[cfg(all(target_os = "macos", feature = "screen-capture"))]
 use hypercolor_macos_capture::MacosCaptureFrame;
 #[cfg(all(target_os = "macos", feature = "screen-capture"))]
@@ -66,6 +63,7 @@ use hypercolor_macos_gpu_interop::{
     MacosScreenBridge as MacosInteropScreenBridge, MacosScreenStorageIdentity,
     probe_macos_metal4_capabilities,
 };
+use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, PublishedSurface, SurfaceStateCounts};
 #[cfg(all(target_os = "macos", feature = "screen-capture"))]
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::scene::ZoneId;

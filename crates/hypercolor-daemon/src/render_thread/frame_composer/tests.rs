@@ -10,7 +10,7 @@ use super::{
 use std::sync::Arc;
 
 use hypercolor_core::spatial::SpatialEngine;
-use hypercolor_core::types::canvas::{Canvas, PublishedSurface};
+use hypercolor_types::canvas::{Canvas, PublishedSurface};
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection,

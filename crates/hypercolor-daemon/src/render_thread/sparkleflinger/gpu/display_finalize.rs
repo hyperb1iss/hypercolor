@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use hypercolor_core::bus::DisplayYuv420Frame;
-use hypercolor_core::types::canvas::{
+use hypercolor_types::canvas::{
     PublishedSurface, RenderSurfacePool, SurfaceDescriptor, SurfaceStateCounts,
 };
 use hypercolor_types::scene::DisplayFaceBlendMode;

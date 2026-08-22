@@ -8,12 +8,12 @@ use hypercolor_core::bus::{
     ZonePreviewFrame,
 };
 use hypercolor_core::input::{SourceKind, SourceState, SourceStatusReporter};
-use hypercolor_core::types::canvas::{Canvas, Rgba};
-use hypercolor_core::types::event::{
+use hypercolor_types::canvas::{Canvas, Rgba};
+use hypercolor_types::device::{ConnectionType, DeviceId, DeviceOrigin};
+use hypercolor_types::event::{
     ChangeTrigger, DisconnectReason, EffectRef, EventCategory, EventPriority, FrameData,
     HypercolorEvent, Severity, SpectrumData, ZoneColors,
 };
-use hypercolor_types::device::{ConnectionType, DeviceId, DeviceOrigin};
 use hypercolor_types::scene::{DisplayFaceBlendMode, ZoneId};
 use tokio::sync::broadcast;
 use tokio::time::{Duration, timeout};

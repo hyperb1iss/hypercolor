@@ -1,10 +1,10 @@
 use hypercolor_core::blend_math::{
     RgbaBlendMode, blend_opaque_normal_rgba_pixels_in_place, blend_rgba_pixels_in_place,
 };
-use hypercolor_core::types::canvas::{
+use hypercolor_types::canvas::PublishedSurfaceStorageIdentity;
+use hypercolor_types::canvas::{
     Canvas, PublishedSurface, RenderSurfacePool, SurfaceDescriptor, SurfaceResourceError,
 };
-use hypercolor_types::canvas::PublishedSurfaceStorageIdentity;
 
 use super::face_overlay::{blend_luma_reveal_rgba, blend_material_tint_rgba};
 use super::transform::process_layer_canvas;

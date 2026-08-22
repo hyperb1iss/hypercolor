@@ -3,9 +3,7 @@ use hypercolor_core::blend_math::{
     RgbaBlendMode, blend_rgba_pixels_in_place, decode_srgb_channel, encode_srgb_channel,
     screen_blend,
 };
-use hypercolor_core::types::canvas::{
-    Canvas, PublishedSurface, RenderSurfacePool, SurfaceDescriptor,
-};
+use hypercolor_types::canvas::{Canvas, PublishedSurface, RenderSurfacePool, SurfaceDescriptor};
 use hypercolor_types::scene::DisplayFaceBlendMode;
 
 #[allow(

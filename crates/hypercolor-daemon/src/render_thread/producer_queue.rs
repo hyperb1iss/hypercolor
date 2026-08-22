@@ -13,11 +13,11 @@ use hypercolor_core::input::screen::ScreenResourceLifetime;
 use hypercolor_core::input::screen::{
     CapturePixelFormat, ScreenBranchPayload, ScreenBranchPublication, ScreenSurfacePayload,
 };
-use hypercolor_core::types::canvas::{Canvas, PublishedSurface};
 #[cfg(all(feature = "wgpu", target_os = "macos", feature = "screen-capture"))]
 use hypercolor_macos_capture::MacosCaptureFrame;
 #[cfg(all(feature = "wgpu", target_os = "macos", feature = "screen-capture"))]
 use hypercolor_macos_gpu_interop::ImportedMacosScreenFrame;
+use hypercolor_types::canvas::{Canvas, PublishedSurface};
 #[cfg(all(feature = "wgpu", target_os = "windows"))]
 use hypercolor_windows_gpu_interop::ScreenTextureCopy;
 #[cfg(all(
@@ -593,7 +593,7 @@ mod tests {
     #[cfg(feature = "wgpu")]
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use hypercolor_core::types::canvas::{Canvas, PublishedSurface};
+    use hypercolor_types::canvas::{Canvas, PublishedSurface};
 
     #[cfg(feature = "wgpu")]
     use super::SubmissionRetirementQueue;

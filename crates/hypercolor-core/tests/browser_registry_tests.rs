@@ -9,7 +9,7 @@ use hypercolor_core::input::{
     BrowserInputSource, BrowserPreviewId, INPUT_EVENT_RING_CAPACITY, InputData, InputSource,
     MotionAggregate,
 };
-use hypercolor_core::types::event::{InputButtonState, InputEvent};
+use hypercolor_types::event::{InputButtonState, InputEvent};
 
 fn started_source() -> (BrowserInputSource, BrowserInputHandle) {
     let mut source = BrowserInputSource::new();

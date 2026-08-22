@@ -12,8 +12,8 @@ use hypercolor_core::input::{
     InputEventRead, InteractionBatch, InteractionData, InteractionTransientTotals, KeyboardData,
     MotionAggregate, MouseData,
 };
-use hypercolor_core::types::config::InteractionRoutePolicy;
-use hypercolor_core::types::event::{InputButtonState, InputEvent, TimedInputEvent};
+use hypercolor_types::config::InteractionRoutePolicy;
+use hypercolor_types::event::{InputButtonState, InputEvent, TimedInputEvent};
 
 trait ResolveForTest {
     fn resolve(

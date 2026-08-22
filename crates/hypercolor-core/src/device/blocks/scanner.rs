@@ -10,7 +10,7 @@ use anyhow::Result;
 use tracing::debug;
 
 use crate::device::{DiscoveredDevice, DiscoveryConnectBehavior};
-use crate::types::device::{
+use hypercolor_types::device::{
     BLOCKS_OUTPUT_BACKEND_ID, ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily,
     DeviceFeatures, DeviceFingerprint, DeviceInfo, DeviceOrigin, DeviceTopologyHint,
     FingerprintNamespace, SegmentInfo,

@@ -285,7 +285,7 @@ fn transition_key(scene_runtime: &SceneRuntimeSnapshot) -> Option<SceneTransitio
 mod tests {
     use std::collections::HashMap;
 
-    use hypercolor_core::types::canvas::{Canvas, Rgba};
+    use hypercolor_types::canvas::{Canvas, Rgba};
     #[cfg(feature = "wgpu")]
     use hypercolor_types::config::RenderAccelerationMode;
     use hypercolor_types::effect::EffectId;

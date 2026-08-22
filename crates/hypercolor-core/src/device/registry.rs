@@ -12,11 +12,11 @@ use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
 use super::{DiscoveredDevice, DiscoveryConnectBehavior};
-use crate::types::device::{
+use hypercolor_types::device::{
     ConnectionType, DeviceFingerprint, DeviceId, DeviceInfo, DeviceState, DeviceUserSettings,
     FingerprintNamespace,
 };
-use crate::types::portable::{PortableDeviceKey, PortableIdentityClaim};
+use hypercolor_types::portable::{PortableDeviceKey, PortableIdentityClaim};
 
 // ── TrackedDevice ────────────────────────────────────────────────────────
 

@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(test)]
 use std::time::Duration;
 
-use hypercolor_core::types::canvas::BYTES_PER_PIXEL;
+use hypercolor_types::canvas::BYTES_PER_PIXEL;
 
 static GPU_SOURCE_UPLOAD_SKIPPED_TOTAL: AtomicU64 = AtomicU64::new(0);
 static GPU_MEDIA_TEXTURE_ALLOCATIONS_TOTAL: AtomicU64 = AtomicU64::new(0);

@@ -2,9 +2,9 @@ use std::time::Instant;
 
 use tracing::{debug, trace, warn};
 
-use hypercolor_core::types::audio::AudioData;
-use hypercolor_core::types::canvas::Canvas;
-use hypercolor_core::types::event::FrameTiming;
+use hypercolor_types::audio::AudioData;
+use hypercolor_types::canvas::Canvas;
+use hypercolor_types::event::FrameTiming;
 use hypercolor_types::session::OffOutputBehavior;
 
 use super::frame_io::{FramePublicationRequest, FramePublicationSurfaces, publish_frame_updates};

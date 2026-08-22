@@ -6,8 +6,8 @@ use tracing::{info, warn};
 use hypercolor_core::bus::{CanvasFrame, DisplayGroupFrame};
 use hypercolor_core::device::BackendManager;
 use hypercolor_core::input::screen::PixelExtent;
-use hypercolor_core::types::canvas::{Canvas, Rgba};
-use hypercolor_core::types::event::FrameTiming;
+use hypercolor_types::canvas::{Canvas, Rgba};
+use hypercolor_types::event::FrameTiming;
 use hypercolor_types::event::{FrameData, HypercolorEvent, Severity};
 use hypercolor_types::session::OffOutputBehavior;
 
@@ -968,8 +968,8 @@ mod tests {
     use crate::render_thread::pipeline_runtime::needs_gpu_preview_advance;
     use crate::render_thread::sparkleflinger::ComposedFrameSet;
     use hypercolor_core::spatial::SpatialEngine;
-    use hypercolor_core::types::canvas::{Canvas, PublishedSurface};
-    use hypercolor_core::types::event::{FrameData, ZoneColors};
+    use hypercolor_types::canvas::{Canvas, PublishedSurface};
+    use hypercolor_types::event::{FrameData, ZoneColors};
     use hypercolor_types::scene::{ColorInterpolation, SceneId};
     use hypercolor_types::session::OffOutputBehavior;
     use hypercolor_types::spatial::{

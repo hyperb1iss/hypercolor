@@ -8,7 +8,7 @@ use arc_swap::{ArcSwap, ArcSwapOption};
 use tokio::sync::watch;
 
 use super::{InputData, SourceKind, SourceStatusHandle};
-use crate::types::event::TimedInputEvent;
+use hypercolor_types::event::TimedInputEvent;
 
 /// Maximum events retained per source between consumer reads.
 pub const INPUT_EVENT_RING_CAPACITY: usize = 256;

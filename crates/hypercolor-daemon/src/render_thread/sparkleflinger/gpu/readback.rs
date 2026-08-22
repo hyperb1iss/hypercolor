@@ -1,5 +1,5 @@
 use anyhow::Result;
-use hypercolor_core::types::canvas::{BYTES_PER_PIXEL, PublishedSurface, RenderSurfacePool};
+use hypercolor_types::canvas::{BYTES_PER_PIXEL, PublishedSurface, RenderSurfacePool};
 
 use super::super::CompositionMode;
 use super::CachedSourceUpload;

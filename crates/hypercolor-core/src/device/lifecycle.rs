@@ -6,7 +6,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
-use crate::types::device::{
+use hypercolor_types::device::{
     DeviceError, DeviceFingerprint, DeviceHandle, DeviceId, DeviceIdentifier, DeviceInfo,
     DeviceState,
 };
@@ -723,7 +723,7 @@ fn sanitize_component(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{DeviceLifecycleManager, LifecycleAction, ReconnectPolicy};
-    use crate::types::device::{
+    use hypercolor_types::device::{
         ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFingerprint,
         DeviceId, DeviceIdentifier, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint,
         SegmentInfo,

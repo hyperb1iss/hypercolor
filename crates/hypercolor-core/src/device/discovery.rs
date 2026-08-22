@@ -14,7 +14,7 @@ use hypercolor_driver_api::DiscoveredDevice;
 use tokio::task::JoinSet;
 use tracing::{info, warn};
 
-use crate::types::device::{DeviceFingerprint, DeviceId};
+use hypercolor_types::device::{DeviceFingerprint, DeviceId};
 
 use super::registry::DeviceRegistry;
 

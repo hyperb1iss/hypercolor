@@ -1374,7 +1374,7 @@ impl InputSource for MacosScreenCaptureInput {
     fn sample_shared_and_drain_into(
         &mut self,
         _delta_secs: f32,
-        _events: &mut Vec<crate::types::event::TimedInputEvent>,
+        _events: &mut Vec<hypercolor_types::event::TimedInputEvent>,
     ) -> anyhow::Result<Option<Arc<InputData>>> {
         self.refresh_platform_status()?;
         self.observe_worker_exit()?;

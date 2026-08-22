@@ -6,7 +6,7 @@ use hypercolor_core::input::{
     INPUT_EVENT_RING_CAPACITY, InputData, InputManager, InputSource, InteractionBatch,
     InteractionData, MotionAggregate,
 };
-use hypercolor_core::types::event::{InputButtonState, InputEvent, TimedInputEvent};
+use hypercolor_types::event::{InputButtonState, InputEvent, TimedInputEvent};
 
 struct SequencedInteractionSource {
     running: bool,

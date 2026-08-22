@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use thiserror::Error;
 
-use crate::types::canvas::{SurfaceResourceError, linear_to_srgb_u8, srgb_u8_to_linear};
+use hypercolor_types::canvas::{SurfaceResourceError, linear_to_srgb_u8, srgb_u8_to_linear};
 
 use super::{CaptureTransferFunction, ScreenSceneCutPolicy, ScreenSmoothingPolicy};
 

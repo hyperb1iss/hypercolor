@@ -26,16 +26,16 @@ use std::sync::Arc;
 
 use anyhow::{Result, bail};
 
-use crate::types::device::DeviceId;
-use crate::types::effect::{ControlBinding, ControlValue, EffectId, EffectMetadata};
-use crate::types::layer::{LayerSource, SceneLayer, SceneLayerId};
-use crate::types::library::PresetId;
-use crate::types::scene::{
+use hypercolor_types::device::DeviceId;
+use hypercolor_types::effect::{ControlBinding, ControlValue, EffectId, EffectMetadata};
+use hypercolor_types::layer::{LayerSource, SceneLayer, SceneLayerId};
+use hypercolor_types::library::PresetId;
+use hypercolor_types::scene::{
     ColorInterpolation, DisplayFaceBlendMode, DisplayFaceTarget, EasingFunction, Scene, SceneId,
     SceneKind, SceneMutationMode, ScenePriority, TransitionSpec, UnassignedBehavior, Zone, ZoneId,
     ZoneRole,
 };
-use crate::types::spatial::{NormalizedPosition, Output, SpatialLayout};
+use hypercolor_types::spatial::{NormalizedPosition, Output, SpatialLayout};
 
 const DEFAULT_ZONE_NAME: &str = "Default zone";
 
@@ -148,7 +148,7 @@ pub struct ScenePlanSnapshot {
     pub transition: Option<TransitionPlan>,
     pub zones: Arc<[Zone]>,
     pub zones_revision: u64,
-    pub unassigned_behavior: crate::types::scene::UnassignedBehavior,
+    pub unassigned_behavior: hypercolor_types::scene::UnassignedBehavior,
 }
 
 /// Central scene lifecycle manager.
@@ -232,7 +232,7 @@ impl SceneManager {
             priority: ScenePriority::AMBIENT,
             enabled: true,
             metadata: HashMap::new(),
-            unassigned_behavior: crate::types::scene::UnassignedBehavior::Off,
+            unassigned_behavior: hypercolor_types::scene::UnassignedBehavior::Off,
             layout_id: None,
             activation_brightness: None,
             kind: SceneKind::Ephemeral,
@@ -2086,8 +2086,8 @@ fn empty_scene_group_layout(
         canvas_width,
         canvas_height,
         zones: Vec::new(),
-        default_sampling_mode: crate::types::spatial::SamplingMode::Bilinear,
-        default_edge_behavior: crate::types::spatial::EdgeBehavior::Clamp,
+        default_sampling_mode: hypercolor_types::spatial::SamplingMode::Bilinear,
+        default_edge_behavior: hypercolor_types::spatial::EdgeBehavior::Clamp,
         spaces: None,
         version: 1,
     }
@@ -2101,8 +2101,8 @@ fn empty_default_spatial_layout() -> SpatialLayout {
         canvas_width: 640,
         canvas_height: 480,
         zones: Vec::new(),
-        default_sampling_mode: crate::types::spatial::SamplingMode::Bilinear,
-        default_edge_behavior: crate::types::spatial::EdgeBehavior::Clamp,
+        default_sampling_mode: hypercolor_types::spatial::SamplingMode::Bilinear,
+        default_edge_behavior: hypercolor_types::spatial::EdgeBehavior::Clamp,
         spaces: None,
         version: 1,
     }
@@ -2202,7 +2202,7 @@ impl Default for SceneManager {
 /// and internal use.
 #[must_use]
 pub fn make_scene(name: &str) -> Scene {
-    use crate::types::scene::{ColorInterpolation, EasingFunction, TransitionSpec};
+    use hypercolor_types::scene::{ColorInterpolation, EasingFunction, TransitionSpec};
 
     Scene {
         id: SceneId::new(),
@@ -2218,7 +2218,7 @@ pub fn make_scene(name: &str) -> Scene {
         priority: ScenePriority::USER,
         enabled: true,
         metadata: HashMap::new(),
-        unassigned_behavior: crate::types::scene::UnassignedBehavior::Off,
+        unassigned_behavior: hypercolor_types::scene::UnassignedBehavior::Off,
         layout_id: None,
         activation_brightness: None,
         kind: SceneKind::Named,

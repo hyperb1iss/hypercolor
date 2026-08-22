@@ -41,7 +41,7 @@ use crate::input::{
     LegacyWheelProjector, SourceIssue, SourceKind, SourceSessionSlot, SourceStatusHandle,
     SourceStatusReporter, TerminalFailureLatch,
 };
-use crate::types::event::{
+use hypercolor_types::event::{
     InputButtonState, InputEvent, PointerScrollPhase, PointerScrollUnit, TimedInputEvent,
 };
 

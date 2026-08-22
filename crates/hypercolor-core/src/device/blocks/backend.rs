@@ -10,7 +10,7 @@ use tracing::{debug, info};
 
 use crate::device::DiscoveredDevice;
 use crate::device::traits::{BackendInfo, DeviceBackend};
-use crate::types::device::{BLOCKS_OUTPUT_BACKEND_ID, DeviceError, DeviceId, DeviceInfo};
+use hypercolor_types::device::{BLOCKS_OUTPUT_BACKEND_ID, DeviceError, DeviceId, DeviceInfo};
 
 use super::connection::{self, BlocksConnection};
 

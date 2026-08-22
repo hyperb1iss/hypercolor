@@ -1,7 +1,7 @@
 //! Immutable scene transition plans and color interpolation.
 
-use crate::types::canvas::{LinearRgba, Oklab};
-use crate::types::scene::{ColorInterpolation, SceneId, TransitionSpec};
+use hypercolor_types::canvas::{LinearRgba, Oklab};
+use hypercolor_types::scene::{ColorInterpolation, SceneId, TransitionSpec};
 
 // ── TransitionPlan ─────────────────────────────────────────────────────
 

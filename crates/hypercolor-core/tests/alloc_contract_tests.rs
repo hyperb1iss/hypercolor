@@ -31,9 +31,9 @@ use hypercolor_core::input::{
     MotionAggregate, ScreenData, SourceKind, SourceSessionWriter, SourceStatusHandle,
     SourceStatusWriter,
 };
-use hypercolor_core::types::audio::{AudioData, AudioPipelineConfig};
-use hypercolor_core::types::event::TimedInputEvent;
+use hypercolor_types::audio::{AudioData, AudioPipelineConfig};
 use hypercolor_types::effect::ControlValue;
+use hypercolor_types::event::TimedInputEvent;
 use hypercolor_types::layer::{LayerSource, SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{Zone, ZoneId, ZoneRole};
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};

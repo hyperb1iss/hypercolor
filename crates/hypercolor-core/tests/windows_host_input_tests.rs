@@ -11,7 +11,7 @@
 use std::sync::Arc;
 
 use hypercolor_core::input::{PointerMode, Q16_16_SCALE, WindowsHostInput};
-use hypercolor_core::types::event::{InputButtonState, InputEvent, PointerScrollUnit};
+use hypercolor_types::event::{InputButtonState, InputEvent, PointerScrollUnit};
 use hypercolor_windows_input::{
     RawButton, RawCursor, RawDeviceDescriptor, RawDeviceKind, RawInputBatch, RawInputEvent,
     RawKeyPrefix,
@@ -63,7 +63,7 @@ fn fold(
     events: &[RawInputEvent],
 ) -> (
     hypercolor_core::input::InteractionData,
-    Vec<hypercolor_core::types::event::TimedInputEvent>,
+    Vec<hypercolor_types::event::TimedInputEvent>,
 ) {
     let epoch = input.epoch();
     input.fold_and_snapshot(RawInputBatch {

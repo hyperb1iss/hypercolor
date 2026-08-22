@@ -2,8 +2,8 @@ use std::sync::LazyLock;
 
 use hypercolor_color::lut::{linear_to_srgb_u8, srgb_u8_to_linear};
 
-use crate::types::canvas::BlendMode;
-use crate::types::layer::LayerAdjust;
+use hypercolor_types::canvas::BlendMode;
+use hypercolor_types::layer::LayerAdjust;
 
 const LINEAR_ENCODE_LUT_SCALE: f32 = 65_535.0;
 const CHANNEL_PAIR_LUT_SIZE: usize = 256 * 256;

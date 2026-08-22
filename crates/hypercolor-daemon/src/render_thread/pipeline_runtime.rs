@@ -25,15 +25,15 @@ use hypercolor_core::input::{
     SourceFreshness, SourceKind, SourceState, SourceStatusAvailability, SourceStatusHandle,
 };
 use hypercolor_core::spatial::SpatialEngine;
-use hypercolor_core::types::canvas::{
+use hypercolor_types::audio::{AudioData, CHROMA_BINS, MEL_BANDS, SPECTRUM_BINS};
+use hypercolor_types::canvas::{
     Canvas, PublishedSurface, RenderSurfacePool, Rgba, SurfaceDescriptor, SurfaceResourceError,
 };
-use hypercolor_core::types::event::{FrameData, HypercolorEvent};
-use hypercolor_types::audio::{AudioData, CHROMA_BINS, MEL_BANDS, SPECTRUM_BINS};
 use hypercolor_types::config::RenderAccelerationMode;
 #[cfg(feature = "wgpu")]
 use hypercolor_types::device::DisplayFrameFormat;
 use hypercolor_types::event::ZoneColors;
+use hypercolor_types::event::{FrameData, HypercolorEvent};
 use hypercolor_types::scene::SceneId;
 #[cfg(feature = "wgpu")]
 use hypercolor_types::scene::{DisplayFaceTarget, ZoneId};

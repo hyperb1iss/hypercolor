@@ -10,7 +10,7 @@ use tracing::{debug, warn};
 use zbus::{Connection, Proxy};
 
 use crate::session::SessionMonitor;
-use crate::types::session::SessionEvent;
+use hypercolor_types::session::SessionEvent;
 
 const RECONNECT_BACKOFF: Duration = Duration::from_secs(1);
 

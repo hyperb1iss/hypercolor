@@ -2,7 +2,7 @@
 //!
 //! [`ConfigManager`] owns the live configuration and provides lock-free reads
 //! via [`arc_swap::ArcSwap`]. TOML files are parsed into
-//! [`HypercolorConfig`](crate::types::config::HypercolorConfig) from
+//! [`HypercolorConfig`](hypercolor_types::config::HypercolorConfig) from
 //! `hypercolor-types`.
 
 pub mod paths;
@@ -23,7 +23,7 @@ use arc_swap::{ArcSwap, Guard};
 use tracing::{debug, info, warn};
 
 use crate::persistence::{AtomicFileWriter, AtomicWriteCommitResult};
-use crate::types::config::{
+use hypercolor_types::config::{
     CURRENT_SCHEMA_VERSION, CaptureConfig, HypercolorConfig, default_driver_configs,
 };
 

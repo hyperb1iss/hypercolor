@@ -38,7 +38,6 @@ use hypercolor_core::input::{
     BrowserInputEdge, InputData, InputSource, SourceIssue, SourceKind, SourceSessionWriter,
     SourceStatusHandle, SourceStatusReporter,
 };
-use hypercolor_core::types::event::InputButtonState;
 use hypercolor_daemon::api;
 #[cfg(feature = "persistence-test-hooks")]
 use hypercolor_daemon::api::layouts::{LayoutMutationTestOperation, LayoutMutationTestPoint};
@@ -72,6 +71,7 @@ use hypercolor_types::effect::{
     ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory, EffectId,
     EffectMetadata, EffectSource, EffectState, PresetTemplate,
 };
+use hypercolor_types::event::InputButtonState;
 use hypercolor_types::event::{HypercolorEvent, ZoneChangeKind};
 use hypercolor_types::layer::{
     LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, SceneLayer, SceneLayerId,

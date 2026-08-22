@@ -3,7 +3,7 @@
 use std::{fs, sync::Arc};
 
 use hypercolor_core::config::ConfigManager;
-use hypercolor_core::types::config::InteractionRoutePolicy;
+use hypercolor_types::config::InteractionRoutePolicy;
 
 // ─── TOML Parsing ───────────────────────────────────────────────────────────
 

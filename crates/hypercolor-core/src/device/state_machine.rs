@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
-use crate::types::device::{DeviceError, DeviceHandle, DeviceIdentifier, DeviceState};
+use hypercolor_types::device::{DeviceError, DeviceHandle, DeviceIdentifier, DeviceState};
 
 /// Reconnection backoff configuration.
 #[derive(Debug, Clone)]

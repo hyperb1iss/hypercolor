@@ -10,11 +10,11 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, anyhow, bail};
 use hypercolor_core::config::{BootConfig, ConfigManager};
 use hypercolor_core::input::{BrowserInputSource, InputManager};
-use hypercolor_core::types::config::{RenderAccelerationMode, ServoGpuImportMode};
 use hypercolor_daemon::api;
 use hypercolor_daemon::app_state::AppState;
 use hypercolor_daemon::interaction_routing::InteractionRoutingControl;
 use hypercolor_daemon::startup::{DaemonState, default_config};
+use hypercolor_types::config::{RenderAccelerationMode, ServoGpuImportMode};
 use tempfile::TempDir;
 use tokio::sync::{Mutex, oneshot};
 

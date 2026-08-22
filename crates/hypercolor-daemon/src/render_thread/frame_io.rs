@@ -3,9 +3,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use hypercolor_core::bus::{CanvasFrame, DisplayGroupFrame, WatchLane, ZonePreviewFrame};
-use hypercolor_core::types::audio::AudioData;
-use hypercolor_core::types::canvas::{Canvas, PublishedSurface, PublishedSurfaceStorageIdentity};
-use hypercolor_core::types::event::{FrameData, FrameTiming, HypercolorEvent, SpectrumData};
+use hypercolor_types::audio::AudioData;
+use hypercolor_types::canvas::{Canvas, PublishedSurface, PublishedSurfaceStorageIdentity};
+use hypercolor_types::event::{FrameData, FrameTiming, HypercolorEvent, SpectrumData};
 use hypercolor_types::scene::{SceneId, ZoneId};
 
 use crate::performance::FullFrameCopyMetrics;
@@ -775,11 +775,11 @@ mod tests {
     use hypercolor_core::input::InputManager;
     use hypercolor_core::scene::SceneManager;
     use hypercolor_core::spatial::SpatialEngine;
-    use hypercolor_core::types::audio::AudioData;
-    use hypercolor_core::types::canvas::{Canvas, PublishedSurface};
-    use hypercolor_core::types::event::{FrameData, FrameTiming, ZoneColors};
+    use hypercolor_types::audio::AudioData;
     use hypercolor_types::canvas::PublishedSurfaceStorageIdentity;
+    use hypercolor_types::canvas::{Canvas, PublishedSurface};
     use hypercolor_types::config::RenderAccelerationMode;
+    use hypercolor_types::event::{FrameData, FrameTiming, ZoneColors};
     use hypercolor_types::scene::{SceneId, ZoneId};
     use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
     use tokio::sync::{Mutex, RwLock, watch};
