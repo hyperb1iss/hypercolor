@@ -17,10 +17,11 @@ use super::{
     WorkerCaptureSchedule, WorkerCommand, bind_current_exact_runtime, capture_epoch,
     capture_freshness, capture_geometry, capture_gpu_descriptor, capture_gpu_reduction_descriptor,
     capture_issue, classify_windows_physical_reduction, display_rotation, native_capture_extent,
-    reap_exact_runtimes, record_capture_health, resolve_windows_publication_branch,
-    settle_inactive_capture, windows_gpu_attempt_at, windows_gpu_candidate_admission,
-    windows_gpu_preparation_gate, windows_gpu_retry_at,
+    record_capture_health, resolve_windows_publication_branch, settle_inactive_capture,
+    windows_gpu_attempt_at, windows_gpu_candidate_admission, windows_gpu_preparation_gate,
+    windows_gpu_retry_at,
 };
+use crate::input::screen::adapter::reap_capture_exact_runtimes;
 
 #[test]
 fn capture_resource_adapter_reconciles_and_releases_source_bytes() {
@@ -645,7 +646,7 @@ fn exact_runtime_identity_survives_retention_mixed_publication_and_removal() {
         .1
         .try_reclaim()
         .expect("initial plan retires no exact runtime resources");
-    reap_exact_runtimes(&mut runtimes, &exact);
+    reap_capture_exact_runtimes(&mut runtimes, &exact);
     let selected = bind_current_exact_runtime(&mut runtimes, &source, &hub)
         .expect("initial runtime binds")
         .expect("initial committed runtime is selected");
@@ -706,7 +707,7 @@ fn exact_runtime_identity_survives_retention_mixed_publication_and_removal() {
         .commit(armed, retained_revision, graph_generation)
         .unwrap_or_else(|failure| panic!("retained-only plan commits: {}", failure.error()));
     let (_, retained_retirement) = committed.into_parts();
-    reap_exact_runtimes(&mut runtimes, &exact);
+    reap_capture_exact_runtimes(&mut runtimes, &exact);
     assert_eq!(runtimes.iter().count(), 1);
     let selected = bind_current_exact_runtime(&mut runtimes, &source, &hub)
         .expect("retained-only runtime binds")
@@ -785,7 +786,7 @@ fn exact_runtime_identity_survives_retention_mixed_publication_and_removal() {
         .commit(armed, mixed_revision, graph_generation)
         .unwrap_or_else(|failure| panic!("mixed plan commits: {}", failure.error()));
     let (_, mixed_retirement) = committed.into_parts();
-    reap_exact_runtimes(&mut runtimes, &exact);
+    reap_capture_exact_runtimes(&mut runtimes, &exact);
     assert_eq!(runtimes.iter().count(), 1);
     let selected = bind_current_exact_runtime(&mut runtimes, &source, &hub)
         .expect("mixed runtime binds")
@@ -883,7 +884,7 @@ fn exact_runtime_identity_survives_retention_mixed_publication_and_removal() {
         .commit(armed, removal_revision, graph_generation)
         .unwrap_or_else(|failure| panic!("removal plan commits: {}", failure.error()));
     let (_, retirement) = committed.into_parts();
-    reap_exact_runtimes(&mut runtimes, &exact);
+    reap_capture_exact_runtimes(&mut runtimes, &exact);
     assert_eq!(runtimes.iter().count(), 0);
     assert!(
         builder

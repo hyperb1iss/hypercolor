@@ -8,8 +8,8 @@ use super::publication::{
 use super::worker::{report_macos_worker_health, synchronize_macos_invalidation_generation};
 use super::*;
 use crate::input::screen::{
-    CpuReductionLayout, CpuReductionRequest, InputPublicationDemandRevision, PreparedLedToneMap,
-    ResolvedScreenColorTransform, ScreenAdmissionCapacity, ScreenAspectPolicy,
+    CpuReductionLayout, CpuReductionRequest, ExactBoxList, InputPublicationDemandRevision,
+    PreparedLedToneMap, ResolvedScreenColorTransform, ScreenAdmissionCapacity, ScreenAspectPolicy,
     ScreenBranchDeliveryLifecycle, ScreenBranchPublication, ScreenExtentRequest, ScreenHdrPolicy,
     ScreenInputGraphGeneration, ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId,
     ScreenNativeTargetPreparation, ScreenNativeTargetPreparer, ScreenPayloadKind,

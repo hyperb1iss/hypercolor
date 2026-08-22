@@ -35,25 +35,24 @@ use super::{
     AdmittedScreenNativeTargetPreparation, BoundScreenNativeTargetPreparation, CaptureCadence,
     CaptureColorSpace, CaptureColorimetry, CaptureConfig, CaptureDynamicRange, CaptureEpoch,
     CaptureLuminanceContext, CapturePixelFormat, CapturePositiveScalar, CaptureRotation,
-    CaptureSourceId, CaptureTransferFunction, ExactBoxList, LedToneMapCalibration, PixelExtent,
-    PixelRect, PlatformGpuApi, PlatformGpuSurface, PlatformGpuSurfaceTimingSink,
-    RegisteredScreenBranchDemand, ResolvedScreenBranchDemand, ResolvedScreenPublicationDescriptor,
-    ResolvedScreenSource, ResolvedScreenSourceConfig, ScreenAnalysisComputeCapacity,
-    ScreenAnalysisResourcePlan, ScreenAnalysisWorkPlan, ScreenBackendResourceIdentity,
-    ScreenBranchPayload, ScreenBranchPublisher, ScreenByteAdmissionCoordinator,
-    ScreenCaptureBackend, ScreenCaptureCadence, ScreenCaptureDemand, ScreenCommittedState,
-    ScreenComputeCapacityPolicy, ScreenCursorCapabilities, ScreenCursorPolicy,
-    ScreenExecutorColorCapabilities, ScreenGpuSurfacePayload, ScreenNativeExecutionTargetId,
-    ScreenNativeExecutionUnavailableReason, ScreenNativePreparationPayload,
-    ScreenNativeWorkPayload, ScreenPhysicalGpuDeviceIdentity, ScreenPreparedWorkerToken,
-    ScreenPublicationColorimetry, ScreenPublicationError, ScreenPublicationExecutor,
-    ScreenPublicationExecutorFallbackReason, ScreenPublicationExecutorRequest,
-    ScreenPublicationHealth, ScreenPublicationHub, ScreenPublicationHubError,
-    ScreenPublicationMetadata, ScreenPublicationRequest, ScreenRendererExecutionState,
-    ScreenRequiredResourceMinimum, ScreenResourceApi, ScreenResourceKind, ScreenResourceLifetime,
-    ScreenSourceReflection, ScreenSourceSelector, ScreenWorkerBinding, ScreenWorkerBindingState,
-    ScreenWorkerExactLedgerBuilder, ScreenWorkerPreparation, ScreenWorkerPreparationTicket,
-    ScreenWorkerRetirement, SourceScale,
+    CaptureSourceId, CaptureTransferFunction, LedToneMapCalibration, PixelExtent, PixelRect,
+    PlatformGpuApi, PlatformGpuSurface, PlatformGpuSurfaceTimingSink, RegisteredScreenBranchDemand,
+    ResolvedScreenBranchDemand, ResolvedScreenPublicationDescriptor, ResolvedScreenSource,
+    ResolvedScreenSourceConfig, ScreenAnalysisComputeCapacity, ScreenAnalysisResourcePlan,
+    ScreenAnalysisWorkPlan, ScreenBackendResourceIdentity, ScreenBranchPayload,
+    ScreenBranchPublisher, ScreenByteAdmissionCoordinator, ScreenCaptureBackend,
+    ScreenCaptureCadence, ScreenCaptureDemand, ScreenCommittedState, ScreenComputeCapacityPolicy,
+    ScreenCursorCapabilities, ScreenCursorPolicy, ScreenExecutorColorCapabilities,
+    ScreenGpuSurfacePayload, ScreenNativeExecutionTargetId, ScreenNativeExecutionUnavailableReason,
+    ScreenNativePreparationPayload, ScreenNativeWorkPayload, ScreenPhysicalGpuDeviceIdentity,
+    ScreenPreparedWorkerToken, ScreenPublicationColorimetry, ScreenPublicationError,
+    ScreenPublicationExecutor, ScreenPublicationExecutorFallbackReason,
+    ScreenPublicationExecutorRequest, ScreenPublicationHealth, ScreenPublicationHub,
+    ScreenPublicationHubError, ScreenPublicationMetadata, ScreenPublicationRequest,
+    ScreenRendererExecutionState, ScreenRequiredResourceMinimum, ScreenResourceApi,
+    ScreenResourceKind, ScreenResourceLifetime, ScreenSourceReflection, ScreenSourceSelector,
+    ScreenWorkerBinding, ScreenWorkerBindingState, ScreenWorkerExactLedgerBuilder,
+    ScreenWorkerPreparation, ScreenWorkerPreparationTicket, ScreenWorkerRetirement, SourceScale,
 };
 #[cfg(feature = "macos-capture-fixtures")]
 use super::{
@@ -73,8 +72,9 @@ use crate::input::{SourceIssue, SourceStatusHandle, SourceStatusReporter};
 
 use super::adapter::{
     CaptureExactCommand, CaptureExactCommandEndpoint, CaptureExactCommandRejected,
-    CaptureExactPublicationShared, CaptureOwnedSource, CapturePublicationSource,
-    begin_capture_exact_preparation, begin_capture_exact_retirement,
+    CaptureExactPublicationShared, CaptureExactRuntimeOwner, CaptureOwnedSource,
+    CapturePublicationSource, begin_capture_exact_preparation, begin_capture_exact_retirement,
+    execute_capture_exact_command,
 };
 
 #[cfg(target_os = "macos")]
@@ -294,6 +294,14 @@ struct MacosExactRuntime {
     fanout_candidate: Option<PreparedCpuPublicationFanoutCandidate>,
     #[cfg(feature = "macos-capture-fixtures")]
     fanout: Option<PreparedCpuPublicationFanout>,
+}
+
+impl CaptureExactRuntimeOwner for MacosExactRuntime {
+    const BACKEND_NAME: &'static str = "macOS";
+
+    fn binding(&self) -> &ScreenWorkerBinding {
+        &self.binding
+    }
 }
 
 enum WorkerCommand {

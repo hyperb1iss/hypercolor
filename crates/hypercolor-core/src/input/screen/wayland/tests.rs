@@ -14,10 +14,11 @@ use super::{
     WaylandScreenCaptureInput, WaylandSourceMetadata, WaylandTopologySignature,
     commit_if_authorized, convert_packed_to_rgba, decode_chunk, fence_previous_publication,
     initial_native_extent_correction, initial_worker_demand, park_unavailable_worker,
-    prepare_wayland_exact_runtime, publish_unexpected_exit_status, reap_wayland_exact_runtimes,
-    request_active_worker_demand, set_worker_demand, settle_pipewire_restoration,
-    unavailable_format_outcome, wait_for_adoption_result, worker_demand_epoch, worker_demanded,
+    prepare_wayland_exact_runtime, publish_unexpected_exit_status, request_active_worker_demand,
+    set_worker_demand, settle_pipewire_restoration, unavailable_format_outcome,
+    wait_for_adoption_result, worker_demand_epoch, worker_demanded,
 };
+use crate::input::screen::adapter::reap_capture_exact_runtimes;
 use crate::input::screen::{
     AnalyzedScreenSnapshot, CaptureColorimetry, CaptureConfig, CaptureFrame, CaptureFrameError,
     CaptureRotation, CaptureSourceId, InputPublicationDemandRevision,
@@ -590,7 +591,7 @@ fn exact_runtime_publishes_surface_and_zones_from_one_captured_frame() {
         retained_runtime_binding.state(),
         ScreenWorkerBindingState::Retired
     );
-    reap_wayland_exact_runtimes(&mut worker.exact_runtimes, &settings.exact);
+    reap_capture_exact_runtimes(&mut worker.exact_runtimes, &settings.exact);
     assert_eq!(worker.exact_runtimes.iter().count(), 1);
 
     let retained_frame = capture_raw(&mut worker, 4, 2, 29);
@@ -667,7 +668,7 @@ fn exact_runtime_publishes_surface_and_zones_from_one_captured_frame() {
             .committed_state()
             .owns_runtime_binding(&mixed_runtime_binding)
     );
-    reap_wayland_exact_runtimes(&mut worker.exact_runtimes, &settings.exact);
+    reap_capture_exact_runtimes(&mut worker.exact_runtimes, &settings.exact);
     assert_eq!(worker.exact_runtimes.iter().count(), 1);
 
     let mixed_frame = capture_raw(&mut worker, 4, 2, 31);
@@ -741,7 +742,7 @@ fn exact_runtime_publishes_surface_and_zones_from_one_captured_frame() {
         .commit(armed, retirement_revision, graph_generation)
         .unwrap_or_else(|failure| panic!("empty successor plan commits: {}", failure.error()));
     let (_, retirement) = committed.into_parts();
-    reap_wayland_exact_runtimes(&mut worker.exact_runtimes, &settings.exact);
+    reap_capture_exact_runtimes(&mut worker.exact_runtimes, &settings.exact);
     assert!(!settings.exact.owns_source(&owned_source_id));
     assert_eq!(worker.exact_runtimes.iter().count(), 0);
     for retirement in [retained_retirement, mixed_retirement, retirement] {

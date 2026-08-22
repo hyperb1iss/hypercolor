@@ -1,12 +1,12 @@
 use super::admission::prepare_macos_exact_runtime;
 use super::publication::{capture_source_id, publish_frame};
 use super::{
-    Arc, AtomicBool, CaptureWorker, ExactBoxList, MacosCaptureControl, MacosExactPublicationShared,
+    Arc, AtomicBool, CaptureWorker, MacosCaptureControl, MacosExactPublicationShared,
     MacosExactRuntime, MacosFrameEvent, MacosFrameMailbox, MacosFrameStatus, MacosPublication,
     MacosScreenRuntimeTelemetry, Mutex, Ordering, PreparedWorker, ResourceState,
     ScreenPublicationHealth, ScreenPublicationHub, ScreenPublicationHubError, ScreenWorkerBinding,
-    SourceSessionSlot, StagedCaptureWorker, TopologyState, WORKER_WAIT, WorkerCommand, anyhow,
-    mpsc,
+    SourceSessionSlot, StagedCaptureWorker, TopologyState, WORKER_WAIT, WorkerCommand,
+    execute_capture_exact_command, mpsc,
 };
 #[cfg(feature = "macos-capture-fixtures")]
 use super::{InputSource, lock};
@@ -33,19 +33,6 @@ impl Drop for StagedCaptureWorker {
     }
 }
 
-pub(super) fn reap_macos_exact_runtimes(
-    runtimes: &mut Vec<MacosExactRuntime>,
-    exact: &MacosExactPublicationShared,
-) {
-    exact.reap_owned_sources();
-    let authority = exact.hub().map(|hub| hub.committed_state());
-    runtimes.retain(|runtime| {
-        authority
-            .as_ref()
-            .is_some_and(|authority| authority.owns_runtime_binding(&runtime.binding))
-    });
-}
-
 pub(super) fn handle_worker_commands(
     command_rx: &mpsc::Receiver<WorkerCommand>,
     prepared: &mut PreparedWorker,
@@ -56,43 +43,10 @@ pub(super) fn handle_worker_commands(
     let _ = prepared;
     while let Ok(command) = command_rx.try_recv() {
         match command {
-            WorkerCommand::Exact(super::CaptureExactCommand::Prepare {
-                ticket,
-                cancelled,
-                completion,
-            }) => {
-                if cancelled.load(Ordering::Acquire) {
-                    let _ = completion.send(Err(anyhow!(
-                        "macOS exact publication preparation was cancelled"
-                    )));
-                    continue;
-                }
-                let source = exact.source();
-                match prepare_macos_exact_runtime(ticket, source.as_ref(), exact) {
-                    Ok((token, runtime)) if !cancelled.load(Ordering::Acquire) => {
-                        if let Some((runtime, owned_source)) = runtime {
-                            exact.register_owned_source(ExactBoxList::boxed_node(owned_source));
-                            runtimes.push(runtime);
-                        }
-                        if completion.send(Ok(token)).is_err() {
-                            reap_macos_exact_runtimes(runtimes, exact);
-                        }
-                    }
-                    Ok((_token, _runtime)) => {
-                        let _ = completion.send(Err(anyhow!(
-                            "macOS exact publication preparation was cancelled"
-                        )));
-                    }
-                    Err(error) => {
-                        let _ = completion.send(Err(error));
-                    }
-                }
-            }
-            WorkerCommand::Exact(super::CaptureExactCommand::Reap { completion }) => {
-                reap_macos_exact_runtimes(runtimes, exact);
-                if let Some(completion) = completion {
-                    let _ = completion.send(Ok(()));
-                }
+            WorkerCommand::Exact(command) => {
+                execute_capture_exact_command(command, exact, runtimes, |ticket, source| {
+                    prepare_macos_exact_runtime(ticket, source, exact)
+                });
             }
             #[cfg(feature = "macos-capture-fixtures")]
             WorkerCommand::ReconfigureProcessing {

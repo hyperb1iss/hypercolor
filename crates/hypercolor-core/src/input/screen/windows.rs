@@ -36,7 +36,6 @@ use hypercolor_windows_capture::{
     PreparedCpuDesktopReadback, PreparedGpuReductionPlan, PreparedGpuSurfacePlan,
     ReductionTelemetry,
 };
-use tokio::sync::oneshot;
 use tracing::{debug, info, warn};
 
 use crate::input::screen::{
@@ -79,9 +78,10 @@ use hypercolor_worker_retention::{retain_worker, spawn_worker};
 
 use super::adapter::{
     CaptureExactCommand, CaptureExactCommandEndpoint, CaptureExactCommandRejected,
-    CaptureExactPublicationShared, CaptureOwnedSource,
+    CaptureExactPublicationShared, CaptureExactRuntimeOwner, CaptureOwnedSource,
     CapturePublication as AdapterCapturePublication, CapturePublicationEpoch,
     CapturePublicationSource, begin_capture_exact_preparation, begin_capture_exact_retirement,
+    execute_capture_exact_command,
 };
 
 /// How long a worker waits on DXGI before checking its command channel.
@@ -719,6 +719,14 @@ struct WindowsExactRuntime {
 }
 
 type WindowsExactRuntimes = ExactBoxList<WindowsExactRuntime>;
+
+impl CaptureExactRuntimeOwner for WindowsExactRuntime {
+    const BACKEND_NAME: &'static str = "Windows";
+
+    fn binding(&self) -> &ScreenWorkerBinding {
+        &self.binding
+    }
+}
 
 impl WindowsExactRuntime {
     fn bind_if_current(&mut self, hub: &ScreenPublicationHub) -> anyhow::Result<()> {
@@ -2697,59 +2705,27 @@ fn windows_gpu_candidate_admission(
     ))
 }
 
-fn prepare_exact_command(
-    ticket: ScreenWorkerPreparationTicket,
-    cancelled: Arc<AtomicBool>,
-    completion: oneshot::Sender<anyhow::Result<ScreenPreparedWorkerToken>>,
+fn execute_windows_exact_command(
+    command: CaptureExactCommand,
     duplicator: Option<&DesktopDuplicator>,
     exact: &ExactPublicationShared,
     compute_capacity_policy: ScreenComputeCapacityPolicy,
     runtimes: &mut WindowsExactRuntimes,
 ) {
-    let result = exact
-        .hub()
-        .ok_or_else(|| anyhow!("Windows exact publication hub is unavailable"))
-        .and_then(|hub| {
-            let source = exact.source();
-            prepare_windows_exact_runtime(
-                ticket,
-                duplicator,
-                source.as_ref(),
-                exact,
-                hub.as_ref(),
-                compute_capacity_policy,
-            )
-        });
-    match result {
-        Ok((token, runtime)) if !cancelled.load(Ordering::Acquire) => {
-            if let Some((runtime, owned_source)) = runtime {
-                let runtime = WindowsExactRuntimes::boxed_node(runtime);
-                let owned_source = ExactBoxList::boxed_node(owned_source);
-                exact.register_owned_source(owned_source);
-                runtimes.push_boxed(runtime);
-            }
-            if completion.send(Ok(token)).is_err() {
-                reap_exact_runtimes(runtimes, exact);
-            }
-        }
-        Ok((_token, _runtime)) => {
-            let _ = completion.send(Err(anyhow!(
-                "Windows exact publication preparation was cancelled"
-            )));
-        }
-        Err(error) => {
-            let _ = completion.send(Err(error));
-        }
-    }
-}
-
-fn reap_exact_runtimes(runtimes: &mut WindowsExactRuntimes, exact: &ExactPublicationShared) {
-    exact.reap_owned_sources();
-    let authority = exact.hub().map(|hub| hub.committed_state());
-    runtimes.retain(|runtime| {
-        authority
-            .as_ref()
-            .is_some_and(|authority| authority.owns_runtime_binding(&runtime.binding))
+    execute_capture_exact_command(command, exact, runtimes, |ticket, source| {
+        exact
+            .hub()
+            .ok_or_else(|| anyhow!("Windows exact publication hub is unavailable"))
+            .and_then(|hub| {
+                prepare_windows_exact_runtime(
+                    ticket,
+                    duplicator,
+                    source,
+                    exact,
+                    hub.as_ref(),
+                    compute_capacity_policy,
+                )
+            })
     });
 }
 
@@ -3381,25 +3357,13 @@ fn run_worker(
                     decision,
                     done,
                 ),
-                Ok(WorkerCommand::Exact(CaptureExactCommand::Prepare {
-                    ticket,
-                    cancelled,
-                    completion,
-                })) => prepare_exact_command(
-                    ticket,
-                    cancelled,
-                    completion,
+                Ok(WorkerCommand::Exact(command)) => execute_windows_exact_command(
+                    command,
                     duplicator.as_ref(),
                     exact,
                     settings.compute_capacity_policy,
                     &mut exact_runtimes,
                 ),
-                Ok(WorkerCommand::Exact(CaptureExactCommand::Reap { completion })) => {
-                    reap_exact_runtimes(&mut exact_runtimes, exact);
-                    if let Some(completion) = completion {
-                        let _ = completion.send(Ok(()));
-                    }
-                }
                 Ok(WorkerCommand::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
             }
@@ -3543,25 +3507,13 @@ fn run_worker(
                             decision,
                             done,
                         ),
-                        Ok(WorkerCommand::Exact(CaptureExactCommand::Prepare {
-                            ticket,
-                            cancelled,
-                            completion,
-                        })) => prepare_exact_command(
-                            ticket,
-                            cancelled,
-                            completion,
+                        Ok(WorkerCommand::Exact(command)) => execute_windows_exact_command(
+                            command,
                             duplicator.as_ref(),
                             exact,
                             settings.compute_capacity_policy,
                             &mut exact_runtimes,
                         ),
-                        Ok(WorkerCommand::Exact(CaptureExactCommand::Reap { completion })) => {
-                            reap_exact_runtimes(&mut exact_runtimes, exact);
-                            if let Some(completion) = completion {
-                                let _ = completion.send(Ok(()));
-                            }
-                        }
                         Ok(WorkerCommand::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => {
                             break;
                         }
@@ -3811,25 +3763,13 @@ fn run_worker(
                         decision,
                         done,
                     ),
-                    Ok(WorkerCommand::Exact(CaptureExactCommand::Prepare {
-                        ticket,
-                        cancelled,
-                        completion,
-                    })) => prepare_exact_command(
-                        ticket,
-                        cancelled,
-                        completion,
+                    Ok(WorkerCommand::Exact(command)) => execute_windows_exact_command(
+                        command,
                         duplicator.as_ref(),
                         exact,
                         settings.compute_capacity_policy,
                         &mut exact_runtimes,
                     ),
-                    Ok(WorkerCommand::Exact(CaptureExactCommand::Reap { completion })) => {
-                        reap_exact_runtimes(&mut exact_runtimes, exact);
-                        if let Some(completion) = completion {
-                            let _ = completion.send(Ok(()));
-                        }
-                    }
                     Ok(WorkerCommand::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
                     Err(mpsc::RecvTimeoutError::Timeout) => {}
                 }
@@ -4031,25 +3971,13 @@ fn drain_commands(
                 decision,
                 done,
             ),
-            Ok(WorkerCommand::Exact(CaptureExactCommand::Prepare {
-                ticket,
-                cancelled,
-                completion,
-            })) => prepare_exact_command(
-                ticket,
-                cancelled,
-                completion,
+            Ok(WorkerCommand::Exact(command)) => execute_windows_exact_command(
+                command,
                 duplicator.as_ref(),
                 exact,
                 settings.compute_capacity_policy,
                 exact_runtimes,
             ),
-            Ok(WorkerCommand::Exact(CaptureExactCommand::Reap { completion })) => {
-                reap_exact_runtimes(exact_runtimes, exact);
-                if let Some(completion) = completion {
-                    let _ = completion.send(Ok(()));
-                }
-            }
             Ok(WorkerCommand::Stop) | Err(mpsc::TryRecvError::Disconnected) => {
                 return ControlFlow::Stop;
             }

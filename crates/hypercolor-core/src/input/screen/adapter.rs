@@ -8,8 +8,8 @@ use tokio::sync::oneshot;
 
 use super::{
     CaptureSourceId, ExactBoxList, ExactBoxNode, ScreenCommittedState, ScreenPreparedWorkerToken,
-    ScreenPublicationHub, ScreenWorkerPreparation, ScreenWorkerPreparationTicket,
-    ScreenWorkerRetirement,
+    ScreenPublicationHub, ScreenWorkerBinding, ScreenWorkerPreparation,
+    ScreenWorkerPreparationTicket, ScreenWorkerRetirement,
 };
 
 pub enum CaptureExactCommand {
@@ -24,6 +24,54 @@ pub enum CaptureExactCommand {
 }
 
 pub struct CaptureExactCommandRejected;
+
+pub trait CaptureExactRuntimeOwner {
+    const BACKEND_NAME: &'static str;
+
+    fn binding(&self) -> &ScreenWorkerBinding;
+}
+
+pub trait CaptureExactRuntimeStore<R> {
+    type Prepared;
+
+    fn prepare(runtime: R) -> Self::Prepared;
+
+    fn install(&mut self, prepared: Self::Prepared);
+
+    fn retain(&mut self, retain: impl FnMut(&R) -> bool);
+}
+
+impl<R> CaptureExactRuntimeStore<R> for ExactBoxList<R> {
+    type Prepared = Box<ExactBoxNode<R>>;
+
+    fn prepare(runtime: R) -> Self::Prepared {
+        Self::boxed_node(runtime)
+    }
+
+    fn install(&mut self, prepared: Self::Prepared) {
+        self.push_boxed(prepared);
+    }
+
+    fn retain(&mut self, mut retain: impl FnMut(&R) -> bool) {
+        ExactBoxList::retain(self, |runtime| retain(runtime));
+    }
+}
+
+impl<R> CaptureExactRuntimeStore<R> for Vec<R> {
+    type Prepared = R;
+
+    fn prepare(runtime: R) -> Self::Prepared {
+        runtime
+    }
+
+    fn install(&mut self, prepared: Self::Prepared) {
+        self.push(prepared);
+    }
+
+    fn retain(&mut self, retain: impl FnMut(&R) -> bool) {
+        Vec::retain(self, retain);
+    }
+}
 
 pub trait CaptureExactCommandEndpoint: Clone + Send + 'static {
     const SOURCE_NAME: &'static str;
@@ -100,6 +148,84 @@ where
             )
         })?
     })
+}
+
+pub fn execute_capture_exact_command<S, O, R, C>(
+    command: CaptureExactCommand,
+    shared: &CaptureExactPublicationShared<S, O>,
+    runtimes: &mut C,
+    prepare: impl FnOnce(
+        ScreenWorkerPreparationTicket,
+        Option<&S>,
+    ) -> anyhow::Result<(ScreenPreparedWorkerToken, Option<(R, O)>)>,
+) where
+    S: CapturePublicationSource,
+    O: CaptureOwnedSource,
+    R: CaptureExactRuntimeOwner,
+    C: CaptureExactRuntimeStore<R>,
+{
+    match command {
+        CaptureExactCommand::Prepare {
+            ticket,
+            cancelled,
+            completion,
+        } => {
+            if cancelled.load(Ordering::Acquire) {
+                let _ = completion.send(Err(anyhow::anyhow!(
+                    "{} exact publication preparation was cancelled",
+                    R::BACKEND_NAME
+                )));
+                return;
+            }
+            let source = shared.source();
+            match prepare(ticket, source.as_ref()) {
+                Ok((token, runtime)) if !cancelled.load(Ordering::Acquire) => {
+                    if let Some((runtime, owned_source)) = runtime {
+                        let runtime = C::prepare(runtime);
+                        let owned_source = ExactBoxList::boxed_node(owned_source);
+                        shared.register_owned_source(owned_source);
+                        runtimes.install(runtime);
+                    }
+                    if completion.send(Ok(token)).is_err() {
+                        reap_capture_exact_runtimes(runtimes, shared);
+                    }
+                }
+                Ok((_token, _runtime)) => {
+                    let _ = completion.send(Err(anyhow::anyhow!(
+                        "{} exact publication preparation was cancelled",
+                        R::BACKEND_NAME
+                    )));
+                }
+                Err(error) => {
+                    let _ = completion.send(Err(error));
+                }
+            }
+        }
+        CaptureExactCommand::Reap { completion } => {
+            reap_capture_exact_runtimes(runtimes, shared);
+            if let Some(completion) = completion {
+                let _ = completion.send(Ok(()));
+            }
+        }
+    }
+}
+
+pub fn reap_capture_exact_runtimes<S, O, R, C>(
+    runtimes: &mut C,
+    shared: &CaptureExactPublicationShared<S, O>,
+) where
+    S: CapturePublicationSource,
+    O: CaptureOwnedSource,
+    R: CaptureExactRuntimeOwner,
+    C: CaptureExactRuntimeStore<R>,
+{
+    shared.reap_owned_sources();
+    let authority = shared.hub().map(|hub| hub.committed_state());
+    runtimes.retain(|runtime| {
+        authority
+            .as_ref()
+            .is_some_and(|authority| authority.owns_runtime_binding(runtime.binding()))
+    });
 }
 
 pub trait CapturePublicationSource: Clone + PartialEq {

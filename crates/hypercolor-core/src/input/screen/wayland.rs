@@ -59,8 +59,9 @@ use hypercolor_worker_retention::{retain_worker, spawn_worker};
 
 use super::adapter::{
     CaptureExactCommand, CaptureExactCommandEndpoint, CaptureExactCommandRejected,
-    CaptureExactPublicationShared, CaptureOwnedSource, CapturePublicationSource,
-    begin_capture_exact_preparation, begin_capture_exact_retirement,
+    CaptureExactPublicationShared, CaptureExactRuntimeOwner, CaptureOwnedSource,
+    CapturePublicationSource, begin_capture_exact_preparation, begin_capture_exact_retirement,
+    execute_capture_exact_command,
 };
 
 const WORKER_READY_TIMEOUT: Duration = Duration::from_secs(1);
@@ -3221,6 +3222,14 @@ struct WaylandExactRuntime {
 
 type WaylandExactRuntimes = ExactBoxList<WaylandExactRuntime>;
 
+impl CaptureExactRuntimeOwner for WaylandExactRuntime {
+    const BACKEND_NAME: &'static str = "Wayland";
+
+    fn binding(&self) -> &ScreenWorkerBinding {
+        &self.binding
+    }
+}
+
 impl WaylandExactRuntime {
     fn bind_if_current(&mut self, hub: &ScreenPublicationHub) -> anyhow::Result<()> {
         if self.fanout.is_some() {
@@ -3482,19 +3491,6 @@ fn prepare_wayland_exact_runtime(
     ))
 }
 
-fn reap_wayland_exact_runtimes(
-    runtimes: &mut WaylandExactRuntimes,
-    exact: &WaylandExactPublicationShared,
-) {
-    exact.reap_owned_sources();
-    let authority = exact.hub().map(|hub| hub.committed_state());
-    runtimes.retain(|runtime| {
-        authority
-            .as_ref()
-            .is_some_and(|authority| authority.owns_runtime_binding(&runtime.binding))
-    });
-}
-
 fn bind_current_wayland_exact_runtime<'a>(
     runtimes: &'a mut WaylandExactRuntimes,
     source: &WaylandPublicationSource,
@@ -3678,57 +3674,19 @@ impl WaylandAnalysisState {
     }
 
     fn handle_exact_command(&mut self, command: CaptureExactCommand) {
-        match command {
-            CaptureExactCommand::Prepare {
-                ticket,
-                cancelled,
-                completion,
-            } => {
-                if cancelled.load(Ordering::Acquire) {
-                    let _ = completion.send(Err(anyhow!(
-                        "Wayland exact publication preparation was cancelled"
-                    )));
-                    return;
-                }
-                let source = self.settings.exact.source();
-                let result = prepare_wayland_exact_runtime(
+        execute_capture_exact_command(
+            command,
+            &self.settings.exact,
+            &mut self.exact_runtimes,
+            |ticket, source| {
+                prepare_wayland_exact_runtime(
                     ticket,
-                    source.as_ref(),
+                    source,
                     &self.settings.exact,
                     self.settings.compute_capacity_policy,
-                );
-                match result {
-                    Ok((token, runtime)) if !cancelled.load(Ordering::Acquire) => {
-                        if let Some((runtime, owned_source)) = runtime {
-                            let runtime = WaylandExactRuntimes::boxed_node(runtime);
-                            let owned_source = ExactBoxList::boxed_node(owned_source);
-                            self.settings.exact.register_owned_source(owned_source);
-                            self.exact_runtimes.push_boxed(runtime);
-                        }
-                        if completion.send(Ok(token)).is_err() {
-                            reap_wayland_exact_runtimes(
-                                &mut self.exact_runtimes,
-                                &self.settings.exact,
-                            );
-                        }
-                    }
-                    Ok((_token, _runtime)) => {
-                        let _ = completion.send(Err(anyhow!(
-                            "Wayland exact publication preparation was cancelled"
-                        )));
-                    }
-                    Err(error) => {
-                        let _ = completion.send(Err(error));
-                    }
-                }
-            }
-            CaptureExactCommand::Reap { completion } => {
-                reap_wayland_exact_runtimes(&mut self.exact_runtimes, &self.settings.exact);
-                if let Some(completion) = completion {
-                    let _ = completion.send(Ok(()));
-                }
-            }
-        }
+                )
+            },
+        );
     }
 
     fn publish_exact(&mut self, frame: &CaptureFrame<RawCaptureSurface>) -> anyhow::Result<()> {
