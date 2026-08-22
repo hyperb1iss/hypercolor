@@ -402,6 +402,7 @@ async fn effect_id_migration_supersedes_queued_layout_publication() {
         .await
         .expect("scene migration should prepare publication");
     scene_manager.publish_effect_id_migration(&mut publication);
+    drop(publication);
 
     assert_eq!(
         publish_commit(accepted, &spatial_engine, &scene_manager).await,
