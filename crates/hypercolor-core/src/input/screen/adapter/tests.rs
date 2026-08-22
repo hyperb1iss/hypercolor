@@ -1,8 +1,8 @@
 use super::{
     CaptureBackend, CaptureExactCommand, CaptureExactCommandEndpoint, CaptureExactCommandRejected,
     CaptureExactPublicationShared, CaptureExactRuntimeCollection, CaptureExactRuntimeOwner,
-    CaptureExactRuntimeStore, CaptureOwnedSource, CapturePublication, CapturePublicationFence,
-    CapturePublicationSource, CaptureSession, CaptureSessionAuthority,
+    CaptureExactRuntimeStore, CaptureExactState, CaptureOwnedSource, CapturePublication,
+    CapturePublicationFence, CapturePublicationSource, CaptureSession, CaptureSessionAuthority,
     CaptureSessionAuthoritySequencer, CaptureSessionDeadline, CaptureSessionReadiness,
     CaptureSessionSet, CaptureSessionTransaction, CaptureSuccessorPolicy,
     ReservedCaptureSessionAuthority, ScreenCaptureAdapter, VersionedCaptureSettings,
@@ -181,6 +181,7 @@ impl CaptureBackend for FakeCaptureBackend {
     type Worker = FakeSession;
     type Readiness = FakeReadiness;
     type SpawnRequest = (FakeSession, FakeReadiness);
+    type ExactState = CaptureExactPublicationShared<FakeSource, FakeOwnedSource>;
 
     const READINESS_TIMEOUT: Duration = Duration::from_secs(1);
 
@@ -202,6 +203,7 @@ impl CaptureBackend for FailingCaptureBackend {
     type Worker = FakeSession;
     type Readiness = FakeReadiness;
     type SpawnRequest = ();
+    type ExactState = CaptureExactPublicationShared<FakeSource, FakeOwnedSource>;
 
     const READINESS_TIMEOUT: Duration = Duration::from_secs(1);
 
@@ -210,6 +212,50 @@ impl CaptureBackend for FailingCaptureBackend {
         _reservation: ReservedCaptureSessionAuthority,
     ) -> anyhow::Result<CaptureSessionTransaction<Self::Worker, Self::Readiness>> {
         anyhow::bail!("injected backend spawn failure")
+    }
+}
+
+struct DropOrderExactState {
+    common: CaptureExactPublicationShared<FakeSource, FakeOwnedSource>,
+    session_detaches: Arc<AtomicUsize>,
+    dropped: Arc<AtomicBool>,
+}
+
+impl CaptureExactState for DropOrderExactState {
+    type Source = FakeSource;
+    type OwnedSource = FakeOwnedSource;
+
+    fn common(&self) -> &CaptureExactPublicationShared<Self::Source, Self::OwnedSource> {
+        &self.common
+    }
+}
+
+impl Drop for DropOrderExactState {
+    fn drop(&mut self) {
+        assert_eq!(self.session_detaches.load(Ordering::Acquire), 1);
+        self.dropped.store(true, Ordering::Release);
+    }
+}
+
+struct DropOrderCaptureBackend;
+
+impl CaptureBackend for DropOrderCaptureBackend {
+    type Worker = FakeSession;
+    type Readiness = FakeReadiness;
+    type SpawnRequest = (FakeSession, FakeReadiness);
+    type ExactState = DropOrderExactState;
+
+    const READINESS_TIMEOUT: Duration = Duration::from_secs(1);
+
+    fn spawn_worker(
+        (session, readiness): Self::SpawnRequest,
+        reservation: ReservedCaptureSessionAuthority,
+    ) -> anyhow::Result<CaptureSessionTransaction<Self::Worker, Self::Readiness>> {
+        Ok(CaptureSessionTransaction::new(
+            session,
+            readiness,
+            reservation,
+        ))
     }
 }
 
@@ -271,6 +317,72 @@ fn backend_worker_factory_burns_failed_spawn_and_cleans_failed_readiness() {
     assert_eq!(wakes.load(Ordering::Relaxed), 1);
     assert_eq!(detaches.load(Ordering::Relaxed), 1);
     assert_eq!(starts.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn adapter_and_backend_handles_share_one_exact_state() {
+    let exact = Arc::new(CaptureExactPublicationShared::<FakeSource, FakeOwnedSource>::default());
+    let adapter = ScreenCaptureAdapter::<FakeCaptureBackend>::new(Arc::clone(&exact));
+    assert_eq!(Arc::strong_count(&exact), 2);
+
+    for _ in 0..3 {
+        let borrowed = adapter.exact_state();
+        assert!(std::ptr::eq(borrowed, exact.as_ref()));
+        assert_eq!(Arc::strong_count(&exact), 2);
+    }
+
+    let backend_handle = adapter.exact_state_handle();
+    assert!(Arc::ptr_eq(&backend_handle, &exact));
+    let reservation = adapter
+        .reserve_exact_authority()
+        .expect("adapter authority reserves");
+    let authority = reservation.authority();
+    drop(
+        backend_handle
+            .activate_reserved_authority(reservation)
+            .expect("backend handle activates adapter reservation"),
+    );
+
+    let source = FakeSource {
+        id: CaptureSourceId::new("fake:adapter").expect("test source id is valid"),
+        incarnation: 1,
+    };
+    assert!(backend_handle.replace_source_if_current(authority, Some(source.clone())));
+    assert_eq!(adapter.exact_source(), Some(source.clone()));
+    assert!(adapter.owns_exact_source(&source.id));
+
+    let hub = Arc::new(ScreenPublicationHub::new(
+        ScreenPublicationSlotPolicy::default(),
+    ));
+    adapter.install_publication_hub(Arc::clone(&hub));
+    assert!(Arc::ptr_eq(
+        &backend_handle.hub().expect("adapter hub remains visible"),
+        &hub
+    ));
+    let revision = adapter.exact_resolution_revision();
+    adapter.advance_exact_resolution_revision();
+    assert_eq!(backend_handle.resolution_revision(), revision + 1);
+}
+
+#[test]
+fn adapter_detaches_sessions_before_releasing_exact_state() {
+    let detaches = Arc::new(AtomicUsize::new(0));
+    let dropped = Arc::new(AtomicBool::new(false));
+    let exact = Arc::new(DropOrderExactState {
+        common: CaptureExactPublicationShared::default(),
+        session_detaches: Arc::clone(&detaches),
+        dropped: Arc::clone(&dropped),
+    });
+    let mut adapter = ScreenCaptureAdapter::<DropOrderCaptureBackend>::new(Arc::clone(&exact));
+    drop(exact);
+    let mut session = FakeSession::new(1);
+    session.detaches = Arc::clone(&detaches);
+    assert!(adapter.install_worker_for_test(session).is_ok());
+
+    drop(adapter);
+
+    assert_eq!(detaches.load(Ordering::Acquire), 1);
+    assert!(dropped.load(Ordering::Acquire));
 }
 
 fn reservation(generation: u64) -> ReservedCaptureSessionAuthority {

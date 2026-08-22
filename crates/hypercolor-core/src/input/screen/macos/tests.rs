@@ -112,11 +112,15 @@ fn retired_worker_cannot_republish_after_stop_returns() {
         MacosScreenCaptureFixture::source(CaptureConfig::default(), admission);
     let authority = CaptureSessionAuthority::new(1);
     input.worker_generation = 1;
-    let reservation = input.exact.reserve_authority().expect("authority reserves");
+    let reservation = input
+        .adapter
+        .reserve_exact_authority()
+        .expect("authority reserves");
     assert_eq!(reservation.authority(), authority);
     drop(
         input
-            .exact
+            .adapter
+            .exact_state()
             .activate_reserved_authority(reservation)
             .expect("authority activates"),
     );
@@ -153,10 +157,11 @@ fn retired_worker_cannot_republish_after_stop_returns() {
     input.stop_worker();
 
     assert!(worker_stop.load(Ordering::Acquire));
-    assert!(!input.exact.is_current_authority(authority));
+    assert!(!input.adapter.exact_state().is_current_authority(authority));
     assert!(
         !input
-            .exact
+            .adapter
+            .exact_state()
             .replace_source_if_current(authority, Some(source(&frame())))
     );
     let mut publication = lock(&input.publication);
@@ -2486,7 +2491,10 @@ fn processing_reconfiguration_preserves_the_native_capture_runtime() {
     let (mut input, fixture) =
         MacosScreenCaptureFixture::source(CaptureConfig::default(), admission);
     let native_source = source(&frame());
-    input.exact.install_test_source(Some(native_source));
+    input
+        .adapter
+        .exact_state()
+        .install_test_source(Some(native_source));
     fixture.control.set_active(true);
     let active_transitions = fixture.control.active_transitions.load(Ordering::Acquire);
     let worker_generation = input.worker_generation;

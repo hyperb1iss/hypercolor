@@ -21,6 +21,15 @@ pub(in crate::input::screen) trait CaptureOwnedSource {
     fn belongs_to_authority(&self, authority: &ScreenCommittedState) -> bool;
 }
 
+pub(in crate::input::screen) trait CaptureExactState:
+    Send + Sync + 'static
+{
+    type Source: CapturePublicationSource + Send + 'static;
+    type OwnedSource: CaptureOwnedSource + Send + 'static;
+
+    fn common(&self) -> &CaptureExactPublicationShared<Self::Source, Self::OwnedSource>;
+}
+
 pub(in crate::input::screen) struct CaptureAuthorityDisplacement<S, O> {
     _source: Option<S>,
     _owned_sources: ExactBoxList<O>,
@@ -58,6 +67,19 @@ impl<S, O> Default for CaptureExactPublicationShared<S, O> {
             hub: Mutex::new(None),
             resolution_revision: AtomicU64::new(0),
         }
+    }
+}
+
+impl<S, O> CaptureExactState for CaptureExactPublicationShared<S, O>
+where
+    S: CapturePublicationSource + Send + 'static,
+    O: CaptureOwnedSource + Send + 'static,
+{
+    type Source = S;
+    type OwnedSource = O;
+
+    fn common(&self) -> &Self {
+        self
     }
 }
 

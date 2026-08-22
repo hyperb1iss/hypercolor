@@ -78,7 +78,7 @@ use hypercolor_worker_retention::{retain_worker, spawn_worker as spawn_retained_
 
 use super::adapter::{
     CaptureBackend, CaptureExactCommand, CaptureExactCommandEndpoint, CaptureExactCommandRejected,
-    CaptureExactPublicationShared, CaptureExactRuntimeOwner, CaptureOwnedSource,
+    CaptureExactPublicationShared, CaptureExactRuntimeOwner, CaptureExactState, CaptureOwnedSource,
     CapturePublication as AdapterCapturePublication, CapturePublicationFence,
     CapturePublicationSource, CaptureSession, CaptureSessionAuthority, CaptureSessionDeadline,
     CaptureSessionReadiness, CaptureSessionTransaction, CaptureSuccessorPolicy,
@@ -462,6 +462,15 @@ impl Deref for ExactPublicationShared {
     }
 }
 
+impl CaptureExactState for ExactPublicationShared {
+    type Source = WindowsPublicationSource;
+    type OwnedSource = WindowsOwnedSource;
+
+    fn common(&self) -> &CaptureExactPublicationShared<Self::Source, Self::OwnedSource> {
+        &self.common
+    }
+}
+
 impl ExactPublicationShared {
     #[cfg(test)]
     fn install_test_source(&self, next: Option<WindowsPublicationSource>) -> bool {
@@ -557,7 +566,6 @@ pub struct WindowsScreenCaptureInput {
     running: bool,
     capture_demand: ScreenCaptureDemand,
     publication: Arc<Mutex<CapturePublication<AnalyzedScreenSnapshot>>>,
-    exact: Arc<ExactPublicationShared>,
     adapter: ScreenCaptureAdapter<WindowsCaptureBackend>,
     status: SourceStatusReporter,
     status_session: SourceSessionSlot,
@@ -673,6 +681,7 @@ impl CaptureBackend for WindowsCaptureBackend {
     type Worker = CaptureWorker;
     type Readiness = WindowsSessionReadiness;
     type SpawnRequest = WindowsWorkerSpawn;
+    type ExactState = ExactPublicationShared;
 
     const READINESS_TIMEOUT: Duration = WORKER_READY_TIMEOUT;
 
@@ -1012,6 +1021,7 @@ impl WindowsScreenCaptureInput {
         admission_coordinator: ScreenByteAdmissionCoordinator,
         compute_capacity_policy: ScreenComputeCapacityPolicy,
     ) -> Self {
+        let exact = Arc::new(ExactPublicationShared::default());
         Self {
             settings: Arc::new(SharedSettings {
                 values: VersionedCaptureSettings::new(
@@ -1028,8 +1038,7 @@ impl WindowsScreenCaptureInput {
             running: false,
             capture_demand: ScreenCaptureDemand::Inactive,
             publication: Arc::new(Mutex::new(CapturePublication::default())),
-            exact: Arc::new(ExactPublicationShared::default()),
-            adapter: ScreenCaptureAdapter::default(),
+            adapter: ScreenCaptureAdapter::new(exact),
             status: SourceStatusReporter::new(
                 "windows_screen_capture",
                 SourceKind::Screen,
@@ -1101,21 +1110,21 @@ impl WindowsScreenCaptureInput {
         }
 
         let reservation = self
-            .exact
-            .reserve_authority()
+            .adapter
+            .reserve_exact_authority()
             .map_err(|error| anyhow!("Windows capture session generation exhausted: {error}"))?;
         let authority = reservation.authority();
         let prepared = self.adapter.prepare_worker(
             WindowsWorkerSpawn {
                 settings: Arc::clone(&self.settings),
                 publication: Arc::clone(&self.publication),
-                exact: Arc::clone(&self.exact),
+                exact: self.adapter.exact_state_handle(),
                 status_session: self.status_session.clone(),
                 source_sink: self.source_sink.clone(),
             },
             reservation,
         )?;
-        let exact = Arc::clone(&self.exact);
+        let exact = self.adapter.exact_state_handle();
         let committed_authority = self
             .adapter
             .commit_worker(
@@ -1220,7 +1229,8 @@ impl WindowsScreenCaptureInput {
 
     fn retire_exact_authority(&self, authority: CaptureSessionAuthority) {
         let retirement = self
-            .exact
+            .adapter
+            .exact_state()
             .retire_authority_if_current(authority)
             .expect("Windows capture session generation exhausted during retirement");
         drop(retirement);
@@ -1285,7 +1295,9 @@ impl WindowsScreenCaptureInput {
 
     fn deactivate_backend(&mut self, activity_generation: u64) {
         if let Some(worker) = self.adapter.active_worker() {
-            self.exact.replace_source_if_current(worker.authority, None);
+            self.adapter
+                .exact_state()
+                .replace_source_if_current(worker.authority, None);
         }
         #[cfg(feature = "windows-capture-fixtures")]
         if let Some(fixture) = self.fixture.as_ref() {
@@ -1311,7 +1323,7 @@ impl WindowsScreenCaptureInput {
             .expect("active Windows capture settings carry an extent");
         let cadence = CaptureCadence::new(config.target_fps)?;
         let source_is_known = source_generation == self.settings.snapshot().source_generation
-            && self.exact.source().is_some();
+            && self.adapter.exact_source().is_some();
         if source_is_known && let Some(capacity) = self.settings.compute_capacity_policy.analysis()
         {
             ScreenAnalysisWorkPlan::try_new(requested_extent, requested_extent, &config)?
@@ -1565,7 +1577,9 @@ impl WindowsScreenCaptureInput {
             }
             if snapshot.source_generation != source_generation {
                 if let Some(worker) = self.adapter.active_worker() {
-                    self.exact.replace_source_if_current(worker.authority, None);
+                    self.adapter
+                        .exact_state()
+                        .replace_source_if_current(worker.authority, None);
                 }
             }
             return Ok(());
@@ -1736,25 +1750,25 @@ impl ScreenSource for WindowsScreenCaptureInput {
     }
 
     fn set_screen_publication_hub(&mut self, hub: Arc<ScreenPublicationHub>) {
-        self.exact.install_hub(hub);
+        self.adapter.install_publication_hub(hub);
     }
 
     fn screen_publication_resolution_revision(&self) -> u64 {
-        self.exact.resolution_revision()
+        self.adapter.exact_resolution_revision()
     }
 
     fn resolve_screen_publication_branch(
         &self,
         demand: &RegisteredScreenBranchDemand,
     ) -> anyhow::Result<Option<ResolvedScreenBranchDemand>> {
-        let Some(source) = self.exact.source() else {
+        let Some(source) = self.adapter.exact_source() else {
             return Ok(None);
         };
         resolve_windows_publication_branch(&source, demand)
     }
 
     fn owns_screen_publication_source(&self, source_id: &CaptureSourceId) -> bool {
-        self.exact.owns_source(source_id)
+        self.adapter.owns_exact_source(source_id)
     }
 
     fn begin_screen_publication_preparation(

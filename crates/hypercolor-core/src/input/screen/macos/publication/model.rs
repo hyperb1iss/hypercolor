@@ -148,10 +148,6 @@ impl MacosExactPublicationShared {
         }
     }
 
-    pub(in crate::input::screen::macos) fn advance_resolution_revision(&self) {
-        self.common.advance_resolution_revision();
-    }
-
     pub(in crate::input::screen::macos) fn replace_current_source(
         &self,
         authority: CaptureSessionAuthority,

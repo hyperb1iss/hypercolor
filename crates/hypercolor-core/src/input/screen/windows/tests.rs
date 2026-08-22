@@ -993,7 +993,10 @@ fn large_native_source_admits_the_gpu_reduced_analysis_plane() {
     source.logical_extent = source.native_extent;
     source.rotation = CaptureRotation::Identity;
     let input = WindowsScreenCaptureInput::new(CaptureConfig::default());
-    input.exact.install_test_source(Some(source));
+    input
+        .adapter
+        .exact_state()
+        .install_test_source(Some(source));
 
     let prepared = input
         .prepare_active_settings(CaptureConfig::default(), 0, active_demand())
@@ -1019,7 +1022,10 @@ fn calibrated_analysis_capacity_rejects_known_work_before_preparation() {
     source.logical_extent = source.native_extent;
     let input =
         WindowsScreenCaptureInput::with_compute_capacity_policy(CaptureConfig::default(), policy);
-    input.exact.install_test_source(Some(source));
+    input
+        .adapter
+        .exact_state()
+        .install_test_source(Some(source));
 
     let Err(error) = input.prepare_active_settings(CaptureConfig::default(), 0, active_demand())
     else {
@@ -1278,7 +1284,8 @@ fn deactivated_worker_is_reused_when_capture_reactivates() {
         .thread()
         .id();
     let first_generation = input
-        .exact
+        .adapter
+        .exact_state()
         .current_authority()
         .expect("active worker owns exact authority")
         .generation();
@@ -1309,7 +1316,8 @@ fn deactivated_worker_is_reused_when_capture_reactivates() {
     assert_eq!(reactivated_thread, first_thread);
     assert_eq!(
         input
-            .exact
+            .adapter
+            .exact_state()
             .current_authority()
             .expect("reactivated worker retains exact authority")
             .generation(),
@@ -1376,7 +1384,8 @@ fn disconnected_worker_is_reaped_before_activation_retries_once() {
     assert_ne!(replacement_thread, disconnected_thread);
     assert_eq!(
         input
-            .exact
+            .adapter
+            .exact_state()
             .current_authority()
             .expect("replacement worker owns exact authority")
             .generation(),
@@ -1391,11 +1400,15 @@ fn disconnected_worker_is_reaped_before_activation_retries_once() {
 fn retired_worker_cannot_republish_after_stop_returns() {
     let mut input = WindowsScreenCaptureInput::new(CaptureConfig::default());
     let authority = CaptureSessionAuthority::new(1);
-    let reservation = input.exact.reserve_authority().expect("authority reserves");
+    let reservation = input
+        .adapter
+        .reserve_exact_authority()
+        .expect("authority reserves");
     assert_eq!(reservation.authority(), authority);
     drop(
         input
-            .exact
+            .adapter
+            .exact_state()
             .activate_reserved_authority(reservation)
             .expect("authority activates"),
     );
@@ -1436,7 +1449,7 @@ fn retired_worker_cannot_republish_after_stop_returns() {
 
     input.stop();
 
-    assert!(!input.exact.is_current_authority(authority));
+    assert!(!input.adapter.exact_state().is_current_authority(authority));
     let mut publication = input
         .publication
         .lock()

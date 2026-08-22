@@ -37,7 +37,7 @@ use crate::input::{SourceIssue, SourceKind, SourceState, SourceStatusReporter};
 
 fn settings(session_generation: u64) -> Arc<SharedSettings> {
     let publication = Arc::new(Mutex::new(WaylandCapturePublication::default()));
-    let exact = WaylandExactPublicationShared::default();
+    let exact = Arc::new(WaylandExactPublicationShared::default());
     let mut reservation = None;
     for _ in 0..session_generation {
         reservation = Some(exact.reserve_authority().expect("test authority reserves"));

@@ -166,20 +166,20 @@ impl ScreenSource for MacosScreenCaptureInput {
     }
 
     fn set_screen_publication_hub(&mut self, hub: Arc<ScreenPublicationHub>) {
-        self.exact.install_hub(hub);
+        self.adapter.install_publication_hub(hub);
     }
 
     fn screen_publication_resolution_revision(&self) -> u64 {
-        self.exact.resolution_revision()
+        self.adapter.exact_resolution_revision()
     }
 
     fn resolve_screen_publication_branch(
         &self,
         demand: &RegisteredScreenBranchDemand,
     ) -> anyhow::Result<Option<ResolvedScreenBranchDemand>> {
-        let Some(source) = self.exact.source() else {
+        let Some(source) = self.adapter.exact_source() else {
             tracing::debug!(
-                shared = ?std::ptr::from_ref(self.exact.as_ref()),
+                shared = ?std::ptr::from_ref(self.adapter.exact_state()),
                 "exact branch unresolvable: no publication source installed"
             );
             return Ok(None);
@@ -212,7 +212,7 @@ impl ScreenSource for MacosScreenCaptureInput {
     }
 
     fn owns_screen_publication_source(&self, source_id: &CaptureSourceId) -> bool {
-        self.exact.owns_source(source_id)
+        self.adapter.owns_exact_source(source_id)
     }
 
     fn begin_screen_publication_preparation(
@@ -323,7 +323,7 @@ impl ScreenSource for MacosScreenCaptureInput {
         self.config.target_led_reference_white_nits = next.target_reference_white_nits();
         self.config.target_led_peak_nits = next.target_peak_nits();
         self.config.exposure_ev = next.exposure_ev();
-        self.exact.advance_resolution_revision();
+        self.adapter.advance_exact_resolution_revision();
         Ok(())
     }
 

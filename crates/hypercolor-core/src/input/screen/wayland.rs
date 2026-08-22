@@ -59,7 +59,7 @@ use hypercolor_worker_retention::{retain_worker, spawn_worker};
 
 use super::adapter::{
     CaptureBackend, CaptureExactCommand, CaptureExactCommandEndpoint, CaptureExactCommandRejected,
-    CaptureExactPublicationShared, CaptureExactRuntimeOwner, CaptureOwnedSource,
+    CaptureExactPublicationShared, CaptureExactRuntimeOwner, CaptureExactState, CaptureOwnedSource,
     CapturePublication, CapturePublicationFence, CapturePublicationSource, CaptureSession,
     CaptureSessionAuthority, CaptureSessionDeadline, CaptureSessionReadiness,
     CaptureSessionTransaction, CaptureSuccessorPolicy, ReservedCaptureSessionAuthority,
@@ -549,7 +549,7 @@ struct SharedSettings {
     session_generation: AtomicU64,
     session_guard: Mutex<()>,
     publication: Arc<Mutex<WaylandCapturePublication>>,
-    exact: WaylandExactPublicationShared,
+    exact: Arc<WaylandExactPublicationShared>,
 }
 
 struct WaylandSessionCommitGuard<'a> {
@@ -632,6 +632,15 @@ impl Deref for WaylandExactPublicationShared {
     type Target = CaptureExactPublicationShared<WaylandPublicationSource, WaylandOwnedSource>;
 
     fn deref(&self) -> &Self::Target {
+        &self.common
+    }
+}
+
+impl CaptureExactState for WaylandExactPublicationShared {
+    type Source = WaylandPublicationSource;
+    type OwnedSource = WaylandOwnedSource;
+
+    fn common(&self) -> &CaptureExactPublicationShared<Self::Source, Self::OwnedSource> {
         &self.common
     }
 }
@@ -1628,6 +1637,7 @@ impl WaylandScreenCaptureInput {
         compute_capacity_policy: ScreenComputeCapacityPolicy,
     ) -> Self {
         let publication = Arc::new(Mutex::new(WaylandCapturePublication::default()));
+        let exact = Arc::new(WaylandExactPublicationShared::default());
         Self {
             settings: Arc::new(SharedSettings {
                 values: VersionedCaptureSettings::new(config, ScreenCaptureDemand::Inactive),
@@ -1638,13 +1648,13 @@ impl WaylandScreenCaptureInput {
                 session_generation: AtomicU64::new(0),
                 session_guard: Mutex::new(()),
                 publication: Arc::clone(&publication),
-                exact: WaylandExactPublicationShared::default(),
+                exact: Arc::clone(&exact),
             }),
             running: false,
             capture_demand: ScreenCaptureDemand::Inactive,
             publication,
             status_snapshot_generation: 0,
-            adapter: ScreenCaptureAdapter::default(),
+            adapter: ScreenCaptureAdapter::new(exact),
             token_sink: None,
             next_adoption_id: 0,
             status: SourceStatusReporter::new(
@@ -1676,7 +1686,7 @@ impl WaylandScreenCaptureInput {
             .requested_extent()
             .context("active Wayland capture settings must carry an extent")?;
         let cadence = CaptureCadence::new(config.target_fps)?;
-        let source = self.settings.exact.source();
+        let source = self.adapter.exact_source();
         let acquisition_extent = source
             .as_ref()
             .map_or(requested_extent, |source| source.config.logical_extent());
@@ -2033,10 +2043,10 @@ impl WaylandScreenCaptureInput {
             anyhow::bail!("previous Wayland capture worker is still stopping");
         }
 
-        let reservation =
-            self.settings.exact.reserve_authority().map_err(|error| {
-                anyhow!("Wayland capture session generation exhausted: {error}")
-            })?;
+        let reservation = self
+            .adapter
+            .reserve_exact_authority()
+            .map_err(|error| anyhow!("Wayland capture session generation exhausted: {error}"))?;
         let reserved_generation = reservation.authority().generation();
         let prepared = self.adapter.prepare_worker(
             WaylandWorkerSpawn {
@@ -2364,18 +2374,18 @@ impl ScreenSource for WaylandScreenCaptureInput {
     }
 
     fn set_screen_publication_hub(&mut self, hub: Arc<ScreenPublicationHub>) {
-        self.settings.exact.install_hub(hub);
+        self.adapter.install_publication_hub(hub);
     }
 
     fn screen_publication_resolution_revision(&self) -> u64 {
-        self.settings.exact.resolution_revision()
+        self.adapter.exact_resolution_revision()
     }
 
     fn resolve_screen_publication_branch(
         &self,
         demand: &RegisteredScreenBranchDemand,
     ) -> anyhow::Result<Option<ResolvedScreenBranchDemand>> {
-        let Some(source) = self.settings.exact.source() else {
+        let Some(source) = self.adapter.exact_source() else {
             return Ok(None);
         };
         if !source.matches_selector(demand.request().selector()) {
@@ -2389,7 +2399,7 @@ impl ScreenSource for WaylandScreenCaptureInput {
     }
 
     fn owns_screen_publication_source(&self, source_id: &CaptureSourceId) -> bool {
-        self.settings.exact.owns_source(source_id)
+        self.adapter.owns_exact_source(source_id)
     }
 
     fn begin_screen_publication_preparation(
@@ -2486,6 +2496,7 @@ impl CaptureBackend for WaylandCaptureBackend {
     type Worker = WaylandCaptureWorker;
     type Readiness = WaylandSessionReadiness;
     type SpawnRequest = WaylandWorkerSpawn;
+    type ExactState = WaylandExactPublicationShared;
 
     const READINESS_TIMEOUT: Duration = WORKER_READY_TIMEOUT;
 

@@ -73,7 +73,7 @@ use crate::input::{SourceIssue, SourceStatusHandle, SourceStatusReporter};
 
 use super::adapter::{
     CaptureBackend, CaptureExactCommand, CaptureExactCommandEndpoint, CaptureExactCommandRejected,
-    CaptureExactPublicationShared, CaptureExactRuntimeOwner, CaptureOwnedSource,
+    CaptureExactPublicationShared, CaptureExactRuntimeOwner, CaptureExactState, CaptureOwnedSource,
     CapturePublication, CapturePublicationFence, CapturePublicationSource, CaptureSession,
     CaptureSessionAuthority, CaptureSessionTransaction, CaptureSuccessorPolicy,
     PreparedCaptureSession, ReservedCaptureSessionAuthority, ScreenCaptureAdapter,
@@ -282,6 +282,15 @@ impl Deref for MacosExactPublicationShared {
     }
 }
 
+impl CaptureExactState for MacosExactPublicationShared {
+    type Source = MacosPublicationSource;
+    type OwnedSource = MacosOwnedSource;
+
+    fn common(&self) -> &CaptureExactPublicationShared<Self::Source, Self::OwnedSource> {
+        &self.common
+    }
+}
+
 struct MacosNativeRoute {
     descriptor: ResolvedScreenPublicationDescriptor,
     target: BoundScreenNativeTargetPreparation,
@@ -369,6 +378,7 @@ impl CaptureBackend for MacosCaptureBackend {
     type Worker = CaptureWorker;
     type Readiness = ();
     type SpawnRequest = MacosWorkerSpawn;
+    type ExactState = MacosExactPublicationShared;
 
     const READINESS_TIMEOUT: Duration = Duration::ZERO;
 
@@ -572,7 +582,6 @@ pub struct MacosScreenCaptureInput {
     #[cfg(feature = "macos-capture-fixtures")]
     compute_capacity_policy: ScreenComputeCapacityPolicy,
     publication: Arc<Mutex<MacosPublication>>,
-    exact: Arc<MacosExactPublicationShared>,
     telemetry: Arc<MacosScreenRuntimeTelemetry>,
     adapter: ScreenCaptureAdapter<MacosCaptureBackend>,
     worker_generation: u64,

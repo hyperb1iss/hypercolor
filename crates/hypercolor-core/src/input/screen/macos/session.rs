@@ -102,6 +102,9 @@ impl MacosScreenCaptureInput {
         let _ = (&admission, compute_capacity_policy);
         let consented = control.authorization() == MacosScreenAuthorizationState::Authorized;
         let authorization = control.authorization();
+        let exact = Arc::new(MacosExactPublicationShared::with_compute_capacity_policy(
+            compute_capacity_policy,
+        ));
         let mut source = Self {
             config,
             control,
@@ -110,11 +113,8 @@ impl MacosScreenCaptureInput {
             #[cfg(feature = "macos-capture-fixtures")]
             compute_capacity_policy,
             publication: Arc::new(Mutex::new(MacosPublication::default())),
-            exact: Arc::new(MacosExactPublicationShared::with_compute_capacity_policy(
-                compute_capacity_policy,
-            )),
             telemetry,
-            adapter: ScreenCaptureAdapter::default(),
+            adapter: ScreenCaptureAdapter::new(exact),
             worker_generation: 0,
             demand: ScreenCaptureDemand::Inactive,
             running: false,
@@ -170,7 +170,7 @@ impl MacosScreenCaptureInput {
             self.authorization_last_transition_at = Some(Instant::now());
         }
         let diagnostics = self.control.diagnostics();
-        let source = self.exact.source();
+        let source = self.adapter.exact_source();
         let timing = MacosScreenTimingStatus {
             callback: timing_status(
                 diagnostics.callback_sample_count,
@@ -359,8 +359,8 @@ impl MacosScreenCaptureInput {
         prepared: PreparedWorker,
     ) -> anyhow::Result<StagedCaptureWorker> {
         let reservation = self
-            .exact
-            .reserve_authority()
+            .adapter
+            .reserve_exact_authority()
             .map_err(|error| anyhow!("macOS capture worker generation exhausted: {error}"))?;
         let authority = reservation.authority();
         let worker_generation = authority.generation();
@@ -371,7 +371,7 @@ impl MacosScreenCaptureInput {
                 mailbox,
                 control: Arc::clone(&self.control),
                 publication: Arc::clone(&self.publication),
-                exact: Arc::clone(&self.exact),
+                exact: self.adapter.exact_state_handle(),
                 telemetry: Arc::clone(&self.telemetry),
                 status_session: self.status_session.clone(),
             },
@@ -395,7 +395,7 @@ impl MacosScreenCaptureInput {
         );
         let checkpoint_publication = Arc::clone(&self.publication);
         let commit_publication = Arc::clone(&self.publication);
-        let exact = Arc::clone(&self.exact);
+        let exact = self.adapter.exact_state_handle();
         let committed_generation = &mut self.worker_generation;
         let authority = self
             .adapter
@@ -471,7 +471,8 @@ impl MacosScreenCaptureInput {
 
     fn retire_worker_authority(&mut self, authority: CaptureSessionAuthority) {
         let Some(retirement) = self
-            .exact
+            .adapter
+            .exact_state()
             .retire_authority_if_current(authority)
             .expect("macOS capture worker generation exhausted during retirement")
         else {

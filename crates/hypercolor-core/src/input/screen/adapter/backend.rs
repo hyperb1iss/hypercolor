@@ -1,15 +1,18 @@
+use std::sync::Arc;
 use std::time::Duration;
 
+use super::super::{CaptureSourceId, ScreenPublicationHub};
 use super::{
-    CaptureSession, CaptureSessionAuthority, CaptureSessionDeadline, CaptureSessionReadiness,
-    CaptureSessionSet, CaptureSessionTransaction, PreparedCaptureSession,
-    ReservedCaptureSessionAuthority,
+    CaptureExactState, CaptureSession, CaptureSessionAuthority, CaptureSessionAuthorityExhausted,
+    CaptureSessionDeadline, CaptureSessionReadiness, CaptureSessionSet, CaptureSessionTransaction,
+    PreparedCaptureSession, ReservedCaptureSessionAuthority,
 };
 
 pub(in crate::input::screen) trait CaptureBackend: Sized {
     type Worker: CaptureSession + Send + 'static;
     type Readiness: CaptureSessionReadiness + Send + 'static;
     type SpawnRequest;
+    type ExactState: CaptureExactState;
 
     const READINESS_TIMEOUT: Duration;
 
@@ -21,17 +24,63 @@ pub(in crate::input::screen) trait CaptureBackend: Sized {
 
 pub(in crate::input::screen) struct ScreenCaptureAdapter<B: CaptureBackend> {
     sessions: CaptureSessionSet<B::Worker>,
+    exact: Arc<B::ExactState>,
 }
 
-impl<B: CaptureBackend> Default for ScreenCaptureAdapter<B> {
+impl<B> Default for ScreenCaptureAdapter<B>
+where
+    B: CaptureBackend,
+    B::ExactState: Default,
+{
     fn default() -> Self {
-        Self {
-            sessions: CaptureSessionSet::default(),
-        }
+        Self::new(Arc::new(B::ExactState::default()))
     }
 }
 
 impl<B: CaptureBackend> ScreenCaptureAdapter<B> {
+    pub(in crate::input::screen) fn new(exact: Arc<B::ExactState>) -> Self {
+        Self {
+            sessions: CaptureSessionSet::default(),
+            exact,
+        }
+    }
+
+    pub(in crate::input::screen) fn exact_state(&self) -> &B::ExactState {
+        &self.exact
+    }
+
+    pub(in crate::input::screen) fn exact_state_handle(&self) -> Arc<B::ExactState> {
+        Arc::clone(&self.exact)
+    }
+
+    pub(in crate::input::screen) fn reserve_exact_authority(
+        &self,
+    ) -> Result<ReservedCaptureSessionAuthority, CaptureSessionAuthorityExhausted> {
+        self.exact.common().reserve_authority()
+    }
+
+    pub(in crate::input::screen) fn install_publication_hub(&self, hub: Arc<ScreenPublicationHub>) {
+        self.exact.common().install_hub(hub);
+    }
+
+    pub(in crate::input::screen) fn exact_source(
+        &self,
+    ) -> Option<<B::ExactState as CaptureExactState>::Source> {
+        self.exact.common().source()
+    }
+
+    pub(in crate::input::screen) fn owns_exact_source(&self, source_id: &CaptureSourceId) -> bool {
+        self.exact.common().owns_source(source_id)
+    }
+
+    pub(in crate::input::screen) fn exact_resolution_revision(&self) -> u64 {
+        self.exact.common().resolution_revision()
+    }
+
+    pub(in crate::input::screen) fn advance_exact_resolution_revision(&self) {
+        self.exact.common().advance_resolution_revision();
+    }
+
     pub(in crate::input::screen) fn prepare_worker(
         &self,
         request: B::SpawnRequest,
