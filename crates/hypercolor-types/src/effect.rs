@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use hypercolor_color::LinearRgba;
 
-use crate::control::ControlValue;
+use crate::control::{ControlValue, ControlValueInvalid};
 use crate::spatial::NormalizedRect;
 
 // ── EffectId ──────────────────────────────────────────────────────────────────
@@ -190,6 +190,7 @@ pub enum EffectState {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct GradientStop {
     /// Position along the gradient axis, `0.0` = start, `1.0` = end.
+    #[schema(minimum = 0.0, maximum = 1.0)]
     pub position: f32,
     /// Linear RGBA color at this stop.
     pub color: [f32; 4],
@@ -266,6 +267,13 @@ pub enum ControlValidationError {
     ExpectedText { control: String, got: &'static str },
     #[error("control '{control}': expected rect value, got {got}")]
     ExpectedRect { control: String, got: &'static str },
+    #[error("control '{control}': expected gradient value, got {got}")]
+    ExpectedGradient { control: String, got: &'static str },
+    #[error("control '{control}': invalid gradient: {source}")]
+    InvalidGradient {
+        control: String,
+        source: ControlValueInvalid,
+    },
     #[error("control '{control}': invalid option '{value}', valid options: {valid:?}")]
     InvalidOption {
         control: String,
@@ -427,6 +435,19 @@ impl ControlDefinition {
         value: &ControlValue,
     ) -> Result<ControlValue, ControlValidationError> {
         let control = self.control_id().to_owned();
+        if matches!(self.control_type, ControlType::GradientEditor) {
+            if !matches!(value, ControlValue::Gradient(_)) {
+                return Err(ControlValidationError::ExpectedGradient {
+                    control,
+                    got: control_value_kind(value),
+                });
+            }
+            value
+                .validate()
+                .map_err(|source| ControlValidationError::InvalidGradient { control, source })?;
+            return Ok(value.clone());
+        }
+
         match self.kind {
             ControlKind::Number | ControlKind::Hue | ControlKind::Area => {
                 let Some(mut normalized) = value.as_effect_f32() else {

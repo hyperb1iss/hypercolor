@@ -6,10 +6,10 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use hypercolor_color::LinearRgba;
-use hypercolor_types::control::ControlValue;
+use hypercolor_types::control::{ControlValue, ControlValueInvalid};
 use hypercolor_types::effect::{
-    ControlBinding, ControlDefinition, ControlKind, ControlType, EffectCategory, EffectId,
-    EffectMetadata, EffectSource, EffectState, GradientStop,
+    ControlBinding, ControlDefinition, ControlKind, ControlType, ControlValidationError,
+    EffectCategory, EffectId, EffectMetadata, EffectSource, EffectState, GradientStop,
 };
 use uuid::Uuid;
 
@@ -539,6 +539,34 @@ fn sample_color_picker_control() -> ControlDefinition {
     }
 }
 
+fn sample_gradient_control() -> ControlDefinition {
+    ControlDefinition {
+        id: "palette".into(),
+        name: "Palette".into(),
+        kind: ControlKind::Other("gradient".into()),
+        control_type: ControlType::GradientEditor,
+        default_value: ControlValue::Gradient(vec![
+            GradientStop {
+                position: 0.0,
+                color: [1.0, 0.0, 0.0, 1.0],
+            },
+            GradientStop {
+                position: 1.0,
+                color: [0.0, 0.0, 1.0, 1.0],
+            },
+        ]),
+        min: None,
+        max: None,
+        step: None,
+        labels: Vec::new(),
+        group: Some("Colors".into()),
+        tooltip: None,
+        aspect_lock: None,
+        preview_source: None,
+        binding: None,
+    }
+}
+
 fn sample_control_binding() -> ControlBinding {
     ControlBinding {
         sensor: " cpu_temp ".into(),
@@ -645,6 +673,49 @@ fn non_color_picker_color_control_preserves_text_values() {
         .expect("text color token should validate");
 
     assert_eq!(validated, ControlValue::Text("brand-accent".into()));
+}
+
+#[test]
+fn gradient_editor_validates_by_widget_contract() {
+    let control = sample_gradient_control();
+    let value = control.default_value.clone();
+
+    assert_eq!(
+        control
+            .validate_value(&value)
+            .expect("valid gradient should survive definition validation"),
+        value
+    );
+    assert_eq!(
+        control.validate_value(&ControlValue::Text("sunset".into())),
+        Err(ControlValidationError::ExpectedGradient {
+            control: "palette".into(),
+            got: "text",
+        })
+    );
+}
+
+#[test]
+fn gradient_editor_surfaces_canonical_validation_errors() {
+    let control = sample_gradient_control();
+    let invalid = ControlValue::Gradient(vec![
+        GradientStop {
+            position: 0.75,
+            color: [1.0, 0.0, 0.0, 1.0],
+        },
+        GradientStop {
+            position: 0.25,
+            color: [0.0, 0.0, 1.0, 1.0],
+        },
+    ]);
+
+    assert!(matches!(
+        control.validate_value(&invalid),
+        Err(ControlValidationError::InvalidGradient {
+            source: ControlValueInvalid::Nested { source, .. },
+            ..
+        }) if *source == ControlValueInvalid::GradientPositionsOutOfOrder
+    ));
 }
 
 // ── EffectMetadata ────────────────────────────────────────────────────────

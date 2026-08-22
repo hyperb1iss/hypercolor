@@ -24,7 +24,7 @@
 //! | `ColorRgb` | ColorPicker | encoded sRGB bytes |
 //! | `ColorRgba` | ColorPicker | encoded sRGB bytes |
 //! | `ColorLinear` | ColorPicker | linear-light; components finite |
-//! | `Gradient` | GradientEditor | stop positions and colors finite |
+//! | `Gradient` | GradientEditor | 2-8 ordered stops; positions and colors normalized and finite |
 //! | `Rect` | Rect | components finite |
 //! | `Enum` | Dropdown | — |
 //! | `Flags` | CheckboxSet | ordered (a `Vec`, not a set) |
@@ -66,6 +66,11 @@ use utoipa::{PartialSchema, ToSchema};
 use crate::effect::GradientStop;
 use crate::spatial::NormalizedRect;
 use crate::viewport::ViewportRect;
+
+/// Minimum number of stops accepted by a canonical gradient control.
+pub const MIN_GRADIENT_STOPS: usize = 2;
+/// Maximum number of stops accepted by a canonical gradient control.
+pub const MAX_GRADIENT_STOPS: usize = 8;
 
 /// Stable identifier for a renderer control.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -635,6 +640,21 @@ pub enum ControlValueInvalid {
     /// A duration carries precision the canonical wire cannot represent.
     #[error("duration carries sub-millisecond precision the control wire cannot represent")]
     SubMillisecondDuration,
+    /// A gradient does not contain the supported number of stops.
+    #[error("gradient must contain 2 to 8 stops, got {actual}")]
+    GradientStopCount {
+        /// Number of supplied stops.
+        actual: usize,
+    },
+    /// A gradient stop position is outside the normalized interval.
+    #[error("gradient stop position must be within 0.0..=1.0")]
+    GradientPositionOutOfRange,
+    /// A gradient color channel is outside the normalized interval.
+    #[error("gradient color channel must be within 0.0..=1.0")]
+    GradientColorOutOfRange,
+    /// Gradient stop positions descend instead of advancing monotonically.
+    #[error("gradient stop positions must be in nondecreasing order")]
+    GradientPositionsOutOfOrder,
     /// A nested value failed; `path` locates it (`[3]`, `.host`).
     #[error("{path}: {source}")]
     Nested {
@@ -657,6 +677,12 @@ pub enum EffectJsonValueError {
     /// A canonical integer cannot fit the effect renderer's `i32` ABI.
     #[error("effect control integer must be within the i32 range")]
     IntegerOutOfRange,
+    /// A decoded gradient violates the canonical gradient contract.
+    #[error("invalid effect gradient: {source}")]
+    InvalidGradient {
+        /// The canonical invariant that failed.
+        source: Box<ControlValueInvalid>,
+    },
     /// A nested projection failed; `path` locates the rejected value.
     #[error("{path}: {source}")]
     Nested {
@@ -671,6 +697,12 @@ impl EffectJsonValueError {
     fn nested(path: impl Into<String>, source: Self) -> Self {
         Self::Nested {
             path: path.into(),
+            source: Box::new(source),
+        }
+    }
+
+    fn invalid_gradient(source: ControlValueInvalid) -> Self {
+        Self::InvalidGradient {
             source: Box::new(source),
         }
     }
@@ -693,12 +725,107 @@ fn finite(value: f32) -> Result<f32, ControlValueInvalid> {
     }
 }
 
-fn finite_stop(stop: &GradientStop) -> Result<(), ControlValueInvalid> {
-    finite(stop.position)?;
-    for channel in stop.color {
-        finite(channel)?;
+fn validate_gradient(stops: &[GradientStop]) -> Result<(), ControlValueInvalid> {
+    if !(MIN_GRADIENT_STOPS..=MAX_GRADIENT_STOPS).contains(&stops.len()) {
+        return Err(ControlValueInvalid::GradientStopCount {
+            actual: stops.len(),
+        });
+    }
+
+    let mut previous_position = None;
+    for (index, stop) in stops.iter().enumerate() {
+        finite(stop.position)
+            .map_err(|error| ControlValueInvalid::nested(format!("[{index}].position"), error))?;
+        if !(0.0..=1.0).contains(&stop.position) {
+            return Err(ControlValueInvalid::nested(
+                format!("[{index}].position"),
+                ControlValueInvalid::GradientPositionOutOfRange,
+            ));
+        }
+        if previous_position.is_some_and(|previous| previous > stop.position) {
+            return Err(ControlValueInvalid::nested(
+                format!("[{index}].position"),
+                ControlValueInvalid::GradientPositionsOutOfOrder,
+            ));
+        }
+        previous_position = Some(stop.position);
+
+        for (channel, value) in stop.color.iter().copied().enumerate() {
+            finite(value).map_err(|error| {
+                ControlValueInvalid::nested(format!("[{index}].color[{channel}]"), error)
+            })?;
+            if !(0.0..=1.0).contains(&value) {
+                return Err(ControlValueInvalid::nested(
+                    format!("[{index}].color[{channel}]"),
+                    ControlValueInvalid::GradientColorOutOfRange,
+                ));
+            }
+        }
     }
     Ok(())
+}
+
+fn parse_effect_gradient_stop(
+    index: usize,
+    value: &serde_json::Value,
+) -> Result<GradientStop, EffectJsonValueError> {
+    let Some(object) = value.as_object() else {
+        return Err(EffectJsonValueError::nested(
+            format!("[{index}]"),
+            EffectJsonValueError::UnsupportedShape,
+        ));
+    };
+    if object.len() != 2 || !object.contains_key("pos") || !object.contains_key("color") {
+        return Err(EffectJsonValueError::nested(
+            format!("[{index}]"),
+            EffectJsonValueError::UnsupportedShape,
+        ));
+    }
+
+    let position = object
+        .get("pos")
+        .and_then(serde_json::Value::as_f64)
+        .ok_or_else(|| {
+            EffectJsonValueError::nested(
+                format!("[{index}].pos"),
+                EffectJsonValueError::UnsupportedShape,
+            )
+        })
+        .and_then(|value| {
+            narrow_effect_f32(value)
+                .map_err(|error| EffectJsonValueError::nested(format!("[{index}].pos"), error))
+        })?;
+    let color = object
+        .get("color")
+        .and_then(serde_json::Value::as_array)
+        .filter(|color| color.len() == 4)
+        .ok_or_else(|| {
+            EffectJsonValueError::nested(
+                format!("[{index}].color"),
+                EffectJsonValueError::UnsupportedShape,
+            )
+        })?;
+    let mut channels = [0.0_f32; 4];
+    for (channel, component) in color.iter().enumerate() {
+        channels[channel] = component
+            .as_f64()
+            .ok_or_else(|| {
+                EffectJsonValueError::nested(
+                    format!("[{index}].color[{channel}]"),
+                    EffectJsonValueError::UnsupportedShape,
+                )
+            })
+            .and_then(|value| {
+                narrow_effect_f32(value).map_err(|error| {
+                    EffectJsonValueError::nested(format!("[{index}].color[{channel}]"), error)
+                })
+            })?;
+    }
+
+    Ok(GradientStop {
+        position,
+        color: channels,
+    })
 }
 
 impl ControlValue {
@@ -736,18 +863,30 @@ impl ControlValue {
         if let Some(value) = value.as_str() {
             return Ok(Self::Text(value.to_owned()));
         }
-        if let Some(array) = value.as_array()
-            && array.len() == 4
-        {
-            let mut color = [0.0_f32; 4];
-            for (index, component) in array.iter().enumerate() {
-                color[index] = narrow_effect_f32(
-                    component
-                        .as_f64()
-                        .ok_or(EffectJsonValueError::UnsupportedShape)?,
-                )?;
+        if let Some(array) = value.as_array() {
+            if array.len() == 4 && array.iter().all(serde_json::Value::is_number) {
+                let mut color = [0.0_f32; 4];
+                for (index, component) in array.iter().enumerate() {
+                    color[index] = narrow_effect_f32(
+                        component
+                            .as_f64()
+                            .ok_or(EffectJsonValueError::UnsupportedShape)?,
+                    )?;
+                }
+                return Ok(Self::linear_color(color));
             }
-            return Ok(Self::linear_color(color));
+
+            let gradient = Self::Gradient(
+                array
+                    .iter()
+                    .enumerate()
+                    .map(|(index, stop)| parse_effect_gradient_stop(index, stop))
+                    .collect::<Result<Vec<_>, _>>()?,
+            );
+            gradient
+                .validate()
+                .map_err(EffectJsonValueError::invalid_gradient)?;
+            return Ok(gradient);
         }
         if let Some(object) = value.as_object() {
             let component = |name| {
@@ -798,37 +937,40 @@ impl ControlValue {
                 let value = value.to_encoded();
                 serde_json::Value::String(effect_color_hex(value))
             }
-            Self::Gradient(stops) => serde_json::Value::Array(
-                stops
-                    .iter()
-                    .enumerate()
-                    .map(|(index, stop)| {
-                        let position =
-                            narrow_effect_f32(f64::from(stop.position)).map_err(|error| {
-                                EffectJsonValueError::nested(format!("[{index}].pos"), error)
-                            })?;
-                        let color = stop
-                            .color
-                            .iter()
-                            .enumerate()
-                            .map(|(channel, value)| {
-                                narrow_effect_f32(f64::from(*value))
-                                    .map(|value| serde_json::Value::from(f64::from(value)))
-                                    .map_err(|error| {
-                                        EffectJsonValueError::nested(
-                                            format!("[{index}].color[{channel}]"),
-                                            error,
-                                        )
-                                    })
-                            })
-                            .collect::<Result<Vec<_>, _>>()?;
-                        Ok(serde_json::json!({
-                            "pos": position,
-                            "color": color,
-                        }))
-                    })
-                    .collect::<Result<Vec<_>, EffectJsonValueError>>()?,
-            ),
+            Self::Gradient(stops) => {
+                validate_gradient(stops).map_err(EffectJsonValueError::invalid_gradient)?;
+                serde_json::Value::Array(
+                    stops
+                        .iter()
+                        .enumerate()
+                        .map(|(index, stop)| {
+                            let position =
+                                narrow_effect_f32(f64::from(stop.position)).map_err(|error| {
+                                    EffectJsonValueError::nested(format!("[{index}].pos"), error)
+                                })?;
+                            let color = stop
+                                .color
+                                .iter()
+                                .enumerate()
+                                .map(|(channel, value)| {
+                                    narrow_effect_f32(f64::from(*value))
+                                        .map(|value| serde_json::Value::from(f64::from(value)))
+                                        .map_err(|error| {
+                                            EffectJsonValueError::nested(
+                                                format!("[{index}].color[{channel}]"),
+                                                error,
+                                            )
+                                        })
+                                })
+                                .collect::<Result<Vec<_>, _>>()?;
+                            Ok(serde_json::json!({
+                                "pos": position,
+                                "color": color,
+                            }))
+                        })
+                        .collect::<Result<Vec<_>, EffectJsonValueError>>()?,
+                )
+            }
             Self::Rect(value) => serde_json::json!({
                 "x": narrow_effect_f32(f64::from(value.x))?,
                 "y": narrow_effect_f32(f64::from(value.y))?,
@@ -956,13 +1098,7 @@ impl ControlValue {
                 }
                 Ok(())
             }
-            Self::Gradient(stops) => {
-                for (index, stop) in stops.iter().enumerate() {
-                    finite_stop(stop)
-                        .map_err(|e| ControlValueInvalid::nested(format!("[{index}]"), e))?;
-                }
-                Ok(())
-            }
+            Self::Gradient(stops) => validate_gradient(stops),
             Self::Rect(rect) => {
                 for component in [rect.x, rect.y, rect.width, rect.height] {
                     finite(component)?;

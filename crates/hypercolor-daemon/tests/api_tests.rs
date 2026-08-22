@@ -72,7 +72,7 @@ use hypercolor_types::device::{
 };
 use hypercolor_types::effect::{
     ControlDefinition, ControlKind, ControlType, EffectCategory, EffectId, EffectMetadata,
-    EffectSource, EffectState, PresetTemplate,
+    EffectSource, EffectState, GradientStop, PresetTemplate,
 };
 use hypercolor_types::event::{HypercolorEvent, ZoneChangeKind};
 use hypercolor_types::layer::{
@@ -3380,16 +3380,10 @@ async fn insert_test_effect_with_presets(
     name: &str,
     presets: Vec<PresetTemplate>,
 ) -> EffectMetadata {
-    let mut registry = state.effect_registry.write().await;
-    let metadata = EffectMetadata {
-        id: EffectId::new(Uuid::now_v7()),
-        name: name.to_owned(),
-        author: "test".to_owned(),
-        version: "0.1.0".to_owned(),
-        description: format!("{name} description"),
-        category: EffectCategory::Ambient,
-        tags: vec!["test".to_owned()],
-        controls: vec![ControlDefinition {
+    insert_test_effect_with_controls(
+        state,
+        name,
+        vec![ControlDefinition {
             id: "speed".to_owned(),
             name: "Speed".to_owned(),
             kind: ControlKind::Number,
@@ -3405,6 +3399,27 @@ async fn insert_test_effect_with_presets(
             preview_source: None,
             binding: None,
         }],
+        presets,
+    )
+    .await
+}
+
+async fn insert_test_effect_with_controls(
+    state: &Arc<AppState>,
+    name: &str,
+    controls: Vec<ControlDefinition>,
+    presets: Vec<PresetTemplate>,
+) -> EffectMetadata {
+    let mut registry = state.effect_registry.write().await;
+    let metadata = EffectMetadata {
+        id: EffectId::new(Uuid::now_v7()),
+        name: name.to_owned(),
+        author: "test".to_owned(),
+        version: "0.1.0".to_owned(),
+        description: format!("{name} description"),
+        category: EffectCategory::Ambient,
+        tags: vec!["test".to_owned()],
+        controls,
         presets,
         audio_reactive: false,
         screen_reactive: false,
@@ -5819,6 +5834,79 @@ async fn apply_effect_upserts_primary_group() {
         .expect("active scene should contain a primary group");
     assert_eq!(primary.role, ZoneRole::Primary);
     assert!(primary.effect_ids().next().is_some());
+}
+
+#[tokio::test]
+async fn apply_effect_accepts_canonical_gradient_controls() {
+    let state = Arc::new(isolated_state());
+    let gradient = ControlValue::Gradient(vec![
+        GradientStop {
+            position: 0.0,
+            color: [1.0, 0.0, 0.0, 1.0],
+        },
+        GradientStop {
+            position: 0.5,
+            color: [0.5, 0.25, 0.75, 1.0],
+        },
+        GradientStop {
+            position: 1.0,
+            color: [0.0, 0.0, 1.0, 1.0],
+        },
+    ]);
+    insert_test_effect_with_controls(
+        &state,
+        "gradient_test",
+        vec![ControlDefinition {
+            id: "palette".to_owned(),
+            name: "Palette".to_owned(),
+            kind: ControlKind::Other("gradient".to_owned()),
+            control_type: ControlType::GradientEditor,
+            default_value: gradient.clone(),
+            min: None,
+            max: None,
+            step: None,
+            labels: Vec::new(),
+            group: None,
+            tooltip: None,
+            aspect_lock: None,
+            preview_source: None,
+            binding: None,
+        }],
+        Vec::new(),
+    )
+    .await;
+    let app = test_app_with_state(Arc::clone(&state));
+    let body = serde_json::json!({
+        "controls": {
+            "palette": serde_json::to_value(&gradient)
+                .expect("gradient should serialize for the REST request")
+        }
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/gradient_test/apply")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&body).expect("request body should serialize"),
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let manager = state.scene_manager.snapshot().await;
+    let primary = manager
+        .active_scene()
+        .and_then(Scene::primary_zone)
+        .expect("active scene should contain a primary group");
+    assert_eq!(
+        zone_effect_controls(primary).and_then(|controls| controls.get("palette")),
+        Some(&gradient)
+    );
 }
 
 #[tokio::test]

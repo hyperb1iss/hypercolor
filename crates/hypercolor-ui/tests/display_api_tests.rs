@@ -1,6 +1,6 @@
 use hypercolor_types::canvas::srgb_to_linear;
 use hypercolor_types::control::ControlValue;
-use hypercolor_types::effect::{ControlDefinition, ControlKind, ControlType};
+use hypercolor_types::effect::{ControlDefinition, ControlKind, ControlType, GradientStop};
 use hypercolor_ui::api::{
     ComponentBinding, DisplayFaceResponse, DisplayFaceScope, PairDeviceRequest,
     SetDisplayFaceRequest,
@@ -55,6 +55,34 @@ fn color_control(id: &str) -> ControlDefinition {
         kind: ControlKind::Color,
         control_type: ControlType::ColorPicker,
         default_value: ControlValue::linear_color([0.0, 0.0, 0.0, 1.0]),
+        min: None,
+        max: None,
+        step: None,
+        labels: Vec::new(),
+        group: None,
+        tooltip: None,
+        aspect_lock: None,
+        preview_source: None,
+        binding: None,
+    }
+}
+
+fn gradient_control(id: &str) -> ControlDefinition {
+    ControlDefinition {
+        id: id.to_owned(),
+        name: id.to_owned(),
+        kind: ControlKind::Other("gradient".to_owned()),
+        control_type: ControlType::GradientEditor,
+        default_value: ControlValue::Gradient(vec![
+            GradientStop {
+                position: 0.0,
+                color: [1.0, 0.0, 0.0, 1.0],
+            },
+            GradientStop {
+                position: 1.0,
+                color: [0.0, 0.0, 1.0, 1.0],
+            },
+        ]),
         min: None,
         max: None,
         step: None,
@@ -252,6 +280,21 @@ fn json_to_control_value_accepts_rgba_arrays() {
     assert!((color.g - 0.5).abs() < 1e-6);
     assert!((color.b - 0.25).abs() < 1e-6);
     assert!((color.a - 1.0).abs() < 1e-6);
+}
+
+#[test]
+fn gradient_control_round_trips_between_ui_state_and_effect_json() {
+    let raw = serde_json::json!([
+        {"pos": 0.0, "color": [1.0, 0.0, 0.0, 1.0]},
+        {"pos": 0.5, "color": [0.5, 0.25, 0.75, 1.0]},
+        {"pos": 1.0, "color": [0.0, 0.0, 1.0, 1.0]}
+    ]);
+    let controls = vec![gradient_control("palette")];
+    let value = json_to_control_value("palette", &controls, &raw)
+        .expect("valid gradient edit should enter UI state");
+    let values = std::collections::HashMap::from([("palette".to_owned(), value)]);
+
+    assert_eq!(controls_to_json(&values).get("palette"), Some(&raw));
 }
 
 #[test]

@@ -128,10 +128,7 @@ fn effect_json_admission_uses_checked_scalar_narrowing() {
 
 #[test]
 fn effect_json_admission_rejects_malformed_composites() {
-    assert_eq!(
-        ControlValue::try_from_effect_json(&serde_json::json!([0.0, 1.0, 0.0])),
-        Err(EffectJsonValueError::UnsupportedShape)
-    );
+    assert!(ControlValue::try_from_effect_json(&serde_json::json!([0.0, 1.0, 0.0])).is_err());
     assert_eq!(
         ControlValue::try_from_effect_json(&serde_json::json!({
             "x": 0.1,
@@ -141,6 +138,171 @@ fn effect_json_admission_rejects_malformed_composites() {
         })),
         Err(EffectJsonValueError::UnsupportedShape)
     );
+}
+
+#[test]
+fn effect_gradient_projection_round_trips_through_admission() {
+    let raw = serde_json::json!([
+        {"pos": 0.0, "color": [1.0, 0.0, 0.25, 1.0]},
+        {"pos": 0.5, "color": [0.5, 0.5, 0.5, 0.75]},
+        {"pos": 1.0, "color": [0.0, 0.25, 1.0, 1.0]}
+    ]);
+
+    let canonical = ControlValue::try_from_effect_json(&raw)
+        .expect("valid effect gradient should enter the canonical algebra");
+    assert!(matches!(&canonical, ControlValue::Gradient(stops) if stops.len() == 3));
+    assert_eq!(
+        canonical
+            .try_to_effect_json()
+            .expect("canonical gradient should return to effect JSON"),
+        raw
+    );
+}
+
+#[test]
+fn effect_gradient_admission_rejects_malformed_stops_and_colors() {
+    for malformed in [
+        serde_json::json!([{"pos": 0.0}, {"pos": 1.0, "color": [0.0, 0.0, 0.0, 1.0]}]),
+        serde_json::json!([
+            {"pos": 0.0, "color": [1.0, 0.0, 0.0]},
+            {"pos": 1.0, "color": [0.0, 0.0, 0.0, 1.0]}
+        ]),
+        serde_json::json!([
+            {"pos": "start", "color": [1.0, 0.0, 0.0, 1.0]},
+            {"pos": 1.0, "color": [0.0, 0.0, 0.0, 1.0]}
+        ]),
+        serde_json::json!([
+            {"pos": 0.0, "color": [1.0, "red", 0.0, 1.0]},
+            {"pos": 1.0, "color": [0.0, 0.0, 0.0, 1.0]}
+        ]),
+        serde_json::json!([
+            {"pos": 0.0, "color": [1.0, 0.0, 0.0, 1.0], "name": "red"},
+            {"pos": 1.0, "color": [0.0, 0.0, 0.0, 1.0]}
+        ]),
+        serde_json::json!(["red", "blue"]),
+    ] {
+        assert!(
+            ControlValue::try_from_effect_json(&malformed).is_err(),
+            "malformed gradient was admitted: {malformed}"
+        );
+    }
+}
+
+#[test]
+fn canonical_gradient_validation_covers_count_range_order_and_finiteness() {
+    let stop = |position, color| GradientStop { position, color };
+    for invalid_count in [
+        ControlValue::Gradient(Vec::new()),
+        ControlValue::Gradient(vec![stop(0.0, [1.0, 0.0, 0.0, 1.0])]),
+        ControlValue::Gradient(
+            [0.0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1.0]
+                .into_iter()
+                .map(|position| stop(position, [1.0, 0.0, 0.0, 1.0]))
+                .collect(),
+        ),
+    ] {
+        assert!(matches!(
+            invalid_count.validate(),
+            Err(ControlValueInvalid::GradientStopCount { .. })
+        ));
+    }
+
+    let cases = [
+        (
+            ControlValue::Gradient(vec![
+                stop(-0.1, [1.0, 0.0, 0.0, 1.0]),
+                stop(1.0, [0.0, 0.0, 1.0, 1.0]),
+            ]),
+            ControlValueInvalid::GradientPositionOutOfRange,
+        ),
+        (
+            ControlValue::Gradient(vec![
+                stop(0.0, [1.0, 0.0, 0.0, 1.0]),
+                stop(1.1, [0.0, 0.0, 1.0, 1.0]),
+            ]),
+            ControlValueInvalid::GradientPositionOutOfRange,
+        ),
+        (
+            ControlValue::Gradient(vec![
+                stop(0.75, [1.0, 0.0, 0.0, 1.0]),
+                stop(0.25, [0.0, 0.0, 1.0, 1.0]),
+            ]),
+            ControlValueInvalid::GradientPositionsOutOfOrder,
+        ),
+        (
+            ControlValue::Gradient(vec![
+                stop(0.0, [1.1, 0.0, 0.0, 1.0]),
+                stop(1.0, [0.0, 0.0, 1.0, 1.0]),
+            ]),
+            ControlValueInvalid::GradientColorOutOfRange,
+        ),
+        (
+            ControlValue::Gradient(vec![
+                stop(0.0, [1.0, 0.0, 0.0, 1.0]),
+                stop(1.0, [0.0, -0.1, 1.0, 1.0]),
+            ]),
+            ControlValueInvalid::GradientColorOutOfRange,
+        ),
+        (
+            ControlValue::Gradient(vec![
+                stop(f32::NAN, [1.0, 0.0, 0.0, 1.0]),
+                stop(1.0, [0.0, 0.0, 1.0, 1.0]),
+            ]),
+            ControlValueInvalid::NonFiniteFloat,
+        ),
+        (
+            ControlValue::Gradient(vec![
+                stop(0.0, [1.0, 0.0, f32::INFINITY, 1.0]),
+                stop(1.0, [0.0, 0.0, 1.0, 1.0]),
+            ]),
+            ControlValueInvalid::NonFiniteFloat,
+        ),
+    ];
+    for (gradient, expected_source) in cases {
+        let error = gradient
+            .validate()
+            .expect_err("invalid gradient should fail canonical validation");
+        assert!(
+            matches!(&error, ControlValueInvalid::Nested { source, .. } if **source == expected_source),
+            "unexpected gradient validation error: {error:?}"
+        );
+    }
+
+    assert!(
+        ControlValue::Gradient(vec![
+            stop(0.5, [1.0, 0.0, 0.0, 1.0]),
+            stop(0.5, [0.0, 0.0, 1.0, 1.0]),
+        ])
+        .validate()
+        .is_ok(),
+        "equal adjacent positions represent a valid hard edge"
+    );
+}
+
+#[test]
+fn effect_gradient_projection_refuses_invalid_canonical_values() {
+    let invalid = ControlValue::Gradient(vec![
+        GradientStop {
+            position: 0.75,
+            color: [1.0, 0.0, 0.0, 1.0],
+        },
+        GradientStop {
+            position: 0.25,
+            color: [0.0, 0.0, 1.0, 1.0],
+        },
+    ]);
+
+    let error = invalid
+        .try_to_effect_json()
+        .expect_err("descending gradient must not project");
+    assert!(matches!(
+        &error,
+        EffectJsonValueError::InvalidGradient { source }
+            if matches!(source.as_ref(), ControlValueInvalid::Nested {
+                source,
+                ..
+            } if **source == ControlValueInvalid::GradientPositionsOutOfOrder)
+    ));
 }
 
 #[test]
