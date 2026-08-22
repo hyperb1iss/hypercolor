@@ -452,7 +452,7 @@ fn publish_power_transition(event_bus: &HypercolorBus, transition: OutputPowerTr
     }
 }
 
-fn brightness_percent(brightness: f32) -> u8 {
+pub(crate) fn brightness_percent(brightness: f32) -> u8 {
     (brightness.clamp(0.0, 1.0) * 100.0).round() as u8
 }
 

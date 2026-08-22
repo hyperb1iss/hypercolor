@@ -136,6 +136,24 @@ fn transports_use_the_scene_domain_mutation_authority() {
 }
 
 #[test]
+fn output_has_one_brightness_percentage_projection() {
+    let definitions = daemon_sources()
+        .into_iter()
+        .filter(|(_, source)| {
+            source.lines().any(|line| {
+                let line = line.trim_start();
+                line.starts_with("fn brightness_percent(")
+                    || line.starts_with("pub(crate) fn brightness_percent(")
+            })
+        })
+        .map(|(path, _)| path)
+        .collect::<Vec<_>>();
+
+    assert_eq!(definitions.len(), 1, "found {definitions:?}");
+    assert!(definitions[0].ends_with("output_power.rs"));
+}
+
+#[test]
 fn display_worker_delegates_delivery_policy_to_the_core_lane() {
     let worker = std::fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("src/display_output/worker.rs"),

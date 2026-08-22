@@ -27,6 +27,7 @@ use tokio::sync::{Mutex, RwLock};
 use crate::domain::DomainError;
 use crate::domain::context::{DeviceContext, RuntimeSessionService};
 use crate::domain::spatial::SpatialService;
+pub(crate) use crate::output_power::brightness_percent;
 use crate::output_power::{OutputOverride, OutputPower, OutputPowerState};
 use crate::performance::PerformanceTracker;
 use crate::preview_runtime::PreviewRuntime;
@@ -329,23 +330,6 @@ fn released_output_reconnect_scope(previous: OutputPowerState) -> Option<OutputR
         Some(OutputReconnectScope::Network)
     } else {
         None
-    }
-}
-
-#[allow(
-    clippy::as_conversions,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "brightness is clamped to the unit interval before scaling to a percentage"
-)]
-pub(crate) fn brightness_percent(brightness: f32) -> u8 {
-    let scaled = (brightness.clamp(0.0, 1.0) * 100.0).round();
-    if scaled <= 0.0 {
-        0
-    } else if scaled >= 100.0 {
-        100
-    } else {
-        scaled as u8
     }
 }
 

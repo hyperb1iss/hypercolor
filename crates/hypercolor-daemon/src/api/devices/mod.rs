@@ -28,6 +28,7 @@ use hypercolor_types::event::HypercolorEvent;
 use crate::api::envelope;
 use crate::app_state::AppState;
 use crate::discovery as core_discovery;
+use crate::domain::output::brightness_percent;
 use crate::domain::{DomainError, ResourceKind};
 
 pub use hypercolor_types::api::devices::{IdentifyAttachmentRequest, ListDevicesQuery};
@@ -939,16 +940,6 @@ fn metadata_value<'a>(metadata: Option<&'a HashMap<String, String>>, key: &str) 
 
 fn percent_to_brightness(percent: u8) -> f32 {
     (f32::from(percent) / 100.0).clamp(0.0, 1.0)
-}
-
-#[allow(
-    clippy::as_conversions,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "brightness is clamped to 0-100 percent before narrowing to a byte"
-)]
-fn brightness_percent(brightness: f32) -> u8 {
-    (brightness.clamp(0.0, 1.0) * 100.0).round() as u8
 }
 
 fn scale_rgb(color: [u8; 3], brightness: f32) -> [u8; 3] {
