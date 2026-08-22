@@ -15,10 +15,11 @@ use crate::viewport::ViewportRect;
 
 // ── EffectId ──────────────────────────────────────────────────────────────────
 
-/// Unique identifier for an effect, wrapping a UUID v7.
+/// Opaque stable identifier for an effect, wrapping a UUID.
 ///
-/// Generated at discovery time and used as the primary key across
-/// the registry, event bus, API, and UI.
+/// The effect source owns its generation policy. Loaders may derive a stable
+/// UUID from source identity or accept an explicitly authored UUID; callers
+/// must not infer UUID version or creation time from this type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
 pub struct EffectId(pub Uuid);
 
