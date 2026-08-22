@@ -402,63 +402,6 @@ impl GpuSparkleFlinger {
             compositor,
         }
     }
-
-    pub(crate) fn current_output_frame(&mut self) -> Result<Option<GpuTextureFrame>> {
-        self.flush_pending_output_submission()?;
-        let Some(surfaces) = self.surfaces.as_ref() else {
-            return Ok(None);
-        };
-        let Some(texture) = self.current_output.map(|output| match output {
-            GpuCompositorOutputSurface::Front => &surfaces.front,
-            GpuCompositorOutputSurface::Back => &surfaces.back,
-        }) else {
-            return Ok(None);
-        };
-        Ok(Some(GpuTextureFrame {
-            width: surfaces.width,
-            height: surfaces.height,
-            storage_id: texture.storage_id,
-            content_generation: self.output_generation,
-            origin: GpuTextureFrameOrigin::CompositorOutput,
-            texture: texture.texture.clone(),
-            view: texture.view.clone(),
-            immutable_lease: None,
-            #[cfg(target_os = "windows")]
-            windows_screen_lease: None,
-            #[cfg(all(target_os = "macos", feature = "screen-capture"))]
-            macos_screen_lease: None,
-        }))
-    }
-
-    #[cfg(test)]
-    pub(crate) fn compositor_surface_cache_entry_count(&self) -> usize {
-        self.compositor_surface_cache.len()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn screen_layer_host_allocation_count(&self) -> usize {
-        self.surfaces
-            .iter()
-            .chain(
-                self.compositor_surface_cache
-                    .values()
-                    .filter_map(Option::as_ref),
-            )
-            .fold(0_usize, |total, surfaces| {
-                total.saturating_add(surfaces.screen_layer_host_allocation_count)
-            })
-    }
-
-    #[cfg(test)]
-    pub(crate) fn active_surface_generation(&self) -> Option<u64> {
-        self.surfaces.as_ref().map(|surfaces| surfaces.generation)
-    }
-
-    pub(crate) fn surface_snapshot(&self) -> Option<GpuCompositorSurfaceSnapshot> {
-        self.surfaces
-            .as_ref()
-            .map(GpuCompositorSurfaceSet::snapshot)
-    }
 }
 
 fn merge_surface_state_counts(

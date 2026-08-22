@@ -19,11 +19,44 @@ use super::probe::probe_render_device;
 use super::source::gpu_source_frame;
 #[cfg(target_os = "windows")]
 use super::windows_screen::create_screen_bridge;
-use super::{GpuSparkleFlinger, MAX_CACHED_PREVIEW_SURFACES, SamplingReadbackLatch};
+use super::{
+    GpuCompositorSurfaceSet, GpuCompositorSurfaceSnapshot, GpuSparkleFlinger,
+    MAX_CACHED_PREVIEW_SURFACES, SamplingReadbackLatch,
+};
 #[cfg(all(target_os = "macos", feature = "screen-capture"))]
 use super::{MacosScreenGpuRecoveryState, macos_screen::create_screen_bridge};
 
 impl GpuSparkleFlinger {
+    #[cfg(test)]
+    pub(crate) fn compositor_surface_cache_entry_count(&self) -> usize {
+        self.compositor_surface_cache.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn screen_layer_host_allocation_count(&self) -> usize {
+        self.surfaces
+            .iter()
+            .chain(
+                self.compositor_surface_cache
+                    .values()
+                    .filter_map(Option::as_ref),
+            )
+            .fold(0_usize, |total, surfaces| {
+                total.saturating_add(surfaces.screen_layer_host_allocation_count)
+            })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn active_surface_generation(&self) -> Option<u64> {
+        self.surfaces.as_ref().map(|surfaces| surfaces.generation)
+    }
+
+    pub(crate) fn surface_snapshot(&self) -> Option<GpuCompositorSurfaceSnapshot> {
+        self.surfaces
+            .as_ref()
+            .map(GpuCompositorSurfaceSet::snapshot)
+    }
+
     pub(crate) fn new() -> Result<Self> {
         Self::new_with_backend_preference(GpuBackendPreference::Default)
     }

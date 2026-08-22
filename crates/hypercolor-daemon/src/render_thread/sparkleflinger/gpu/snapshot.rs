@@ -13,6 +13,33 @@ use super::{
 };
 
 impl GpuSparkleFlinger {
+    pub(crate) fn current_output_frame(&mut self) -> Result<Option<GpuTextureFrame>> {
+        self.flush_pending_output_submission()?;
+        let Some(surfaces) = self.surfaces.as_ref() else {
+            return Ok(None);
+        };
+        let Some(texture) = self.current_output.map(|output| match output {
+            GpuCompositorOutputSurface::Front => &surfaces.front,
+            GpuCompositorOutputSurface::Back => &surfaces.back,
+        }) else {
+            return Ok(None);
+        };
+        Ok(Some(GpuTextureFrame {
+            width: surfaces.width,
+            height: surfaces.height,
+            storage_id: texture.storage_id,
+            content_generation: self.output_generation,
+            origin: GpuTextureFrameOrigin::CompositorOutput,
+            texture: texture.texture.clone(),
+            view: texture.view.clone(),
+            immutable_lease: None,
+            #[cfg(target_os = "windows")]
+            windows_screen_lease: None,
+            #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+            macos_screen_lease: None,
+        }))
+    }
+
     pub(crate) fn snapshot_projected_group_frame(
         &mut self,
         group_id: ZoneId,
