@@ -367,6 +367,22 @@ fn test_html_effect_metadata(name: &str) -> EffectMetadata {
 fn test_display_face_effect_metadata(name: &str) -> EffectMetadata {
     let mut metadata = test_html_effect_metadata(name);
     metadata.category = EffectCategory::Display;
+    metadata.controls.push(ControlDefinition {
+        id: "title".to_owned(),
+        name: "Title".to_owned(),
+        kind: ControlKind::Text,
+        control_type: ControlType::TextInput,
+        default_value: ControlValue::Text("System".to_owned()),
+        min: None,
+        max: None,
+        step: None,
+        labels: Vec::new(),
+        group: Some("General".to_owned()),
+        tooltip: None,
+        aspect_lock: None,
+        preview_source: None,
+        binding: None,
+    });
     metadata
 }
 
