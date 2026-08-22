@@ -131,10 +131,13 @@ impl ConnectionEventGate {
     }
 
     fn activate(&self) {
-        self.ready.set(true);
-        while let Some(event) = self.pending.borrow_mut().pop_front() {
+        loop {
+            let Some(event) = self.pending.borrow_mut().pop_front() else {
+                break;
+            };
             self.dispatch(event);
         }
+        self.ready.set(true);
     }
 
     fn receive(&self, event: WebSocketEvent) {
@@ -1138,12 +1141,27 @@ mod tests {
             let socket_generation = StoredValue::new(4_u64);
             let received = Rc::new(RefCell::new(Vec::new()));
             let received_for_process = Rc::clone(&received);
+            let reentrant_handler = Rc::new(RefCell::new(None::<Rc<dyn Fn(WebSocketEvent)>>));
+            let reentrant_handler_for_process = Rc::clone(&reentrant_handler);
             let gate = ConnectionEventGate::new(
                 socket_generation,
                 4,
-                Rc::new(move |event| received_for_process.borrow_mut().push(event)),
+                Rc::new(move |event| {
+                    received_for_process.borrow_mut().push(event.clone());
+                    if event == WebSocketEvent::Opened {
+                        reentrant_handler_for_process
+                            .borrow()
+                            .as_ref()
+                            .expect("handler is installed before activation")(
+                            WebSocketEvent::Message(WebSocketMessage::Text(
+                                r#"{"type":"subscribed"}"#.to_owned(),
+                            )),
+                        );
+                    }
+                }),
             );
             let handler = gate.handler();
+            reentrant_handler.replace(Some(Rc::clone(&handler)));
 
             handler(WebSocketEvent::Opened);
             handler(WebSocketEvent::Message(WebSocketMessage::Text(
@@ -1158,6 +1176,9 @@ mod tests {
                     WebSocketEvent::Opened,
                     WebSocketEvent::Message(WebSocketMessage::Text(
                         r#"{"type":"hello"}"#.to_owned()
+                    )),
+                    WebSocketEvent::Message(WebSocketMessage::Text(
+                        r#"{"type":"subscribed"}"#.to_owned()
                     )),
                 ]
             );
