@@ -36,7 +36,7 @@ impl SceneStoreDocument {
 
 /// Named-scene snapshot reserved at its owning scene-manager boundary.
 #[derive(Debug)]
-pub struct SceneStoreSave {
+pub(crate) struct SceneStoreSave {
     scenes: HashMap<SceneId, Scene>,
     write: AtomicWriteReservation,
     payload: Vec<u8>,
@@ -125,7 +125,7 @@ impl SceneStore {
     }
 
     /// Reserve a named-scene snapshot before releasing its source lock.
-    pub fn reserve_save<I>(&self, scenes: I) -> Result<SceneStoreSave, PersistenceError>
+    pub(crate) fn reserve_save<I>(&self, scenes: I) -> Result<SceneStoreSave, PersistenceError>
     where
         I: IntoIterator<Item = Scene>,
     {
@@ -144,7 +144,10 @@ impl SceneStore {
     }
 
     /// Commit a previously reserved snapshot and retain it when it wins.
-    pub fn save_reserved(&mut self, pending: SceneStoreSave) -> anyhow::Result<AtomicWriteOutcome> {
+    pub(crate) fn save_reserved(
+        &mut self,
+        pending: SceneStoreSave,
+    ) -> anyhow::Result<AtomicWriteOutcome> {
         match self.save_reserved_stage_aware(pending) {
             AtomicWriteCommitResult::Superseded => Ok(AtomicWriteOutcome::Superseded),
             AtomicWriteCommitResult::DurableWritten => Ok(AtomicWriteOutcome::Written),
@@ -156,7 +159,7 @@ impl SceneStore {
     }
 
     /// Commit a reserved snapshot without collapsing its durability stage.
-    pub fn save_reserved_stage_aware(
+    pub(crate) fn save_reserved_stage_aware(
         &mut self,
         pending: SceneStoreSave,
     ) -> AtomicWriteCommitResult {
@@ -292,14 +295,113 @@ impl From<SceneStoreSave> for AdmittedSceneStoreSave {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    #[cfg(feature = "persistence-test-hooks")]
+    use std::time::Duration;
 
-    use hypercolor_core::scene::SceneManager;
+    use hypercolor_core::scene::{SceneManager, make_scene};
     use hypercolor_types::effect::EffectId;
     use hypercolor_types::layer::{SceneLayer, SceneLayerId};
     use hypercolor_types::scene::{SceneId, SceneKind, SceneMutationMode};
     use tempfile::TempDir;
 
+    #[cfg(feature = "persistence-test-hooks")]
+    use crate::persistence::AtomicFileWriter;
+    use crate::persistence::{AtomicWriteCommitResult, AtomicWriteOutcome};
+
     use super::SceneStore;
+
+    #[test]
+    fn rejects_an_overtaken_snapshot() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let path = tempdir.path().join("scenes.json");
+        let mut store = SceneStore::new(path.clone()).expect("scene store");
+        let older_save = store
+            .reserve_save([make_scene("Older")])
+            .expect("reserve older scene snapshot");
+        let newer_save = store
+            .reserve_save([make_scene("Newer")])
+            .expect("reserve newer scene snapshot");
+
+        assert_eq!(
+            store
+                .save_reserved(newer_save)
+                .expect("save newer scene snapshot"),
+            AtomicWriteOutcome::Written
+        );
+        assert_eq!(
+            store
+                .save_reserved(older_save)
+                .expect("reject older scene snapshot"),
+            AtomicWriteOutcome::Superseded
+        );
+
+        let loaded = SceneStore::load(&path).expect("scene store should reload");
+        let names = loaded
+            .list()
+            .map(|scene| scene.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["Newer"]);
+    }
+
+    #[test]
+    fn stage_aware_save_restores_state_when_superseded() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let path = tempdir.path().join("scenes.json");
+        let mut store = SceneStore::new(path).expect("scene store");
+        let older_save = store
+            .reserve_save([make_scene("Older")])
+            .expect("reserve older scene snapshot");
+        let newer_save = store
+            .reserve_save([make_scene("Newer")])
+            .expect("reserve newer scene snapshot");
+
+        assert!(matches!(
+            store.save_reserved_stage_aware(newer_save),
+            AtomicWriteCommitResult::DurableWritten
+        ));
+        assert!(matches!(
+            store.save_reserved_stage_aware(older_save),
+            AtomicWriteCommitResult::Superseded
+        ));
+        assert_eq!(
+            store
+                .list()
+                .map(|scene| scene.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Newer"]
+        );
+    }
+
+    #[cfg(feature = "persistence-test-hooks")]
+    #[test]
+    fn failed_delete_keeps_live_state_and_does_not_resurrect() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let path = tempdir.path().join("scenes.json");
+        let mut store = SceneStore::new(path.clone()).expect("scene store");
+        store.replace_named_scenes([make_scene("Ephemeral")]);
+        store.save().expect("seed scene store");
+        let writer = AtomicFileWriter::new(&path).expect("atomic writer");
+        writer.set_injected_replace_failures(usize::MAX);
+        let pending = store
+            .reserve_save(std::iter::empty())
+            .expect("reserve scene deletion");
+
+        assert!(store.save_reserved(pending).is_err());
+        assert!(store.is_empty(), "live scene state remains authoritative");
+
+        writer.set_injected_replace_failures(0);
+        store
+            .kick_persistence()
+            .expect("kick scene persistence retry");
+        writer
+            .flush(Duration::from_secs(5))
+            .expect("scene deletion should converge");
+        assert!(
+            SceneStore::load(&path)
+                .expect("reload scene store")
+                .is_empty()
+        );
+    }
 
     #[test]
     fn scene_effect_id_migration_rewrites_the_durable_store() {

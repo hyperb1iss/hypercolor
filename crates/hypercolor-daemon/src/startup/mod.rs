@@ -53,7 +53,6 @@ use crate::performance::PerformanceTracker;
 use crate::playlist_runtime::PlaylistRuntimeState;
 use crate::preview_runtime::PreviewRuntime;
 use crate::render_thread::{ConfiguredFpsTier, InputPublicationDemandHandle, RenderThread};
-use crate::scene_store::SceneStore;
 use crate::scene_transactions::SceneTransactionQueue;
 use crate::session::SessionController;
 use crate::simulators::{SimulatedDisplayRuntime, SimulatedDisplayStore};
@@ -80,6 +79,8 @@ pub use config::{config_sources, default_config, parse_config_toml};
 pub use discovery_worker::{
     collect_unmapped_driver_layout_targets, collect_unmapped_prefixed_layout_targets,
 };
+#[cfg(test)]
+pub(crate) use lifecycle::persist_scene_store_snapshot;
 pub use signals::{SUPERVISED_PARENT_PID_ENV, install_signal_handlers};
 
 /// The top-level daemon state, holding all subsystems.
@@ -114,9 +115,6 @@ pub struct DaemonState {
 
     /// Scene manager — scene lifecycle, priority stack, transitions.
     pub scene_manager: SceneService,
-
-    /// Persisted named-scene store.
-    pub scene_store: Arc<RwLock<SceneStore>>,
 
     /// Event bus — broadcast events, frame data, spectrum data.
     pub event_bus: Arc<HypercolorBus>,

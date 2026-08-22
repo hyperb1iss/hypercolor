@@ -511,8 +511,12 @@ impl SceneService {
 
     /// Persist the current named-scene projection through the owning store.
     pub async fn save_snapshot(&self) -> anyhow::Result<()> {
+        self.persist_snapshot().await.map(|_| ())
+    }
+
+    pub(crate) async fn persist_snapshot(&self) -> anyhow::Result<Option<AtomicWriteOutcome>> {
         let Some(store) = self.0.store.as_ref() else {
-            return Ok(());
+            return Ok(None);
         };
         #[cfg(all(test, feature = "persistence-test-hooks"))]
         self.pause_before_persistence_for_test().await;
@@ -524,7 +528,7 @@ impl SceneService {
                 .await
                 .reserve_save(manager.list().into_iter().cloned())?
         };
-        store.write().await.save_reserved(pending).map(|_| ())
+        store.write().await.save_reserved(pending).map(Some)
     }
 
     pub(crate) async fn publish_layout_activation<F>(

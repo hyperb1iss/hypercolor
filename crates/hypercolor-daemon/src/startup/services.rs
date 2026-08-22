@@ -824,7 +824,6 @@ impl DaemonState {
             device_registry,
             effect_registry,
             scene_manager,
-            scene_store,
             event_bus,
             macos_daemon_ownership,
             #[cfg(target_os = "macos")]

@@ -49,6 +49,7 @@ use hypercolor_daemon::library::JsonLibraryStore;
 #[cfg(feature = "persistence-test-hooks")]
 use hypercolor_daemon::persistence::AtomicFileWriter;
 use hypercolor_daemon::runtime_state;
+use hypercolor_daemon::scene_store::SceneStore;
 use hypercolor_daemon::scene_transactions::SceneTransaction;
 #[cfg(feature = "persistence-test-hooks")]
 use hypercolor_daemon::simulators::{SimulatedDisplayConfig, SimulatedDisplayStore};
@@ -12038,7 +12039,8 @@ async fn deleting_display_device_prunes_scene_display_groups_and_persists_cleanu
         "deleted device should not survive in the persisted default scene"
     );
 
-    let scene_store = state.scene_store.read().await;
+    let scene_store =
+        SceneStore::load(&state.data_dir.join("scenes.json")).expect("scene store should reload");
     let named_scene = scene_store
         .list()
         .find(|scene| scene.id == named_scene_id)

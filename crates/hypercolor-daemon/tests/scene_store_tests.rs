@@ -1,7 +1,6 @@
 //! Integration tests for persisted named-scene storage.
 
 use hypercolor_core::scene::{SceneManager, default_primary_group, make_scene};
-use hypercolor_daemon::persistence::{AtomicWriteCommitResult, AtomicWriteOutcome};
 use hypercolor_daemon::scene_store::SceneStore;
 use hypercolor_types::scene::SceneId;
 use hypercolor_types::spatial::{
@@ -9,11 +8,6 @@ use hypercolor_types::spatial::{
     StripDirection,
 };
 use tempfile::TempDir;
-
-#[cfg(feature = "persistence-test-hooks")]
-use hypercolor_daemon::persistence::AtomicFileWriter;
-#[cfg(feature = "persistence-test-hooks")]
-use std::time::Duration;
 
 fn sample_layout(zone_id: &str) -> SpatialLayout {
     SpatialLayout {
@@ -158,102 +152,6 @@ fn scene_store_sync_from_manager_filters_default_scene() {
     assert!(
         store.list().all(|scene| scene.id != SceneId::DEFAULT),
         "the synthesized default scene should never be persisted"
-    );
-}
-
-#[test]
-fn scene_store_rejects_an_overtaken_snapshot() {
-    let tempdir = TempDir::new().expect("tempdir");
-    let path = tempdir.path().join("scenes.json");
-    let mut store = SceneStore::new(path.clone()).expect("scene store");
-    let older = make_scene("Older");
-    let newer = make_scene("Newer");
-
-    let older_save = store
-        .reserve_save([older])
-        .expect("reserve older scene snapshot");
-    let newer_save = store
-        .reserve_save([newer])
-        .expect("reserve newer scene snapshot");
-
-    assert_eq!(
-        store
-            .save_reserved(newer_save)
-            .expect("save newer scene snapshot"),
-        AtomicWriteOutcome::Written
-    );
-    assert_eq!(
-        store
-            .save_reserved(older_save)
-            .expect("reject older scene snapshot"),
-        AtomicWriteOutcome::Superseded
-    );
-
-    let loaded = SceneStore::load(&path).expect("scene store should reload");
-    let names = loaded
-        .list()
-        .map(|scene| scene.name.as_str())
-        .collect::<Vec<_>>();
-    assert_eq!(names, vec!["Newer"]);
-}
-
-#[test]
-fn scene_store_stage_aware_save_restores_state_when_superseded() {
-    let tempdir = TempDir::new().expect("tempdir");
-    let path = tempdir.path().join("scenes.json");
-    let mut store = SceneStore::new(path).expect("scene store");
-    let older_save = store
-        .reserve_save([make_scene("Older")])
-        .expect("reserve older scene snapshot");
-    let newer_save = store
-        .reserve_save([make_scene("Newer")])
-        .expect("reserve newer scene snapshot");
-
-    assert!(matches!(
-        store.save_reserved_stage_aware(newer_save),
-        AtomicWriteCommitResult::DurableWritten
-    ));
-    assert!(matches!(
-        store.save_reserved_stage_aware(older_save),
-        AtomicWriteCommitResult::Superseded
-    ));
-    assert_eq!(
-        store
-            .list()
-            .map(|scene| scene.name.as_str())
-            .collect::<Vec<_>>(),
-        vec!["Newer"]
-    );
-}
-
-#[cfg(feature = "persistence-test-hooks")]
-#[test]
-fn failed_scene_delete_keeps_live_state_and_does_not_resurrect() {
-    let tempdir = TempDir::new().expect("tempdir");
-    let path = tempdir.path().join("scenes.json");
-    let mut store = SceneStore::new(path.clone()).expect("scene store");
-    store.replace_named_scenes([make_scene("Ephemeral")]);
-    store.save().expect("seed scene store");
-    let writer = AtomicFileWriter::new(&path).expect("atomic writer");
-    writer.set_injected_replace_failures(usize::MAX);
-    let pending = store
-        .reserve_save(std::iter::empty())
-        .expect("reserve scene deletion");
-
-    assert!(store.save_reserved(pending).is_err());
-    assert!(store.is_empty(), "live scene state remains authoritative");
-
-    writer.set_injected_replace_failures(0);
-    store
-        .kick_persistence()
-        .expect("kick scene persistence retry");
-    writer
-        .flush(Duration::from_secs(5))
-        .expect("scene deletion should converge");
-    assert!(
-        SceneStore::load(&path)
-            .expect("reload scene store")
-            .is_empty()
     );
 }
 

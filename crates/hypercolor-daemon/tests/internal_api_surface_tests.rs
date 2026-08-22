@@ -21,6 +21,14 @@ fn daemon_sources() -> Vec<(PathBuf, String)> {
     sources
 }
 
+fn references_rust_member(source: &str, member: &str) -> bool {
+    source.match_indices(member).any(|(start, _)| {
+        let prefix = source[..start].trim_end();
+        let suffix = source[start + member.len()..].trim_start();
+        (prefix.ends_with("SceneStore::") || prefix.ends_with('.')) && suffix.starts_with('(')
+    })
+}
+
 #[test]
 fn app_state_has_one_module_identity() {
     let banned = [
@@ -221,6 +229,72 @@ fn runtime_state_writers_share_the_runtime_session_authority() {
     assert!(lifecycle.contains(".runtime_session\n            .persist_snapshot()"));
     assert!(!lifecycle.contains("runtime_state::reserve_save"));
     assert!(!lifecycle.contains("runtime_state::save_reserved"));
+}
+
+#[test]
+fn scene_store_writers_share_the_scene_service_authority() {
+    assert!(references_rust_member(
+        "snapshot_alias . reserve_save (scenes)",
+        "reserve_save"
+    ));
+    assert!(references_rust_member(
+        "snapshot_alias.save_reserved(pending)",
+        "save_reserved"
+    ));
+
+    let sources = daemon_sources();
+    let raw_writer_members = [
+        "reserve_save",
+        "save_reserved",
+        "save_reserved_stage_aware",
+        "replace_named_scenes",
+    ];
+    let bypasses = sources
+        .iter()
+        .filter(|(path, _)| {
+            !path.ends_with("domain/scene.rs")
+                && !path.ends_with("profile_import.rs")
+                && !path.ends_with("scene_store.rs")
+        })
+        .flat_map(|(path, source)| {
+            raw_writer_members
+                .into_iter()
+                .filter(|member| references_rust_member(source, member))
+                .map(|member| format!("{} references {member}", path.display()))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        bypasses.is_empty(),
+        "scene-store writers bypassed SceneService:\n{}",
+        bypasses.join("\n")
+    );
+
+    let source = |suffix: &str| {
+        sources
+            .iter()
+            .find(|(path, _)| path.ends_with(suffix))
+            .map(|(_, source)| source.as_str())
+            .unwrap_or_else(|| panic!("missing daemon source {suffix}"))
+    };
+    let lifecycle = source("startup/lifecycle.rs");
+    assert!(lifecycle.contains("persist_scene_store_snapshot(&self.scene_manager)"));
+    assert!(!lifecycle.contains("self.scene_store"));
+    let watcher_shutdown = lifecycle
+        .split_once("if let Some(handle) = self.effect_watcher_task.take()")
+        .map(|(_, shutdown)| shutdown)
+        .expect("shutdown should stop the effect watcher");
+    let watcher_shutdown = watcher_shutdown
+        .split_once("if let Some(handle) = self.display_preference_sync_task.take()")
+        .map(|(shutdown, _)| shutdown)
+        .expect("watcher shutdown should precede preference sync shutdown");
+    assert!(watcher_shutdown.contains("handle.abort()"));
+    assert!(watcher_shutdown.contains("handle.await"));
+
+    let app_state = source("app_state.rs");
+    assert!(!app_state.contains("pub scene_store:"));
+    let startup = source("startup/mod.rs");
+    assert!(!startup.contains("pub scene_store:"));
 }
 
 #[test]

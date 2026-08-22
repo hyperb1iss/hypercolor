@@ -111,9 +111,6 @@ pub struct AppState {
     /// Scene CRUD, priority stack, and transitions.
     pub scene_manager: SceneService,
 
-    /// Persisted named-scene store.
-    pub scene_store: Arc<RwLock<SceneStore>>,
-
     /// System-wide event bus (broadcast + watch channels).
     pub event_bus: Arc<HypercolorBus>,
 
@@ -611,7 +608,6 @@ impl AppState {
             domains,
             device_registry,
             scene_manager,
-            scene_store,
             event_bus,
             macos_daemon_ownership: Arc::new(ArcSwapOption::empty()),
             asset_library,
@@ -686,10 +682,6 @@ impl AppState {
     /// shared by `Arc::clone` — the API operates on the exact same live
     /// instances as the daemon's render pipeline.
     pub fn from_daemon_state(daemon: &crate::startup::DaemonState) -> Self {
-        // Stores are shared from the daemon, never reopened: every
-        // AppState built from one daemon must see the same in-memory
-        // copy, or a save through one silently clobbers writes made
-        // through another.
         let data_dir = ConfigManager::data_dir();
         let library_store = Arc::clone(&daemon.library_store);
         let library_identity = Arc::clone(&daemon.library_identity);
@@ -701,7 +693,6 @@ impl AppState {
             domains,
             device_registry: daemon.device_registry.clone(),
             scene_manager: daemon.scene_manager.clone(),
-            scene_store: Arc::clone(&daemon.scene_store),
             event_bus: Arc::clone(&daemon.event_bus),
             macos_daemon_ownership: Arc::clone(&daemon.macos_daemon_ownership),
             asset_library: Arc::clone(&daemon.asset_library),

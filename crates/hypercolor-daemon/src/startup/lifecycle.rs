@@ -314,6 +314,11 @@ impl DaemonState {
 
         if let Some(handle) = self.effect_watcher_task.take() {
             handle.abort();
+            if let Err(error) = handle.await
+                && !error.is_cancelled()
+            {
+                warn!(%error, "Effect watcher did not stop cleanly");
+            }
         }
         if let Some(handle) = self.display_preference_sync_task.take() {
             handle.abort();
@@ -358,7 +363,7 @@ impl DaemonState {
 
         // 5. Persist the current runtime session before scene cleanup.
         let runtime_snapshot = self.persist_runtime_session_snapshot().await;
-        let scene_snapshot = self.persist_scene_store_snapshot().await;
+        let scene_snapshot = persist_scene_store_snapshot(&self.scene_manager).await;
         let flush_report = persistence::flush_all(SHUTDOWN_PERSISTENCE_FLUSH_TIMEOUT);
         for error in flush_report.errors() {
             warn!(%error, "Persistence retry did not converge during shutdown");
@@ -443,18 +448,6 @@ impl DaemonState {
             .persist_snapshot()
             .await
             .map_err(Into::into)
-    }
-
-    async fn persist_scene_store_snapshot(&self) -> Result<AtomicWriteOutcome> {
-        let pending = {
-            let scene_manager = self.scene_manager.snapshot().await;
-            let store = self.scene_store.read().await;
-            store.reserve_save(scene_manager.list().into_iter().cloned())
-        };
-
-        let pending = pending?;
-        let mut store = self.scene_store.write().await;
-        store.save_reserved(pending)
     }
 
     async fn restore_runtime_session(&mut self, config: &HypercolorConfig) {
@@ -984,6 +977,12 @@ impl DaemonState {
             }
         }));
     }
+}
+
+pub(crate) async fn persist_scene_store_snapshot(
+    scene_manager: &crate::domain::scene::SceneService,
+) -> Result<Option<AtomicWriteOutcome>> {
+    scene_manager.persist_snapshot().await
 }
 
 fn spawn_delayed_usb_hotplug_scan(worker: DiscoveryWorkerContext) {
