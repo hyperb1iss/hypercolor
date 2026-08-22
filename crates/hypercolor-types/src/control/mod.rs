@@ -622,6 +622,51 @@ impl<'de> Deserialize<'de> for ControlValue {
                 .map_err(|error| E::custom(format!("invalid {kind} value: {error}")))
         }
 
+        fn parse_closed_object<T, E>(
+            kind: &str,
+            value: Option<serde_json::Value>,
+            fields: &[&str],
+        ) -> Result<T, E>
+        where
+            T: serde::de::DeserializeOwned,
+            E: serde::de::Error,
+        {
+            let value = value.ok_or_else(|| E::custom(format!("missing value for {kind}")))?;
+            if let Some(object) = value.as_object()
+                && let Some(field) = object
+                    .keys()
+                    .find(|field| !fields.contains(&field.as_str()))
+            {
+                return Err(E::custom(format!(
+                    "invalid {kind} value: unknown field `{field}`"
+                )));
+            }
+            serde_json::from_value(value)
+                .map_err(|error| E::custom(format!("invalid {kind} value: {error}")))
+        }
+
+        fn parse_gradient<E>(value: Option<serde_json::Value>) -> Result<Vec<GradientStop>, E>
+        where
+            E: serde::de::Error,
+        {
+            let value = value.ok_or_else(|| E::custom("missing value for gradient"))?;
+            if let Some(stops) = value.as_array() {
+                for (index, stop) in stops.iter().enumerate() {
+                    if let Some(object) = stop.as_object()
+                        && let Some(field) = object
+                            .keys()
+                            .find(|field| !matches!(field.as_str(), "position" | "color"))
+                    {
+                        return Err(E::custom(format!(
+                            "invalid gradient value: stop {index} has unknown field `{field}`"
+                        )));
+                    }
+                }
+            }
+            serde_json::from_value(value)
+                .map_err(|error| E::custom(format!("invalid gradient value: {error}")))
+        }
+
         fn parse_unit<E>(kind: &str, value: Option<serde_json::Value>) -> Result<(), E>
         where
             E: serde::de::Error,
@@ -661,11 +706,27 @@ impl<'de> Deserialize<'de> for ControlValue {
             "duration" => {
                 Self::Duration(Duration::from_millis(parse_value("duration", raw_value)?))
             }
-            "color_rgb" => Self::ColorRgb(parse_value("color_rgb", raw_value)?),
-            "color_rgba" => Self::ColorRgba(parse_value("color_rgba", raw_value)?),
-            "color_linear" => Self::ColorLinear(parse_value("color_linear", raw_value)?),
-            "gradient" => Self::Gradient(parse_value("gradient", raw_value)?),
-            "rect" => Self::Rect(parse_value("rect", raw_value)?),
+            "color_rgb" => Self::ColorRgb(parse_closed_object(
+                "color_rgb",
+                raw_value,
+                &["r", "g", "b"],
+            )?),
+            "color_rgba" => Self::ColorRgba(parse_closed_object(
+                "color_rgba",
+                raw_value,
+                &["r", "g", "b", "a"],
+            )?),
+            "color_linear" => Self::ColorLinear(parse_closed_object(
+                "color_linear",
+                raw_value,
+                &["r", "g", "b", "a"],
+            )?),
+            "gradient" => Self::Gradient(parse_gradient(raw_value)?),
+            "rect" => Self::Rect(parse_closed_object(
+                "rect",
+                raw_value,
+                &["x", "y", "width", "height"],
+            )?),
             "enum" => Self::Enum(parse_value("enum", raw_value)?),
             "flags" => Self::Flags(parse_value("flags", raw_value)?),
             "list" => Self::List(parse_value("list", raw_value)?),

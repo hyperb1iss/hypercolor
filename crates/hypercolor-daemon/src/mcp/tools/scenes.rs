@@ -216,21 +216,52 @@ fn canonical_control_value_schema() -> Value {
     let recursive = json!({ "$ref": "#/$defs/controlValue" });
     let byte = json!({ "type": "integer", "minimum": 0, "maximum": 255 });
     let number = json!({ "type": "number" });
+    let f32_number = json!({
+        "type": "number",
+        "minimum": -f64::from(f32::MAX),
+        "maximum": f64::from(f32::MAX)
+    });
+    let normalized_channel = json!({ "type": "number", "minimum": 0.0, "maximum": 1.0 });
     let variants = vec![
         unit("null"),
         tagged("bool", json!({ "type": "boolean" })),
-        tagged("int", json!({ "type": "integer" })),
+        tagged(
+            "int",
+            json!({
+                "type": "integer",
+                "minimum": i64::MIN,
+                "maximum": i64::MAX
+            }),
+        ),
         tagged("float", number.clone()),
         tagged("text", json!({ "type": "string" })),
         tagged("secret_ref", json!({ "type": "string" })),
-        tagged("ip", json!({ "type": "string" })),
-        tagged("mac", json!({ "type": "string" })),
-        tagged("duration", json!({ "type": "integer", "minimum": 0 })),
+        tagged(
+            "ip",
+            json!({
+                "type": "string",
+                "anyOf": [
+                    { "format": "ipv4" },
+                    { "format": "ipv6" }
+                ]
+            }),
+        ),
+        tagged(
+            "mac",
+            json!({
+                "type": "string",
+                "pattern": "^(?:[0-9A-Fa-f]{12}|(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}|(?:[0-9A-Fa-f]{2}-){5}[0-9A-Fa-f]{2}|(?:[0-9A-Fa-f]{4}\\.){2}[0-9A-Fa-f]{4})$"
+            }),
+        ),
+        tagged(
+            "duration",
+            json!({ "type": "integer", "minimum": 0, "maximum": u64::MAX }),
+        ),
         tagged("color_rgb", channels(&["r", "g", "b"], byte.clone())),
         tagged("color_rgba", channels(&["r", "g", "b", "a"], byte)),
         tagged(
             "color_linear",
-            channels(&["r", "g", "b", "a"], number.clone()),
+            channels(&["r", "g", "b", "a"], f32_number.clone()),
         ),
         tagged(
             "gradient",
@@ -244,7 +275,7 @@ fn canonical_control_value_schema() -> Value {
                         "position": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
                         "color": {
                             "type": "array",
-                            "items": { "type": "number" },
+                            "items": normalized_channel,
                             "minItems": 4,
                             "maxItems": 4
                         }
@@ -254,7 +285,7 @@ fn canonical_control_value_schema() -> Value {
                 }
             }),
         ),
-        tagged("rect", channels(&["x", "y", "width", "height"], number)),
+        tagged("rect", channels(&["x", "y", "width", "height"], f32_number)),
         tagged("enum", json!({ "type": "string" })),
         tagged(
             "flags",

@@ -112,6 +112,25 @@ fn canonical_wire_rejects_malformed_envelopes() {
         serde_json::json!({"kind": "unknown", "value": 1}),
         serde_json::json!({"kind": "text", "value": "ok", "extra": true}),
         serde_json::json!({"kind": "future_value", "value": 1}),
+        serde_json::json!({
+            "kind": "color_rgb",
+            "value": { "r": 1, "g": 2, "b": 3, "future": 4 }
+        }),
+        serde_json::json!({
+            "kind": "gradient",
+            "value": [
+                {
+                    "position": 0.0,
+                    "color": [0.0, 0.0, 0.0, 1.0],
+                    "future": true
+                },
+                { "position": 1.0, "color": [1.0, 1.0, 1.0, 1.0] }
+            ]
+        }),
+        serde_json::json!({
+            "kind": "rect",
+            "value": { "x": 0.0, "y": 0.0, "width": 1.0, "height": 1.0, "z": 0.0 }
+        }),
     ] {
         assert!(
             serde_json::from_value::<ControlValue>(value.clone()).is_err(),

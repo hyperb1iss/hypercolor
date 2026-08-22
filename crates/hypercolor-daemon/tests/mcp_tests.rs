@@ -1278,6 +1278,191 @@ fn adjust_controls_advertises_recursive_canonical_values() {
     }
 }
 
+#[test]
+fn adjust_controls_schema_matches_canonical_value_boundaries() {
+    let tools = build_tool_definitions();
+    let adjust = tools
+        .iter()
+        .find(|tool| tool.name == "adjust_controls")
+        .expect("adjust_controls should be registered");
+    let validator = jsonschema::options()
+        .should_validate_formats(true)
+        .build(&adjust.input_schema)
+        .expect("adjust_controls schema should compile with format assertions");
+    let assert_parity = |label: &str, value: Value, expected: bool| {
+        let input = json!({
+            "zone": "primary",
+            "layer": "layer-1",
+            "values": { "candidate": value.clone() }
+        });
+        let schema_accepts = validator.is_valid(&input);
+        let canonical_accepts = serde_json::from_value::<ControlValue>(value).is_ok();
+        assert_eq!(schema_accepts, expected, "schema result for {label}");
+        assert_eq!(canonical_accepts, expected, "canonical result for {label}");
+        assert_eq!(
+            schema_accepts, canonical_accepts,
+            "schema and canonical admission diverged for {label}"
+        );
+    };
+
+    for (label, value) in [
+        ("i64 minimum", json!({ "kind": "int", "value": i64::MIN })),
+        ("i64 maximum", json!({ "kind": "int", "value": i64::MAX })),
+        ("IPv4", json!({ "kind": "ip", "value": "192.0.2.1" })),
+        ("IPv6", json!({ "kind": "ip", "value": "2001:db8::1" })),
+        (
+            "colon MAC",
+            json!({ "kind": "mac", "value": "aa:bb:cc:dd:ee:ff" }),
+        ),
+        (
+            "hyphen MAC",
+            json!({ "kind": "mac", "value": "AA-BB-CC-DD-EE-FF" }),
+        ),
+        (
+            "bare MAC",
+            json!({ "kind": "mac", "value": "aabbccddeeff" }),
+        ),
+        (
+            "dotted MAC",
+            json!({ "kind": "mac", "value": "aabb.ccdd.eeff" }),
+        ),
+        (
+            "gradient channel bounds",
+            json!({
+                "kind": "gradient",
+                "value": [
+                    { "position": 0.0, "color": [0.0, 0.0, 0.0, 0.0] },
+                    { "position": 1.0, "color": [1.0, 1.0, 1.0, 1.0] }
+                ]
+            }),
+        ),
+        (
+            "recursive list and map",
+            json!({
+                "kind": "map",
+                "value": {
+                    "items": {
+                        "kind": "list",
+                        "value": [
+                            { "kind": "ip", "value": "::1" },
+                            { "kind": "unknown" }
+                        ]
+                    }
+                }
+            }),
+        ),
+        (
+            "maximum duration",
+            json!({ "kind": "duration", "value": u64::MAX }),
+        ),
+        (
+            "maximum finite f32 channel",
+            json!({
+                "kind": "color_linear",
+                "value": {
+                    "r": f64::from(f32::MAX),
+                    "g": 0.0,
+                    "b": 0.0,
+                    "a": 1.0
+                }
+            }),
+        ),
+    ] {
+        assert_parity(label, value, true);
+    }
+
+    let above_i64 = serde_json::from_str::<Value>(r#"{"kind":"int","value":9223372036854775808}"#)
+        .expect("above-i64 fixture should parse as JSON");
+    let below_i64 = serde_json::from_str::<Value>(r#"{"kind":"int","value":-9223372036854777856}"#)
+        .expect("below-i64 fixture should parse as JSON");
+    let above_u64 =
+        serde_json::from_str::<Value>(r#"{"kind":"duration","value":18446744073709551616}"#)
+            .expect("above-u64 fixture should parse as JSON");
+    for (label, value) in [
+        ("above i64", above_i64),
+        ("below i64", below_i64),
+        (
+            "invalid IPv4",
+            json!({ "kind": "ip", "value": "999.1.2.3" }),
+        ),
+        ("invalid IPv6", json!({ "kind": "ip", "value": "2001:::1" })),
+        (
+            "mixed MAC separators",
+            json!({ "kind": "mac", "value": "aa:bb-cc:dd:ee:ff" }),
+        ),
+        (
+            "short MAC",
+            json!({ "kind": "mac", "value": "aa:bb:cc:dd:ee" }),
+        ),
+        (
+            "gradient channel below zero",
+            json!({
+                "kind": "gradient",
+                "value": [
+                    { "position": 0.0, "color": [-0.001, 0.0, 0.0, 1.0] },
+                    { "position": 1.0, "color": [1.0, 1.0, 1.0, 1.0] }
+                ]
+            }),
+        ),
+        (
+            "gradient channel above one",
+            json!({
+                "kind": "gradient",
+                "value": [
+                    { "position": 0.0, "color": [0.0, 0.0, 0.0, 1.0] },
+                    { "position": 1.0, "color": [1.001, 1.0, 1.0, 1.0] }
+                ]
+            }),
+        ),
+        (
+            "invalid nested IP",
+            json!({
+                "kind": "map",
+                "value": { "address": { "kind": "ip", "value": "nope" } }
+            }),
+        ),
+        (
+            "channel above f32 range",
+            json!({
+                "kind": "color_linear",
+                "value": { "r": 1.0e40, "g": 0.0, "b": 0.0, "a": 1.0 }
+            }),
+        ),
+        ("above u64 duration", above_u64),
+        (
+            "unknown payload",
+            json!({ "kind": "unknown", "value": null }),
+        ),
+        (
+            "unknown tag",
+            json!({ "kind": "vector3", "value": [0.0, 0.0, 0.0] }),
+        ),
+        (
+            "unknown color payload field",
+            json!({
+                "kind": "color_rgb",
+                "value": { "r": 1, "g": 2, "b": 3, "future": 4 }
+            }),
+        ),
+        (
+            "unknown gradient stop field",
+            json!({
+                "kind": "gradient",
+                "value": [
+                    {
+                        "position": 0.0,
+                        "color": [0.0, 0.0, 0.0, 1.0],
+                        "future": true
+                    },
+                    { "position": 1.0, "color": [1.0, 1.0, 1.0, 1.0] }
+                ]
+            }),
+        ),
+    ] {
+        assert_parity(label, value, false);
+    }
+}
+
 /// A deleted parameter is refused, not quietly dropped.
 ///
 /// `additionalProperties: false` is enforced in the dispatch path
