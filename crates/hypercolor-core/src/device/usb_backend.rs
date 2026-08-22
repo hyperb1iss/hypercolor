@@ -45,9 +45,11 @@ use crate::attachment::ComponentRegistry;
 const RETRY_BACKOFF: Duration = Duration::from_millis(100);
 const MAX_RETRIES: u8 = 3;
 const USB_MIDI_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+const USB_ACTOR_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const DELIVERY_PENDING: u8 = 0;
 const DELIVERY_STARTED: u8 = 1;
 const DELIVERY_REJECTED: u8 = 2;
+const DELIVERY_TERMINAL: u8 = 3;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct UsbActorMetricsSnapshot {
@@ -196,9 +198,126 @@ impl UsbFramePayload {
     }
 }
 
-#[derive(Debug)]
 struct UsbDisplayPayload {
     payload: Arc<OwnedDisplayFramePayload>,
+    delivery_id: Option<DeviceDeliveryId>,
+    delivery_observer: Option<Arc<dyn DeviceDeliveryObserver>>,
+    delivery_tx: StdMutex<Option<oneshot::Sender<DeviceDeliveryAck>>>,
+    delivery_state: AtomicU8,
+}
+
+impl UsbDisplayPayload {
+    fn untracked(payload: Arc<OwnedDisplayFramePayload>) -> Self {
+        Self {
+            payload,
+            delivery_id: None,
+            delivery_observer: None,
+            delivery_tx: StdMutex::new(None),
+            delivery_state: AtomicU8::new(DELIVERY_PENDING),
+        }
+    }
+
+    fn tracked(
+        id: DeviceDeliveryId,
+        payload: Arc<OwnedDisplayFramePayload>,
+    ) -> (Self, oneshot::Receiver<DeviceDeliveryAck>) {
+        Self::tracked_observed(id, payload, None)
+    }
+
+    fn tracked_observed(
+        id: DeviceDeliveryId,
+        payload: Arc<OwnedDisplayFramePayload>,
+        delivery_observer: Option<Arc<dyn DeviceDeliveryObserver>>,
+    ) -> (Self, oneshot::Receiver<DeviceDeliveryAck>) {
+        let (delivery_tx, delivery_rx) = oneshot::channel();
+        (
+            Self {
+                payload,
+                delivery_id: Some(id),
+                delivery_observer,
+                delivery_tx: StdMutex::new(Some(delivery_tx)),
+                delivery_state: AtomicU8::new(DELIVERY_PENDING),
+            },
+            delivery_rx,
+        )
+    }
+
+    fn acknowledge(&self, ack: DeviceDeliveryAck) {
+        if self
+            .delivery_state
+            .swap(DELIVERY_TERMINAL, Ordering::AcqRel)
+            == DELIVERY_TERMINAL
+        {
+            return;
+        }
+        if let Some(observer) = &self.delivery_observer {
+            observer.delivery_terminal(&ack);
+        }
+        if let Ok(mut delivery_tx) = self.delivery_tx.lock()
+            && let Some(delivery_tx) = delivery_tx.take()
+        {
+            let _ = delivery_tx.send(ack);
+        }
+    }
+
+    fn reject_pending(&self, error: DeviceError) {
+        let Some(id) = self.delivery_id else {
+            return;
+        };
+        if self
+            .delivery_state
+            .compare_exchange(
+                DELIVERY_PENDING,
+                DELIVERY_REJECTED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_err()
+        {
+            return;
+        }
+        self.acknowledge(DeviceDeliveryAck::rejected(id, error));
+    }
+
+    fn reject_unacknowledged(&self, error: DeviceError) {
+        let Some(id) = self.delivery_id else {
+            return;
+        };
+        let state = self
+            .delivery_state
+            .swap(DELIVERY_REJECTED, Ordering::AcqRel);
+        if matches!(state, DELIVERY_REJECTED | DELIVERY_TERMINAL) {
+            return;
+        }
+        self.acknowledge(DeviceDeliveryAck::failed(
+            id,
+            state == DELIVERY_STARTED,
+            Duration::ZERO,
+            error,
+        ));
+    }
+
+    fn mark_transport_started(&self) -> bool {
+        let Some(id) = self.delivery_id else {
+            return true;
+        };
+        if self
+            .delivery_state
+            .compare_exchange(
+                DELIVERY_PENDING,
+                DELIVERY_STARTED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_err()
+        {
+            return false;
+        }
+        if let Some(observer) = &self.delivery_observer {
+            observer.transport_started(id);
+        }
+        true
+    }
 }
 
 enum UsbDeviceCommand {
@@ -293,13 +412,21 @@ impl UsbDevice {
             device_id,
             display_tx: self.display_tx.clone(),
             active: Arc::clone(&self.active),
+            lifecycle_gate: Arc::clone(&self.lifecycle_gate),
             last_async_error: Arc::clone(&self.last_async_error),
         })
     }
 
     fn queue_display_frame(&self, payload: Arc<OwnedDisplayFramePayload>) {
-        self.display_tx
-            .send_replace(Some(Arc::new(UsbDisplayPayload { payload })));
+        if let Some(previous) = self
+            .display_tx
+            .send_replace(Some(Arc::new(UsbDisplayPayload::untracked(payload))))
+        {
+            previous.reject_pending(DeviceError::write(
+                self.info_template.id,
+                "USB display frame was superseded before transport started",
+            ));
+        }
     }
 
     async fn set_brightness(
@@ -341,7 +468,7 @@ impl UsbDevice {
                 });
             }
         }
-        let Some(actor_task) = self.actor_task.take() else {
+        let Some(mut actor_task) = self.actor_task.take() else {
             if let Some(error) = self.last_async_error(device_id)? {
                 return Err(error);
             }
@@ -358,18 +485,51 @@ impl UsbDevice {
             .is_ok();
 
         let shutdown_result = if command_sent {
-            response_rx.await.map_err(|_| DeviceError::Disconnected {
-                device: device_id.to_string(),
-            })?
+            match tokio::time::timeout(USB_ACTOR_SHUTDOWN_TIMEOUT, response_rx).await {
+                Ok(result) => result.map_err(|_| DeviceError::Disconnected {
+                    device: device_id.to_string(),
+                })?,
+                Err(_) => Err(DeviceError::Timeout {
+                    after: USB_ACTOR_SHUTDOWN_TIMEOUT,
+                }),
+            }
         } else {
             Ok(())
         };
 
-        if let Err(error) = actor_task.await {
-            self.store_async_error(
-                DeviceError::protocol(device_id, format!("USB device actor join failed: {error}")),
-                device_id,
-            )?;
+        if matches!(&shutdown_result, Err(DeviceError::Timeout { .. })) {
+            if let Some(pending) = self.display_tx.send_replace(None) {
+                pending.reject_unacknowledged(DeviceError::Timeout {
+                    after: USB_ACTOR_SHUTDOWN_TIMEOUT,
+                });
+            }
+            actor_task.abort();
+        }
+
+        match tokio::time::timeout(USB_ACTOR_SHUTDOWN_TIMEOUT, &mut actor_task).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) if error.is_cancelled() => {}
+            Ok(Err(error)) => {
+                self.store_async_error(
+                    DeviceError::protocol(
+                        device_id,
+                        format!("USB device actor join failed: {error}"),
+                    ),
+                    device_id,
+                )?;
+            }
+            Err(_) => {
+                if let Some(pending) = self.display_tx.send_replace(None) {
+                    pending.reject_unacknowledged(DeviceError::Timeout {
+                        after: USB_ACTOR_SHUTDOWN_TIMEOUT,
+                    });
+                }
+                actor_task.abort();
+                let _ = actor_task.await;
+                return Err(DeviceError::Timeout {
+                    after: USB_ACTOR_SHUTDOWN_TIMEOUT,
+                });
+            }
         }
 
         if let Err(error) = shutdown_result {
@@ -406,6 +566,27 @@ impl UsbDevice {
         })?;
         *slot = Some(error);
         Ok(())
+    }
+}
+
+impl Drop for UsbDevice {
+    fn drop(&mut self) {
+        let _gate = lock_lifecycle_gate(&self.lifecycle_gate);
+        self.active.store(false, Ordering::Release);
+        let device_id = self.info_template.id;
+        if let Some(pending) = self.frame_tx.send_replace(None) {
+            pending.reject_pending(DeviceError::Disconnected {
+                device: device_id.to_string(),
+            });
+        }
+        if let Some(pending) = self.display_tx.send_replace(None) {
+            pending.reject_unacknowledged(DeviceError::Disconnected {
+                device: device_id.to_string(),
+            });
+        }
+        if let Some(actor_task) = self.actor_task.take() {
+            actor_task.abort();
+        }
     }
 }
 
@@ -510,6 +691,7 @@ struct UsbDisplaySink {
     device_id: DeviceId,
     display_tx: watch::Sender<Option<Arc<UsbDisplayPayload>>>,
     active: Arc<AtomicBool>,
+    lifecycle_gate: Arc<StdMutex<()>>,
     last_async_error: Arc<StdMutex<Option<DeviceError>>>,
 }
 
@@ -519,6 +701,69 @@ impl DeviceDisplaySink for UsbDisplaySink {
         &self,
         payload: Arc<OwnedDisplayFramePayload>,
     ) -> Result<(), DeviceError> {
+        self.publish(Arc::new(UsbDisplayPayload::untracked(payload)))
+    }
+
+    async fn deliver_display_payload_owned(
+        &self,
+        id: DeviceDeliveryId,
+        payload: Arc<OwnedDisplayFramePayload>,
+    ) -> DeviceDeliveryAck {
+        let (payload, delivery_rx) = UsbDisplayPayload::tracked(id, payload);
+        if let Err(error) = self.publish(Arc::new(payload)) {
+            return DeviceDeliveryAck::rejected(id, error);
+        }
+
+        delivery_rx.await.unwrap_or_else(|_| {
+            DeviceDeliveryAck::rejected(
+                id,
+                DeviceError::Disconnected {
+                    device: self.device_id.to_string(),
+                },
+            )
+        })
+    }
+
+    async fn deliver_display_payload_owned_observed(
+        &self,
+        id: DeviceDeliveryId,
+        payload: Arc<OwnedDisplayFramePayload>,
+        observer: Arc<dyn DeviceDeliveryObserver>,
+    ) -> DeviceDeliveryAck {
+        let terminal_observer = Arc::clone(&observer);
+        let (payload, delivery_rx) =
+            UsbDisplayPayload::tracked_observed(id, payload, Some(observer));
+        if let Err(error) = self.publish(Arc::new(payload)) {
+            let ack = DeviceDeliveryAck::rejected(id, error);
+            terminal_observer.delivery_terminal(&ack);
+            return ack;
+        }
+
+        delivery_rx.await.unwrap_or_else(|_| {
+            DeviceDeliveryAck::rejected(
+                id,
+                DeviceError::Disconnected {
+                    device: self.device_id.to_string(),
+                },
+            )
+        })
+    }
+}
+
+impl UsbDisplaySink {
+    fn publish(&self, payload: Arc<UsbDisplayPayload>) -> Result<(), DeviceError> {
+        let _gate = lock_lifecycle_gate(&self.lifecycle_gate);
+        self.ensure_ready()?;
+        if let Some(previous) = self.display_tx.send_replace(Some(payload)) {
+            previous.reject_pending(DeviceError::write(
+                self.device_id,
+                "USB display frame was superseded before transport started",
+            ));
+        }
+        Ok(())
+    }
+
+    fn ensure_ready(&self) -> Result<(), DeviceError> {
         if !self.active.load(Ordering::Acquire) {
             return Err(DeviceError::Disconnected {
                 device: self.device_id.to_string(),
@@ -535,9 +780,6 @@ impl DeviceDisplaySink for UsbDisplaySink {
         {
             return Err(error);
         }
-
-        self.display_tx
-            .send_replace(Some(Arc::new(UsbDisplayPayload { payload })));
         Ok(())
     }
 }
@@ -1155,6 +1397,7 @@ impl DeviceBackend for UsbBackend {
             Arc::clone(&lifecycle_gate),
             frame_tx.clone(),
             frame_rx,
+            display_tx.clone(),
             display_rx,
             command_rx,
             Arc::clone(&last_async_error),

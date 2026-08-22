@@ -31,7 +31,10 @@ mod warnings;
 
 pub use backend_io::BackendIo;
 use brightness::DeviceOutputBrightness;
-pub use display_output::{DisplayOutputLane, DisplayOutputStatistics};
+use display_output::DisplayDeliveryAuthority;
+pub use display_output::{
+    DisplayDeliverySupervisorStatistics, DisplayOutputLane, DisplayOutputStatistics,
+};
 use output_coordinator::DeviceOutputCoordinator;
 pub use output_coordinator::DirectControlGuard;
 use routing::{DeviceMapping, RoutingPlan};
@@ -82,6 +85,12 @@ pub use super::output_queue::{
 pub struct BackendManager {
     /// Registered backends, keyed by `BackendInfo.id`.
     backends: HashMap<String, BackendHandle>,
+
+    /// Current registration generation for each backend ID.
+    backend_generations: HashMap<String, u64>,
+
+    /// Monotonic source for backend registration generations.
+    backend_generation_counter: u64,
 
     /// Maps spatial layout `Output.device_id` strings to `(backend_id, DeviceId)`.
     ///

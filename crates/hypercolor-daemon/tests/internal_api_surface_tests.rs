@@ -115,3 +115,42 @@ fn transports_use_the_effect_domain_authority() {
         offenders.join("\n")
     );
 }
+
+#[test]
+fn display_worker_delegates_delivery_policy_to_the_core_lane() {
+    let worker = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/display_output/worker.rs"),
+    )
+    .expect("display worker source should read");
+
+    assert!(worker.contains("output_lane.write("));
+    assert!(worker.contains("lane_is_active"));
+    for retired_pipeline in [
+        "RetryAfterFailure",
+        "retry_after",
+        "schedule_display_retry",
+        "schedule_cached_display_retry",
+        "BackendIo",
+    ] {
+        assert!(
+            !worker.contains(retired_pipeline),
+            "daemon display worker retained {retired_pipeline}"
+        );
+    }
+
+    let backend_io = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../hypercolor-core/src/device/manager/backend_io.rs"),
+    )
+    .expect("core backend I/O source should read");
+    for retired_bypass in [
+        "pub async fn write_display_frame(",
+        "pub async fn write_display_frame_owned(",
+        "pub async fn write_display_payload_owned(",
+    ] {
+        assert!(
+            !backend_io.contains(retired_bypass),
+            "BackendIo retained display bypass {retired_bypass}"
+        );
+    }
+}

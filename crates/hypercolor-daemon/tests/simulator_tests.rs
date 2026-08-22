@@ -17,7 +17,7 @@ use hypercolor_daemon::simulators::{
     SimulatedDisplayConfig, SimulatedDisplayStore, activate_simulated_displays,
     default_layout_device_id, logical_device_ids_for_simulator,
 };
-use hypercolor_types::device::{DeviceId, DeviceState};
+use hypercolor_types::device::{DeviceId, DeviceState, OwnedDisplayFramePayload};
 use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
@@ -187,13 +187,19 @@ async fn activate_simulated_displays_registers_virtual_display_in_runtime_surfac
     let logical_ids = logical_device_ids_for_simulator(&state.logical_devices, config.id).await;
     assert_eq!(logical_ids, vec![default_layout_device_id(&config)]);
 
-    {
+    let lane = {
         let mut manager = state.backend_manager.lock().await;
         manager
-            .write_device_display_frame("simulator", config.id, &[1, 2, 3])
-            .await
-            .expect("simulated backend should accept display writes");
-    }
+            .display_output_lane("simulator", config.id)
+            .expect("simulated backend should expose a display lane")
+    };
+    lane.write(Arc::new(OwnedDisplayFramePayload::jpeg(
+        0,
+        0,
+        Arc::new(vec![1, 2, 3]),
+    )))
+    .await
+    .expect("simulated backend should accept display writes");
 
     let app = api::build_router(Arc::clone(&state), None);
 
@@ -250,13 +256,19 @@ async fn simulated_display_backend_reuses_owned_jpeg_payloads() {
     .expect("simulated displays should activate");
 
     let jpeg = Arc::new(vec![0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]);
-    {
+    let lane = {
         let mut manager = state.backend_manager.lock().await;
         manager
-            .write_device_display_frame_owned("simulator", config.id, Arc::clone(&jpeg))
-            .await
-            .expect("simulated backend should retain owned display frames");
-    }
+            .display_output_lane("simulator", config.id)
+            .expect("simulated backend should expose a display lane")
+    };
+    lane.write(Arc::new(OwnedDisplayFramePayload::jpeg(
+        0,
+        0,
+        Arc::clone(&jpeg),
+    )))
+    .await
+    .expect("simulated backend should retain owned display frames");
 
     let stored = state
         .simulated_display_runtime
@@ -505,13 +517,19 @@ async fn simulated_display_crud_routes_update_runtime_state() {
     .await
     .expect("valid simulator layout should apply");
 
-    {
+    let lane = {
         let mut manager = state.backend_manager.lock().await;
         manager
-            .write_device_display_frame("simulator", device_id, &[9, 8, 7])
-            .await
-            .expect("simulated backend should capture frame bytes");
-    }
+            .display_output_lane("simulator", device_id)
+            .expect("simulated backend should expose a display lane")
+    };
+    lane.write(Arc::new(OwnedDisplayFramePayload::jpeg(
+        0,
+        0,
+        Arc::new(vec![9, 8, 7]),
+    )))
+    .await
+    .expect("simulated backend should capture frame bytes");
     publish_display_frame(&state, &preview_config, vec![7, 8, 9]).await;
     let frame = body_bytes(
         app.clone()

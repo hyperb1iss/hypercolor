@@ -202,6 +202,10 @@ struct DiagnoseDeviceOutputItem {
     last_transport_started_sequence: u64,
     last_transport_completed_sequence: u64,
     last_transport_failed_sequence: u64,
+    display_queue_generation: Option<u64>,
+    display_transport_started: u64,
+    display_transport_completed: u64,
+    display_transport_failed: u64,
 }
 
 /// `POST /api/v1/diagnose` — Run lightweight daemon diagnostics.
@@ -773,6 +777,10 @@ fn build_device_output_snapshot(metrics: &DeviceMetricsSnapshot) -> DiagnoseDevi
             last_transport_started_sequence: item.last_transport_started_sequence,
             last_transport_completed_sequence: item.last_transport_completed_sequence,
             last_transport_failed_sequence: item.last_transport_failed_sequence,
+            display_queue_generation: item.display_queue_generation,
+            display_transport_started: item.display_transport_started,
+            display_transport_completed: item.display_transport_completed,
+            display_transport_failed: item.display_transport_failed,
         })
         .collect();
 

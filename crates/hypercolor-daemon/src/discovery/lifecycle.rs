@@ -538,7 +538,9 @@ fn claim_current_async_write_failures(
             }
 
             let recovery = failure.error.recoverability();
-            let is_current = if recovery == ErrorRecoverability::Retry {
+            let is_current = if recovery == ErrorRecoverability::Retry
+                && !failure.is_from_retired_generation()
+            {
                 failure.is_current()
             } else {
                 failure.try_acknowledge()

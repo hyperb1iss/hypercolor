@@ -1,14 +1,16 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex as StdMutex, PoisonError};
+use std::sync::{Arc, Mutex as StdMutex, PoisonError, Weak};
 
 use hypercolor_types::device::DeviceId;
+use tokio::sync::Mutex;
 
-use crate::device::output_queue::{
-    DeviceStagingBuffer, OutputLane, OutputQueue, next_queue_generation,
-};
+use crate::device::output_queue::{DeviceStagingBuffer, OutputLane, OutputQueue};
 use crate::device::traits::OutputCadence;
 
-use super::{BackendDeviceKey, BackendHandle, DeviceFrameSinkHandle, DisplayOutputLane};
+use super::{
+    BackendDeviceKey, BackendHandle, DeviceFrameSinkHandle, DisplayDeliveryAuthority,
+    DisplayOutputLane,
+};
 
 #[derive(Debug, Default)]
 struct DirectControlRegistry {
@@ -65,6 +67,8 @@ pub(super) struct DeviceOutputCoordinator {
     queues: HashMap<BackendDeviceKey, OutputQueue>,
     frame_sinks: HashMap<BackendDeviceKey, DeviceFrameSinkHandle>,
     display_lanes: HashMap<BackendDeviceKey, DisplayOutputLane>,
+    display_delivery_gates: HashMap<BackendDeviceKey, Weak<Mutex<()>>>,
+    display_delivery_authority: Arc<DisplayDeliveryAuthority>,
     staging: HashMap<BackendDeviceKey, DeviceStagingBuffer>,
     active_staging_keys: Vec<BackendDeviceKey>,
     active_staging_len: usize,
@@ -80,8 +84,14 @@ impl DeviceOutputCoordinator {
             .retain(|(queued_backend_id, _), _| queued_backend_id != backend_id);
         self.frame_sinks
             .retain(|(sink_backend_id, _), _| sink_backend_id != backend_id);
-        self.display_lanes
-            .retain(|(lane_backend_id, _), _| lane_backend_id != backend_id);
+        self.display_lanes.retain(|(lane_backend_id, _), lane| {
+            if lane_backend_id == backend_id {
+                lane.retire();
+                false
+            } else {
+                true
+            }
+        });
         self.staging
             .retain(|(staged_backend_id, _), _| staged_backend_id != backend_id);
         self.output_cadence
@@ -93,7 +103,9 @@ impl DeviceOutputCoordinator {
     pub(super) fn remove_target_state(&mut self, key: &BackendDeviceKey) {
         self.queues.remove(key);
         self.frame_sinks.remove(key);
-        self.display_lanes.remove(key);
+        if let Some(lane) = self.display_lanes.remove(key) {
+            lane.retire();
+        }
         self.staging.remove(key);
         self.output_cadence.remove(key);
         self.warned_inactive_layout_devices.remove(key);
@@ -104,12 +116,47 @@ impl DeviceOutputCoordinator {
         backend_id: &str,
         device_id: DeviceId,
         backend: BackendHandle,
+        backend_generation: u64,
     ) -> DisplayOutputLane {
         let key = (backend_id.to_owned(), device_id);
+        let delivery_gate = self.display_delivery_gate(&key);
+        let delivery_authority = Arc::clone(&self.display_delivery_authority);
         self.display_lanes
             .entry(key)
-            .or_insert_with(|| DisplayOutputLane::new(backend, device_id, next_queue_generation()))
+            .or_insert_with(|| {
+                DisplayOutputLane::new(
+                    backend_id.to_owned(),
+                    backend,
+                    device_id,
+                    delivery_gate,
+                    backend_generation,
+                    delivery_authority,
+                )
+            })
             .clone()
+    }
+
+    fn display_delivery_gate(&mut self, key: &BackendDeviceKey) -> Arc<Mutex<()>> {
+        self.display_delivery_gates
+            .retain(|_, gate| gate.strong_count() > 0);
+        if let Some(gate) = self.display_delivery_gates.get(key).and_then(Weak::upgrade) {
+            return gate;
+        }
+
+        let gate = Arc::new(Mutex::new(()));
+        self.display_delivery_gates
+            .insert(key.clone(), Arc::downgrade(&gate));
+        gate
+    }
+
+    pub(super) fn display_lanes(
+        &self,
+    ) -> impl Iterator<Item = (&BackendDeviceKey, &DisplayOutputLane)> {
+        self.display_lanes.iter()
+    }
+
+    pub(super) fn display_delivery_authority(&self) -> &Arc<DisplayDeliveryAuthority> {
+        &self.display_delivery_authority
     }
 
     pub(super) fn set_frame_sink(

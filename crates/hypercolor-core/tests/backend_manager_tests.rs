@@ -812,6 +812,62 @@ struct DisplayRecordingBackend {
     display_writes: Arc<Mutex<Vec<Vec<u8>>>>,
 }
 
+struct RecoveringDisplayBackend {
+    expected_device_id: DeviceId,
+    fail_next: Arc<AtomicBool>,
+    failure: DeviceError,
+}
+
+struct OrderedDisplayBackend {
+    backend_id: &'static str,
+    expected_device_id: DeviceId,
+    attempts: Arc<AtomicUsize>,
+    first_entered: Arc<Notify>,
+    release_first: Arc<Notify>,
+    entry_order: Arc<Mutex<Vec<u8>>>,
+    block_first: bool,
+}
+
+impl RecoveringDisplayBackend {
+    fn new(expected_device_id: DeviceId, fail_next: Arc<AtomicBool>) -> Self {
+        Self {
+            expected_device_id,
+            fail_next,
+            failure: DeviceError::WriteError {
+                device: expected_device_id.to_string(),
+                detail: "injected display failure".to_owned(),
+            },
+        }
+    }
+
+    fn with_failure(mut self, failure: DeviceError) -> Self {
+        self.failure = failure;
+        self
+    }
+}
+
+impl OrderedDisplayBackend {
+    fn new(
+        backend_id: &'static str,
+        expected_device_id: DeviceId,
+        attempts: Arc<AtomicUsize>,
+        first_entered: Arc<Notify>,
+        release_first: Arc<Notify>,
+        entry_order: Arc<Mutex<Vec<u8>>>,
+        block_first: bool,
+    ) -> Self {
+        Self {
+            backend_id,
+            expected_device_id,
+            attempts,
+            first_entered,
+            release_first,
+            entry_order,
+            block_first,
+        }
+    }
+}
+
 impl DisplayRecordingBackend {
     fn new(expected_device_id: DeviceId, display_writes: Arc<Mutex<Vec<Vec<u8>>>>) -> Self {
         Self {
@@ -1059,6 +1115,112 @@ impl DeviceBackend for DisplayRecordingBackend {
         }
 
         self.display_writes.lock().await.push(jpeg_data.to_vec());
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl DeviceBackend for RecoveringDisplayBackend {
+    fn info(&self) -> BackendInfo {
+        BackendInfo {
+            id: "recovering_display".to_owned(),
+            name: "Recovering Display Backend".to_owned(),
+            description: "Fails one display delivery for fencing tests".to_owned(),
+        }
+    }
+
+    fn adopt_device(&self, _discovered: &hypercolor_driver_api::DiscoveredDevice) -> Result<()> {
+        Ok(())
+    }
+
+    async fn connect(&self, id: &DeviceId) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+        Ok(())
+    }
+
+    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+        Ok(())
+    }
+
+    async fn write_colors(&self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+        Ok(())
+    }
+
+    async fn write_display_payload_owned(
+        &self,
+        id: &DeviceId,
+        _payload: Arc<OwnedDisplayFramePayload>,
+    ) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+        if self.fail_next.swap(false, Ordering::AcqRel) {
+            return Err(self.failure.clone());
+        }
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl DeviceBackend for OrderedDisplayBackend {
+    fn info(&self) -> BackendInfo {
+        BackendInfo {
+            id: self.backend_id.to_owned(),
+            name: "Ordered Display Backend".to_owned(),
+            description: "Blocks display deliveries for serialization tests".to_owned(),
+        }
+    }
+
+    fn adopt_device(&self, _discovered: &hypercolor_driver_api::DiscoveredDevice) -> Result<()> {
+        Ok(())
+    }
+
+    async fn connect(&self, id: &DeviceId) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+        Ok(())
+    }
+
+    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+        Ok(())
+    }
+
+    async fn write_colors(&self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+        Ok(())
+    }
+
+    async fn write_display_payload_owned(
+        &self,
+        id: &DeviceId,
+        payload: Arc<OwnedDisplayFramePayload>,
+    ) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+        let attempt = self.attempts.fetch_add(1, Ordering::AcqRel);
+        self.entry_order
+            .lock()
+            .await
+            .push(payload.data.first().copied().unwrap_or_default());
+        if attempt == 0 && self.block_first {
+            self.first_entered.notify_one();
+            self.release_first.notified().await;
+        }
         Ok(())
     }
 }
@@ -1907,29 +2069,6 @@ async fn backend_io_connected_device_info_returns_backend_metadata() {
 }
 
 #[tokio::test]
-async fn backend_io_write_display_frame_targets_backend_directly() {
-    let device_id = DeviceId::new();
-    let display_writes = Arc::new(Mutex::new(Vec::new()));
-    let mut manager = BackendManager::new();
-    manager.register_backend(Arc::new(DisplayRecordingBackend::new(
-        device_id,
-        Arc::clone(&display_writes),
-    )));
-
-    let io = manager
-        .backend_io("display")
-        .expect("backend io handle should exist");
-    io.connect(device_id).await.expect("connect should succeed");
-
-    let jpeg_data = vec![0xFF, 0xD8, 0xFF, 0xD9];
-    io.write_display_frame(device_id, &jpeg_data)
-        .await
-        .expect("display write should succeed");
-
-    assert_eq!(*display_writes.lock().await, vec![jpeg_data]);
-}
-
-#[tokio::test]
 async fn write_device_colors_fails_for_unknown_backend() {
     let mut manager = BackendManager::new();
     let error = manager
@@ -1999,7 +2138,7 @@ async fn connected_device_info_returns_backend_metadata() {
 }
 
 #[tokio::test]
-async fn write_device_display_frame_targets_backend_directly() {
+async fn display_output_lane_targets_registered_backend() {
     let device_id = DeviceId::new();
     let display_writes = Arc::new(Mutex::new(Vec::new()));
 
@@ -2011,7 +2150,13 @@ async fn write_device_display_frame_targets_backend_directly() {
 
     let jpeg_data = vec![0xFF, 0xD8, 0xFF, 0xDB];
     manager
-        .write_device_display_frame("display", device_id, &jpeg_data)
+        .display_output_lane("display", device_id)
+        .expect("registered display backend should expose a lane")
+        .write(Arc::new(OwnedDisplayFramePayload::jpeg(
+            0,
+            0,
+            Arc::new(jpeg_data.clone()),
+        )))
         .await
         .expect("display write should succeed");
 
@@ -2033,7 +2178,7 @@ async fn display_output_lane_tracks_delivery_telemetry() {
 
     let initial = lane.statistics();
     assert_ne!(initial.queue_generation, 0);
-    assert_eq!(initial.attempts, 0);
+    assert_eq!(initial.transport_started, 0);
     lane.write(Arc::new(OwnedDisplayFramePayload::jpeg(
         16,
         16,
@@ -2044,9 +2189,437 @@ async fn display_output_lane_tracks_delivery_telemetry() {
 
     let delivered = lane.statistics();
     assert_eq!(delivered.queue_generation, initial.queue_generation);
-    assert_eq!(delivered.attempts, 1);
-    assert_eq!(delivered.completed, 1);
-    assert_eq!(delivered.failed, 0);
+    assert_eq!(delivered.transport_started, 1);
+    assert_eq!(delivered.transport_completed, 1);
+    assert_eq!(delivered.transport_failed, 0);
+
+    let shared = manager.device_output_statistics();
+    assert_eq!(shared.len(), 1);
+    assert_eq!(shared[0].device_id, device_id);
+    assert_eq!(
+        shared[0].display_queue_generation,
+        Some(initial.queue_generation)
+    );
+    assert_eq!(shared[0].display_transport_started, 1);
+    assert_eq!(shared[0].display_transport_completed, 1);
+    assert_eq!(shared[0].display_transport_failed, 0);
+    assert_eq!(
+        manager.debug_snapshot().queues[0].display_transport_started,
+        1
+    );
+}
+
+#[tokio::test]
+async fn device_output_statistics_merge_led_and_display_lanes() {
+    let device_id = DeviceId::new();
+    let display_writes = Arc::new(Mutex::new(Vec::new()));
+    let backend = DisplayRecordingBackend::new(device_id, Arc::clone(&display_writes));
+    backend.connect(&device_id).await.expect("connect");
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Arc::new(backend));
+    manager.map_device("display:combined", "display", device_id);
+    let layout = make_layout(vec![make_zone("zone_0", "display:combined", 1)]);
+    manager.write_frame(
+        &[ZoneColors {
+            zone_id: "zone_0".into(),
+            colors: vec![[16, 32, 64]],
+        }],
+        &layout,
+    );
+    let lane = manager
+        .display_output_lane("display", device_id)
+        .expect("registered backend should expose a display lane");
+    lane.write(Arc::new(OwnedDisplayFramePayload::jpeg(
+        16,
+        16,
+        Arc::new(vec![1]),
+    )))
+    .await
+    .expect("display delivery should succeed");
+
+    let statistics = manager.device_output_statistics();
+    assert_eq!(statistics.len(), 1);
+    assert_eq!(statistics[0].device_id, device_id);
+    assert_ne!(statistics[0].queue_generation, 0);
+    assert_eq!(
+        statistics[0].display_queue_generation,
+        Some(lane.queue_generation())
+    );
+    assert_eq!(statistics[0].display_transport_started, 1);
+    assert_eq!(statistics[0].display_transport_completed, 1);
+}
+
+#[tokio::test]
+async fn display_output_failures_join_the_typed_lifecycle_fence() {
+    let device_id = DeviceId::new();
+    let fail_next = Arc::new(AtomicBool::new(true));
+    let mut manager = BackendManager::new();
+    manager.register_backend(Arc::new(RecoveringDisplayBackend::new(
+        device_id,
+        Arc::clone(&fail_next),
+    )));
+    let lane = manager
+        .display_output_lane("recovering_display", device_id)
+        .expect("registered display backend should expose a lane");
+    let payload = Arc::new(OwnedDisplayFramePayload::jpeg(
+        16,
+        16,
+        Arc::new(vec![0xFF, 0xD8, 0xFF, 0xDB]),
+    ));
+
+    lane.write(Arc::clone(&payload))
+        .await
+        .expect_err("first display delivery should fail");
+
+    let failures = manager.async_write_failures();
+    assert_eq!(failures.len(), 1);
+    let failure = failures[0].clone();
+    assert_eq!(failure.backend_id, "recovering_display");
+    assert_eq!(failure.device_id, device_id);
+    assert_eq!(
+        failure.delivery_id.queue_generation,
+        lane.queue_generation()
+    );
+    assert_eq!(failure.delivery_id.sequence, 1);
+    assert!(failure.is_current());
+    assert!(matches!(failure.error, DeviceError::WriteError { .. }));
+
+    lane.write(payload)
+        .await
+        .expect("newer successful display delivery should recover the lane");
+
+    assert!(!failure.is_current());
+    assert!(!failure.try_acknowledge());
+    assert!(manager.async_write_failures().is_empty());
+    assert_eq!(lane.statistics().transport_started, 2);
+    assert_eq!(lane.statistics().transport_completed, 1);
+    assert_eq!(lane.statistics().transport_failed, 1);
+}
+
+#[tokio::test]
+async fn concurrent_display_deliveries_preserve_physical_order() {
+    let device_id = DeviceId::new();
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let first_entered = Arc::new(Notify::new());
+    let release_first = Arc::new(Notify::new());
+    let entry_order = Arc::new(Mutex::new(Vec::new()));
+    let mut manager = BackendManager::new();
+    manager.register_backend(Arc::new(OrderedDisplayBackend::new(
+        "ordered_display",
+        device_id,
+        Arc::clone(&attempts),
+        Arc::clone(&first_entered),
+        Arc::clone(&release_first),
+        Arc::clone(&entry_order),
+        true,
+    )));
+    let lane = manager
+        .display_output_lane("ordered_display", device_id)
+        .expect("registered display backend should expose a lane");
+    let older_payload = Arc::new(OwnedDisplayFramePayload::jpeg(16, 16, Arc::new(vec![1])));
+    let newer_payload = Arc::new(OwnedDisplayFramePayload::jpeg(16, 16, Arc::new(vec![2])));
+
+    let older_lane = lane.clone();
+    let older_write = tokio::spawn(async move { older_lane.write(older_payload).await });
+    first_entered.notified().await;
+
+    let newer_lane = lane.clone();
+    let newer_write = tokio::spawn(async move { newer_lane.write(newer_payload).await });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert_eq!(attempts.load(Ordering::Acquire), 1);
+    assert_eq!(*entry_order.lock().await, vec![1]);
+
+    release_first.notify_one();
+    older_write
+        .await
+        .expect("older display task should complete")
+        .expect("older display delivery should succeed");
+    newer_write
+        .await
+        .expect("newer display task should complete")
+        .expect("newer display delivery should succeed");
+
+    assert_eq!(*entry_order.lock().await, vec![1, 2]);
+    assert_eq!(lane.statistics().transport_started, 2);
+    assert_eq!(lane.statistics().transport_completed, 2);
+    assert_eq!(lane.statistics().transport_failed, 0);
+}
+
+#[tokio::test]
+async fn backend_replacement_waits_for_in_flight_display_delivery() {
+    let device_id = DeviceId::new();
+    let old_attempts = Arc::new(AtomicUsize::new(0));
+    let new_attempts = Arc::new(AtomicUsize::new(0));
+    let old_entered = Arc::new(Notify::new());
+    let release_old = Arc::new(Notify::new());
+    let entry_order = Arc::new(Mutex::new(Vec::new()));
+    let mut manager = BackendManager::new();
+    manager.register_backend(Arc::new(OrderedDisplayBackend::new(
+        "replaceable_display",
+        device_id,
+        Arc::clone(&old_attempts),
+        Arc::clone(&old_entered),
+        Arc::clone(&release_old),
+        Arc::clone(&entry_order),
+        true,
+    )));
+    let old_lane = manager
+        .display_output_lane("replaceable_display", device_id)
+        .expect("initial backend should expose a lane");
+    let old_generation = old_lane.backend_generation();
+    let old_write_lane = old_lane.clone();
+    let old_write = tokio::spawn(async move {
+        old_write_lane
+            .write(Arc::new(OwnedDisplayFramePayload::jpeg(
+                16,
+                16,
+                Arc::new(vec![1]),
+            )))
+            .await
+    });
+    old_entered.notified().await;
+
+    manager.register_backend(Arc::new(OrderedDisplayBackend::new(
+        "replaceable_display",
+        device_id,
+        Arc::clone(&new_attempts),
+        Arc::new(Notify::new()),
+        Arc::new(Notify::new()),
+        Arc::clone(&entry_order),
+        false,
+    )));
+    let new_lane = manager
+        .display_output_lane("replaceable_display", device_id)
+        .expect("replacement backend should expose a lane");
+    assert!(!old_lane.is_active());
+    assert_ne!(new_lane.backend_generation(), old_generation);
+
+    let new_write_lane = new_lane.clone();
+    let new_write = tokio::spawn(async move {
+        new_write_lane
+            .write(Arc::new(OwnedDisplayFramePayload::jpeg(
+                16,
+                16,
+                Arc::new(vec![2]),
+            )))
+            .await
+    });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert_eq!(new_attempts.load(Ordering::Acquire), 0);
+    assert_eq!(*entry_order.lock().await, vec![1]);
+
+    release_old.notify_one();
+    old_write
+        .await
+        .expect("old write task should complete")
+        .expect("in-flight old write should drain");
+    new_write
+        .await
+        .expect("new write task should complete")
+        .expect("replacement write should succeed");
+    assert_eq!(*entry_order.lock().await, vec![1, 2]);
+}
+
+#[tokio::test]
+async fn backend_replacement_preserves_retired_display_failure_ticket_until_claimed() {
+    let device_id = DeviceId::new();
+    let fail_next = Arc::new(AtomicBool::new(true));
+    let mut manager = BackendManager::new();
+    manager.register_backend(Arc::new(RecoveringDisplayBackend::new(
+        device_id,
+        Arc::clone(&fail_next),
+    )));
+    let old_lane = manager
+        .display_output_lane("recovering_display", device_id)
+        .expect("initial backend should expose a lane");
+    old_lane
+        .write(Arc::new(OwnedDisplayFramePayload::jpeg(
+            16,
+            16,
+            Arc::new(vec![1]),
+        )))
+        .await
+        .expect_err("initial delivery should fail");
+    let failure = manager
+        .async_write_failures()
+        .into_iter()
+        .next()
+        .expect("initial lane should retain its failure");
+    assert!(failure.is_current());
+
+    manager.register_backend(Arc::new(RecoveringDisplayBackend::new(
+        device_id,
+        Arc::new(AtomicBool::new(false)),
+    )));
+    let new_lane = manager
+        .display_output_lane("recovering_display", device_id)
+        .expect("replacement backend should expose a lane");
+
+    assert!(!old_lane.is_active());
+    assert!(failure.is_current());
+    let retained_failure = manager
+        .async_write_failures()
+        .into_iter()
+        .next()
+        .expect("retired display failure should remain available to lifecycle fencing");
+    assert!(retained_failure.is_from_retired_generation());
+    assert!(retained_failure.try_acknowledge());
+    assert!(!failure.is_current());
+    assert!(manager.async_write_failures().is_empty());
+    assert_ne!(new_lane.queue_generation(), old_lane.queue_generation());
+    assert_ne!(new_lane.backend_generation(), old_lane.backend_generation());
+    old_lane
+        .write(Arc::new(OwnedDisplayFramePayload::jpeg(
+            16,
+            16,
+            Arc::new(vec![2]),
+        )))
+        .await
+        .expect_err("retired lane must reject new deliveries");
+    assert!(manager.async_write_failures().is_empty());
+}
+
+#[tokio::test]
+async fn claimed_retired_retry_failure_releases_supervisor_generation() {
+    let device_id = DeviceId::new();
+    let mut manager = BackendManager::new();
+    manager.register_backend(Arc::new(
+        RecoveringDisplayBackend::new(device_id, Arc::new(AtomicBool::new(true))).with_failure(
+            DeviceError::Timeout {
+                after: Duration::from_millis(25),
+            },
+        ),
+    ));
+    let old_lane = manager
+        .display_output_lane("recovering_display", device_id)
+        .expect("initial backend should expose a lane");
+    old_lane
+        .write(Arc::new(OwnedDisplayFramePayload::jpeg(
+            16,
+            16,
+            Arc::new(vec![1]),
+        )))
+        .await
+        .expect_err("initial delivery should time out");
+
+    manager.register_backend(Arc::new(RecoveringDisplayBackend::new(
+        device_id,
+        Arc::new(AtomicBool::new(false)),
+    )));
+    let _new_lane = manager
+        .display_output_lane("recovering_display", device_id)
+        .expect("replacement backend should expose a lane");
+    let failure = manager
+        .async_write_failures()
+        .into_iter()
+        .next()
+        .expect("retired retryable failure should remain available for one claim");
+
+    assert!(failure.is_from_retired_generation());
+    assert!(matches!(failure.error, DeviceError::Timeout { .. }));
+    assert!(failure.try_acknowledge());
+    assert!(manager.async_write_failures().is_empty());
+    assert_eq!(
+        manager
+            .display_delivery_supervisor_statistics()
+            .retained_generations,
+        1
+    );
+}
+
+#[tokio::test]
+async fn retired_retry_failure_precedes_current_generation_failure() {
+    let device_id = DeviceId::new();
+    let timeout_error = DeviceError::Timeout {
+        after: Duration::from_millis(25),
+    };
+    let mut manager = BackendManager::new();
+    manager.register_backend(Arc::new(
+        RecoveringDisplayBackend::new(device_id, Arc::new(AtomicBool::new(true)))
+            .with_failure(timeout_error.clone()),
+    ));
+    manager
+        .display_output_lane("recovering_display", device_id)
+        .expect("initial backend should expose a lane")
+        .write(Arc::new(OwnedDisplayFramePayload::jpeg(
+            16,
+            16,
+            Arc::new(vec![1]),
+        )))
+        .await
+        .expect_err("initial generation should time out");
+
+    manager.register_backend(Arc::new(
+        RecoveringDisplayBackend::new(device_id, Arc::new(AtomicBool::new(true)))
+            .with_failure(timeout_error),
+    ));
+    manager
+        .display_output_lane("recovering_display", device_id)
+        .expect("replacement backend should expose a lane")
+        .write(Arc::new(OwnedDisplayFramePayload::jpeg(
+            16,
+            16,
+            Arc::new(vec![2]),
+        )))
+        .await
+        .expect_err("current generation should time out");
+
+    let failures = manager.async_write_failures();
+    assert_eq!(failures.len(), 2);
+    assert!(failures[0].is_from_retired_generation());
+    assert!(!failures[1].is_from_retired_generation());
+    assert!(failures[0].try_acknowledge());
+    let current_failure = manager
+        .async_write_failures()
+        .into_iter()
+        .next()
+        .expect("current generation failure should remain after retired claim");
+    assert!(!current_failure.is_from_retired_generation());
+    assert!(current_failure.try_acknowledge());
+}
+
+#[tokio::test]
+async fn display_delivery_does_not_hold_the_backend_manager_lock() {
+    let device_id = DeviceId::new();
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let first_entered = Arc::new(Notify::new());
+    let release_first = Arc::new(Notify::new());
+    let manager = Arc::new(Mutex::new(BackendManager::new()));
+    let lane = {
+        let mut manager = manager.lock().await;
+        manager.register_backend(Arc::new(OrderedDisplayBackend::new(
+            "lock_release_display",
+            device_id,
+            attempts,
+            Arc::clone(&first_entered),
+            Arc::clone(&release_first),
+            Arc::new(Mutex::new(Vec::new())),
+            true,
+        )));
+        manager
+            .display_output_lane("lock_release_display", device_id)
+            .expect("registered backend should expose a lane")
+    };
+
+    let write = tokio::spawn(async move {
+        lane.write(Arc::new(OwnedDisplayFramePayload::jpeg(
+            16,
+            16,
+            Arc::new(vec![1]),
+        )))
+        .await
+    });
+    first_entered.notified().await;
+    let guard = tokio::time::timeout(Duration::from_millis(100), manager.lock())
+        .await
+        .expect("manager lock should remain available during display I/O");
+    drop(guard);
+    release_first.notify_one();
+    write
+        .await
+        .expect("display task should complete")
+        .expect("display delivery should succeed");
 }
 
 #[tokio::test]

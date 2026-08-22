@@ -16,11 +16,24 @@ impl BackendManager {
                 queue.async_write_failure(backend_id.clone(), *device_id)
             })
             .collect::<Vec<_>>();
+        failures.extend(self.output.display_delivery_authority().pending_failures());
 
         failures.sort_by(|left, right| {
-            left.backend_id
-                .cmp(&right.backend_id)
+            failure_priority(&left.error)
+                .cmp(&failure_priority(&right.error))
+                .then(left.backend_id.cmp(&right.backend_id))
                 .then(left.device_id.to_string().cmp(&right.device_id.to_string()))
+                .then_with(|| {
+                    right
+                        .is_from_retired_generation()
+                        .cmp(&left.is_from_retired_generation())
+                })
+                .then(
+                    left.delivery_id
+                        .queue_generation
+                        .cmp(&right.delivery_id.queue_generation),
+                )
+                .then(left.delivery_id.sequence.cmp(&right.delivery_id.sequence))
         });
         failures
     }
@@ -41,12 +54,40 @@ impl BackendManager {
         }
 
         let mut queues = Vec::with_capacity(self.output.queue_count());
+        let mut queue_index_by_key = HashMap::new();
         for ((backend_id, device_id), queue) in self.output.queues() {
             let mapped_layout_ids = layout_ids_by_key
                 .get(&(backend_id.clone(), *device_id))
                 .cloned()
                 .unwrap_or_default();
+            queue_index_by_key.insert((backend_id.clone(), *device_id), queues.len());
             queues.push(queue.statistics(backend_id, *device_id, mapped_layout_ids));
+        }
+
+        for ((backend_id, device_id), lane) in self.output.display_lanes() {
+            let display = lane.statistics();
+            if let Some(index) = queue_index_by_key.get(&(backend_id.clone(), *device_id)) {
+                queues[*index].record_display_statistics(
+                    display.queue_generation,
+                    display.transport_started,
+                    display.transport_completed,
+                    display.transport_failed,
+                );
+                continue;
+            }
+
+            queues.push(DeviceOutputStatistics::display_only(
+                backend_id.clone(),
+                *device_id,
+                layout_ids_by_key
+                    .get(&(backend_id.clone(), *device_id))
+                    .cloned()
+                    .unwrap_or_default(),
+                display.queue_generation,
+                display.transport_started,
+                display.transport_completed,
+                display.transport_failed,
+            ));
         }
 
         queues.sort_by(|left, right| {
@@ -71,5 +112,15 @@ impl BackendManager {
             mapped_device_count: self.device_map.len(),
             queues,
         }
+    }
+}
+
+const fn failure_priority(error: &hypercolor_types::device::DeviceError) -> u8 {
+    use hypercolor_types::device::ErrorRecoverability;
+
+    match error.recoverability() {
+        ErrorRecoverability::Permanent => 0,
+        ErrorRecoverability::Reconnect => 1,
+        ErrorRecoverability::Retry => 2,
     }
 }

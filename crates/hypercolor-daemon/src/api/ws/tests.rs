@@ -1408,6 +1408,10 @@ fn device_metrics_message_uses_shared_snapshot() {
             last_transport_started_sequence: 302,
             last_transport_completed_sequence: 301,
             last_transport_failed_sequence: 302,
+            display_queue_generation: Some(44),
+            display_transport_started: 120,
+            display_transport_completed: 119,
+            display_transport_failed: 1,
         }],
     }));
 
@@ -1421,6 +1425,10 @@ fn device_metrics_message_uses_shared_snapshot() {
     assert_eq!(data.items[0].backend_id, "usb");
     assert!(data.items[0].uses_frame_sink);
     assert_eq!(data.items[0].worker_recoveries, 3);
+    assert_eq!(data.items[0].display_queue_generation, Some(44));
+    assert_eq!(data.items[0].display_transport_started, 120);
+    assert_eq!(data.items[0].display_transport_completed, 119);
+    assert_eq!(data.items[0].display_transport_failed, 1);
     assert_eq!(data.items[0].avg_queue_wait_ms, 3);
     assert_eq!(data.items[0].avg_write_ms, 8);
     assert_eq!(data.items[0].avg_transport_latency_ms, 8);
@@ -1498,6 +1506,10 @@ async fn relay_device_metrics_wakes_when_subscription_changes() {
             last_transport_started_sequence: 42,
             last_transport_completed_sequence: 42,
             last_transport_failed_sequence: 0,
+            display_queue_generation: None,
+            display_transport_started: 0,
+            display_transport_completed: 0,
+            display_transport_failed: 0,
         }],
     }));
     let initial_subscriptions = SubscriptionState::default();

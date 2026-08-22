@@ -23,6 +23,10 @@ impl BackendManager {
         // They are lazily recreated on the next frame.
         self.output.remove_backend_state(&backend_id);
 
+        self.backend_generation_counter =
+            self.backend_generation_counter.checked_add(1).unwrap_or(1);
+        self.backend_generations
+            .insert(backend_id.clone(), self.backend_generation_counter);
         self.backends.insert(backend_id, backend);
     }
 
@@ -42,5 +46,11 @@ impl BackendManager {
     #[must_use]
     pub fn backend_count(&self) -> usize {
         self.backends.len()
+    }
+
+    /// Current registration generation for one backend ID.
+    #[must_use]
+    pub fn backend_generation(&self, backend_id: &str) -> Option<u64> {
+        self.backend_generations.get(backend_id).copied()
     }
 }

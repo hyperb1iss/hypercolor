@@ -434,7 +434,8 @@ async fn run_display_output(state: DisplayOutputState, mut shutdown_rx: oneshot:
             state.face_fps_cap,
         )
         .await;
-        if last_reconciled_target_version != Some(targets.version) {
+        let backend_generation_changed = workers.values().any(|worker| !worker.lane_is_active());
+        if last_reconciled_target_version != Some(targets.version) || backend_generation_changed {
             reconcile_display_workers(&state, &mut workers, targets.targets.as_ref()).await;
             last_reconciled_target_version = Some(targets.version);
             last_dispatched_sources.clear();
@@ -619,9 +620,9 @@ async fn reconcile_display_workers(
 
     for target in targets {
         let key = target.worker_key.clone();
-        let needs_restart = workers
-            .get(&key)
-            .is_some_and(|worker| worker.config_signature != target.worker_config_signature());
+        let needs_restart = workers.get(&key).is_some_and(|worker| {
+            !worker.lane_is_active() || worker.config_signature != target.worker_config_signature()
+        });
         if needs_restart && let Some(worker) = workers.remove(&key) {
             retire_display_worker(worker, Arc::clone(&state.display_frames), key.1, false);
         }

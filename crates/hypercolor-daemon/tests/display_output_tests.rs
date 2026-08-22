@@ -1,24 +1,28 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{
-    Arc, Mutex as StdMutex, OnceLock, PoisonError,
+    Arc, Barrier, Mutex as StdMutex, OnceLock, PoisonError,
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use tokio::sync::{Mutex, RwLock, watch};
+use tokio::time::timeout;
 
 use hypercolor_core::bus::{
     CanvasFrame, DisplayGroupFrame, DisplayGroupTarget, HypercolorBus, PreviewKind,
 };
 use hypercolor_core::device::{BackendManager, DeviceRegistry};
 use hypercolor_core::spatial::SpatialEngine;
-use hypercolor_driver_api::{BackendInfo, DeviceBackend, DeviceDisplaySink};
+use hypercolor_driver_api::{
+    BackendInfo, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId, DeviceDeliveryObserver,
+    DeviceDisplaySink,
+};
 use hypercolor_types::canvas::{Canvas, PublishedSurface, Rgba};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceError, DeviceFamily,
     DeviceFeatures, DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceState,
-    DeviceTopologyHint, OwnedDisplayFramePayload, SegmentInfo,
+    DeviceTopologyHint, ErrorRecoverability, OwnedDisplayFramePayload, SegmentInfo,
 };
 use hypercolor_types::scene::{DisplayFaceBlendMode, DisplayFaceTarget, ZoneId};
 use hypercolor_types::session::OffOutputBehavior;
@@ -172,6 +176,8 @@ struct RecordingDisplaySink {
     write_count: Arc<AtomicUsize>,
     failures_remaining: Arc<AtomicUsize>,
     delay: Duration,
+    actor_release: Option<Arc<Barrier>>,
+    actor_threads: StdMutex<Vec<std::thread::JoinHandle<()>>>,
 }
 
 impl RecordingDisplaySink {
@@ -182,12 +188,19 @@ impl RecordingDisplaySink {
             write_count: Arc::new(AtomicUsize::new(0)),
             failures_remaining: Arc::new(AtomicUsize::new(0)),
             delay,
+            actor_release: None,
+            actor_threads: StdMutex::new(Vec::new()),
         }
     }
 
     fn with_transient_failures(self, failure_count: usize) -> Self {
         self.failures_remaining
             .store(failure_count, Ordering::SeqCst);
+        self
+    }
+
+    fn with_actor_release(mut self, actor_release: Arc<Barrier>) -> Self {
+        self.actor_release = Some(actor_release);
         self
     }
 }
@@ -212,6 +225,82 @@ impl DeviceDisplaySink for RecordingDisplaySink {
         self.writes.lock().await.push(payload.data.to_vec());
         self.write_count.fetch_add(1, Ordering::SeqCst);
         Ok(())
+    }
+
+    async fn deliver_display_payload_owned_observed(
+        &self,
+        id: DeviceDeliveryId,
+        payload: Arc<OwnedDisplayFramePayload>,
+        observer: Arc<dyn DeviceDeliveryObserver>,
+    ) -> DeviceDeliveryAck {
+        let writes = Arc::clone(&self.writes);
+        let entered_count = Arc::clone(&self.entered_count);
+        let write_count = Arc::clone(&self.write_count);
+        let failures_remaining = Arc::clone(&self.failures_remaining);
+        let delay = self.delay;
+        let actor_release = self.actor_release.clone();
+        let payload_bytes = payload.data.len();
+        let (terminal_tx, terminal_rx) = tokio::sync::oneshot::channel();
+        let actor = std::thread::Builder::new()
+            .name("test-display-actor".to_owned())
+            .spawn(move || {
+                entered_count.fetch_add(1, Ordering::SeqCst);
+                observer.transport_started(id);
+                if let Some(actor_release) = actor_release {
+                    actor_release.wait();
+                }
+                let ack = if failures_remaining
+                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+                        remaining.checked_sub(1)
+                    })
+                    .is_ok()
+                {
+                    DeviceDeliveryAck::failed(
+                        id,
+                        true,
+                        Duration::ZERO,
+                        DeviceError::write(
+                            "test display",
+                            "intentional transient display sink failure",
+                        ),
+                    )
+                } else {
+                    if !delay.is_zero() {
+                        std::thread::sleep(delay);
+                    }
+                    writes.blocking_lock().push(payload.data.to_vec());
+                    write_count.fetch_add(1, Ordering::SeqCst);
+                    DeviceDeliveryAck::completed(id, payload_bytes, delay)
+                };
+                observer.delivery_terminal(&ack);
+                let _ = terminal_tx.send(ack);
+            })
+            .expect("test display actor should spawn");
+        self.actor_threads
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(actor);
+        terminal_rx.await.unwrap_or_else(|_| {
+            DeviceDeliveryAck::rejected(
+                id,
+                DeviceError::Disconnected {
+                    device: "test display actor".to_owned(),
+                },
+            )
+        })
+    }
+}
+
+impl Drop for RecordingDisplaySink {
+    fn drop(&mut self) {
+        let actors = std::mem::take(
+            self.actor_threads
+                .get_mut()
+                .unwrap_or_else(PoisonError::into_inner),
+        );
+        for actor in actors {
+            let _ = actor.join();
+        }
     }
 }
 
@@ -1202,7 +1291,7 @@ async fn automatic_display_output_uses_device_display_sinks_without_cross_device
 }
 
 #[tokio::test]
-async fn automatic_display_output_aborts_stale_blocked_worker_without_stalling_others() {
+async fn automatic_display_output_aborts_stale_waiter_without_cancelling_transport() {
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
@@ -1212,7 +1301,7 @@ async fn automatic_display_output_aborts_stale_blocked_worker_without_stalling_o
     let fast_device_id = DeviceId::new();
     let slow_logical_id = insert_default_logical_device(&logical_devices, slow_device_id).await;
     let fast_logical_id = insert_default_logical_device(&logical_devices, fast_device_id).await;
-    let slow_sink = Arc::new(RecordingDisplaySink::new(Duration::from_mins(1)));
+    let slow_sink = Arc::new(RecordingDisplaySink::new(Duration::from_millis(700)));
     let fast_sink = Arc::new(RecordingDisplaySink::new(Duration::ZERO));
     let fallback_write_count = Arc::new(AtomicUsize::new(0));
 
@@ -1309,8 +1398,108 @@ async fn automatic_display_output_aborts_stale_blocked_worker_without_stalling_o
         0,
         "display output should keep using per-device display sinks"
     );
+    tokio::time::sleep(Duration::from_millis(350)).await;
+    assert_eq!(
+        slow_sink.write_count.load(Ordering::SeqCst),
+        0,
+        "stale worker shutdown should remain bounded while transport continues"
+    );
+    wait_for_atomic_count(slow_sink.write_count.as_ref(), 1, DISPLAY_TEST_TIMEOUT).await;
 
     thread.shutdown().await.expect("display thread should stop");
+}
+
+#[tokio::test]
+async fn display_thread_shutdown_is_bounded_while_actor_delivery_is_blocked() {
+    let _guard = display_output_test_guard().await;
+    let event_bus = Arc::new(HypercolorBus::new());
+    let device_registry = DeviceRegistry::new();
+    let spatial_engine = SpatialService::new(SpatialEngine::new(layout_with_zones(vec![])));
+    let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
+    let device_id = DeviceId::new();
+    let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
+    let actor_release = Arc::new(Barrier::new(2));
+    let sink = Arc::new(
+        RecordingDisplaySink::new(Duration::ZERO).with_actor_release(Arc::clone(&actor_release)),
+    );
+    let fallback_write_count = Arc::new(AtomicUsize::new(0));
+
+    spatial_engine.update_layout(layout_with_zones(vec![display_zone_with_id(
+        "zone-slow-shutdown-display",
+        logical_id.as_str(),
+        NormalizedPosition::new(0.5, 0.5),
+        NormalizedPosition::new(1.0, 1.0),
+    )]));
+
+    let mut backend_manager = BackendManager::new();
+    backend_manager.register_backend(Arc::new(MultiDisplaySinkBackend::new(
+        HashMap::from([(device_id, Arc::clone(&sink))]),
+        fallback_write_count,
+    )));
+    backend_manager
+        .connect_device("usb", device_id, "corsair:slow-shutdown-display")
+        .await
+        .expect("backend device should connect");
+    let backend_manager = Arc::new(Mutex::new(backend_manager));
+
+    let tracked_id = device_registry
+        .add(display_device_info(device_id, true, 64, 64, false))
+        .await;
+    assert_eq!(tracked_id, device_id);
+    assert!(
+        device_registry
+            .set_state(&device_id, DeviceState::Active)
+            .await
+    );
+
+    let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
+        backend_manager: Arc::clone(&backend_manager),
+        device_registry,
+        spatial_engine,
+        logical_devices,
+        event_bus: Arc::clone(&event_bus),
+        preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
+        power_state: default_power_state_rx(),
+        static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        face_fps_cap: 30,
+        display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
+    });
+
+    wait_for_scene_canvas_receiver_count(event_bus.as_ref(), 1).await;
+    event_bus
+        .scene_canvas_lane()
+        .send_replace(CanvasFrame::from_canvas(
+            &solid_canvas(Rgba::new(32, 64, 96, 255)),
+            1,
+            16,
+        ));
+    wait_for_atomic_count(sink.entered_count.as_ref(), 1, DISPLAY_TEST_TIMEOUT).await;
+
+    timeout(Duration::from_millis(600), thread.shutdown())
+        .await
+        .expect("display thread shutdown should not await physical actor completion")
+        .expect("display thread should stop");
+    assert_eq!(sink.write_count.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        backend_manager
+            .lock()
+            .await
+            .display_delivery_supervisor_statistics()
+            .in_flight,
+        1,
+        "blocked physical actor should remain manager-supervised after worker shutdown"
+    );
+    actor_release.wait();
+    wait_for_atomic_count(sink.write_count.as_ref(), 1, DISPLAY_TEST_TIMEOUT).await;
+    assert_eq!(
+        backend_manager
+            .lock()
+            .await
+            .display_delivery_supervisor_statistics()
+            .in_flight,
+        0,
+        "terminal actor completion should drain manager supervision"
+    );
 }
 
 #[tokio::test]
@@ -1444,7 +1633,7 @@ async fn automatic_display_output_promotes_backend_writer_to_display_sink_after_
 }
 
 #[tokio::test]
-async fn automatic_display_output_reacquires_display_sink_after_sink_error() {
+async fn automatic_display_output_reacquires_display_sink_on_the_next_frame_after_sink_error() {
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
@@ -1507,18 +1696,17 @@ async fn automatic_display_output_reacquires_display_sink_after_sink_error() {
             16,
         ));
 
-    wait_for_atomic_count(sink.entered_count.as_ref(), 2, DISPLAY_TEST_TIMEOUT).await;
-    wait_for_atomic_count(sink.write_count.as_ref(), 1, DISPLAY_TEST_TIMEOUT).await;
-    wait_for_atomic_count(display_sink_lookup_count.as_ref(), 2, DISPLAY_TEST_TIMEOUT).await;
+    wait_for_atomic_count(sink.entered_count.as_ref(), 1, DISPLAY_TEST_TIMEOUT).await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
     assert_eq!(
-        display_sink_lookup_count.load(Ordering::SeqCst),
-        2,
-        "worker should re-acquire exactly once after the sink error"
+        sink.entered_count.load(Ordering::SeqCst),
+        1,
+        "daemon worker must not retry a failed sink without a new frame"
     );
     assert_eq!(
-        fallback_write_count.load(Ordering::SeqCst),
-        0,
-        "display sink retry should reacquire the sink without falling back to the backend lock"
+        display_sink_lookup_count.load(Ordering::SeqCst),
+        1,
+        "the initial display lane should resolve its sink exactly once"
     );
 
     event_bus
@@ -1528,12 +1716,140 @@ async fn automatic_display_output_reacquires_display_sink_after_sink_error() {
             2,
             32,
         ));
+
+    wait_for_atomic_count(sink.entered_count.as_ref(), 2, DISPLAY_TEST_TIMEOUT).await;
+    wait_for_atomic_count(sink.write_count.as_ref(), 1, DISPLAY_TEST_TIMEOUT).await;
+    wait_for_atomic_count(display_sink_lookup_count.as_ref(), 2, DISPLAY_TEST_TIMEOUT).await;
+    assert_eq!(
+        display_sink_lookup_count.load(Ordering::SeqCst),
+        2,
+        "the next frame should re-acquire exactly once after the sink error"
+    );
+    assert_eq!(
+        fallback_write_count.load(Ordering::SeqCst),
+        0,
+        "sink recovery should avoid the backend-lock fallback"
+    );
+
+    event_bus
+        .scene_canvas_lane()
+        .send_replace(CanvasFrame::from_canvas(
+            &solid_canvas(Rgba::new(48, 128, 48, 255)),
+            3,
+            48,
+        ));
     wait_for_atomic_count(sink.write_count.as_ref(), 2, DISPLAY_TEST_TIMEOUT).await;
     assert_eq!(
         display_sink_lookup_count.load(Ordering::SeqCst),
         2,
         "cached display sink should be reused after recovery"
     );
+
+    thread.shutdown().await.expect("display thread should stop");
+}
+
+#[tokio::test]
+async fn automatic_display_output_reconciles_replaced_backend_generation() {
+    let _guard = display_output_test_guard().await;
+    let event_bus = Arc::new(HypercolorBus::new());
+    let device_registry = DeviceRegistry::new();
+    let spatial_engine = SpatialService::new(SpatialEngine::new(layout_with_zones(vec![])));
+    let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
+    let old_writes = Arc::new(Mutex::new(Vec::new()));
+    let new_writes = Arc::new(Mutex::new(Vec::new()));
+    let device_id = DeviceId::new();
+    let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
+
+    spatial_engine.update_layout(layout_with_zones(vec![display_zone(
+        logical_id.as_str(),
+        NormalizedPosition::new(0.5, 0.5),
+        NormalizedPosition::new(1.0, 1.0),
+    )]));
+
+    let mut backend_manager = BackendManager::new();
+    backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
+        device_id,
+        Arc::clone(&old_writes),
+    )));
+    backend_manager
+        .connect_device("usb", device_id, "usb:test-display")
+        .await
+        .expect("initial backend should connect");
+    let initial_backend_generation = backend_manager
+        .backend_generation("usb")
+        .expect("initial backend should have a generation");
+
+    let tracked_id = device_registry
+        .add(display_device_info(device_id, true, 64, 64, false))
+        .await;
+    assert_eq!(tracked_id, device_id);
+    assert!(
+        device_registry
+            .set_state(&device_id, DeviceState::Active)
+            .await
+    );
+
+    let backend_manager = Arc::new(Mutex::new(backend_manager));
+    let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
+        backend_manager: Arc::clone(&backend_manager),
+        device_registry: device_registry.clone(),
+        spatial_engine: spatial_engine.clone(),
+        logical_devices: Arc::clone(&logical_devices),
+        event_bus: Arc::clone(&event_bus),
+        preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
+        power_state: default_power_state_rx(),
+        static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        face_fps_cap: 30,
+        display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
+    });
+
+    wait_for_scene_canvas_receiver_count(event_bus.as_ref(), 1).await;
+    event_bus
+        .scene_canvas_lane()
+        .send_replace(CanvasFrame::from_canvas(
+            &solid_canvas(Rgba::new(255, 0, 0, 255)),
+            1,
+            16,
+        ));
+    let initial_writes = wait_for_display_write_count(&old_writes, 1).await;
+    assert_eq!(initial_writes.len(), 1);
+
+    let replacement_backend_generation = {
+        let mut manager = backend_manager.lock().await;
+        manager.register_backend(Arc::new(RecordingDisplayBackend::new(
+            device_id,
+            Arc::clone(&new_writes),
+        )));
+        manager
+            .connect_device("usb", device_id, "usb:test-display")
+            .await
+            .expect("replacement backend should connect");
+        manager
+            .backend_generation("usb")
+            .expect("replacement backend should have a generation")
+    };
+    assert_ne!(replacement_backend_generation, initial_backend_generation);
+
+    let replacement_writes = wait_for_display_write_count(&new_writes, 1).await;
+    assert_eq!(replacement_writes.len(), 1);
+    assert_eq!(old_writes.lock().await.len(), 1);
+
+    event_bus
+        .scene_canvas_lane()
+        .send_replace(CanvasFrame::from_canvas(
+            &solid_canvas(Rgba::new(0, 255, 0, 255)),
+            2,
+            32,
+        ));
+    let replacement_writes = wait_for_display_write_count(&new_writes, 2).await;
+    let image = decode_jpeg(
+        replacement_writes
+            .last()
+            .expect("replacement should receive green"),
+    );
+    let pixel = image.get_pixel(image.width() / 2, image.height() / 2);
+    assert!(pixel[1] > 200, "replacement backend got {pixel:?}");
+    assert_eq!(old_writes.lock().await.len(), 1);
 
     thread.shutdown().await.expect("display thread should stop");
 }
@@ -3593,7 +3909,7 @@ async fn automatic_display_output_keeps_preview_frame_when_backend_write_fails()
 }
 
 #[tokio::test]
-async fn automatic_display_output_retries_unchanged_frame_after_transient_write_failure() {
+async fn automatic_display_output_routes_failures_through_the_core_lifecycle_fence() {
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
@@ -3634,8 +3950,9 @@ async fn automatic_display_output_retries_unchanged_frame_after_transient_write_
     );
 
     let display_frames = Arc::new(RwLock::new(DisplayFrameRuntime::new()));
+    let backend_manager = Arc::new(Mutex::new(backend_manager));
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
-        backend_manager: Arc::new(Mutex::new(backend_manager)),
+        backend_manager: Arc::clone(&backend_manager),
         device_registry: device_registry.clone(),
         spatial_engine: spatial_engine.clone(),
         logical_devices: Arc::clone(&logical_devices),
@@ -3654,34 +3971,63 @@ async fn automatic_display_output_retries_unchanged_frame_after_transient_write_
         .scene_canvas_lane()
         .send_replace(CanvasFrame::from_canvas(&red, 1, 16));
 
+    wait_for_display_attempt_count(&display_write_attempt_times, 1).await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert_eq!(
+        display_write_attempt_times.lock().await.len(),
+        1,
+        "daemon worker must not run a private display retry loop"
+    );
+
+    let failure = backend_manager
+        .lock()
+        .await
+        .async_write_failures()
+        .into_iter()
+        .next()
+        .expect("display failure should enter the shared lifecycle fence");
+    assert!(failure.is_current());
+    assert_eq!(
+        failure.error.recoverability(),
+        ErrorRecoverability::Reconnect
+    );
+
+    event_bus
+        .scene_canvas_lane()
+        .send_replace(CanvasFrame::from_canvas(&red, 2, 32));
+
     let writes = wait_for_display_write_count(&display_writes, 1).await;
     let attempt_times = wait_for_display_attempt_count(&display_write_attempt_times, 2).await;
     assert_eq!(writes.len(), 1);
     assert_eq!(attempt_times.len(), 2);
+    assert!(!failure.is_current());
     assert!(
-        attempt_times[1].duration_since(attempt_times[0]) >= Duration::from_millis(70),
-        "retry should wait for target cadence instead of spinning"
+        backend_manager
+            .lock()
+            .await
+            .async_write_failures()
+            .is_empty()
     );
 
     let image = decode_jpeg(writes.first().expect("expected retried display frame"));
     let pixel = image.get_pixel(image.width() / 2, image.height() / 2);
     assert!(
         pixel[0] > 200,
-        "expected retried unchanged display frame to be red, got {pixel:?}"
+        "expected the next published display frame to be red, got {pixel:?}"
     );
 
     let metrics = display_frames.read().await.metrics_snapshot();
     assert_eq!(metrics.write_attempts_total, 2);
     assert_eq!(metrics.write_successes_total, 1);
     assert_eq!(metrics.write_failures_total, 1);
-    assert_eq!(metrics.retry_attempts_total, 1);
+    assert_eq!(metrics.retry_attempts_total, 0);
     assert!(metrics.last_failure_age_ms.is_some());
 
     thread.shutdown().await.expect("display thread should stop");
 }
 
 #[tokio::test]
-async fn static_hold_failure_retries_unchanged_payload_after_frame_refresh() {
+async fn static_hold_refresh_recovers_without_a_private_retry_pipeline() {
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
@@ -3755,16 +4101,16 @@ async fn static_hold_failure_retries_unchanged_payload_after_frame_refresh() {
     let metrics = tokio::time::timeout(DISPLAY_TEST_TIMEOUT, async {
         loop {
             let metrics = display_frames.read().await.metrics_snapshot();
-            if metrics.retry_attempts_total >= 1 && metrics.write_successes_total >= 2 {
+            if metrics.write_failures_total >= 1 && metrics.write_successes_total >= 2 {
                 return metrics;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
     .await
-    .expect("unchanged display retry should be recorded in metrics");
+    .expect("static hold refresh should recover the display lane");
     assert_eq!(metrics.write_failures_total, 1);
-    assert_eq!(metrics.retry_attempts_total, 1);
+    assert_eq!(metrics.retry_attempts_total, 0);
     assert_eq!(fallback_write_count.load(Ordering::SeqCst), 0);
 
     thread.shutdown().await.expect("display thread should stop");

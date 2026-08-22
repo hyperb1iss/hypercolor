@@ -23,6 +23,14 @@ pub(super) enum FrameWriteDisposition {
     Fatal,
 }
 
+struct AbortTaskOnDrop(tokio::task::AbortHandle);
+
+impl Drop for AbortTaskOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 impl UsbBackend {
     fn command_response(
         device_id: DeviceId,
@@ -54,6 +62,7 @@ impl UsbBackend {
         lifecycle_gate: Arc<StdMutex<()>>,
         frame_tx: watch::Sender<Option<Arc<UsbFramePayload>>>,
         frame_rx: watch::Receiver<Option<Arc<UsbFramePayload>>>,
+        display_tx: watch::Sender<Option<Arc<UsbDisplayPayload>>>,
         display_rx: watch::Receiver<Option<Arc<UsbDisplayPayload>>>,
         command_rx: mpsc::UnboundedReceiver<UsbDeviceCommand>,
         last_async_error: Arc<StdMutex<Option<DeviceError>>>,
@@ -61,30 +70,37 @@ impl UsbBackend {
         tokio::spawn(async move {
             let transport_name = transport.name();
             let parallel_transfer_lanes = transport.supports_parallel_transfer_lanes();
-
-            let actor_result = if parallel_transfer_lanes {
-                Self::run_parallel_device_actor(
-                    device_id,
-                    device_name,
-                    protocol.clone(),
-                    transport.clone(),
-                    frame_rx,
-                    display_rx,
-                    command_rx,
-                )
+            let actor_protocol = Arc::clone(&protocol);
+            let actor_transport = Arc::clone(&transport);
+            let actor_task = tokio::spawn(async move {
+                if parallel_transfer_lanes {
+                    Self::run_parallel_device_actor(
+                        device_id,
+                        device_name,
+                        actor_protocol,
+                        actor_transport,
+                        frame_rx,
+                        display_rx,
+                        command_rx,
+                    )
+                    .await
+                } else {
+                    Self::run_device_actor(
+                        device_id,
+                        device_name,
+                        actor_protocol,
+                        actor_transport,
+                        frame_rx,
+                        display_rx,
+                        command_rx,
+                    )
+                    .await
+                }
+            });
+            let _actor_abort = AbortTaskOnDrop(actor_task.abort_handle());
+            let actor_result = actor_task
                 .await
-            } else {
-                Self::run_device_actor(
-                    device_id,
-                    device_name,
-                    protocol.clone(),
-                    transport.clone(),
-                    frame_rx,
-                    display_rx,
-                    command_rx,
-                )
-                .await
-            };
+                .unwrap_or_else(|error| Err(anyhow!("USB device actor task failed: {error}")));
 
             let actor_error = actor_result.as_ref().err().map(|error| {
                 map_hal_transport_error(
@@ -99,12 +115,16 @@ impl UsbBackend {
                 .unwrap_or_else(|| DeviceError::Disconnected {
                     device: device_id.to_string(),
                 });
-            {
+            let (pending_frame, pending_display) = {
                 let _gate = super::lock_lifecycle_gate(&lifecycle_gate);
                 active.store(false, Ordering::Release);
-                if let Some(pending) = frame_tx.send_replace(None) {
-                    pending.reject_pending(rejection);
-                }
+                (frame_tx.send_replace(None), display_tx.send_replace(None))
+            };
+            if let Some(pending) = pending_frame {
+                pending.reject_pending(rejection.clone());
+            }
+            if let Some(pending) = pending_display {
+                pending.reject_unacknowledged(rejection);
             }
 
             if let Err(error) = actor_result {
@@ -164,6 +184,8 @@ impl UsbBackend {
         let mut display_task = tokio::spawn(Self::run_device_display_actor(
             device_id, protocol, transport, display_rx,
         ));
+        let _control_abort = AbortTaskOnDrop(control_task.abort_handle());
+        let _display_abort = AbortTaskOnDrop(display_task.abort_handle());
 
         tokio::select! {
             result = &mut control_task => {
@@ -172,21 +194,9 @@ impl UsbBackend {
                 Self::flatten_actor_result(result, "USB control actor")
             }
             result = &mut display_task => {
-                match Self::flatten_actor_result(result, "USB display actor") {
-                    Ok(()) => debug!(
-                        device_id = %device_id,
-                        device = device_name,
-                        "USB display actor exited; control lane remains active"
-                    ),
-                    Err(error) => warn!(
-                        device_id = %device_id,
-                        device = device_name,
-                        error = %error,
-                        error_chain = %format_error_chain(&error),
-                        "USB display actor failed; keeping control lane active"
-                    ),
-                }
-                Self::flatten_actor_result(control_task.await, "USB control actor")
+                control_task.abort();
+                let _ = control_task.await;
+                Self::flatten_actor_result(result, "USB display actor")
             }
         }
     }
@@ -759,11 +769,30 @@ impl UsbBackend {
         frame: &UsbDisplayPayload,
         commands: &mut Vec<ProtocolCommand>,
     ) -> Result<()> {
-        protocol
+        if let Err(error) = protocol
             .encode_display_payload_into(frame.payload.as_borrowed(), commands)
             .with_context(|| {
                 format!("USB protocol does not support display output for device {device_id}")
-            })?;
+            })
+        {
+            if let Some(id) = frame.delivery_id {
+                frame.acknowledge(super::DeviceDeliveryAck::failed(
+                    id,
+                    false,
+                    Duration::ZERO,
+                    map_hal_transport_error(
+                        device_id,
+                        USB_OUTPUT_BACKEND_ID,
+                        DeviceTransportOperation::Write,
+                        &error,
+                    ),
+                ));
+            }
+            return Err(error);
+        }
+        if !frame.mark_transport_started() {
+            return Ok(());
+        }
         if tracing::enabled!(tracing::Level::TRACE) {
             let first_packet = commands.first().map_or_else(
                 || "<none>".to_owned(),
@@ -782,9 +811,37 @@ impl UsbBackend {
             );
         }
 
-        Self::run_commands(protocol, transport, commands.as_slice())
+        let transport_started_at = Instant::now();
+        let result = Self::run_commands(protocol, transport, commands.as_slice())
             .await
-            .with_context(|| format!("USB display write failed for device {device_id}"))
+            .with_context(|| format!("USB display write failed for device {device_id}"));
+        match &result {
+            Ok(()) => {
+                if let Some(id) = frame.delivery_id {
+                    frame.acknowledge(super::DeviceDeliveryAck::completed(
+                        id,
+                        frame.payload.data.len(),
+                        transport_started_at.elapsed(),
+                    ));
+                }
+            }
+            Err(error) => {
+                if let Some(id) = frame.delivery_id {
+                    frame.acknowledge(super::DeviceDeliveryAck::failed(
+                        id,
+                        true,
+                        transport_started_at.elapsed(),
+                        map_hal_transport_error(
+                            device_id,
+                            USB_OUTPUT_BACKEND_ID,
+                            DeviceTransportOperation::Write,
+                            error,
+                        ),
+                    ));
+                }
+            }
+        }
+        result
     }
 
     async fn run_shutdown_sequence(

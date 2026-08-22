@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use hypercolor_driver_api::{DeviceError, DiscoveredDevice};
-use hypercolor_types::device::{DeviceId, DeviceInfo, OwnedDisplayFramePayload};
+use hypercolor_types::device::{DeviceId, DeviceInfo};
 
 use crate::device::traits::{DeviceFrameSink, DeviceLifecyclePolicy, OutputCadence};
 
@@ -142,51 +142,6 @@ impl BackendIo {
         brightness: u8,
     ) -> Result<(), DeviceError> {
         self.backend.set_brightness(&device_id, brightness).await
-    }
-
-    /// Write immediate display bytes directly to the backend.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the display write fails.
-    pub async fn write_display_frame(
-        &self,
-        device_id: DeviceId,
-        jpeg_data: &[u8],
-    ) -> Result<(), DeviceError> {
-        self.backend
-            .write_display_frame(&device_id, jpeg_data)
-            .await
-    }
-
-    /// Write an owned display payload directly to the backend.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the display write fails.
-    pub async fn write_display_frame_owned(
-        &self,
-        device_id: DeviceId,
-        jpeg_data: Arc<Vec<u8>>,
-    ) -> Result<(), DeviceError> {
-        self.backend
-            .write_display_frame_owned(&device_id, jpeg_data)
-            .await
-    }
-
-    /// Write an owned display payload directly to the backend.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the display write fails.
-    pub async fn write_display_payload_owned(
-        &self,
-        device_id: DeviceId,
-        payload: Arc<OwnedDisplayFramePayload>,
-    ) -> Result<(), DeviceError> {
-        self.backend
-            .write_display_payload_owned(&device_id, payload)
-            .await
     }
 }
 

@@ -460,6 +460,10 @@ async fn device_metrics_subscription_streams_seeded_snapshot() {
             last_transport_started_sequence: 64,
             last_transport_completed_sequence: 64,
             last_transport_failed_sequence: 0,
+            display_queue_generation: Some(10),
+            display_transport_started: 32,
+            display_transport_completed: 32,
+            display_transport_failed: 0,
         }],
     }));
     let addr = spawn_test_daemon_with_state(state).await;
@@ -499,6 +503,13 @@ async fn device_metrics_subscription_streams_seeded_snapshot() {
     assert_eq!(message["data"]["items"][0]["transport_completed"], 64);
     assert_eq!(message["data"]["items"][0]["coalesced_target_cadence"], 1);
     assert_eq!(message["data"]["items"][0]["payload_bps_estimate"], 2_048);
+    assert_eq!(message["data"]["items"][0]["display_queue_generation"], 10);
+    assert_eq!(message["data"]["items"][0]["display_transport_started"], 32);
+    assert_eq!(
+        message["data"]["items"][0]["display_transport_completed"],
+        32
+    );
+    assert_eq!(message["data"]["items"][0]["display_transport_failed"], 0);
 }
 
 #[tokio::test]

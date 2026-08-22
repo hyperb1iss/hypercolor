@@ -176,10 +176,15 @@ pub struct DeviceDeliveryAck {
     pub error: Option<DeviceError>,
 }
 
-/// Observer notified when a queue-qualified delivery begins transport I/O.
+/// Observer notified as a queue-qualified delivery crosses transport boundaries.
 pub trait DeviceDeliveryObserver: Send + Sync {
     /// Record that the matching transport attempt has started.
     fn transport_started(&self, id: DeviceDeliveryId);
+
+    /// Record the matching terminal transport acknowledgement.
+    fn delivery_terminal(&self, ack: &DeviceDeliveryAck) {
+        let _ = ack;
+    }
 }
 
 impl DeviceDeliveryAck {
@@ -422,9 +427,6 @@ pub trait DeviceFrameSink: Send + Sync {
 }
 
 /// Cloneable hot-path display output lane for one connected, display-capable device.
-///
-/// Successful writes only mean the sink accepted the latest payload; the
-/// backend may still deliver the bytes asynchronously.
 #[async_trait::async_trait]
 pub trait DeviceDisplaySink: Send + Sync {
     /// Push an owned display payload to this device's output lane.
@@ -437,6 +439,40 @@ pub trait DeviceDisplaySink: Send + Sync {
         &self,
         payload: Arc<OwnedDisplayFramePayload>,
     ) -> Result<(), DeviceError>;
+
+    /// Deliver a queue-qualified payload and acknowledge its terminal state.
+    ///
+    /// Drivers with their own output actor override this method so the future
+    /// resolves after that actor completes or fails the matching transport I/O.
+    async fn deliver_display_payload_owned(
+        &self,
+        id: DeviceDeliveryId,
+        payload: Arc<OwnedDisplayFramePayload>,
+    ) -> DeviceDeliveryAck {
+        let payload_bytes = payload.data.len();
+        let started_at = std::time::Instant::now();
+        match self.write_display_payload_owned(payload).await {
+            Ok(()) => DeviceDeliveryAck::completed(id, payload_bytes, started_at.elapsed()),
+            Err(error) => DeviceDeliveryAck::failed(id, true, started_at.elapsed(), error),
+        }
+    }
+
+    /// Deliver a queue-qualified payload with actor-owned terminal observation.
+    ///
+    /// Actor-backed drivers override this method and retain `observer` with the
+    /// physical delivery so cancellation of the awaiting caller cannot discard
+    /// its terminal acknowledgement.
+    async fn deliver_display_payload_owned_observed(
+        &self,
+        id: DeviceDeliveryId,
+        payload: Arc<OwnedDisplayFramePayload>,
+        observer: Arc<dyn DeviceDeliveryObserver>,
+    ) -> DeviceDeliveryAck {
+        observer.transport_started(id);
+        let ack = self.deliver_display_payload_owned(id, payload).await;
+        observer.delivery_terminal(&ack);
+        ack
+    }
 }
 
 /// Core device communication trait.
@@ -535,6 +571,28 @@ pub trait DeviceBackend: Send + Sync {
             started_at.elapsed(),
             result,
         )
+    }
+
+    /// Deliver a queue-qualified display payload with terminal observation.
+    async fn deliver_display_payload_owned_observed(
+        &self,
+        device_id: &DeviceId,
+        delivery_id: DeviceDeliveryId,
+        payload: Arc<OwnedDisplayFramePayload>,
+        observer: Arc<dyn DeviceDeliveryObserver>,
+    ) -> DeviceDeliveryAck {
+        observer.transport_started(delivery_id);
+        let payload_bytes = payload.data.len();
+        let started_at = std::time::Instant::now();
+        let result = self.write_display_payload_owned(device_id, payload).await;
+        let ack = match result {
+            Ok(()) => {
+                DeviceDeliveryAck::completed(delivery_id, payload_bytes, started_at.elapsed())
+            }
+            Err(error) => DeviceDeliveryAck::failed(delivery_id, true, started_at.elapsed(), error),
+        };
+        observer.delivery_terminal(&ack);
+        ack
     }
 
     /// Return a cloneable hot-path frame sink for a connected device.
