@@ -1,6 +1,7 @@
 //! Effect-related API types and fetch functions.
 
 use std::collections::HashMap;
+use std::future::Future;
 
 use gloo_net::http::Method;
 use hypercolor_types::api::scene::{ClearSceneRequest, ReplaceLayerRequest, SceneDocument};
@@ -129,25 +130,40 @@ pub async fn stop_effect() -> Result<(), String> {
         .map_err(Into::into)
 }
 
-/// Update effect control parameters.
-pub async fn update_controls(controls: &HashMap<String, ControlValue>) -> Result<(), String> {
-    let scene: SceneDocument = client::fetch_json("/api/v1/scene").await?;
-    let Some((zone_id, layer_id, _, _, _, _)) = effect_target(&scene, None, None) else {
-        return Err("The active scene has no effect layer".to_owned());
-    };
-    patch_controls(&zone_id, &layer_id, controls, Vec::new()).await
-}
-
 /// Patch controls on the live layer running a specific effect.
 pub async fn update_effect_controls(
     effect_id: &str,
     controls: &HashMap<String, ControlValue>,
 ) -> Result<(), String> {
-    let scene: SceneDocument = client::fetch_json("/api/v1/scene").await?;
+    update_effect_controls_with(
+        effect_id,
+        async {
+            client::fetch_json("/api/v1/scene")
+                .await
+                .map_err(Into::into)
+        },
+        |zone_id, layer_id| async move {
+            patch_controls(&zone_id, &layer_id, controls, Vec::new()).await
+        },
+    )
+    .await
+}
+
+async fn update_effect_controls_with<SceneFuture, Patch, PatchFuture>(
+    effect_id: &str,
+    scene: SceneFuture,
+    patch: Patch,
+) -> Result<(), String>
+where
+    SceneFuture: Future<Output = Result<SceneDocument, String>>,
+    Patch: FnOnce(String, String) -> PatchFuture,
+    PatchFuture: Future<Output = Result<(), String>>,
+{
+    let scene = scene.await?;
     let Some((zone_id, layer_id, _, _, _, _)) = effect_target(&scene, None, Some(effect_id)) else {
         return Err("The requested effect is not present in the live scene".to_owned());
     };
-    patch_controls(&zone_id, &layer_id, controls, Vec::new()).await
+    patch(zone_id, layer_id).await
 }
 
 /// Reset all controls on the active effect to their defaults.
@@ -334,6 +350,86 @@ pub async fn upload_effect(file: File) -> Result<InstalledEffectResponse, String
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::task::{Context, Poll, Waker};
+
+    use hypercolor_types::api::scene::SceneDocument;
+
+    use super::update_effect_controls_with;
+
+    struct SuspendedSceneFetch {
+        scene: Option<SceneDocument>,
+        suspended: bool,
+    }
+
+    impl Future for SuspendedSceneFetch {
+        type Output = Result<SceneDocument, String>;
+
+        fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+            if !self.suspended {
+                self.suspended = true;
+                cx.waker().wake_by_ref();
+                return Poll::Pending;
+            }
+            Poll::Ready(Ok(self.scene.take().expect("scene is returned once")))
+        }
+    }
+
+    #[test]
+    fn suspended_scene_fetch_never_retargets_restored_controls() {
+        let effect_a = "00000000-0000-0000-0000-00000000000a";
+        let effect_b = "00000000-0000-0000-0000-00000000000b";
+        let scene: SceneDocument = serde_json::from_value(serde_json::json!({
+            "id": "00000000-0000-0000-0000-000000000001",
+            "name": "live",
+            "kind": "ephemeral",
+            "is_default": true,
+            "revision": 2,
+            "zones": [{
+                "id": "00000000-0000-0000-0000-000000000002",
+                "name": "primary",
+                "role": "primary",
+                "enabled": true,
+                "brightness": 1.0,
+                "members": [],
+                "layers": [{
+                    "id": "00000000-0000-0000-0000-000000000003",
+                    "source": {
+                        "type": "effect",
+                        "effect_id": effect_b,
+                        "controls": {}
+                    }
+                }]
+            }]
+        }))
+        .expect("scene B fixture should deserialize");
+        let patch_count = Cell::new(0_u8);
+        let fetch = SuspendedSceneFetch {
+            scene: Some(scene),
+            suspended: false,
+        };
+        let future = update_effect_controls_with(effect_a, fetch, |_, _| {
+            patch_count.set(patch_count.get() + 1);
+            std::future::ready(Ok(()))
+        });
+        let mut future = std::pin::pin!(future);
+        let waker = Waker::noop();
+        let mut context = Context::from_waker(waker);
+
+        assert!(matches!(future.as_mut().poll(&mut context), Poll::Pending));
+        assert_eq!(patch_count.get(), 0, "GET suspension must not patch B");
+        let Poll::Ready(result) = future.as_mut().poll(&mut context) else {
+            panic!("scene fetch should resolve on its second poll");
+        };
+        assert_eq!(
+            result,
+            Err("The requested effect is not present in the live scene".to_owned())
+        );
+        assert_eq!(patch_count.get(), 0, "A preferences must never patch B");
+    }
+
     #[test]
     fn effect_cover_urls_require_verified_native_route_and_preserve_browser_same_origin() {
         crate::api::client::reset_daemon_transport_for_test();

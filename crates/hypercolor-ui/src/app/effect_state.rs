@@ -221,7 +221,8 @@ fn restore_effect_preferences(ctx: EffectsContext, effect_id: String, prefs: Eff
         }
 
         if !prefs.control_values.is_empty() {
-            if let Err(error) = api::update_controls(&prefs.control_values).await {
+            if let Err(error) = api::update_effect_controls(&effect_id, &prefs.control_values).await
+            {
                 crate::toasts::toast_error(&format!("Couldn't restore saved controls: {error}"));
             }
             if ctx.active_effect_id.get_untracked().as_deref() != Some(effect_id.as_str()) {
