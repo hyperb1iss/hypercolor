@@ -4,7 +4,9 @@ use std::collections::HashMap;
 use std::future::Future;
 
 use gloo_net::http::Method;
-use hypercolor_types::api::scene::{ClearSceneRequest, ReplaceLayerRequest, SceneDocument};
+use hypercolor_types::api::scene::{
+    ApplyEffectResponse, ClearSceneRequest, ReplaceLayerRequest, SceneDocument, ZoneResource,
+};
 use hypercolor_types::control::ControlValue;
 use hypercolor_types::effect::ControlDefinition;
 use hypercolor_types::layer::LayerSource;
@@ -26,10 +28,12 @@ pub use hypercolor_types::api::scene::ApplyEffectRequest as ApplyEffectBody;
 #[derive(Debug, Clone, PartialEq)]
 pub struct PrimaryEffectView {
     pub id: String,
+    pub zone_id: String,
     pub name: String,
     pub controls: Vec<ControlDefinition>,
     pub control_values: HashMap<String, ControlValue>,
     pub active_preset_id: Option<String>,
+    pub scene_revision: u64,
 }
 
 // ── Fetch Functions ─────────────────────────────────────────────────────────
@@ -43,16 +47,19 @@ pub async fn fetch_effects() -> Result<Vec<EffectSummary>, String> {
 /// Project the primary zone's top effect layer from the live scene tree.
 pub async fn fetch_primary_effect_view() -> Result<Option<PrimaryEffectView>, String> {
     let scene: SceneDocument = client::fetch_json("/api/v1/scene").await?;
-    let Some((_, _, effect_id, values, _, preset_id)) = effect_target(&scene, None, None) else {
+    let Some((zone_id, _, effect_id, values, _, preset_id)) = effect_target(&scene, None, None)
+    else {
         return Ok(None);
     };
     let detail = fetch_effect_detail(&effect_id.to_string()).await?;
     Ok(Some(PrimaryEffectView {
         id: effect_id,
+        zone_id,
         name: detail.name,
         controls: detail.controls,
         control_values: values,
         active_preset_id: preset_id,
+        scene_revision: scene.revision,
     }))
 }
 
@@ -87,6 +94,7 @@ pub async fn apply_effect_preset(
     effect_id: &str,
     preset_id: &str,
     zone_id: Option<&str>,
+    expected_revision: u64,
 ) -> Result<(), String> {
     let path = format!(
         "/api/v1/effects/{}/presets/{}/apply",
@@ -100,15 +108,38 @@ pub async fn apply_effect_preset(
                 .map_err(|_| "Target zone must be a UUID".to_owned())
         })
         .transpose()?;
-    client::post_json_discard(
-        &path,
-        &ApplyEffectBody {
-            zone,
-            ..ApplyEffectBody::default()
-        },
-    )
+    let body = ApplyEffectBody {
+        zone,
+        ..ApplyEffectBody::default()
+    };
+    apply_effect_preset_with(expected_revision, move |revision| async move {
+        client::send_json_versioned::<_, ApplyEffectResponse>(
+            Method::POST,
+            &path,
+            Some(&body),
+            Some(revision),
+        )
+        .await
+        .map(|outcome| outcome.map(|_| ()))
+        .map_err(Into::into)
+    })
     .await
-    .map_err(Into::into)
+}
+
+async fn apply_effect_preset_with<Send, SendFuture>(
+    expected_revision: u64,
+    send: Send,
+) -> Result<(), String>
+where
+    Send: FnOnce(u64) -> SendFuture,
+    SendFuture: Future<Output = Result<client::MutationOutcome<()>, String>>,
+{
+    match send(expected_revision).await? {
+        client::MutationOutcome::Applied(()) => Ok(()),
+        client::MutationOutcome::Stale { current } => Err(format!(
+            "Scene changed from revision {expected_revision} to {current} before preset apply"
+        )),
+    }
 }
 
 /// Apply an effect by ID or name. Pass `None` for a bare start; pass
@@ -166,25 +197,34 @@ where
     patch(zone_id, layer_id).await
 }
 
-/// Reset all controls on the active effect to their defaults.
-pub async fn reset_controls() -> Result<(), String> {
+/// Reset one observed effect layer to its defaults.
+pub async fn reset_effect_controls(
+    effect_id: &str,
+    zone_id: Option<&str>,
+    expected_revision: u64,
+) -> Result<(), String> {
     let scene: SceneDocument = client::fetch_json("/api/v1/scene").await?;
-    let Some(zone) = scene
+    if scene.revision != expected_revision {
+        return Err(format!(
+            "Scene changed from revision {expected_revision} to {} before controls reset",
+            scene.revision
+        ));
+    }
+    let Some((target_zone_id, target_layer_id, _, _, _, _)) =
+        effect_target(&scene, zone_id, Some(effect_id))
+    else {
+        return Err("The requested effect is not present in the live scene".to_owned());
+    };
+    let zone = scene
         .zones
         .iter()
-        .find(|zone| zone.role == ZoneRole::Primary)
-        .or_else(|| scene.zones.first())
-    else {
-        return Err("The active scene has no effect layer".to_owned());
-    };
-    let Some(layer) = zone
+        .find(|zone| zone.id.to_string() == target_zone_id)
+        .expect("effect target zone came from this scene");
+    let layer = zone
         .layers
         .iter()
-        .rev()
-        .find(|layer| matches!(layer.source, LayerSource::Effect { .. }))
-    else {
-        return Err("The active scene has no effect layer".to_owned());
-    };
+        .find(|layer| layer.id.to_string() == target_layer_id)
+        .expect("effect target layer came from this scene");
     let LayerSource::Effect {
         effect_id,
         control_bindings,
@@ -199,9 +239,10 @@ pub async fn reset_controls() -> Result<(), String> {
         .into_iter()
         .map(|control| (control.control_id().to_owned(), control.default_value))
         .collect();
-    client::put_json_discard(
+    let outcome = client::send_json_versioned::<_, ZoneResource>(
+        Method::PUT,
         &format!("/api/v1/scene/zones/{}/layers/{}", zone.id, layer.id),
-        &ReplaceLayerRequest {
+        Some(&ReplaceLayerRequest {
             source: LayerSource::Effect {
                 effect_id: *effect_id,
                 controls: values,
@@ -215,10 +256,17 @@ pub async fn reset_controls() -> Result<(), String> {
             adjust: Some(layer.adjust),
             bindings: Some(layer.bindings.clone()),
             enabled: Some(layer.enabled),
-        },
+        }),
+        Some(expected_revision),
     )
     .await
-    .map_err(Into::into)
+    .map_err(String::from)?;
+    match outcome {
+        client::MutationOutcome::Applied(_) => Ok(()),
+        client::MutationOutcome::Stale { current } => Err(format!(
+            "Scene changed from revision {expected_revision} to {current} before controls reset"
+        )),
+    }
 }
 
 type EffectTarget = (
@@ -350,14 +398,16 @@ pub async fn upload_effect(file: File) -> Result<InstalledEffectResponse, String
 
 #[cfg(test)]
 mod tests {
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
     use std::future::Future;
     use std::pin::Pin;
+    use std::rc::Rc;
     use std::task::{Context, Poll, Waker};
 
     use hypercolor_types::api::scene::SceneDocument;
 
-    use super::update_effect_controls_with;
+    use super::{apply_effect_preset_with, update_effect_controls_with};
+    use crate::api::MutationOutcome;
 
     struct SuspendedSceneFetch {
         scene: Option<SceneDocument>,
@@ -375,6 +425,66 @@ mod tests {
             }
             Poll::Ready(Ok(self.scene.take().expect("scene is returned once")))
         }
+    }
+
+    struct SuspendedPresetApply {
+        active_effect: Rc<RefCell<String>>,
+        revision: Rc<Cell<u64>>,
+        expected_revision: u64,
+        suspended: bool,
+    }
+
+    impl Future for SuspendedPresetApply {
+        type Output = Result<MutationOutcome<()>, String>;
+
+        fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+            if !self.suspended {
+                self.suspended = true;
+                self.active_effect.replace("effect-b".to_owned());
+                self.revision.set(8);
+                cx.waker().wake_by_ref();
+                return Poll::Pending;
+            }
+            if self.expected_revision != self.revision.get() {
+                return Poll::Ready(Ok(MutationOutcome::Stale {
+                    current: self.revision.get(),
+                }));
+            }
+            self.active_effect.replace("effect-a".to_owned());
+            Poll::Ready(Ok(MutationOutcome::Applied(())))
+        }
+    }
+
+    #[test]
+    fn suspended_preset_apply_cannot_replace_a_newer_effect() {
+        let active_effect = Rc::new(RefCell::new("effect-a".to_owned()));
+        let revision = Rc::new(Cell::new(7_u64));
+        let request_active_effect = Rc::clone(&active_effect);
+        let request_revision = Rc::clone(&revision);
+        let future = apply_effect_preset_with(7, move |expected_revision| SuspendedPresetApply {
+            active_effect: request_active_effect,
+            revision: request_revision,
+            expected_revision,
+            suspended: false,
+        });
+        let mut future = std::pin::pin!(future);
+        let waker = Waker::noop();
+        let mut context = Context::from_waker(waker);
+
+        assert!(matches!(future.as_mut().poll(&mut context), Poll::Pending));
+        assert_eq!(active_effect.borrow().as_str(), "effect-b");
+        let Poll::Ready(result) = future.as_mut().poll(&mut context) else {
+            panic!("preset apply should resolve on its second poll");
+        };
+        assert_eq!(
+            result,
+            Err("Scene changed from revision 7 to 8 before preset apply".to_owned())
+        );
+        assert_eq!(
+            active_effect.borrow().as_str(),
+            "effect-b",
+            "stale A preset must never replace B"
+        );
     }
 
     #[test]

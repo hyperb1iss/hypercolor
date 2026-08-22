@@ -124,10 +124,12 @@ fn effect_layer_source(effect_id: &str, prefs: Option<&EffectPreferences>) -> Op
 pub(super) fn apply_active_effect_snapshot(ctx: &EffectsContext, active: api::PrimaryEffectView) {
     let api::PrimaryEffectView {
         id,
+        zone_id,
         name,
         controls,
         control_values,
         active_preset_id,
+        scene_revision,
     } = active;
     let category = ctx
         .effect_summary(&id)
@@ -178,7 +180,7 @@ pub(super) fn apply_active_effect_snapshot(ctx: &EffectsContext, active: api::Pr
             let daemon_json = controls_to_json(&control_values);
             let needs_restore = prefs.preset_id != active_preset_id || stored_json != daemon_json;
             if needs_restore {
-                restore_effect_preferences(*ctx, id, prefs);
+                restore_effect_preferences(*ctx, id, zone_id, scene_revision, prefs);
                 return;
             }
         }
@@ -200,7 +202,13 @@ pub(super) fn apply_active_effect_snapshot(ctx: &EffectsContext, active: api::Pr
 }
 
 /// Restores a remembered preset and its exact derived control snapshot.
-fn restore_effect_preferences(ctx: EffectsContext, effect_id: String, prefs: EffectPreferences) {
+fn restore_effect_preferences(
+    ctx: EffectsContext,
+    effect_id: String,
+    zone_id: String,
+    scene_revision: u64,
+    prefs: EffectPreferences,
+) {
     leptos::task::spawn_local(async move {
         if ctx.active_effect_id.get_untracked().as_deref() != Some(effect_id.as_str()) {
             return;
@@ -212,8 +220,13 @@ fn restore_effect_preferences(ctx: EffectsContext, effect_id: String, prefs: Eff
             .filter(|preset_id| uuid::Uuid::parse_str(preset_id).is_ok())
             .map(str::to_owned);
         if let Some(preset_id) = resolved_preset_id.as_ref() {
-            if let Err(error) = api::apply_effect_preset(&effect_id, preset_id, None).await {
+            if let Err(error) =
+                api::apply_effect_preset(&effect_id, preset_id, Some(&zone_id), scene_revision)
+                    .await
+            {
                 crate::toasts::toast_error(&format!("Couldn't restore preset: {error}"));
+                ctx.refresh_active_effect();
+                return;
             }
             if ctx.active_effect_id.get_untracked().as_deref() != Some(effect_id.as_str()) {
                 return;

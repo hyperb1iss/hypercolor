@@ -219,6 +219,13 @@ pub fn CalibrationGuide(
                                 return;
                             };
                             let target_zone = zones_ctx.focused_zone_id_untracked();
+                            let Some(expected_revision) = zones_ctx.effect_revision_untracked(
+                                &active_effect_id,
+                                target_zone.as_deref(),
+                            ) else {
+                                toasts::toast_error("Calibration effect is no longer active");
+                                return;
+                            };
                             let preset_id = template.id;
                             let preset_name = template.name;
                             leptos::task::spawn_local(async move {
@@ -226,6 +233,7 @@ pub fn CalibrationGuide(
                                     &active_effect_id,
                                     &preset_id,
                                     target_zone.as_deref(),
+                                    expected_revision,
                                 )
                                 .await
                                 {

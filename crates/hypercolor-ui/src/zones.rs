@@ -10,6 +10,8 @@
 
 pub mod surface;
 
+use hypercolor_types::layer::LayerSource;
+use hypercolor_types::scene::ZoneRole;
 use leptos::prelude::*;
 
 use crate::api;
@@ -79,6 +81,42 @@ impl ZonesContext {
                 .then_some(id)
         })
     }
+
+    /// Scene revision that owns the requested effect at the write target.
+    pub fn effect_revision_untracked(&self, effect_id: &str, zone_id: Option<&str>) -> Option<u64> {
+        self.active_scene
+            .with_untracked(|scene| effect_revision_in_scene(scene.as_ref()?, effect_id, zone_id))
+    }
+}
+
+fn effect_revision_in_scene(
+    scene: &api::SceneDocument,
+    effect_id: &str,
+    zone_id: Option<&str>,
+) -> Option<u64> {
+    let zone = match zone_id {
+        Some(zone_id) => scene
+            .zones
+            .iter()
+            .find(|zone| zone.id.to_string() == zone_id),
+        None => scene
+            .zones
+            .iter()
+            .find(|zone| zone.role == ZoneRole::Primary)
+            .or_else(|| {
+                scene
+                    .zones
+                    .iter()
+                    .find(|zone| zone.role != ZoneRole::Display)
+            }),
+    }?;
+    let current_effect_id = zone.layers.iter().rev().find_map(|layer| {
+        let LayerSource::Effect { effect_id, .. } = &layer.source else {
+            return None;
+        };
+        Some(effect_id.to_string())
+    })?;
+    (current_effect_id == effect_id).then_some(scene.revision)
 }
 
 /// One LED zone's active-effect state — the per-zone answer to "what is

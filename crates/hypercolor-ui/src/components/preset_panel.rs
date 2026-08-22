@@ -182,13 +182,32 @@ pub fn PresetToolbar(
 
     // Select preset by value string (replaces the old on_select that took web_sys::Event)
     let on_select_value = move |val: String| {
+        let previous_selection = selected_id.get_untracked();
+        let Some(active_effect_id) = effect_id.get_untracked() else {
+            set_selected_id.set(previous_selection);
+            return;
+        };
+        let target_zone = zones_ctx.focused_zone_id_untracked();
+        let Some(expected_revision) =
+            zones_ctx.effect_revision_untracked(&active_effect_id, target_zone.as_deref())
+        else {
+            set_selected_id.set(previous_selection);
+            toasts::toast_error("The selected effect is no longer active");
+            return;
+        };
+
         if val.is_empty() {
             // "No preset" selected — reset controls to defaults
-            let previous_selection = selected_id.get_untracked();
             set_selected_id.set(None);
             let on_applied = on_preset_applied;
             leptos::task::spawn_local(async move {
-                match api::reset_controls().await {
+                match api::reset_effect_controls(
+                    &active_effect_id,
+                    target_zone.as_deref(),
+                    expected_revision,
+                )
+                .await
+                {
                     Ok(()) => on_applied.run(()),
                     Err(error) => {
                         set_selected_id.set(previous_selection);
@@ -199,17 +218,18 @@ pub fn PresetToolbar(
             return;
         }
 
-        let previous_selection = selected_id.get_untracked();
         set_selected_id.set(Some(val.clone()));
         set_mode.set(ToolbarMode::Idle);
         let on_applied = on_preset_applied;
-        let Some(active_effect_id) = effect_id.get_untracked() else {
-            set_selected_id.set(previous_selection);
-            return;
-        };
-        let target_zone = zones_ctx.focused_zone_id_untracked();
         leptos::task::spawn_local(async move {
-            match api::apply_effect_preset(&active_effect_id, &val, target_zone.as_deref()).await {
+            match api::apply_effect_preset(
+                &active_effect_id,
+                &val,
+                target_zone.as_deref(),
+                expected_revision,
+            )
+            .await
+            {
                 Ok(()) => {
                     if target_zone.is_some() {
                         zones_ctx.refresh.run(());
@@ -260,6 +280,12 @@ pub fn PresetToolbar(
         let controls_json = controls_to_json(&values);
         let refresh = refresh_presets;
         let target_zone = zones_ctx.focused_zone_id_untracked();
+        let Some(expected_revision) =
+            zones_ctx.effect_revision_untracked(&eid, target_zone.as_deref())
+        else {
+            toasts::toast_error("The selected effect is no longer active");
+            return;
+        };
         set_mode.set(ToolbarMode::Idle);
         leptos::task::spawn_local(async move {
             let req = api::SavePresetRequest {
@@ -272,7 +298,13 @@ pub fn PresetToolbar(
             match api::create_preset(&req).await {
                 Ok(created) => {
                     let created_id = created.id.to_string();
-                    match api::apply_effect_preset(&eid, &created_id, target_zone.as_deref()).await
+                    match api::apply_effect_preset(
+                        &eid,
+                        &created_id,
+                        target_zone.as_deref(),
+                        expected_revision,
+                    )
+                    .await
                     {
                         Ok(()) => {
                             set_selected_id.set(Some(created_id));
