@@ -16,9 +16,7 @@ use hypercolor_core::input::{
 };
 use hypercolor_types::audio::{AudioPipelineConfig, AudioSourceType};
 use hypercolor_types::config::{CaptureConfig, HypercolorConfig};
-use hypercolor_types::config_registry::{
-    self, ApplyPolicy, ConfigKeyDescriptor, KeyPattern, LiveSection, Redaction,
-};
+use hypercolor_types::config_registry::{self, ApplyPolicy, LiveSection};
 
 use axum::Extension;
 
@@ -27,6 +25,10 @@ use crate::api::envelope;
 use crate::api::security::RequestAuthContext;
 use crate::app_state::AppState;
 use crate::domain::{DomainError, ResourceKind};
+
+mod redaction;
+
+use redaction::{redact_document, redact_key};
 
 pub use hypercolor_types::api::config::{
     ConfigApplyQuery, ConfigDocument, ConfigKeyResponse, ConfigMutationResponse,
@@ -485,61 +487,6 @@ async fn apply_live_sections(
         applied |= apply_input_config_change(state, key).await;
     }
     applied
-}
-
-// ── Read-surface redaction ──────────────────────────────────────────
-
-/// What a masked value renders as.
-fn redacted_marker() -> serde_json::Value {
-    serde_json::json!({ "redacted": true })
-}
-
-/// Render a whole config document for a read surface.
-///
-/// Sections the registry classifies `Secret` are masked. A dynamic
-/// namespace masks per entry, so the entry names — already public
-/// through their own resource routes — survive while every value inside
-/// them is hidden.
-fn redact_document(mut document: serde_json::Value) -> serde_json::Value {
-    let Some(root) = document.as_object_mut() else {
-        return document;
-    };
-
-    for (key, value) in root.iter_mut() {
-        let descriptor = config_registry::descriptor_for(key);
-        if matches!(descriptor.redaction, Redaction::Secret) {
-            *value = mask_section(descriptor, std::mem::take(value));
-        }
-    }
-    document
-}
-
-/// Render one key's value for a read surface.
-fn redact_key(key: &str, value: serde_json::Value) -> serde_json::Value {
-    let descriptor = config_registry::descriptor_for(key);
-    if !matches!(descriptor.redaction, Redaction::Secret) {
-        return value;
-    }
-
-    if key == descriptor.pattern.root() {
-        mask_section(descriptor, value)
-    } else {
-        redacted_marker()
-    }
-}
-
-fn mask_section(descriptor: &ConfigKeyDescriptor, value: serde_json::Value) -> serde_json::Value {
-    if let KeyPattern::Namespace(_) = descriptor.pattern
-        && let Some(entries) = value.as_object()
-    {
-        return serde_json::Value::Object(
-            entries
-                .keys()
-                .map(|entry| (entry.clone(), redacted_marker()))
-                .collect(),
-        );
-    }
-    redacted_marker()
 }
 
 /// Restore one key, or the whole config, to defaults.
