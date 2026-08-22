@@ -3,8 +3,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use gloo_net::http::Method;
-
 use hypercolor_types::api::scene::{
     AssignMembersRequest, CreateZoneRequest, MemberPlacement, SceneDocument, ScenePatchRequest,
     ZoneLayoutRequest, ZoneMemberId, ZoneResource,
@@ -14,6 +12,7 @@ use hypercolor_types::spatial::{Output, SpatialLayout};
 
 use super::client;
 use super::client::MutationOutcome;
+use super::http_transport::HttpMethod;
 use super::scenes::{LiveZoneView, zone_projection};
 use crate::control_surface_api::path_segment;
 
@@ -53,7 +52,7 @@ pub async fn create_zone(
         color: color.map(str::to_owned),
     };
     let outcome = client::send_json_versioned::<_, ZoneResource>(
-        Method::POST,
+        HttpMethod::Post,
         "/api/v1/scene/zones",
         Some(&request),
         expected_revision,
@@ -68,7 +67,7 @@ pub async fn update_zone(
     expected_revision: Option<u64>,
 ) -> Result<ZoneOutcome<LiveZoneView>, String> {
     let outcome = client::send_json_versioned::<_, ZoneResource>(
-        Method::PATCH,
+        HttpMethod::Patch,
         &format!("/api/v1/scene/zones/{}", path_segment(zone_id)),
         Some(request),
         expected_revision,
@@ -86,7 +85,7 @@ pub async fn update_zone_layout(
         placements: layout.zones.iter().map(member_placement).collect(),
     };
     let outcome = client::send_json_versioned::<_, ZoneResource>(
-        Method::PUT,
+        HttpMethod::Put,
         &format!("/api/v1/scene/zones/{}/layout", path_segment(zone_id)),
         Some(&request),
         expected_revision,
@@ -100,7 +99,7 @@ pub async fn delete_zone(
     expected_revision: Option<u64>,
 ) -> Result<ZoneOutcome<()>, String> {
     client::send_json_versioned::<(), SceneDocument>(
-        Method::DELETE,
+        HttpMethod::Delete,
         &format!("/api/v1/scene/zones/{}", path_segment(zone_id)),
         None,
         expected_revision,
@@ -168,7 +167,7 @@ pub async fn assign_devices(
             device_id,
         };
         match client::send_json_versioned::<_, ZoneResource>(
-            Method::POST,
+            HttpMethod::Post,
             &format!("/api/v1/scene/zones/{}/members", path_segment(zone_id)),
             Some(&request),
             Some(revision),
@@ -188,7 +187,7 @@ pub async fn assign_devices(
     if preserve_placement && !desired_outputs.is_empty() {
         let request = preserved_layout(&written_zone, &desired_outputs);
         match client::send_json_versioned::<_, ZoneResource>(
-            Method::PUT,
+            HttpMethod::Put,
             &format!("/api/v1/scene/zones/{}/layout", path_segment(zone_id)),
             Some(&request),
             Some(revision),
@@ -211,7 +210,7 @@ pub async fn unassign_device(
     expected_revision: Option<u64>,
 ) -> Result<ZoneOutcome<u64>, String> {
     let outcome = client::send_json_versioned::<(), ZoneResource>(
-        Method::DELETE,
+        HttpMethod::Delete,
         &format!(
             "/api/v1/scene/zones/{}/members/{}",
             path_segment(zone_id),
@@ -238,7 +237,7 @@ pub async fn update_unassigned_behavior(
         unassigned_behavior: Some(behavior.clone()),
     };
     client::send_json_versioned::<_, SceneDocument>(
-        Method::PATCH,
+        HttpMethod::Patch,
         "/api/v1/scene",
         Some(&request),
         expected_revision,

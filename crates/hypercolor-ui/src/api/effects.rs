@@ -2,14 +2,13 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use gloo_net::http::Method;
 use hypercolor_types::api::scene::{
     ClearSceneRequest, PatchControlsRequest, ReplaceLayerRequest, SceneDocument,
 };
 use hypercolor_types::effect::{ControlDefinition, ControlValue};
 use hypercolor_types::layer::LayerSource;
 use hypercolor_types::scene::ZoneRole;
-use web_sys::{File, FormData};
+use web_sys::File;
 
 use super::client;
 use crate::control_surface_api::path_segment;
@@ -324,22 +323,12 @@ fn control_value_from_json(value: &serde_json::Value) -> Option<ControlValue> {
 }
 
 pub async fn upload_effect(file: File) -> Result<InstalledEffectResponse, String> {
-    let form_data = FormData::new().map_err(|error| format!("{error:?}"))?;
-    form_data
-        .append_with_blob_and_filename("file", &file, &file.name())
-        .map_err(|error| format!("{error:?}"))?;
+    let part = client::multipart_file_part("file", &file).await?;
+    let response = client::send_multipart("/api/v1/effects/install", vec![part]).await?;
 
-    let request = client::request(Method::POST, "/api/v1/effects/install").map_err(String::from)?;
-    let response = request
-        .body(form_data)
-        .map_err(|error| error.to_string())?
-        .send()
-        .await
-        .map_err(|error| error.to_string())?;
-
-    if !(200..300).contains(&response.status()) {
-        let fallback = format!("HTTP {}", response.status());
-        let payload = response.json::<serde_json::Value>().await.ok();
+    if !(200..300).contains(&response.status) {
+        let fallback = format!("HTTP {}", response.status);
+        let payload = serde_json::from_slice::<serde_json::Value>(&response.body).ok();
         let detail_errors = payload
             .as_ref()
             .and_then(|value| value["error"]["details"]["errors"].as_array())
@@ -362,11 +351,7 @@ pub async fn upload_effect(file: File) -> Result<InstalledEffectResponse, String
         return Err(message);
     }
 
-    response
-        .json::<super::ApiEnvelope<InstalledEffectResponse>>()
-        .await
-        .map(|payload| payload.data)
-        .map_err(|error| error.to_string())
+    client::parse_envelope(&response).map_err(Into::into)
 }
 
 #[cfg(test)]

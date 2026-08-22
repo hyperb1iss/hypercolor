@@ -14,7 +14,7 @@ use hypercolor_types::scene::{
 use hypercolor_types::spatial::{EdgeBehavior, Output, SamplingMode, SpatialLayout};
 
 use super::client;
-use gloo_net::http::Method;
+use super::http_transport::HttpMethod;
 
 pub use hypercolor_types::api::scenes::{
     CreateSceneRequest, ReplaceSceneRequest, SceneListResponse, SceneSummary,
@@ -194,7 +194,7 @@ pub async fn rename_scene(scene_id: &str, name: &str) -> Result<(), String> {
     document.name = name.to_owned();
     let request = ReplaceSceneRequest::from(&document);
     match client::send_json_versioned::<_, SceneDocument>(
-        Method::PUT,
+        HttpMethod::Put,
         &url,
         Some(&request),
         Some(document.revision),
