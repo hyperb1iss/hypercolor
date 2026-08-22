@@ -3,7 +3,9 @@
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use hypercolor_types::api::ApiResponse;
-use hypercolor_types::api::controls::{ControlSurfaceListResponse, InvokeControlActionRequest};
+use hypercolor_types::api::controls::{
+    ControlSurfaceListQuery, ControlSurfaceListResponse, InvokeControlActionRequest,
+};
 use hypercolor_types::api::devices::{
     DeviceListResponse as ApiDeviceListResponse, DeviceSummary as ApiDeviceSummary,
 };
@@ -106,7 +108,7 @@ impl DaemonClient {
     /// Fetch control surfaces selected by device, driver, or both.
     pub async fn get_control_surfaces(
         &self,
-        query: ControlSurfaceQuery<'_>,
+        query: &ControlSurfaceListQuery,
     ) -> Result<Vec<ControlSurfaceDocument>> {
         let response: Option<ControlSurfaceListResponse> = self
             .get_optional_data(&control_surface_list_path(query))
@@ -120,10 +122,10 @@ impl DaemonClient {
         device_id: &str,
         include_driver: bool,
     ) -> Result<Vec<ControlSurfaceDocument>> {
-        self.get_control_surfaces(ControlSurfaceQuery {
-            device_id: Some(device_id),
+        self.get_control_surfaces(&ControlSurfaceListQuery {
+            device_id: Some(device_id.to_owned()),
             driver_id: None,
-            include_driver,
+            include_driver: Some(include_driver),
         })
         .await
     }
@@ -540,14 +542,6 @@ impl DaemonClient {
     }
 }
 
-/// Query parameters for the aggregate control-surface endpoint.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct ControlSurfaceQuery<'a> {
-    pub device_id: Option<&'a str>,
-    pub driver_id: Option<&'a str>,
-    pub include_driver: bool,
-}
-
 fn map_effect_summary(summary: ApiEffectSummary) -> EffectSummary {
     EffectSummary {
         id: summary.id,
@@ -688,15 +682,15 @@ async fn response_data<T: DeserializeOwned>(response: reqwest::Response) -> Resu
     Ok(envelope.data)
 }
 
-fn control_surface_list_path(query: ControlSurfaceQuery<'_>) -> String {
+fn control_surface_list_path(query: &ControlSurfaceListQuery) -> String {
     let mut parts = Vec::new();
-    if let Some(device_id) = query.device_id {
+    if let Some(device_id) = query.device_id.as_deref() {
         parts.push(format!("device_id={}", query_value(device_id)));
     }
-    if let Some(driver_id) = query.driver_id {
+    if let Some(driver_id) = query.driver_id.as_deref() {
         parts.push(format!("driver_id={}", query_value(driver_id)));
     }
-    if query.include_driver {
+    if query.include_driver == Some(true) {
         parts.push("include_driver=true".to_string());
     }
 

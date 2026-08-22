@@ -2,6 +2,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 const CANONICAL_DEFINITION: &str = "hypercolor-types/src/control/mod.rs";
+const CANONICAL_CONTROL_SURFACE_LIST_QUERY: &str = "hypercolor-types/src/api/controls.rs";
 const CANONICAL_CONTROL_SURFACE_LIST_RESPONSE: &str = "hypercolor-types/src/api/controls.rs";
 const FENCE_SOURCE: &str = "hypercolor-types/tests/control_value_authority_tests.rs";
 
@@ -197,7 +198,10 @@ fn allowed_control_value_enum(path: &str, name: &str) -> bool {
         (path, name),
         (
             "hypercolor-types/src/control/mod.rs",
-            "ControlValue" | "ControlValueRef" | "ControlValueWire" | "ControlValueInvalid"
+            "ControlValue" | "ControlValueInvalid"
+        ) | (
+            "hypercolor-types/src/control/wire.rs",
+            "ControlValueRef" | "ControlValueWire"
         ) | (
             "hypercolor-types/src/controls.rs",
             "ControlValueType" | "ControlValueKind" | "ControlValueValidationError"
@@ -253,6 +257,10 @@ fn manual_json_authorities(path: &str, source: &str) -> Vec<String> {
             if !normalized.contains("control_value") || !normalized.contains("json") {
                 return None;
             }
+            if path == "hypercolor-types/src/control/wire.rs" && name == "control_value_json_schema"
+            {
+                return None;
+            }
 
             let compact_declaration = compact(declaration);
             let delegates_to_canonical = [
@@ -295,6 +303,36 @@ fn disallowed_control_surface_list_responses(path: &str, source: &str) -> Vec<St
             name == "ControlSurfaceListResponse" && path != CANONICAL_CONTROL_SURFACE_LIST_RESPONSE
         })
         .map(|(name, _)| name)
+        .collect()
+}
+
+fn control_surface_query_fields(declaration: &str) -> BTreeSet<String> {
+    declaration
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("pub "))
+        .filter_map(|field| {
+            field
+                .split_once(':')
+                .map(|(name, _)| name.trim().to_owned())
+        })
+        .collect()
+}
+
+fn disallowed_control_surface_queries(path: &str, source: &str) -> Vec<String> {
+    let canonical_fields = BTreeSet::from([
+        "device_id".to_owned(),
+        "driver_id".to_owned(),
+        "include_driver".to_owned(),
+    ]);
+    declarations_after(source, "struct")
+        .into_iter()
+        .filter_map(|(name, declaration)| {
+            let fields = control_surface_query_fields(declaration);
+            let mirrors_canonical_fields = fields == canonical_fields;
+            ((name == "ControlSurfaceListQuery" && path != CANONICAL_CONTROL_SURFACE_LIST_QUERY)
+                || (name != "ControlSurfaceListQuery" && mirrors_canonical_fields))
+                .then_some(name)
+        })
         .collect()
 }
 
@@ -387,6 +425,7 @@ fn control_value_has_one_definition_and_no_legacy_projection_paths() {
     let mut mirror_enums = Vec::new();
     let mut manual_authorities = Vec::new();
     let mut response_mirrors = Vec::new();
+    let mut query_mirrors = Vec::new();
     let mut retired_rust_tags = Vec::new();
 
     for (path, source) in &sources {
@@ -422,6 +461,11 @@ fn control_value_has_one_definition_and_no_legacy_projection_paths() {
         );
         response_mirrors.extend(
             disallowed_control_surface_list_responses(path, source)
+                .into_iter()
+                .map(|name| format!("{path}: {name}")),
+        );
+        query_mirrors.extend(
+            disallowed_control_surface_queries(path, source)
                 .into_iter()
                 .map(|name| format!("{path}: {name}")),
         );
@@ -475,6 +519,30 @@ fn control_value_has_one_definition_and_no_legacy_projection_paths() {
     assert!(
         response_mirrors.is_empty(),
         "control-surface list response mirrors remain in {response_mirrors:#?}"
+    );
+    assert!(
+        query_mirrors.is_empty(),
+        "control-surface list query mirrors remain in {query_mirrors:#?}"
+    );
+
+    let canonical_query_source = sources
+        .iter()
+        .find(|(path, _)| path == CANONICAL_CONTROL_SURFACE_LIST_QUERY)
+        .map(|(_, source)| source)
+        .expect("canonical control-surface query source should exist");
+    let canonical_query = declarations_after(canonical_query_source, "struct")
+        .into_iter()
+        .find(|(name, _)| name == "ControlSurfaceListQuery")
+        .map(|(_, declaration)| declaration)
+        .expect("canonical control-surface query should exist");
+    assert_eq!(
+        control_surface_query_fields(canonical_query),
+        BTreeSet::from([
+            "device_id".to_owned(),
+            "driver_id".to_owned(),
+            "include_driver".to_owned(),
+        ]),
+        "canonical control-surface query field set drifted"
     );
     assert!(
         retired_rust_tags.is_empty(),
@@ -541,6 +609,18 @@ fn authority_fence_detects_renamed_mirrors_and_manual_parsers() {
     assert_eq!(
         disallowed_control_surface_list_responses("fixture.rs", response_mirror),
         ["ControlSurfaceListResponse"]
+    );
+
+    let query_mirror = r"
+        struct BorrowedControlSurfaceQuery<'a> {
+            pub device_id: Option<&'a str>,
+            pub driver_id: Option<&'a str>,
+            pub include_driver: bool,
+        }
+    ";
+    assert_eq!(
+        disallowed_control_surface_queries("fixture.rs", query_mirror),
+        ["BorrowedControlSurfaceQuery"]
     );
 
     let retired_rust_fixture = r#"
