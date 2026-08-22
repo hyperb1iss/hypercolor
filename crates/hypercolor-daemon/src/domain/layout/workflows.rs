@@ -256,7 +256,8 @@ impl LayoutContext {
         if let (Some(previous_zones), Some(updated_zones)) =
             (previous_zones, updated_zones_for_exclusions)
         {
-            self.reconcile_layout_auto_exclusions(&layout_id, &previous_zones, &updated_zones)
+            self.exclusions
+                .reconcile_layout(&layout_id, &previous_zones, &updated_zones)
                 .await;
         }
         drop(guard);
@@ -448,7 +449,7 @@ impl LayoutContext {
             ));
         }
 
-        self.remove_layout_auto_exclusions(&key).await;
+        self.exclusions.remove_layout(&key).await;
         drop(guard);
         let persistence = if active_layout_changed {
             self.converge_persisted_update().await

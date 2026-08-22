@@ -1,6 +1,7 @@
 //! Spatial layout catalog, mutation, activation, and durability authority.
 
 mod auto_layout;
+mod exclusions;
 mod workflows;
 
 use std::collections::{HashMap, HashSet};
@@ -37,6 +38,8 @@ use crate::scene_transactions::{
     LayoutUpdateError, LayoutUpdateGuard, PreparedLayoutUpdate, SceneActivationGuard,
     SceneTransactionQueue, apply_prepared_layout_update_under_guard_with_persistence,
 };
+
+use self::exclusions::LayoutExclusions;
 
 const LAYOUT_DURABILITY_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -124,7 +127,7 @@ impl<'a> LayoutTestFixture<'a> {
 
     #[must_use]
     pub fn auto_exclusions(&self) -> &'a RwLock<layout_auto_exclusions::LayoutAutoExclusionStore> {
-        &self.context.layout_auto_exclusions
+        self.context.exclusions.entries()
     }
 
     pub fn replace_current(&self, layout: SpatialLayout) {
@@ -313,8 +316,7 @@ impl LayoutContextResources {
 pub struct LayoutContext {
     layouts: Arc<RwLock<HashMap<String, SpatialLayout>>>,
     layouts_path: PathBuf,
-    layout_auto_exclusions: Arc<RwLock<layout_auto_exclusions::LayoutAutoExclusionStore>>,
-    layout_auto_exclusions_path: PathBuf,
+    exclusions: LayoutExclusions,
     spatial: SpatialService,
     scenes: SceneService,
     transactions: SceneTransactionQueue,
@@ -337,8 +339,11 @@ impl LayoutContext {
         Self {
             layouts: Arc::new(RwLock::new(resources.layouts)),
             layouts_path: resources.layouts_path,
-            layout_auto_exclusions: Arc::new(RwLock::new(resources.layout_auto_exclusions)),
-            layout_auto_exclusions_path: resources.layout_auto_exclusions_path,
+            exclusions: LayoutExclusions::new(
+                resources.layout_auto_exclusions,
+                resources.layout_auto_exclusions_path,
+                scenes.clone(),
+            ),
             spatial,
             scenes,
             transactions,
@@ -720,15 +725,7 @@ impl LayoutContext {
         let guard = self.acquire_update_guard().await;
         let original_layout = self.current();
         let mut layout = original_layout.clone();
-        let excluded_layout_device_ids = {
-            let exclusion_keys = self.active_auto_exclusion_keys(&layout).await;
-            let store = self.layout_auto_exclusions.read().await;
-            exclusion_keys
-                .iter()
-                .filter_map(|key| store.get(key))
-                .flat_map(|device_ids| device_ids.iter().cloned())
-                .collect::<HashSet<_>>()
-        };
+        let excluded_layout_device_ids = self.exclusions.excluded_device_ids(&layout).await;
         let inactive_ids = {
             let manager = runtime.backend_manager.lock().await;
             manager
@@ -854,24 +851,6 @@ impl LayoutContext {
         );
     }
 
-    async fn active_auto_exclusion_keys(
-        &self,
-        layout: &SpatialLayout,
-    ) -> Vec<layout_auto_exclusions::LayoutAutoExclusionKey> {
-        let mut keys = vec![layout_auto_exclusions::LayoutAutoExclusionKey::layout(
-            layout.id.as_str(),
-        )];
-        let manager = self.scenes.snapshot().await;
-        if let Some(scene) = manager.active_scene()
-            && let Some(group) = scene.primary_zone()
-        {
-            keys.push(layout_auto_exclusions::LayoutAutoExclusionKey::zone(
-                scene.id, group.id,
-            ));
-        }
-        keys
-    }
-
     async fn persist_catalog(&self) -> anyhow::Result<()> {
         let snapshot = self.layouts.read().await.clone();
         self.save_catalog_snapshot(snapshot).await
@@ -897,51 +876,6 @@ impl LayoutContext {
         }
     }
 
-    async fn reconcile_layout_auto_exclusions(
-        &self,
-        layout_id: &str,
-        previous_zones: &[Output],
-        updated_zones: &[Output],
-    ) {
-        let changed = {
-            let mut exclusions = self.layout_auto_exclusions.write().await;
-            let key = layout_auto_exclusions::LayoutAutoExclusionKey::layout(layout_id);
-            let current = exclusions.get(&key).cloned().unwrap_or_default();
-            let next = layout_auto_exclusions::reconcile_layout_device_exclusions(
-                previous_zones,
-                updated_zones,
-                &current,
-            );
-            if next == current {
-                false
-            } else {
-                if next.is_empty() {
-                    exclusions.remove(&key);
-                } else {
-                    exclusions.insert(key, next);
-                }
-                true
-            }
-        };
-        if changed {
-            self.persist_layout_auto_exclusions().await;
-        }
-    }
-
-    async fn remove_layout_auto_exclusions(&self, layout_id: &str) {
-        let removed = {
-            let mut exclusions = self.layout_auto_exclusions.write().await;
-            exclusions
-                .remove(&layout_auto_exclusions::LayoutAutoExclusionKey::layout(
-                    layout_id,
-                ))
-                .is_some()
-        };
-        if removed {
-            self.persist_layout_auto_exclusions().await;
-        }
-    }
-
     /// Reconcile discovery exclusions after zone layouts change.
     pub async fn reconcile_zone_auto_exclusions(
         &self,
@@ -954,7 +888,8 @@ impl LayoutContext {
         let updated_zones = updated_zones.to_vec();
         if let Err(error) = tokio::spawn(async move {
             context
-                .reconcile_zone_auto_exclusions_workflow(scene_id, &previous_zones, &updated_zones)
+                .exclusions
+                .reconcile_zones(scene_id, &previous_zones, &updated_zones)
                 .await;
         })
         .await
@@ -963,91 +898,15 @@ impl LayoutContext {
         }
     }
 
-    async fn reconcile_zone_auto_exclusions_workflow(
-        &self,
-        scene_id: SceneId,
-        previous_zones: &[Zone],
-        updated_zones: &[Zone],
-    ) {
-        let changed = {
-            let mut exclusions = self.layout_auto_exclusions.write().await;
-            let mut changed = false;
-            for previous_zone in previous_zones {
-                let Some(updated_zone) = updated_zones
-                    .iter()
-                    .find(|zone| zone.id == previous_zone.id)
-                else {
-                    continue;
-                };
-                if previous_zone.layout.zones == updated_zone.layout.zones {
-                    continue;
-                }
-
-                let key = layout_auto_exclusions::LayoutAutoExclusionKey::zone(
-                    scene_id,
-                    previous_zone.id,
-                );
-                let current = exclusions.get(&key).cloned().unwrap_or_default();
-                let next = layout_auto_exclusions::reconcile_layout_device_exclusions(
-                    &previous_zone.layout.zones,
-                    &updated_zone.layout.zones,
-                    &current,
-                );
-                if next == current {
-                    continue;
-                }
-                if next.is_empty() {
-                    exclusions.remove(&key);
-                } else {
-                    exclusions.insert(key, next);
-                }
-                changed = true;
-            }
-            changed
-        };
-
-        if changed {
-            self.persist_layout_auto_exclusions().await;
-        }
-    }
-
     /// Drop discovery exclusions owned by a removed zone.
     pub async fn remove_zone_auto_exclusions(&self, scene_id: SceneId, zone_id: ZoneId) {
         let context = self.clone();
         if let Err(error) = tokio::spawn(async move {
-            let removed = {
-                let mut exclusions = context.layout_auto_exclusions.write().await;
-                exclusions
-                    .remove(&layout_auto_exclusions::LayoutAutoExclusionKey::zone(
-                        scene_id, zone_id,
-                    ))
-                    .is_some()
-            };
-            if removed {
-                context.persist_layout_auto_exclusions().await;
-            }
+            context.exclusions.remove_zone(scene_id, zone_id).await;
         })
         .await
         {
             tracing::warn!(%error, "zone layout exclusion removal failed");
-        }
-    }
-
-    async fn persist_layout_auto_exclusions(&self) {
-        let snapshot = self.layout_auto_exclusions.read().await.clone();
-        let path = self.layout_auto_exclusions_path.clone();
-        let result =
-            tokio::task::spawn_blocking(move || layout_auto_exclusions::save(&path, &snapshot))
-                .await;
-        if let Err(error) = result
-            .map_err(|error| anyhow::anyhow!("layout exclusion store task failed: {error}"))
-            .and_then(|result| result)
-        {
-            tracing::warn!(
-                path = %self.layout_auto_exclusions_path.display(),
-                %error,
-                "Failed to persist layout auto-exclusion store"
-            );
         }
     }
 
