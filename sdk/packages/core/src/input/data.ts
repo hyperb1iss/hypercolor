@@ -41,7 +41,6 @@ export function getInputData(): InputData {
 function readAvailability(raw: any): InputAvailability {
     if (typeof raw !== 'object' || raw === null) {
         return {
-            available: false,
             declared: false,
             degraded: false,
             fresh: false,
@@ -50,15 +49,12 @@ function readAvailability(raw: any): InputAvailability {
         }
     }
 
-    const routed = raw.routed === true
-    const healthy = raw.healthy === true
     return {
-        available: routed && healthy,
         declared: raw.declared === true,
         degraded: raw.degraded === true,
         fresh: raw.fresh === true,
-        healthy,
-        routed,
+        healthy: raw.healthy === true,
+        routed: raw.routed === true,
     }
 }
 

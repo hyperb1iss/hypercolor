@@ -92,7 +92,7 @@ interface HypercolorEngine {
     /** Count of input events dropped this frame due to overflow. */
     inputDropped?: number
     /** Declared capability and lifecycle state for the routed input source. */
-    inputAvailability?: Omit<InputAvailability, 'available'>
+    inputAvailability?: InputAvailability
 
     // ── Canvas dimensions ──────────────────────────────────────────
     // Set by the daemon to match the render canvas or display resolution.

@@ -142,13 +142,6 @@ export interface InputAvailability {
     fresh: boolean
     /** Whether the routed source is operating with reduced capability. */
     degraded: boolean
-    /**
-     * Whether input is routed and healthy.
-     *
-     * @deprecated Read `routed && healthy` instead. This alias will be removed
-     * in version 0.4.0.
-     */
-    available: boolean
 }
 
 /** Typed per-frame input snapshot returned by `getInputData()`. */

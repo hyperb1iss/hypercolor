@@ -356,7 +356,7 @@ import { canvas, getInputData } from ${JSON.stringify(SDK_ALIAS)}
 export default canvas.stateful('Missing Input Opt-In', {}, () => {
     return () => {
         const data = getInputData()
-        void data.available
+        void data.healthy
     }
 })
 `,
