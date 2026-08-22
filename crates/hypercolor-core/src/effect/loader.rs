@@ -130,7 +130,9 @@ pub fn register_html_effects(
 
             let Some(entry) = loaded.entry else {
                 for (legacy_id, canonical_id) in loaded.legacy_effect_ids {
-                    report.legacy_effect_ids.insert(legacy_id, canonical_id);
+                    if registry.get(&canonical_id).is_some() {
+                        report.legacy_effect_ids.insert(legacy_id, canonical_id);
+                    }
                 }
                 report.skipped_files += 1;
                 continue;

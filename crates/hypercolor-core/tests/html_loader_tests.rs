@@ -710,14 +710,69 @@ fn register_html_effects_skips_builtin_html_ports_without_servo() {
     assert_eq!(report.scanned_files, 1);
     assert_eq!(report.loaded_effects, 0);
     assert_eq!(report.skipped_files, 1);
+    assert!(report.legacy_effect_ids.is_empty());
+    assert_eq!(registry.len(), 0);
+}
+
+#[cfg(not(feature = "servo"))]
+#[test]
+fn skipped_builtin_html_port_only_targets_a_registered_native_effect() {
+    let temp = TempDir::new().expect("failed to create tempdir");
+    let root = temp.path().join("effects");
+
+    write_html(
+        &root.join("hypercolor/breathing.html"),
+        r#"
+<head>
+  <title>Breathing</title>
+  <meta builtin-id="breathing" />
+</head>
+"#,
+    );
+
+    let mut empty_registry = EffectRegistry::new(vec![root.clone()]);
+    let empty_report = register_html_effects(&mut empty_registry, std::slice::from_ref(&root));
+    assert!(empty_report.legacy_effect_ids.is_empty());
+
+    let mut native_registry = EffectRegistry::new(vec![root.clone()]);
+    register_builtin_effects(&mut native_registry);
+    let native_id = native_registry
+        .iter()
+        .find(|(_, entry)| entry.metadata.source.source_stem() == Some("breathing"))
+        .map(|(id, _)| *id)
+        .expect("native Breathing should be registered");
+    let report = register_html_effects(&mut native_registry, &[root]);
+
     assert!(!report.legacy_effect_ids.is_empty());
     assert!(
         report
             .legacy_effect_ids
-            .iter()
-            .all(|(legacy_id, canonical_id)| legacy_id != canonical_id)
+            .values()
+            .all(|canonical_id| *canonical_id == native_id)
     );
-    assert_eq!(registry.len(), 0);
+}
+
+#[cfg(not(feature = "servo"))]
+#[test]
+fn skipped_screen_cast_port_never_targets_an_unregistered_html_effect() {
+    let temp = TempDir::new().expect("failed to create tempdir");
+    let root = temp.path().join("effects");
+
+    write_html(
+        &root.join("hypercolor/screen-cast.html"),
+        r#"
+<head>
+  <title>Screen Cast</title>
+  <meta builtin-id="screen_cast" />
+</head>
+"#,
+    );
+
+    let mut registry = EffectRegistry::new(vec![root.clone()]);
+    register_builtin_effects(&mut registry);
+    let report = register_html_effects(&mut registry, &[root]);
+
+    assert!(report.legacy_effect_ids.is_empty());
 }
 
 #[cfg(feature = "servo")]
