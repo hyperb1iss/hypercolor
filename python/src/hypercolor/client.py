@@ -120,13 +120,14 @@ from .models.device import Device
 from .models.display import DisplayFaceAssignment, DisplaySummary
 from .models.driver import Driver
 from .models.effect import EffectCoverImage
-from .models.layout import Layout, LayoutSummary
+from .models.layout import LayoutSummary
 from .models.library import (
     Favorite,
     Playlist,
     Preset,
 )
 from .models.output import OutputState
+from .models.spatial import SpatialLayout
 from .websocket import HypercolorEventStream
 
 ModelT = TypeVar("ModelT")
@@ -636,12 +637,12 @@ class HypercolorClient:
             LayoutSummary,
         )
 
-    async def get_active_layout(self) -> Layout | None:
+    async def get_active_layout(self) -> SpatialLayout | None:
         """Return the active layout if one exists."""
         try:
             return await self._generated_model(
                 generated_get_active_layout._get_kwargs(),
-                Layout,
+                SpatialLayout,
             )
         except HypercolorNotFoundError:
             return None

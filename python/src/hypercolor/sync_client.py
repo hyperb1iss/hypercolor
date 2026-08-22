@@ -32,8 +32,9 @@ from .models.control import ControlActionResult, ControlApplyResult, ControlSurf
 from .models.device import Device
 from .models.driver import Driver
 from .models.effect import EffectCoverImage
-from .models.layout import Layout, LayoutSummary
+from .models.layout import LayoutSummary
 from .models.output import OutputState
+from .models.spatial import SpatialLayout
 
 
 class SyncHypercolorClient:
@@ -287,7 +288,7 @@ class SyncHypercolorClient:
     def get_layouts(self) -> list[LayoutSummary]:
         return self._run(self._client.get_layouts())
 
-    def get_active_layout(self) -> Layout | None:
+    def get_active_layout(self) -> SpatialLayout | None:
         return self._run(self._client.get_active_layout())
 
     def apply_layout(self, layout_id: str) -> MutationResult:

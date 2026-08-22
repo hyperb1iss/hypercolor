@@ -61,7 +61,7 @@ from .driver import (
     TransportKind,
 )
 from .effect import EffectCoverImage
-from .layout import Layout, LayoutSummary
+from .layout import LayoutSummary
 from .library import Favorite, Playlist, PlaylistItem, Preset, PresetApplyResult
 from .output import OutputState
 from .spatial import LayoutOutput, NormalizedPosition, SpatialLayout
@@ -107,7 +107,6 @@ __all__ = [
     "IdentifyResult",
     "JsonObject",
     "JsonValue",
-    "Layout",
     "LayoutOutput",
     "LayoutSummary",
     "Meta",
