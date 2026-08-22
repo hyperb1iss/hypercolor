@@ -5404,6 +5404,7 @@ dependencies = [
  "euclid",
  "gleam",
  "glow",
+ "hypercolor-gpu-frame",
  "libc",
  "pollster",
  "servo",
