@@ -1,5 +1,6 @@
 //! Integration tests for daemon startup orchestration.
 
+use std::collections::HashMap;
 use std::io::Write;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -24,6 +25,8 @@ use hypercolor_daemon::daemon::{
     validate_network_bind_auth,
 };
 use hypercolor_daemon::discovery;
+use hypercolor_daemon::display_preferences::{DisplayPreference, DisplayPreferencesStore};
+use hypercolor_daemon::library::{JsonLibraryStore, LibraryStore};
 use hypercolor_daemon::startup::{
     DaemonState, collect_unmapped_driver_layout_targets, collect_unmapped_prefixed_layout_targets,
     config_sources, default_config, install_signal_handlers, parse_config_toml,
@@ -40,11 +43,11 @@ use hypercolor_types::device::{
     DeviceFeatures, DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint,
     SegmentInfo, SegmentLayoutHint,
 };
-use hypercolor_types::effect::EffectSource;
+use hypercolor_types::effect::{EffectId, EffectSource};
 use hypercolor_types::event::{EffectStopReason, HypercolorEvent};
 use hypercolor_types::identity::LayoutId;
 use hypercolor_types::layer::{LayerSource, SceneLayer, SceneLayerId};
-use hypercolor_types::scene::{SceneId, Zone, ZoneId, ZoneRole};
+use hypercolor_types::scene::{DisplayFaceBlendMode, SceneId, Zone, ZoneId, ZoneRole};
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection, ZoneShape,
@@ -86,6 +89,183 @@ fn write_scene_store(
         .expect("scene store should serialize"),
     )
     .expect("scene store should write");
+}
+
+struct SeededEffectIdentity {
+    effect_root: PathBuf,
+    legacy_id: EffectId,
+    device_id: DeviceId,
+    scene_id: SceneId,
+}
+
+fn deterministic_html_effect_id(path: &Path) -> EffectId {
+    let mut hash: u128 = 0x6c62_69f0_7bb0_14d9_8d4f_1283_7ec6_3b8b;
+    for byte in format!("hypercolor:html:{}", path.display()).bytes() {
+        hash ^= u128::from(byte);
+        hash = hash.wrapping_mul(0x1000_0000_01b3);
+    }
+    let mut bytes = hash.to_be_bytes();
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    EffectId::new(uuid::Uuid::from_bytes(bytes))
+}
+
+async fn seed_effect_identity_stores(
+    guard: &TestDataDirGuard,
+    builtin_id: &str,
+) -> SeededEffectIdentity {
+    let effect_root = guard.data_dir.join("startup-effects");
+    let effect_path = effect_root.join(format!("{builtin_id}.html"));
+    std::fs::create_dir_all(&effect_root).expect("effect root should build");
+    std::fs::write(
+        &effect_path,
+        format!("<head><title>{builtin_id}</title><meta builtin-id=\"{builtin_id}\" /></head>"),
+    )
+    .expect("effect port should write");
+    let effect_path = std::fs::canonicalize(effect_path).expect("effect path should canonicalize");
+    let legacy_id = deterministic_html_effect_id(&effect_path);
+
+    let mut named_scene = hypercolor_core::scene::make_scene("Legacy identity");
+    let scene_id = named_scene.id;
+    let mut zone = hypercolor_core::scene::default_primary_group(SpatialLayout {
+        id: "identity-test".into(),
+        name: "Identity Test".to_owned(),
+        description: None,
+        canvas_width: DEFAULT_CANVAS_WIDTH,
+        canvas_height: DEFAULT_CANVAS_HEIGHT,
+        zones: Vec::new(),
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        spaces: None,
+        version: 1,
+    });
+    zone.layers = vec![SceneLayer::from_effect(
+        SceneLayerId::new(),
+        legacy_id,
+        HashMap::new(),
+        HashMap::new(),
+        None,
+    )];
+    named_scene.zones.push(zone);
+    write_scene_store(&guard.scenes_path(), [named_scene.clone()]);
+
+    runtime_state::save(
+        &guard.legacy_state_path("runtime-state.json"),
+        &runtime_state::RuntimeSessionSnapshot {
+            active_scene_id: Some(SceneId::DEFAULT.to_string()),
+            default_scene_groups: named_scene.zones.clone(),
+            active_layout_id: None,
+            manual_paused: false,
+        },
+    )
+    .expect("runtime identity should persist");
+
+    let device_id = DeviceId::new();
+    let mut display =
+        DisplayPreferencesStore::new(guard.legacy_state_path("display-preferences.json"))
+            .expect("display store should open");
+    display
+        .set(
+            device_id,
+            DisplayPreference {
+                effect_id: legacy_id,
+                controls: HashMap::new(),
+                blend_mode: DisplayFaceBlendMode::Alpha,
+                opacity: 1.0,
+            },
+        )
+        .expect("display identity should persist");
+
+    let library = JsonLibraryStore::open(guard.data_dir.join("library.json"))
+        .expect("library store should open");
+    library
+        .upsert_favorite(legacy_id, 1)
+        .await
+        .expect("library identity should persist");
+
+    SeededEffectIdentity {
+        effect_root,
+        legacy_id,
+        device_id,
+        scene_id,
+    }
+}
+
+async fn registry_effect_id(state: &DaemonState, source_stem: &str) -> EffectId {
+    state
+        .effect_registry
+        .read()
+        .await
+        .iter()
+        .find(|(_, entry)| entry.metadata.source.source_stem() == Some(source_stem))
+        .map(|(effect_id, _)| *effect_id)
+        .unwrap_or_else(|| panic!("registry should contain {source_stem}"))
+}
+
+async fn assert_effect_identity_everywhere(
+    state: &DaemonState,
+    guard: &TestDataDirGuard,
+    seeded: &SeededEffectIdentity,
+    expected_id: EffectId,
+) {
+    let manager = state.scene_manager.snapshot().await;
+    let scene_ids = manager
+        .get(&seeded.scene_id)
+        .expect("seeded scene should load")
+        .zones
+        .iter()
+        .flat_map(Zone::effect_ids)
+        .collect::<Vec<_>>();
+    assert_eq!(scene_ids, vec![expected_id]);
+
+    let runtime = runtime_state::load(&guard.runtime_state_path())
+        .expect("runtime state should load")
+        .expect("runtime state should exist");
+    assert_eq!(
+        runtime
+            .default_scene_groups
+            .iter()
+            .flat_map(Zone::effect_ids)
+            .collect::<Vec<_>>(),
+        vec![expected_id]
+    );
+
+    let scenes = hypercolor_daemon::scene_store::load(&guard.scenes_path())
+        .expect("scene store should load");
+    assert_eq!(
+        scenes
+            .list()
+            .flat_map(|scene| &scene.zones)
+            .flat_map(Zone::effect_ids)
+            .collect::<Vec<_>>(),
+        vec![expected_id]
+    );
+
+    assert_eq!(
+        state
+            .display_preferences
+            .read()
+            .await
+            .get(seeded.device_id)
+            .map(|preference| preference.effect_id),
+        Some(expected_id)
+    );
+    let display = DisplayPreferencesStore::load(&guard.state_path("display-preferences.json"))
+        .expect("display store should reopen");
+    assert_eq!(
+        display
+            .get(seeded.device_id)
+            .map(|preference| preference.effect_id),
+        Some(expected_id)
+    );
+
+    assert_eq!(
+        state.library_store.list_favorites().await[0].effect_id,
+        expected_id
+    );
+    let library = JsonLibraryStore::open(guard.data_dir.join("library.json"))
+        .expect("library store should reopen");
+    assert_eq!(library.list_favorites().await[0].effect_id, expected_id);
 }
 
 static DATA_DIR_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
@@ -1097,6 +1277,52 @@ async fn api_shutdown_timeout_forces_stuck_connections_to_close() {
 }
 
 // ── DaemonState Initialization ──────────────────────────────────────────────
+
+#[tokio::test]
+async fn startup_migrates_registered_builtin_ports_across_every_durable_store() {
+    let guard = TestDataDirGuard::new().await;
+    let seeded = seed_effect_identity_stores(&guard, "breathing").await;
+    let mut config = default_config();
+    config.effect_engine.extra_effect_dirs = vec![seeded.effect_root.clone()];
+    let temp = temp_config_file();
+
+    let state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    )
+    .expect("daemon should migrate the registered builtin port");
+    let canonical_id = registry_effect_id(&state, "breathing").await;
+
+    assert_ne!(canonical_id, seeded.legacy_id);
+    assert_effect_identity_everywhere(&state, &guard, &seeded, canonical_id).await;
+}
+
+#[cfg(not(feature = "servo"))]
+#[tokio::test]
+async fn startup_rejects_screen_cast_port_migration_without_servo() {
+    let guard = TestDataDirGuard::new().await;
+    let seeded = seed_effect_identity_stores(&guard, "screen_cast").await;
+    let mut config = default_config();
+    config.effect_engine.extra_effect_dirs = vec![seeded.effect_root.clone()];
+    let temp = temp_config_file();
+
+    let state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    )
+    .expect("daemon should skip an unavailable HTML screen cast port");
+    let native_id = registry_effect_id(&state, "screen_cast").await;
+    let effect_path = seeded.effect_root.join("screen_cast.html");
+
+    assert_ne!(native_id, seeded.legacy_id);
+    assert!(state.effect_registry.read().await.iter().all(|(_, entry)| {
+        !matches!(
+                    &entry.metadata.source,
+                    EffectSource::Html { path } if path == &effect_path
+        )
+    }));
+    assert_effect_identity_everywhere(&state, &guard, &seeded, seeded.legacy_id).await;
+}
 
 #[tokio::test]
 async fn daemon_state_initializes_with_default_config() {
