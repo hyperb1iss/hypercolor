@@ -1,12 +1,13 @@
 use super::{
-    CaptureBackend, CaptureExactCommand, CaptureExactCommandEndpoint, CaptureExactCommandRejected,
-    CaptureExactPublicationShared, CaptureExactRuntimeCollection, CaptureExactRuntimeOwner,
-    CaptureExactRuntimeStore, CaptureExactState, CaptureOwnedSource, CapturePublication,
-    CapturePublicationFence, CapturePublicationSource, CaptureSession, CaptureSessionAuthority,
-    CaptureSessionAuthoritySequencer, CaptureSessionDeadline, CaptureSessionReadiness,
-    CaptureSessionSet, CaptureSessionTransaction, CaptureSuccessorPolicy,
-    ReservedCaptureSessionAuthority, ScreenCaptureAdapter, VersionedCaptureSettings,
-    begin_capture_exact_retirement, exact_preparation_abort, reap_capture_exact_runtimes,
+    CaptureBackend, CaptureBackendHandles, CaptureExactCommand, CaptureExactCommandEndpoint,
+    CaptureExactCommandRejected, CaptureExactPublicationShared, CaptureExactRuntimeCollection,
+    CaptureExactRuntimeOwner, CaptureExactRuntimeStore, CaptureExactState, CaptureOwnedSource,
+    CapturePublication, CapturePublicationFence, CapturePublicationSource, CaptureSession,
+    CaptureSessionAuthority, CaptureSessionAuthoritySequencer, CaptureSessionDeadline,
+    CaptureSessionReadiness, CaptureSessionSet, CaptureSessionTransaction, CaptureSuccessorPolicy,
+    ReservedCaptureSessionAuthority, ScreenCaptureAdapter, ScreenCaptureAdapterAssembly,
+    VersionedCaptureSettings, begin_capture_exact_retirement, exact_preparation_abort,
+    reap_capture_exact_runtimes,
 };
 use crate::input::screen::{
     CaptureSourceId, ExactBoxList, PixelExtent, ScreenCaptureDemand, ScreenCommittedState,
@@ -175,6 +176,7 @@ impl CaptureSessionReadiness for FakeReadiness {
     }
 }
 
+#[derive(Default)]
 struct FakeCaptureBackend;
 
 impl CaptureBackend for FakeCaptureBackend {
@@ -189,7 +191,9 @@ impl CaptureBackend for FakeCaptureBackend {
     const READINESS_TIMEOUT: Duration = Duration::from_secs(1);
 
     fn spawn_worker(
+        &self,
         (session, readiness): Self::SpawnRequest,
+        _handles: CaptureBackendHandles<'_, Self>,
         reservation: ReservedCaptureSessionAuthority,
     ) -> anyhow::Result<CaptureSessionTransaction<Self::Worker, Self::Readiness>> {
         Ok(CaptureSessionTransaction::new(
@@ -200,6 +204,58 @@ impl CaptureBackend for FakeCaptureBackend {
     }
 }
 
+struct StatefulCaptureBackend {
+    compatibility: Weak<Mutex<CapturePublication<FakeFence, FakeEpoch, &'static str>>>,
+    exact: Weak<CaptureExactPublicationShared<FakeSource, FakeOwnedSource>>,
+    requests: Arc<Mutex<Vec<u64>>>,
+}
+
+impl CaptureBackend for StatefulCaptureBackend {
+    type Worker = FakeSession;
+    type Readiness = FakeReadiness;
+    type SpawnRequest = (u64, FakeSession, FakeReadiness);
+    type ExactState = CaptureExactPublicationShared<FakeSource, FakeOwnedSource>;
+    type CompatibilityFence = FakeFence;
+    type CompatibilityEpoch = FakeEpoch;
+    type CompatibilityValue = &'static str;
+
+    const READINESS_TIMEOUT: Duration = Duration::from_secs(1);
+
+    fn spawn_worker(
+        &self,
+        (request, session, readiness): Self::SpawnRequest,
+        handles: CaptureBackendHandles<'_, Self>,
+        reservation: ReservedCaptureSessionAuthority,
+    ) -> anyhow::Result<CaptureSessionTransaction<Self::Worker, Self::Readiness>> {
+        let compatibility = handles.compatibility_publication_handle();
+        let exact = handles.exact_state_handle();
+        assert!(Arc::ptr_eq(
+            &compatibility,
+            &self
+                .compatibility
+                .upgrade()
+                .expect("adapter compatibility handle remains alive")
+        ));
+        assert!(Arc::ptr_eq(
+            &exact,
+            &self
+                .exact
+                .upgrade()
+                .expect("adapter exact handle remains alive")
+        ));
+        self.requests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(request);
+        Ok(CaptureSessionTransaction::new(
+            session,
+            readiness,
+            reservation,
+        ))
+    }
+}
+
+#[derive(Default)]
 struct FailingCaptureBackend;
 
 impl CaptureBackend for FailingCaptureBackend {
@@ -214,7 +270,9 @@ impl CaptureBackend for FailingCaptureBackend {
     const READINESS_TIMEOUT: Duration = Duration::from_secs(1);
 
     fn spawn_worker(
+        &self,
         (): Self::SpawnRequest,
+        _handles: CaptureBackendHandles<'_, Self>,
         _reservation: ReservedCaptureSessionAuthority,
     ) -> anyhow::Result<CaptureSessionTransaction<Self::Worker, Self::Readiness>> {
         anyhow::bail!("injected backend spawn failure")
@@ -223,7 +281,6 @@ impl CaptureBackend for FailingCaptureBackend {
 
 struct DropOrderExactState {
     common: CaptureExactPublicationShared<FakeSource, FakeOwnedSource>,
-    session_detaches: Arc<AtomicUsize>,
     compatibility_dropped: Arc<AtomicBool>,
     dropped: Arc<AtomicBool>,
 }
@@ -239,21 +296,34 @@ impl CaptureExactState for DropOrderExactState {
 
 impl Drop for DropOrderExactState {
     fn drop(&mut self) {
-        assert_eq!(self.session_detaches.load(Ordering::Acquire), 1);
         assert!(self.compatibility_dropped.load(Ordering::Acquire));
         self.dropped.store(true, Ordering::Release);
     }
 }
 
-struct CompatibilityDropProbe(Arc<AtomicBool>);
+struct CompatibilityDropProbe {
+    backend_dropped: Arc<AtomicBool>,
+    compatibility_dropped: Arc<AtomicBool>,
+}
 
 impl Drop for CompatibilityDropProbe {
     fn drop(&mut self) {
-        self.0.store(true, Ordering::Release);
+        assert!(self.backend_dropped.load(Ordering::Acquire));
+        self.compatibility_dropped.store(true, Ordering::Release);
     }
 }
 
-struct DropOrderCaptureBackend;
+struct DropOrderCaptureBackend {
+    session_detaches: Arc<AtomicUsize>,
+    backend_dropped: Arc<AtomicBool>,
+}
+
+impl Drop for DropOrderCaptureBackend {
+    fn drop(&mut self) {
+        assert_eq!(self.session_detaches.load(Ordering::Acquire), 1);
+        self.backend_dropped.store(true, Ordering::Release);
+    }
+}
 
 impl CaptureBackend for DropOrderCaptureBackend {
     type Worker = FakeSession;
@@ -267,7 +337,9 @@ impl CaptureBackend for DropOrderCaptureBackend {
     const READINESS_TIMEOUT: Duration = Duration::from_secs(1);
 
     fn spawn_worker(
+        &self,
         (session, readiness): Self::SpawnRequest,
+        _handles: CaptureBackendHandles<'_, Self>,
         reservation: ReservedCaptureSessionAuthority,
     ) -> anyhow::Result<CaptureSessionTransaction<Self::Worker, Self::Readiness>> {
         Ok(CaptureSessionTransaction::new(
@@ -299,6 +371,44 @@ fn backend_worker_factory_pairs_authority_and_waits_once() {
 
     assert_eq!(prepared.authority().generation(), 1);
     assert_eq!(waits.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn stateful_backend_receives_adapter_handles_and_fresh_spawn_requests() {
+    let exact = Arc::new(CaptureExactPublicationShared::<FakeSource, FakeOwnedSource>::default());
+    let assembly = ScreenCaptureAdapterAssembly::<StatefulCaptureBackend>::new(Arc::clone(&exact));
+    let handles = assembly.handles();
+    let compatibility = handles.compatibility_publication_handle();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let adapter = assembly.finish(StatefulCaptureBackend {
+        compatibility: Arc::downgrade(&compatibility),
+        exact: Arc::downgrade(&exact),
+        requests: Arc::clone(&requests),
+    });
+
+    for (request, generation) in [(17, 1), (29, 2)] {
+        let prepared = adapter
+            .prepare_worker(
+                (
+                    request,
+                    FakeSession::new(generation),
+                    FakeReadiness::ready(),
+                ),
+                adapter
+                    .reserve_exact_authority()
+                    .expect("stateful backend authority reserves"),
+            )
+            .expect("stateful backend worker prepares");
+        drop(prepared);
+    }
+
+    assert_eq!(
+        requests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_slice(),
+        &[17, 29]
+    );
 }
 
 #[test]
@@ -341,7 +451,8 @@ fn backend_worker_factory_burns_failed_spawn_and_cleans_failed_readiness() {
 #[test]
 fn adapter_and_backend_handles_share_one_exact_state() {
     let exact = Arc::new(CaptureExactPublicationShared::<FakeSource, FakeOwnedSource>::default());
-    let adapter = ScreenCaptureAdapter::<FakeCaptureBackend>::new(Arc::clone(&exact));
+    let adapter = ScreenCaptureAdapterAssembly::<FakeCaptureBackend>::new(Arc::clone(&exact))
+        .finish(FakeCaptureBackend);
     assert_eq!(Arc::strong_count(&exact), 2);
     let compatibility = adapter.compatibility_publication_handle();
     assert!(std::ptr::eq(
@@ -415,15 +526,21 @@ fn adapter_and_backend_handles_share_one_exact_state() {
 #[test]
 fn adapter_detaches_sessions_before_releasing_exact_state() {
     let detaches = Arc::new(AtomicUsize::new(0));
+    let backend_dropped = Arc::new(AtomicBool::new(false));
     let compatibility_dropped = Arc::new(AtomicBool::new(false));
     let dropped = Arc::new(AtomicBool::new(false));
     let exact = Arc::new(DropOrderExactState {
         common: CaptureExactPublicationShared::default(),
-        session_detaches: Arc::clone(&detaches),
         compatibility_dropped: Arc::clone(&compatibility_dropped),
         dropped: Arc::clone(&dropped),
     });
-    let mut adapter = ScreenCaptureAdapter::<DropOrderCaptureBackend>::new(Arc::clone(&exact));
+    let mut adapter = ScreenCaptureAdapterAssembly::<DropOrderCaptureBackend>::new(Arc::clone(
+        &exact,
+    ))
+    .finish(DropOrderCaptureBackend {
+        session_detaches: Arc::clone(&detaches),
+        backend_dropped: Arc::clone(&backend_dropped),
+    });
     let epoch = FakeEpoch {
         source: 0,
         activity: 0,
@@ -441,7 +558,10 @@ fn adapter_detaches_sessions_before_releasing_exact_state() {
             publication
                 .publish(
                     &epoch,
-                    CompatibilityDropProbe(Arc::clone(&compatibility_dropped)),
+                    CompatibilityDropProbe {
+                        backend_dropped: Arc::clone(&backend_dropped),
+                        compatibility_dropped: Arc::clone(&compatibility_dropped),
+                    },
                 )
                 .is_ok()
         );
@@ -454,6 +574,7 @@ fn adapter_detaches_sessions_before_releasing_exact_state() {
     drop(adapter);
 
     assert_eq!(detaches.load(Ordering::Acquire), 1);
+    assert!(backend_dropped.load(Ordering::Acquire));
     assert!(compatibility_dropped.load(Ordering::Acquire));
     assert!(dropped.load(Ordering::Acquire));
 }

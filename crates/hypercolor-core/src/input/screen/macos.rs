@@ -72,12 +72,13 @@ use crate::input::traits::{
 use crate::input::{SourceIssue, SourceStatusHandle, SourceStatusReporter};
 
 use super::adapter::{
-    CaptureBackend, CaptureExactCommand, CaptureExactCommandEndpoint, CaptureExactCommandRejected,
-    CaptureExactPublicationShared, CaptureExactRuntimeOwner, CaptureExactState, CaptureOwnedSource,
-    CapturePublication, CapturePublicationFence, CapturePublicationSource, CaptureSession,
-    CaptureSessionAuthority, CaptureSessionTransaction, CaptureSuccessorPolicy,
-    PreparedCaptureSession, ReservedCaptureSessionAuthority, ScreenCaptureAdapter,
-    begin_capture_exact_preparation, begin_capture_exact_retirement, execute_capture_exact_command,
+    CaptureBackend, CaptureBackendHandles, CaptureExactCommand, CaptureExactCommandEndpoint,
+    CaptureExactCommandRejected, CaptureExactPublicationShared, CaptureExactRuntimeOwner,
+    CaptureExactState, CaptureOwnedSource, CapturePublication, CapturePublicationFence,
+    CapturePublicationSource, CaptureSession, CaptureSessionAuthority, CaptureSessionTransaction,
+    CaptureSuccessorPolicy, PreparedCaptureSession, ReservedCaptureSessionAuthority,
+    ScreenCaptureAdapter, ScreenCaptureAdapterAssembly, begin_capture_exact_preparation,
+    begin_capture_exact_retirement, execute_capture_exact_command,
 };
 
 #[cfg(target_os = "macos")]
@@ -362,16 +363,14 @@ struct CaptureWorker {
     join: Option<thread::JoinHandle<()>>,
 }
 
-struct MacosCaptureBackend;
+struct MacosCaptureBackend {
+    control: Arc<dyn MacosCaptureControl>,
+    telemetry: Arc<MacosScreenRuntimeTelemetry>,
+    status_session: SourceSessionSlot,
+}
 
 struct MacosWorkerSpawn {
     prepared: PreparedWorker,
-    mailbox: MacosFrameMailbox,
-    control: Arc<dyn MacosCaptureControl>,
-    publication: Arc<Mutex<MacosPublication>>,
-    exact: Arc<MacosExactPublicationShared>,
-    telemetry: Arc<MacosScreenRuntimeTelemetry>,
-    status_session: SourceSessionSlot,
 }
 
 impl CaptureBackend for MacosCaptureBackend {
@@ -386,18 +385,18 @@ impl CaptureBackend for MacosCaptureBackend {
     const READINESS_TIMEOUT: Duration = Duration::ZERO;
 
     fn spawn_worker(
+        &self,
         request: Self::SpawnRequest,
+        handles: CaptureBackendHandles<'_, Self>,
         reservation: ReservedCaptureSessionAuthority,
     ) -> anyhow::Result<CaptureSessionTransaction<Self::Worker, Self::Readiness>> {
-        let MacosWorkerSpawn {
-            prepared,
-            mailbox,
-            control,
-            publication,
-            exact,
-            telemetry,
-            status_session,
-        } = request;
+        let MacosWorkerSpawn { prepared } = request;
+        let mailbox = self.control.mailbox();
+        let control = Arc::clone(&self.control);
+        let publication = handles.compatibility_publication_handle();
+        let exact = handles.exact_state_handle();
+        let telemetry = Arc::clone(&self.telemetry);
+        let status_session = self.status_session.clone();
         let authority = reservation.authority();
         let worker_generation = authority.generation();
         let worker_mailbox = mailbox.clone();

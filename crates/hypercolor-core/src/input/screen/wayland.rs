@@ -58,14 +58,14 @@ use crate::input::{
 use hypercolor_worker_retention::{retain_worker, spawn_worker};
 
 use super::adapter::{
-    CaptureBackend, CaptureExactCommand, CaptureExactCommandEndpoint, CaptureExactCommandRejected,
-    CaptureExactPublicationShared, CaptureExactRuntimeOwner, CaptureExactState, CaptureOwnedSource,
-    CapturePublication, CapturePublicationFence, CapturePublicationSource, CaptureSession,
-    CaptureSessionAuthority, CaptureSessionDeadline, CaptureSessionReadiness,
-    CaptureSessionTransaction, CaptureSuccessorPolicy, ReservedCaptureSessionAuthority,
-    ScreenCaptureAdapter, VersionedCaptureSettings, begin_capture_exact_preparation,
-    begin_capture_exact_retirement, bind_current_capture_exact_runtime,
-    execute_capture_exact_command,
+    CaptureBackend, CaptureBackendHandles, CaptureExactCommand, CaptureExactCommandEndpoint,
+    CaptureExactCommandRejected, CaptureExactPublicationShared, CaptureExactRuntimeOwner,
+    CaptureExactState, CaptureOwnedSource, CapturePublication, CapturePublicationFence,
+    CapturePublicationSource, CaptureSession, CaptureSessionAuthority, CaptureSessionDeadline,
+    CaptureSessionReadiness, CaptureSessionTransaction, CaptureSuccessorPolicy,
+    ReservedCaptureSessionAuthority, ScreenCaptureAdapter, ScreenCaptureAdapterAssembly,
+    VersionedCaptureSettings, begin_capture_exact_preparation, begin_capture_exact_retirement,
+    bind_current_capture_exact_runtime, execute_capture_exact_command,
 };
 
 const WORKER_READY_TIMEOUT: Duration = Duration::from_secs(1);
@@ -1636,20 +1636,28 @@ impl WaylandScreenCaptureInput {
         compute_capacity_policy: ScreenComputeCapacityPolicy,
     ) -> Self {
         let exact = Arc::new(WaylandExactPublicationShared::default());
-        let adapter = ScreenCaptureAdapter::new(Arc::clone(&exact));
-        let publication = adapter.compatibility_publication_handle();
+        let assembly = ScreenCaptureAdapterAssembly::<WaylandCaptureBackend>::new(exact);
+        let handles = assembly.handles();
+        let publication = handles.compatibility_publication_handle();
+        let exact = handles.exact_state_handle();
+        let settings = Arc::new(SharedSettings {
+            values: VersionedCaptureSettings::new(config, ScreenCaptureDemand::Inactive),
+            admission_coordinator,
+            compute_capacity_policy,
+            topology_generation: AtomicU64::new(0),
+            topology: Mutex::new(None),
+            session_generation: AtomicU64::new(0),
+            session_guard: Mutex::new(()),
+            publication: Arc::clone(&publication),
+            exact,
+        });
+        let status_session = SourceSessionSlot::new();
+        let adapter = assembly.finish(WaylandCaptureBackend {
+            settings: Arc::clone(&settings),
+            status_session: status_session.clone(),
+        });
         Self {
-            settings: Arc::new(SharedSettings {
-                values: VersionedCaptureSettings::new(config, ScreenCaptureDemand::Inactive),
-                admission_coordinator,
-                compute_capacity_policy,
-                topology_generation: AtomicU64::new(0),
-                topology: Mutex::new(None),
-                session_generation: AtomicU64::new(0),
-                session_guard: Mutex::new(()),
-                publication: Arc::clone(&publication),
-                exact,
-            }),
+            settings,
             running: false,
             capture_demand: ScreenCaptureDemand::Inactive,
             status_snapshot_generation: 0,
@@ -1664,7 +1672,7 @@ impl WaylandScreenCaptureInput {
                 true,
                 false,
             ),
-            status_session: SourceSessionSlot::new(),
+            status_session,
         }
     }
 
@@ -2051,9 +2059,7 @@ impl WaylandScreenCaptureInput {
         let reserved_generation = reservation.authority().generation();
         let prepared = self.adapter.prepare_worker(
             WaylandWorkerSpawn {
-                settings: Arc::clone(&self.settings),
                 token_sink: self.token_sink.clone(),
-                status_writer: self.status_session.load(),
             },
             reservation,
         )?;
@@ -2464,12 +2470,13 @@ struct WaylandCaptureWorker {
     settings: Arc<SharedSettings>,
 }
 
-struct WaylandCaptureBackend;
+struct WaylandCaptureBackend {
+    settings: Arc<SharedSettings>,
+    status_session: SourceSessionSlot,
+}
 
 struct WaylandWorkerSpawn {
-    settings: Arc<SharedSettings>,
     token_sink: Option<RestoreTokenSink>,
-    status_writer: Option<SourceSessionWriter>,
 }
 
 struct WaylandCaptureExit {
@@ -2507,14 +2514,14 @@ impl CaptureBackend for WaylandCaptureBackend {
     const READINESS_TIMEOUT: Duration = WORKER_READY_TIMEOUT;
 
     fn spawn_worker(
+        &self,
         request: Self::SpawnRequest,
+        _handles: CaptureBackendHandles<'_, Self>,
         reservation: ReservedCaptureSessionAuthority,
     ) -> anyhow::Result<CaptureSessionTransaction<Self::Worker, Self::Readiness>> {
-        let WaylandWorkerSpawn {
-            settings,
-            token_sink,
-            status_writer,
-        } = request;
+        let WaylandWorkerSpawn { token_sink } = request;
+        let settings = Arc::clone(&self.settings);
+        let status_writer = self.status_session.load();
         let reserved_generation = reservation.authority().generation();
         let cancel = Arc::new(AtomicBool::new(false));
         let demand_state = Arc::new(AtomicU64::new(initial_worker_demand(false)));

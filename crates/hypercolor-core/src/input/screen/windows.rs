@@ -77,14 +77,15 @@ use crate::input::{
 use hypercolor_worker_retention::{retain_worker, spawn_worker as spawn_retained_worker};
 
 use super::adapter::{
-    CaptureBackend, CaptureExactCommand, CaptureExactCommandEndpoint, CaptureExactCommandRejected,
-    CaptureExactPublicationShared, CaptureExactRuntimeOwner, CaptureExactState, CaptureOwnedSource,
-    CapturePublication as AdapterCapturePublication, CapturePublicationFence,
-    CapturePublicationSource, CaptureSession, CaptureSessionAuthority, CaptureSessionDeadline,
-    CaptureSessionReadiness, CaptureSessionTransaction, CaptureSuccessorPolicy,
-    ReservedCaptureSessionAuthority, ScreenCaptureAdapter, VersionedCaptureSettings,
-    begin_capture_exact_preparation, begin_capture_exact_retirement,
-    bind_current_capture_exact_runtime, execute_capture_exact_command,
+    CaptureBackend, CaptureBackendHandles, CaptureExactCommand, CaptureExactCommandEndpoint,
+    CaptureExactCommandRejected, CaptureExactPublicationShared, CaptureExactRuntimeOwner,
+    CaptureExactState, CaptureOwnedSource, CapturePublication as AdapterCapturePublication,
+    CapturePublicationFence, CapturePublicationSource, CaptureSession, CaptureSessionAuthority,
+    CaptureSessionDeadline, CaptureSessionReadiness, CaptureSessionTransaction,
+    CaptureSuccessorPolicy, ReservedCaptureSessionAuthority, ScreenCaptureAdapter,
+    ScreenCaptureAdapterAssembly, VersionedCaptureSettings, begin_capture_exact_preparation,
+    begin_capture_exact_retirement, bind_current_capture_exact_runtime,
+    execute_capture_exact_command,
 };
 
 /// How long a worker waits on DXGI before checking its command channel.
@@ -666,13 +667,12 @@ struct CaptureWorker {
     processed_activity_generation: Arc<AtomicU64>,
 }
 
-struct WindowsCaptureBackend;
+struct WindowsCaptureBackend {
+    settings: Arc<SharedSettings>,
+    status_session: SourceSessionSlot,
+}
 
 struct WindowsWorkerSpawn {
-    settings: Arc<SharedSettings>,
-    publication: Arc<Mutex<CapturePublication<AnalyzedScreenSnapshot>>>,
-    exact: Arc<ExactPublicationShared>,
-    status_session: SourceSessionSlot,
     source_sink: Option<CaptureSourceSink>,
 }
 
@@ -688,16 +688,16 @@ impl CaptureBackend for WindowsCaptureBackend {
     const READINESS_TIMEOUT: Duration = WORKER_READY_TIMEOUT;
 
     fn spawn_worker(
+        &self,
         request: Self::SpawnRequest,
+        handles: CaptureBackendHandles<'_, Self>,
         reservation: ReservedCaptureSessionAuthority,
     ) -> anyhow::Result<CaptureSessionTransaction<Self::Worker, Self::Readiness>> {
-        let WindowsWorkerSpawn {
-            settings,
-            publication,
-            exact,
-            status_session,
-            source_sink,
-        } = request;
+        let WindowsWorkerSpawn { source_sink } = request;
+        let settings = Arc::clone(&self.settings);
+        let publication = handles.compatibility_publication_handle();
+        let exact = handles.exact_state_handle();
+        let status_session = self.status_session.clone();
         let authority = reservation.authority();
         let session_generation = authority.generation();
         let (command_tx, command_rx) = mpsc::channel();
@@ -1024,20 +1024,26 @@ impl WindowsScreenCaptureInput {
         compute_capacity_policy: ScreenComputeCapacityPolicy,
     ) -> Self {
         let exact = Arc::new(ExactPublicationShared::default());
-        let adapter = ScreenCaptureAdapter::new(exact);
+        let assembly = ScreenCaptureAdapterAssembly::<WindowsCaptureBackend>::new(exact);
+        let settings = Arc::new(SharedSettings {
+            values: VersionedCaptureSettings::new(
+                VersionedCaptureConfig {
+                    value: config,
+                    source_generation: 0,
+                },
+                ScreenCaptureDemand::Inactive,
+            ),
+            compute_capacity_policy,
+            admission_coordinator,
+            activity_generation: AtomicU64::new(0),
+        });
+        let status_session = SourceSessionSlot::new();
+        let adapter = assembly.finish(WindowsCaptureBackend {
+            settings: Arc::clone(&settings),
+            status_session: status_session.clone(),
+        });
         Self {
-            settings: Arc::new(SharedSettings {
-                values: VersionedCaptureSettings::new(
-                    VersionedCaptureConfig {
-                        value: config,
-                        source_generation: 0,
-                    },
-                    ScreenCaptureDemand::Inactive,
-                ),
-                compute_capacity_policy,
-                admission_coordinator,
-                activity_generation: AtomicU64::new(0),
-            }),
+            settings,
             running: false,
             capture_demand: ScreenCaptureDemand::Inactive,
             adapter,
@@ -1049,7 +1055,7 @@ impl WindowsScreenCaptureInput {
                 true,
                 false,
             ),
-            status_session: SourceSessionSlot::new(),
+            status_session,
             source_sink: None,
             #[cfg(feature = "windows-capture-fixtures")]
             fixture: None,
@@ -1118,10 +1124,6 @@ impl WindowsScreenCaptureInput {
         let authority = reservation.authority();
         let prepared = self.adapter.prepare_worker(
             WindowsWorkerSpawn {
-                settings: Arc::clone(&self.settings),
-                publication: self.adapter.compatibility_publication_handle(),
-                exact: self.adapter.exact_state_handle(),
-                status_session: self.status_session.clone(),
                 source_sink: self.source_sink.clone(),
             },
             reservation,

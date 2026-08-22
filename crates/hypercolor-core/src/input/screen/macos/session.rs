@@ -21,9 +21,9 @@ use super::status::protected_screen_action_issue;
 use super::{
     CaptureConfig, CaptureSessionAuthority, MacosCaptureControl, MacosExactPublicationShared,
     MacosScreenCaptureInput, MacosScreenRuntimeTelemetry, MacosWorkerSpawn, PixelExtent,
-    PreparedWorker, ScreenByteAdmissionCoordinator, ScreenCaptureAdapter, ScreenCaptureDemand,
-    ScreenComputeCapacityPolicy, StagedCaptureWorker, color_space_name, dynamic_range_name,
-    executable_architecture, frame_drop_counters, lock, map_tahoe_capabilities,
+    PreparedWorker, ScreenByteAdmissionCoordinator, ScreenCaptureAdapterAssembly,
+    ScreenCaptureDemand, ScreenComputeCapacityPolicy, StagedCaptureWorker, color_space_name,
+    dynamic_range_name, executable_architecture, frame_drop_counters, lock, map_tahoe_capabilities,
     map_tahoe_selection_capabilities, nonzero_telemetry, pixel_format_name,
     production_stream_request, timing_status, transfer_function_name,
 };
@@ -105,7 +105,13 @@ impl MacosScreenCaptureInput {
         let exact = Arc::new(MacosExactPublicationShared::with_compute_capacity_policy(
             compute_capacity_policy,
         ));
-        let adapter = ScreenCaptureAdapter::new(exact);
+        let assembly = ScreenCaptureAdapterAssembly::<super::MacosCaptureBackend>::new(exact);
+        let status_session = SourceSessionSlot::new();
+        let adapter = assembly.finish(super::MacosCaptureBackend {
+            control: Arc::clone(&control),
+            telemetry: Arc::clone(&telemetry),
+            status_session: status_session.clone(),
+        });
         let mut source = Self {
             config,
             control,
@@ -126,7 +132,7 @@ impl MacosScreenCaptureInput {
                 consented,
                 false,
             ),
-            status_session: SourceSessionSlot::new(),
+            status_session,
             owner: MacosCapabilityOwner::Standalone,
             owner_conflict: None,
             owner_designated_requirement_hash: None,
@@ -364,19 +370,9 @@ impl MacosScreenCaptureInput {
             .map_err(|error| anyhow!("macOS capture worker generation exhausted: {error}"))?;
         let authority = reservation.authority();
         let worker_generation = authority.generation();
-        let mailbox = self.control.mailbox();
-        let prepared = self.adapter.prepare_worker(
-            MacosWorkerSpawn {
-                prepared,
-                mailbox,
-                control: Arc::clone(&self.control),
-                publication: self.adapter.compatibility_publication_handle(),
-                exact: self.adapter.exact_state_handle(),
-                telemetry: Arc::clone(&self.telemetry),
-                status_session: self.status_session.clone(),
-            },
-            reservation,
-        )?;
+        let prepared = self
+            .adapter
+            .prepare_worker(MacosWorkerSpawn { prepared }, reservation)?;
         Ok(StagedCaptureWorker {
             generation: worker_generation,
             prepared,

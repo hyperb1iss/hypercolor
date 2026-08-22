@@ -15,6 +15,54 @@ type BackendCompatibilityPublication<B> = CapturePublication<
     <B as CaptureBackend>::CompatibilityValue,
 >;
 
+pub(in crate::input::screen) struct CaptureBackendHandles<'a, B: CaptureBackend> {
+    compatibility: &'a Arc<Mutex<BackendCompatibilityPublication<B>>>,
+    exact: &'a Arc<B::ExactState>,
+}
+
+impl<B: CaptureBackend> CaptureBackendHandles<'_, B> {
+    pub(in crate::input::screen) fn compatibility_publication_handle(
+        &self,
+    ) -> Arc<Mutex<BackendCompatibilityPublication<B>>> {
+        Arc::clone(&self.compatibility)
+    }
+
+    pub(in crate::input::screen) fn exact_state_handle(&self) -> Arc<B::ExactState> {
+        Arc::clone(&self.exact)
+    }
+}
+
+pub(in crate::input::screen) struct ScreenCaptureAdapterAssembly<B: CaptureBackend> {
+    compatibility: Arc<Mutex<BackendCompatibilityPublication<B>>>,
+    exact: Arc<B::ExactState>,
+}
+
+impl<B: CaptureBackend> ScreenCaptureAdapterAssembly<B> {
+    pub(in crate::input::screen) fn new(exact: Arc<B::ExactState>) -> Self {
+        Self {
+            compatibility: Arc::new(Mutex::new(CapturePublication::default())),
+            exact,
+        }
+    }
+
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub(in crate::input::screen) fn handles(&self) -> CaptureBackendHandles<'_, B> {
+        CaptureBackendHandles {
+            compatibility: &self.compatibility,
+            exact: &self.exact,
+        }
+    }
+
+    pub(in crate::input::screen) fn finish(self, backend: B) -> ScreenCaptureAdapter<B> {
+        ScreenCaptureAdapter {
+            sessions: CaptureSessionSet::default(),
+            backend,
+            compatibility: self.compatibility,
+            exact: self.exact,
+        }
+    }
+}
+
 pub(in crate::input::screen) trait CaptureBackend: Sized {
     type Worker: CaptureSession + Send + 'static;
     type Readiness: CaptureSessionReadiness + Send + 'static;
@@ -30,13 +78,16 @@ pub(in crate::input::screen) trait CaptureBackend: Sized {
     const READINESS_TIMEOUT: Duration;
 
     fn spawn_worker(
+        &self,
         request: Self::SpawnRequest,
+        handles: CaptureBackendHandles<'_, Self>,
         reservation: ReservedCaptureSessionAuthority,
     ) -> anyhow::Result<CaptureSessionTransaction<Self::Worker, Self::Readiness>>;
 }
 
 pub(in crate::input::screen) struct ScreenCaptureAdapter<B: CaptureBackend> {
     sessions: CaptureSessionSet<B::Worker>,
+    backend: B,
     compatibility: Arc<Mutex<BackendCompatibilityPublication<B>>>,
     exact: Arc<B::ExactState>,
 }
@@ -44,19 +95,19 @@ pub(in crate::input::screen) struct ScreenCaptureAdapter<B: CaptureBackend> {
 impl<B> Default for ScreenCaptureAdapter<B>
 where
     B: CaptureBackend,
+    B: Default,
     B::ExactState: Default,
 {
     fn default() -> Self {
-        Self::new(Arc::new(B::ExactState::default()))
+        ScreenCaptureAdapterAssembly::new(Arc::new(B::ExactState::default())).finish(B::default())
     }
 }
 
 impl<B: CaptureBackend> ScreenCaptureAdapter<B> {
-    pub(in crate::input::screen) fn new(exact: Arc<B::ExactState>) -> Self {
-        Self {
-            sessions: CaptureSessionSet::default(),
-            compatibility: Arc::new(Mutex::new(CapturePublication::default())),
-            exact,
+    fn handles(&self) -> CaptureBackendHandles<'_, B> {
+        CaptureBackendHandles {
+            compatibility: &self.compatibility,
+            exact: &self.exact,
         }
     }
 
@@ -113,7 +164,8 @@ impl<B: CaptureBackend> ScreenCaptureAdapter<B> {
         request: B::SpawnRequest,
         reservation: ReservedCaptureSessionAuthority,
     ) -> anyhow::Result<PreparedCaptureSession<B::Worker>> {
-        B::spawn_worker(request, reservation)?
+        self.backend
+            .spawn_worker(request, self.handles(), reservation)?
             .prepare(CaptureSessionDeadline::after(B::READINESS_TIMEOUT))
     }
 
