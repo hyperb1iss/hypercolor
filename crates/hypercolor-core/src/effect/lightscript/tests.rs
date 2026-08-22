@@ -139,7 +139,8 @@ fn frame_payload_emits_control_deltas_only() {
 }
 
 #[test]
-fn frame_payload_rejects_out_of_range_control_values() {
+#[should_panic(expected = "effect pool admits only renderer-compatible controls")]
+fn frame_payload_treats_non_projectable_controls_as_a_broken_pool_invariant() {
     let mut runtime = LightscriptRuntime::new(320, 200);
     let audio = AudioData::silence();
     let interaction = InteractionData::default();
@@ -150,11 +151,7 @@ fn frame_payload_rejects_out_of_range_control_values() {
         ControlValue::Int(i64::from(i32::MAX) + 1),
     )]);
 
-    assert!(
-        runtime
-            .frame_payload(&input, &controls, default_options())
-            .is_none()
-    );
+    let _ = runtime.frame_payload(&input, &controls, default_options());
 }
 
 #[test]

@@ -877,10 +877,22 @@ fn canonical_control_set(
                 metadata.id
             )
         })?;
+        value.try_to_effect_json().map_err(|error| {
+            anyhow!(
+                "effect '{}' control '{control_id}' cannot enter the runtime: {error}",
+                metadata.id
+            )
+        })?;
         controls.insert(ControlId::from(control_id), value)?;
     }
     for (control_id, value) in &source.controls {
         if controls.get(control_id).is_none() {
+            value.try_to_effect_json().map_err(|error| {
+                anyhow!(
+                    "effect '{}' control '{control_id}' cannot enter the runtime: {error}",
+                    metadata.id
+                )
+            })?;
             controls.insert(ControlId::from(control_id.as_str()), value.clone())?;
         }
     }

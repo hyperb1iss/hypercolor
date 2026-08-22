@@ -7,7 +7,9 @@ use std::collections::{BTreeMap, HashMap};
 
 use hypercolor_color::{Hsl, Rgb};
 use hypercolor_types::audio::{AudioData, CHROMA_BINS, MEL_BANDS, SPECTRUM_BINS};
-use hypercolor_types::control::{ControlValue, EffectJsonValueError};
+use hypercolor_types::control::ControlValue;
+#[cfg(feature = "servo")]
+use hypercolor_types::control::EffectJsonValueError;
 use hypercolor_types::lighting::LightingState;
 use hypercolor_types::media::MediaState;
 use hypercolor_types::net::NetStats;
@@ -540,13 +542,7 @@ impl LightscriptRuntime {
             .include_lighting
             .then(|| self.lighting_payload(input.sources.lighting))
             .flatten();
-        let controls = match self.changed_control_payload(controls) {
-            Ok(controls) => controls,
-            Err(error) => {
-                tracing::error!(%error, "rejected invalid LightScript control payload");
-                return None;
-            }
-        };
+        let controls = self.changed_control_payload(controls);
         let input_availability = options
             .include_interaction
             .then(|| self.changed_input_availability_payload(input.sources.input_availability));
@@ -932,7 +928,7 @@ impl LightscriptRuntime {
     fn changed_control_payload(
         &mut self,
         controls: &HashMap<String, ControlValue>,
-    ) -> Result<BTreeMap<String, serde_json::Value>, EffectJsonValueError> {
+    ) -> BTreeMap<String, serde_json::Value> {
         let mut changed_controls = BTreeMap::new();
         let mut accepted = Vec::new();
         for (name, value) in controls {
@@ -945,11 +941,14 @@ impl LightscriptRuntime {
                 continue;
             }
 
-            changed_controls.insert(name.clone(), value.try_to_effect_json()?);
+            let projected = value
+                .try_to_effect_json()
+                .expect("effect pool admits only renderer-compatible controls");
+            changed_controls.insert(name.clone(), projected);
             accepted.push((name.clone(), value.clone()));
         }
         self.last_controls.extend(accepted);
-        Ok(changed_controls)
+        changed_controls
     }
 }
 

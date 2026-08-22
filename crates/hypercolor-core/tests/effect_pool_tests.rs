@@ -257,6 +257,41 @@ fn invalid_effect_control_is_rejected_before_live_state_changes() {
 }
 
 #[test]
+fn effect_pool_rejects_non_projectable_values_even_for_unknown_keys() {
+    let registry = registry_with_builtins();
+    let solid_id = builtin_effect_id(&registry, "solid_color");
+    let rejected_values = [
+        serde_json::json!({"kind": "null"}),
+        serde_json::json!({"kind": "secret_ref", "value": "token"}),
+        serde_json::json!({"kind": "ip", "value": "127.0.0.1"}),
+        serde_json::json!({"kind": "mac", "value": "01:23:45:67:89:ab"}),
+        serde_json::json!({"kind": "duration", "value": 250}),
+        serde_json::json!({"kind": "color_rgb", "value": {"r": 1, "g": 2, "b": 3}}),
+        serde_json::json!({"kind": "color_rgba", "value": {"r": 1, "g": 2, "b": 3, "a": 4}}),
+        serde_json::json!({"kind": "flags", "value": ["one"]}),
+        serde_json::json!({"kind": "list", "value": [{"kind": "bool", "value": true}]}),
+        serde_json::json!({"kind": "map", "value": {"one": {"kind": "bool", "value": true}}}),
+        serde_json::json!({"kind": "unknown"}),
+    ];
+
+    for (index, raw) in rejected_values.into_iter().enumerate() {
+        let mut group = render_group(ZoneId::new(), solid_id);
+        set_effect_control(
+            &mut group,
+            &format!("unknown_{index}"),
+            serde_json::from_value(raw).expect("fixture should decode canonically"),
+        );
+        let pool = EffectPool::new();
+
+        assert!(
+            pool.prepare_reconcile(&[group], &registry, &HashMap::new())
+                .is_err(),
+            "non-projectable fixture {index} entered a prepared effect pool"
+        );
+    }
+}
+
+#[test]
 fn abandoned_prepared_effect_pool_keeps_live_slots_renderable() {
     let registry = registry_with_builtins();
     let solid_id = builtin_effect_id(&registry, "solid_color");

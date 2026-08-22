@@ -890,28 +890,20 @@ pub(crate) fn normalize_control_payload(
 
     for (name, value) in raw_controls {
         let definition = metadata.control_by_id(name);
-        let parsed = definition
-            .filter(|control| {
-                matches!(
-                    control.control_type,
-                    hypercolor_types::effect::ControlType::ColorPicker
-                )
-            })
-            .map_or_else(
-                || ControlValue::try_from_effect_json(value),
-                |_| {
-                    ControlValue::try_from_effect_color_json(value)
-                        .or_else(|_| ControlValue::try_from_effect_json(value))
-                },
-            );
-        let Ok(parsed) = parsed else {
-            rejected.push(format!("{name} (unsupported JSON shape or numeric range)"));
-            continue;
-        };
-
-        let result = definition.map_or_else(
-            || Ok(parsed.clone()),
-            |control| control.validate_value(&parsed),
+        let result: Result<ControlValue, String> = definition.map_or_else(
+            || {
+                let parsed =
+                    ControlValue::try_from_effect_json(value).map_err(|error| error.to_string())?;
+                parsed
+                    .try_to_effect_json()
+                    .map_err(|error| error.to_string())?;
+                Ok(parsed)
+            },
+            |control| {
+                control
+                    .admit_effect_json(value)
+                    .map_err(|error| error.to_string())
+            },
         );
         match result {
             Ok(control_value) => {
@@ -932,9 +924,22 @@ pub(crate) fn normalize_control_values<'a>(
     let mut rejected = Vec::new();
 
     for (name, value) in control_values {
-        let result = metadata.control_by_id(name).map_or_else(
-            || Ok(value.clone()),
-            |control| control.validate_value(value),
+        let result: Result<ControlValue, String> = metadata.control_by_id(name).map_or_else(
+            || {
+                value
+                    .try_to_effect_json()
+                    .map_err(|error| error.to_string())?;
+                Ok(value.clone())
+            },
+            |control| {
+                let normalized = control
+                    .validate_value(value)
+                    .map_err(|error| error.to_string())?;
+                normalized
+                    .try_to_effect_json()
+                    .map_err(|error| error.to_string())?;
+                Ok(normalized)
+            },
         );
         match result {
             Ok(control_value) => {
@@ -945,6 +950,105 @@ pub(crate) fn normalize_control_values<'a>(
     }
 
     (normalized, rejected)
+}
+
+#[cfg(test)]
+mod control_admission_tests {
+    use hypercolor_types::control::ControlValue;
+    use hypercolor_types::effect::{
+        ControlDefinition, ControlKind, ControlType, EffectCategory, EffectId, EffectMetadata,
+        EffectSource,
+    };
+
+    fn metadata() -> EffectMetadata {
+        EffectMetadata {
+            id: EffectId::new(uuid::Uuid::now_v7()),
+            name: "admission fixture".to_owned(),
+            author: "test".to_owned(),
+            version: "1".to_owned(),
+            description: String::new(),
+            category: EffectCategory::Ambient,
+            tags: Vec::new(),
+            controls: vec![ControlDefinition {
+                id: "accent".to_owned(),
+                name: "Accent".to_owned(),
+                kind: ControlKind::Color,
+                control_type: ControlType::ColorPicker,
+                default_value: ControlValue::linear_color([1.0, 1.0, 1.0, 1.0]),
+                min: None,
+                max: None,
+                step: None,
+                labels: Vec::new(),
+                group: None,
+                tooltip: None,
+                aspect_lock: None,
+                preview_source: None,
+                binding: None,
+            }],
+            presets: Vec::new(),
+            audio_reactive: false,
+            screen_reactive: false,
+            input_reactive: false,
+            source: EffectSource::Native {
+                path: "fixture".into(),
+            },
+            license: None,
+        }
+    }
+
+    #[test]
+    fn raw_admission_uses_color_schema_but_keeps_unknown_arrays_strict() {
+        let raw = serde_json::json!({
+            "accent": [0.125, 0.25, 0.5, 1.0],
+            "unknown": [0.125, 0.25, 0.5, 1.0]
+        });
+        let (admitted, rejected) = super::normalize_control_payload(
+            &metadata(),
+            raw.as_object().expect("fixture should be an object"),
+        );
+
+        assert_eq!(
+            admitted.get("accent"),
+            Some(&ControlValue::linear_color([0.125, 0.25, 0.5, 1.0]))
+        );
+        assert_eq!(rejected.len(), 1);
+        assert!(rejected[0].starts_with("unknown ("));
+    }
+
+    #[test]
+    fn typed_admission_rejects_every_non_effect_variant_on_unknown_keys() {
+        let rejected_values = [
+            serde_json::json!({"kind": "null"}),
+            serde_json::json!({"kind": "secret_ref", "value": "token"}),
+            serde_json::json!({"kind": "ip", "value": "127.0.0.1"}),
+            serde_json::json!({"kind": "mac", "value": "01:23:45:67:89:ab"}),
+            serde_json::json!({"kind": "duration", "value": 250}),
+            serde_json::json!({"kind": "color_rgb", "value": {"r": 1, "g": 2, "b": 3}}),
+            serde_json::json!({"kind": "color_rgba", "value": {"r": 1, "g": 2, "b": 3, "a": 4}}),
+            serde_json::json!({"kind": "flags", "value": ["one"]}),
+            serde_json::json!({"kind": "list", "value": [{"kind": "bool", "value": true}]}),
+            serde_json::json!({"kind": "map", "value": {"one": {"kind": "bool", "value": true}}}),
+            serde_json::json!({"kind": "unknown"}),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, value)| {
+            (
+                format!("unknown_{index}"),
+                serde_json::from_value::<ControlValue>(value)
+                    .expect("fixture should decode canonically"),
+            )
+        })
+        .collect::<Vec<_>>();
+
+        let (admitted, rejected) = super::normalize_control_values(
+            &metadata(),
+            rejected_values.iter().map(|(k, v)| (k, v)),
+        );
+
+        assert!(admitted.is_empty());
+        assert_eq!(rejected.len(), rejected_values.len());
+    }
 }
 
 pub(crate) fn default_control_values(metadata: &EffectMetadata) -> HashMap<String, ControlValue> {
