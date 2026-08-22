@@ -10,8 +10,9 @@ mod model;
 
 pub use channel::{LoopReceiver, LoopSendError, LoopSender, loop_channel};
 pub use model::{
-    BufferFault, CaptureFormatRequest, D4Transform, DequeueOutcome, FrameView, MetaFault,
-    NegotiatedVideoFormat, PackedVideoFormat, PixelCrop, VideoFraction,
+    BufferFault, CallbackAction, CaptureFormatRequest, D4Transform, DequeueOutcome, FormatEvent,
+    FormatFault, FormatOffer, FormatOfferError, FrameView, MetaFault, NegotiatedVideoFormat,
+    PackedVideoFormat, PixelCrop, StateChange, StreamError, StreamState, VideoFraction,
 };
 
 /// One source selected through the XDG ScreenCast portal.

@@ -74,6 +74,119 @@ pub struct CaptureFormatRequest {
     pub target_fps: u32,
 }
 
+/// Opaque native format offer derived from an exact capture request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FormatOffer {
+    pub(crate) request: CaptureFormatRequest,
+}
+
+impl FormatOffer {
+    /// Creates one exact native format offer.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error when the extent or preferred cadence is zero.
+    pub fn new(request: CaptureFormatRequest) -> Result<Self, FormatOfferError> {
+        if request.width == 0 || request.height == 0 {
+            return Err(FormatOfferError::ZeroExtent);
+        }
+        if request.target_fps == 0 {
+            return Err(FormatOfferError::ZeroCadence);
+        }
+        Ok(Self { request })
+    }
+
+    /// Returns the neutral request carried by this offer.
+    #[must_use]
+    pub const fn request(&self) -> CaptureFormatRequest {
+        self.request
+    }
+}
+
+/// Invalid native format-offer request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum FormatOfferError {
+    /// The requested storage extent has a zero axis.
+    #[error("capture format extent must be nonzero")]
+    ZeroExtent,
+    /// The preferred capture cadence is zero.
+    #[error("capture format cadence must be nonzero")]
+    ZeroCadence,
+}
+
+/// Native format-change event translated without exposing SPA objects.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FormatEvent {
+    /// The producer removed its negotiated format.
+    Removed,
+    /// The producer supplied a malformed or unsupported format.
+    Invalid(FormatFault),
+    /// The producer fixed one supported packed video format.
+    Negotiated(NegotiatedVideoFormat),
+}
+
+/// Reason a native format event could not be translated.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FormatFault {
+    /// The native format pod could not be decoded.
+    Unreadable,
+    /// The media type or subtype was not raw video.
+    NonRawVideo,
+    /// The raw-video body did not contain valid format information.
+    InvalidRawVideo,
+    /// The negotiated packed pixel format is unsupported.
+    UnsupportedPixelFormat,
+}
+
+/// Neutral lifecycle state for one native stream.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StreamState {
+    /// No native link exists.
+    Unconnected,
+    /// The native link is being established.
+    Connecting,
+    /// The native link exists but is not producing buffers.
+    Paused,
+    /// The native link is producing buffers.
+    Streaming,
+    /// The native stream entered a terminal error state.
+    Error(String),
+}
+
+/// One exact native stream-state transition.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StateChange {
+    /// State observed before the transition.
+    pub previous: StreamState,
+    /// State observed after the transition.
+    pub current: StreamState,
+}
+
+/// Action requested by a synchronous native callback.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CallbackAction {
+    /// Keep servicing the native stream.
+    Continue,
+    /// Quit the native stream loop after this callback returns.
+    Quit,
+}
+
+/// Failure while constructing or controlling a native capture stream.
+#[derive(Debug, thiserror::Error)]
+pub enum StreamError {
+    /// Native stream support is unavailable on this host.
+    #[error("native capture streams are unsupported on this platform")]
+    UnsupportedPlatform,
+    /// One native operation failed.
+    #[error("{operation}: {detail}")]
+    Operation {
+        /// Stable operation label.
+        operation: &'static str,
+        /// Native error detail.
+        detail: String,
+    },
+}
+
 /// Crop rectangle in native storage coordinates.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PixelCrop {
@@ -186,7 +299,7 @@ pub enum DequeueOutcome<V> {
 
 #[cfg(test)]
 mod tests {
-    use super::{D4Transform, PackedVideoFormat};
+    use super::{CaptureFormatRequest, D4Transform, FormatOffer, PackedVideoFormat};
 
     #[test]
     fn packed_formats_preserve_exact_pixel_widths() {
@@ -206,5 +319,22 @@ mod tests {
         assert!(D4Transform::Flipped90.swaps_axes());
         assert!(!D4Transform::Flipped180.swaps_axes());
         assert!(D4Transform::Flipped270.swaps_axes());
+    }
+
+    #[test]
+    fn format_offer_rejects_zero_axes_and_cadence() {
+        let request = CaptureFormatRequest {
+            width: 0,
+            height: 1080,
+            target_fps: 60,
+        };
+        assert!(FormatOffer::new(request).is_err());
+
+        let request = CaptureFormatRequest {
+            width: 1920,
+            height: 1080,
+            target_fps: 0,
+        };
+        assert!(FormatOffer::new(request).is_err());
     }
 }
