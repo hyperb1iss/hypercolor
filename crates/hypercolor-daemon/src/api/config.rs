@@ -32,12 +32,12 @@ pub use hypercolor_types::api::config::{
     ConfigApplyQuery, ConfigDocument, ConfigKeyResponse, ConfigMutationResponse,
 };
 
-/// Render an internal config failure.
+/// Build an internal config failure.
 ///
 /// The chain goes to tracing and the wire sees the canonical generic
 /// message, so a serialization fault cannot leak a config path or value.
-fn internal_config_error(message: impl Into<String>) -> Response {
-    DomainError::Internal(anyhow::anyhow!(message.into())).into_response()
+fn internal_config_error(message: impl Into<String>) -> DomainError {
+    DomainError::Internal(anyhow::anyhow!(message.into()))
 }
 
 /// `GET /api/v1/config` — the effective config, rendered for reading.
@@ -45,11 +45,15 @@ pub async fn show_config(State(state): State<Arc<AppState>>) -> Response {
     let config = config_snapshot(&state);
     let value = match serde_json::to_value(config) {
         Ok(value) => value,
-        Err(error) => return internal_config_error(format!("Failed to serialize config: {error}")),
+        Err(error) => {
+            return internal_config_error(format!("Failed to serialize config: {error}"))
+                .into_response();
+        }
     };
 
     let serde_json::Value::Object(values) = redact_document(value) else {
-        return internal_config_error("Effective config did not serialize as an object");
+        return internal_config_error("Effective config did not serialize as an object")
+            .into_response();
     };
     envelope::ok(ConfigDocument {
         values: values.into_iter().collect(),
@@ -74,7 +78,10 @@ pub async fn get_config_key(
     let config = config_snapshot(&state);
     let value = match serde_json::to_value(config) {
         Ok(value) => value,
-        Err(error) => return internal_config_error(format!("Failed to serialize config: {error}")),
+        Err(error) => {
+            return internal_config_error(format!("Failed to serialize config: {error}"))
+                .into_response();
+        }
     };
 
     let Some(found) = get_json_path(&value, &key) else {
@@ -194,14 +201,17 @@ async fn write_config_key(
     live_requested: bool,
 ) -> Response {
     let Some(manager) = state.config_manager.as_ref() else {
-        return internal_config_error("Config manager unavailable in this runtime");
+        return internal_config_error("Config manager unavailable in this runtime").into_response();
     };
 
     let current_snapshot = Arc::clone(&manager.get());
     let current = (*current_snapshot).clone();
     let mut root = match serde_json::to_value(&current) {
         Ok(v) => v,
-        Err(e) => return internal_config_error(format!("Failed to serialize config: {e}")),
+        Err(e) => {
+            return internal_config_error(format!("Failed to serialize config: {e}"))
+                .into_response();
+        }
     };
 
     let key = raw_key.to_owned();
@@ -238,11 +248,12 @@ async fn write_config_key(
     let updated: HypercolorConfig = match serde_json::from_value(root) {
         Ok(cfg) => cfg,
         Err(error) => {
-            return rejected_value(&key, "type validation", &error.to_string());
+            return rejected_value(&key, "type validation", &error.to_string()).into_response();
         }
     };
     if let Err(rejection) = validate_driver_config_scope(state, Some(&key), &updated) {
-        return rejected_value(&rejection.key, "driver validation", &rejection.detail);
+        return rejected_value(&rejection.key, "driver validation", &rejection.detail)
+            .into_response();
     }
     if let Err(error) = updated.capture.validate() {
         return DomainError::validation(error.to_string()).into_response();
@@ -259,13 +270,15 @@ async fn write_config_key(
                     Err(error) => {
                         return internal_config_error(format!(
                             "Failed to serialize canonicalized config: {error}"
-                        ));
+                        ))
+                        .into_response();
                     }
                 };
                 let Some(effective_value) = get_json_path(&effective_root, &key).cloned() else {
                     return internal_config_error(format!(
                         "Canonicalized config is missing expected key: {key}"
-                    ));
+                    ))
+                    .into_response();
                 };
                 return envelope::ok(mutation_result(
                     manager,
@@ -287,7 +300,8 @@ async fn write_config_key(
                 .into_response();
             }
             Err(CaptureConfigTransactionError::Persist(error)) => {
-                return internal_config_error(format!("Failed to persist config: {error}"));
+                return internal_config_error(format!("Failed to persist config: {error}"))
+                    .into_response();
             }
             Err(CaptureConfigTransactionError::Commit(error)) => {
                 return DomainError::conflict(format!(
@@ -311,7 +325,7 @@ async fn write_config_key(
         *config = reapplied.unwrap_or_else(|| updated.clone());
     });
     if let Err(e) = manager.save() {
-        return internal_config_error(format!("Failed to persist config: {e}"));
+        return internal_config_error(format!("Failed to persist config: {e}")).into_response();
     }
     let effective_config = manager.get();
     let effective_root = match serde_json::to_value(&**effective_config) {
@@ -319,14 +333,16 @@ async fn write_config_key(
         Err(error) => {
             return internal_config_error(format!(
                 "Failed to serialize canonicalized config: {error}"
-            ));
+            ))
+            .into_response();
         }
     };
     let Some(effective_value) = get_json_path(&effective_root, &key).cloned() else {
         return internal_config_error(format!(
             "Canonicalized config is missing expected key: {}",
             key
-        ));
+        ))
+        .into_response();
     };
 
     let live_applied = apply_live_sections(state, sections, Some(&key), live_requested).await;
@@ -394,7 +410,7 @@ async fn reset_config_state(
     live_requested: bool,
 ) -> Response {
     let Some(manager) = state.config_manager.as_ref() else {
-        return internal_config_error("Config manager unavailable in this runtime");
+        return internal_config_error("Config manager unavailable in this runtime").into_response();
     };
 
     let current_snapshot = Arc::clone(&manager.get());
@@ -402,12 +418,16 @@ async fn reset_config_state(
     let updated: HypercolorConfig = if let Some(key) = requested_key.as_deref() {
         let mut current = match serde_json::to_value(&*current_snapshot) {
             Ok(v) => v,
-            Err(e) => return internal_config_error(format!("Failed to serialize config: {e}")),
+            Err(e) => {
+                return internal_config_error(format!("Failed to serialize config: {e}"))
+                    .into_response();
+            }
         };
         let defaults = match serde_json::to_value(HypercolorConfig::default()) {
             Ok(v) => v,
             Err(e) => {
-                return internal_config_error(format!("Failed to serialize default config: {e}"));
+                return internal_config_error(format!("Failed to serialize default config: {e}"))
+                    .into_response();
             }
         };
         let reset_fields: &[&str] = if key == CAPTURE_CALIBRATION_RESET_KEY {
@@ -431,7 +451,9 @@ async fn reset_config_state(
             // The default this rebuilds around is the daemon's, but the
             // document it lands in still holds the neighbors a secret
             // key keeps company with.
-            Err(error) => return rejected_value(key, "type validation", &error.to_string()),
+            Err(error) => {
+                return rejected_value(key, "type validation", &error.to_string()).into_response();
+            }
         }
     } else {
         full_reset_config(&current_snapshot)
@@ -442,7 +464,8 @@ async fn reset_config_state(
     if let Some(key) = requested_key.as_deref()
         && let Err(rejection) = validate_driver_config_scope(state, Some(key), &updated)
     {
-        return rejected_value(&rejection.key, "driver validation", &rejection.detail);
+        return rejected_value(&rejection.key, "driver validation", &rejection.detail)
+            .into_response();
     }
     if let Err(error) = updated.capture.validate() {
         return DomainError::validation(error.to_string()).into_response();
@@ -475,7 +498,8 @@ async fn reset_config_state(
                 .into_response();
             }
             Err(CaptureConfigTransactionError::Persist(error)) => {
-                return internal_config_error(format!("Failed to persist config: {error}"));
+                return internal_config_error(format!("Failed to persist config: {error}"))
+                    .into_response();
             }
             Err(CaptureConfigTransactionError::Commit(error)) => {
                 return DomainError::conflict(format!(
@@ -524,7 +548,7 @@ async fn reset_config_state(
         *config = reapplied.unwrap_or(updated);
     });
     if let Err(e) = manager.save() {
-        return internal_config_error(format!("Failed to persist config: {e}"));
+        return internal_config_error(format!("Failed to persist config: {e}")).into_response();
     }
 
     let live_applied =
@@ -629,19 +653,18 @@ fn validate_driver_config_scope(
     Ok(())
 }
 
-/// Render a rejected value without echoing it back on a secret key.
+/// Build a rejected-value error without echoing it back on a secret key.
 ///
 /// Serde and driver validators quote the value they refused, so a
 /// secret-classified key would put the submitted credential in the
 /// response body and in whatever logs that body. Those keys report the
 /// key and the class of failure; plain keys keep the detail that makes
 /// the error actionable.
-fn rejected_value(key: &str, class: &str, detail: &str) -> Response {
+fn rejected_value(key: &str, class: &str, detail: &str) -> DomainError {
     if config_registry::is_redacted(key) {
-        DomainError::validation(format!("Value for '{key}' failed {class}")).into_response()
+        DomainError::validation(format!("Value for '{key}' failed {class}"))
     } else {
         DomainError::validation(format!("Value for '{key}' failed {class}: {detail}"))
-            .into_response()
     }
 }
 

@@ -70,7 +70,7 @@ pub async fn upload_asset(
         let mut library = state.asset_library.write().await;
         match library.add_bytes(&parsed.bytes, options) {
             Ok(upsert) => upsert,
-            Err(error) => return asset_error_response(error),
+            Err(error) => return asset_error(error).into_response(),
         }
     };
 
@@ -96,7 +96,7 @@ pub async fn update_asset(
         match library.update_metadata(id, body.name, body.tags) {
             Ok(Some(update)) => update,
             Ok(None) => return DomainError::not_found(ResourceKind::Asset, id).into_response(),
-            Err(error) => return asset_error_response(error),
+            Err(error) => return asset_error(error).into_response(),
         }
     };
 
@@ -112,7 +112,7 @@ pub async fn delete_asset(State(state): State<Arc<AppState>>, Path(id): Path<Ass
         match library.remove(id) {
             Ok(Some(event)) => event,
             Ok(None) => return DomainError::not_found(ResourceKind::Asset, id).into_response(),
-            Err(error) => return asset_error_response(error),
+            Err(error) => return asset_error(error).into_response(),
         }
     };
 
@@ -131,7 +131,7 @@ pub async fn get_asset_blob(
         };
         let path = match library.object_path_for_hash(&record.hash_sha256) {
             Ok(path) => path,
-            Err(error) => return asset_error_response(error),
+            Err(error) => return asset_error(error).into_response(),
         };
         (record, path)
     };
@@ -283,21 +283,19 @@ fn parse_tags(raw: &str) -> Result<Vec<String>, String> {
         .collect())
 }
 
-fn asset_error_response(error: AssetLibraryError) -> Response {
+fn asset_error(error: AssetLibraryError) -> DomainError {
     match error {
         AssetLibraryError::HardCapExceeded { hard_cap_bytes, .. } => DomainError::PayloadTooLarge {
             limit_bytes: hard_cap_bytes,
-        }
-        .into_response(),
+        },
         AssetLibraryError::UnsupportedMediaType { reason } => {
-            DomainError::unsupported_media_type(reason).into_response()
+            DomainError::unsupported_media_type(reason)
         }
         AssetLibraryError::DecodeImage(error) => {
             DomainError::validation(format!("Failed to decode image asset: {error}"))
-                .into_response()
         }
         AssetLibraryError::InvalidHashPath { .. } => {
-            DomainError::Internal(anyhow::anyhow!(error.to_string())).into_response()
+            DomainError::Internal(anyhow::anyhow!(error.to_string()))
         }
         AssetLibraryError::CreateDir { .. }
         | AssetLibraryError::Read { .. }
@@ -307,11 +305,9 @@ fn asset_error_response(error: AssetLibraryError) -> Response {
         | AssetLibraryError::ParseIndex { .. }
         | AssetLibraryError::SerializeIndex(_)
         | AssetLibraryError::EncodeThumbnail { .. } => {
-            DomainError::Internal(anyhow::anyhow!(error.to_string())).into_response()
+            DomainError::Internal(anyhow::anyhow!(error.to_string()))
         }
-        AssetLibraryError::NotFound(id) => {
-            DomainError::not_found(ResourceKind::Asset, id).into_response()
-        }
+        AssetLibraryError::NotFound(id) => DomainError::not_found(ResourceKind::Asset, id),
     }
 }
 

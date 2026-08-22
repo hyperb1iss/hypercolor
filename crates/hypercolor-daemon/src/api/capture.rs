@@ -22,21 +22,24 @@ use crate::api::security::RequestAuthContext;
 use crate::app_state::AppState;
 use crate::domain::DomainError;
 
-fn domain_validation(message: impl Into<String>) -> Response {
-    DomainError::validation(message).into_response()
+fn domain_validation(message: impl Into<String>) -> DomainError {
+    DomainError::validation(message)
 }
 
-fn domain_validation_details(message: impl Into<String>, details: serde_json::Value) -> Response {
-    DomainError::validation_details(message, details).into_response()
+fn domain_validation_details(
+    message: impl Into<String>,
+    details: serde_json::Value,
+) -> DomainError {
+    DomainError::validation_details(message, details)
 }
 
-fn domain_internal(message: impl Into<String>) -> Response {
-    DomainError::Internal(anyhow::anyhow!(message.into())).into_response()
+fn domain_internal(message: impl Into<String>) -> DomainError {
+    DomainError::Internal(anyhow::anyhow!(message.into()))
 }
 
 #[cfg(target_os = "macos")]
-fn domain_conflict(message: impl Into<String>) -> Response {
-    DomainError::conflict(message).into_response()
+fn domain_conflict(message: impl Into<String>) -> DomainError {
+    DomainError::conflict(message)
 }
 
 pub(crate) fn protected_control_rejection(auth_context: RequestAuthContext) -> Option<Response> {
@@ -71,7 +74,7 @@ fn requires_app_ui_details(active_owner: MacosCapabilityOwner) -> serde_json::Va
     })
 }
 
-fn requires_app_ui(action: &str, active_owner: MacosCapabilityOwner) -> Response {
+fn requires_app_ui(action: &str, active_owner: MacosCapabilityOwner) -> DomainError {
     domain_validation_details(
         format!("{action} must run in Hypercolor.app for the active process topology"),
         requires_app_ui_details(active_owner),
@@ -181,7 +184,8 @@ pub(crate) async fn authorize_input_monitoring(
     if !config.input.enabled || !config.input.keyboard {
         return domain_validation(
             "Keyboard input is disabled; enable input.enabled and input.keyboard before authorizing",
-        );
+        )
+        .into_response();
     }
     let action = {
         let input_manager = state.input_manager.lock().await;
@@ -194,7 +198,7 @@ pub(crate) async fn authorize_input_monitoring(
     let (action, grant_owner) = match action {
         ResolvedProtectedSourceAction::Local { action, owner } => (action, owner),
         ResolvedProtectedSourceAction::RequiresAppUi { active_owner } => {
-            return requires_app_ui("Input Monitoring authorization", active_owner);
+            return requires_app_ui("Input Monitoring authorization", active_owner).into_response();
         }
     };
     match tokio::task::spawn_blocking(move || action.execute()).await {
@@ -208,10 +212,12 @@ pub(crate) async fn authorize_input_monitoring(
         Ok(Err(error)) => {
             warn!(%error, "Input Monitoring authorization failed");
             domain_internal(format!("Failed to authorize Input Monitoring: {error}"))
+                .into_response()
         }
         Err(error) => domain_internal(format!(
             "Input Monitoring authorization task failed: {error}"
-        )),
+        ))
+        .into_response(),
     }
 }
 
@@ -232,7 +238,8 @@ pub(crate) async fn authorize_screen_recording(
     if !manager.get().capture.enabled {
         return domain_validation(
             "Screen capture is disabled; enable capture.enabled before authorizing",
-        );
+        )
+        .into_response();
     }
     let action = {
         let input_manager = state.input_manager.lock().await;
@@ -245,7 +252,7 @@ pub(crate) async fn authorize_screen_recording(
     let (action, grant_owner) = match action {
         ResolvedProtectedSourceAction::Local { action, owner } => (action, owner),
         ResolvedProtectedSourceAction::RequiresAppUi { active_owner } => {
-            return requires_app_ui("Screen Recording authorization", active_owner);
+            return requires_app_ui("Screen Recording authorization", active_owner).into_response();
         }
     };
     match tokio::task::spawn_blocking(move || action.execute()).await {
@@ -259,10 +266,12 @@ pub(crate) async fn authorize_screen_recording(
         Ok(Err(error)) => {
             warn!(%error, "Screen Recording authorization failed");
             domain_internal(format!("Failed to authorize Screen Recording: {error}"))
+                .into_response()
         }
         Err(error) => domain_internal(format!(
             "Screen Recording authorization task failed: {error}"
-        )),
+        ))
+        .into_response(),
     }
 }
 
@@ -296,7 +305,8 @@ pub(crate) async fn set_capture_source(
         if !input_manager.has_screen_source() {
             return domain_validation(
                 "No screen capture source is registered; restart the daemon or re-enable capture",
-            );
+            )
+            .into_response();
         }
         let status = input_manager
             .source_status_registry()
@@ -314,7 +324,7 @@ pub(crate) async fn set_capture_source(
     let (action, grant_owner) = match action {
         ResolvedProtectedSourceAction::Local { action, owner } => (action, owner),
         ResolvedProtectedSourceAction::RequiresAppUi { active_owner } => {
-            return requires_app_ui("Screen source picker", active_owner);
+            return requires_app_ui("Screen source picker", active_owner).into_response();
         }
     };
     #[cfg(target_os = "macos")]
@@ -338,7 +348,8 @@ pub(crate) async fn set_capture_source(
             Err(error) => {
                 return domain_conflict(format!(
                     "Capture configuration changed before picker dispatch: {error}"
-                ));
+                ))
+                .into_response();
             }
         };
     #[cfg(target_os = "macos")]
