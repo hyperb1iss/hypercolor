@@ -1216,7 +1216,7 @@ impl MacosScreenCaptureInput {
                         command_rx,
                     )
                 };
-                // The exit channel is only drained by the legacy sampling
+                // The exit channel is only drained by the sampled analysis
                 // path; the exact-publication path never observes it, so an
                 // unlogged error here is a silently dead capture pump.
                 if let Err(error) = &result {
@@ -1374,7 +1374,7 @@ impl InputSource for MacosScreenCaptureInput {
     fn sample_shared_and_drain_into(
         &mut self,
         _delta_secs: f32,
-        _events: &mut Vec<crate::types::event::TimedInputEvent>,
+        _events: &mut Vec<hypercolor_types::event::TimedInputEvent>,
     ) -> anyhow::Result<Option<Arc<InputData>>> {
         self.refresh_platform_status()?;
         self.observe_worker_exit()?;
@@ -2462,11 +2462,11 @@ fn publish_frame(
         publish_macos_scalar_exact(&frame, &capture, &source, exact, exact_runtimes, telemetry)?;
     }
     // The exact lane feeds native compositing only; HTML effects read the
-    // analyzed ScreenData that flows through the legacy slot publication.
+    // analyzed ScreenData that flows through the sampled publication slot.
     // Treating the lanes as exclusive turns every HTML screen effect black
-    // the moment an exact plan commits, so the legacy analysis always runs
+    // the moment an exact plan commits, so sampled analysis always runs
     // alongside exact deliveries.
-    let capture = legacy_cpu_capture_frame(
+    let capture = analysis_cpu_capture_frame(
         prepared,
         &frame,
         captured_at,
@@ -2511,22 +2511,22 @@ fn publish_frame(
     Ok(())
 }
 
-/// Ceiling on the surface handed to the legacy analyzer. The analyzer reduces
+/// Ceiling on the surface handed to the sampled analyzer. The analyzer reduces
 /// whatever it receives into the coarse ScreenData grid, so tone-mapping every
 /// pixel of a native 4K HDR frame is wasted work that blows the publication
 /// freshness budget and starves every HTML screen effect.
-const LEGACY_ANALYSIS_MAX_WIDTH: u32 = 640;
-const LEGACY_ANALYSIS_MAX_HEIGHT: u32 = 480;
+const ANALYSIS_MAX_WIDTH: u32 = 640;
+const ANALYSIS_MAX_HEIGHT: u32 = 480;
 
-fn legacy_analysis_decimation(extent: PixelExtent) -> u32 {
+fn analysis_decimation(extent: PixelExtent) -> u32 {
     extent
         .width()
-        .div_ceil(LEGACY_ANALYSIS_MAX_WIDTH)
-        .max(extent.height().div_ceil(LEGACY_ANALYSIS_MAX_HEIGHT))
+        .div_ceil(ANALYSIS_MAX_WIDTH)
+        .max(extent.height().div_ceil(ANALYSIS_MAX_HEIGHT))
 }
 
 #[allow(clippy::too_many_arguments)]
-fn legacy_cpu_capture_frame(
+fn analysis_cpu_capture_frame(
     prepared: &mut PreparedWorker,
     frame: &MacosCaptureFrame,
     captured_at: Instant,
@@ -2541,7 +2541,7 @@ fn legacy_cpu_capture_frame(
         // exact by contract, so it keeps every native pixel.
         1
     } else {
-        legacy_analysis_decimation(extent)
+        analysis_decimation(extent)
     };
     let storage_extent = if decimation == 1 {
         extent
@@ -2580,21 +2580,21 @@ fn legacy_cpu_capture_frame(
             for y in 0..storage_extent.height() {
                 let source_y = y
                     .checked_mul(decimation)
-                    .ok_or_else(|| anyhow!("macOS legacy sample row overflow"))?;
+                    .ok_or_else(|| anyhow!("macOS analysis sample row overflow"))?;
                 let row_start = usize::try_from(y)?
                     .checked_mul(row_stride)
-                    .ok_or_else(|| anyhow!("macOS legacy row offset overflow"))?;
+                    .ok_or_else(|| anyhow!("macOS analysis row offset overflow"))?;
                 for x in 0..storage_extent.width() {
                     let source_x = x
                         .checked_mul(decimation)
-                        .ok_or_else(|| anyhow!("macOS legacy sample column overflow"))?;
+                        .ok_or_else(|| anyhow!("macOS analysis sample column overflow"))?;
                     let pixel_start = usize::try_from(x)?
                         .checked_mul(4)
                         .and_then(|offset| row_start.checked_add(offset))
-                        .ok_or_else(|| anyhow!("macOS legacy pixel offset overflow"))?;
+                        .ok_or_else(|| anyhow!("macOS analysis pixel offset overflow"))?;
                     let pixel_end = pixel_start
                         .checked_add(4)
-                        .ok_or_else(|| anyhow!("macOS legacy pixel end overflow"))?;
+                        .ok_or_else(|| anyhow!("macOS analysis pixel end overflow"))?;
                     let source_pixel = samples.sample_rgba32f(source_x, source_y)?;
                     plane[pixel_start..pixel_end].copy_from_slice(
                         &tone_map.encode(tone_map.decode_and_map_source(source_pixel)),
@@ -5892,22 +5892,22 @@ mod tests {
     }
 
     #[test]
-    fn legacy_analysis_decimation_keeps_the_surface_near_the_analyzer_budget() {
+    fn analysis_decimation_keeps_the_surface_near_the_analyzer_budget() {
         // Native 4K HDR display (retina 2x): must decimate hard enough to fit
         // the tone-map conversion inside the publication freshness budget.
         let native_4k = PixelExtent::new(4112, 2658).expect("valid extent");
-        assert_eq!(legacy_analysis_decimation(native_4k), 7);
+        assert_eq!(analysis_decimation(native_4k), 7);
         // Surfaces already at or under the analyzer budget pass through exact.
         let analyzer_sized = PixelExtent::new(640, 480).expect("valid extent");
-        assert_eq!(legacy_analysis_decimation(analyzer_sized), 1);
+        assert_eq!(analysis_decimation(analyzer_sized), 1);
         let small_window = PixelExtent::new(320, 200).expect("valid extent");
-        assert_eq!(legacy_analysis_decimation(small_window), 1);
+        assert_eq!(analysis_decimation(small_window), 1);
         // The limiting axis wins: a wide-but-short surface decimates by width.
         let ultrawide = PixelExtent::new(5120, 400).expect("valid extent");
-        assert_eq!(legacy_analysis_decimation(ultrawide), 8);
+        assert_eq!(analysis_decimation(ultrawide), 8);
         // Every decimated sample position stays inside the source surface.
         for extent in [native_4k, analyzer_sized, small_window, ultrawide] {
-            let step = legacy_analysis_decimation(extent);
+            let step = analysis_decimation(extent);
             let last_x = (extent.width().div_ceil(step) - 1) * step;
             let last_y = (extent.height().div_ceil(step) - 1) * step;
             assert!(last_x < extent.width());

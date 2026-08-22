@@ -785,8 +785,6 @@ dependencies = [
  "bytes",
  "gloo-events",
  "js-sys",
- "leptos",
- "leptos-use",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -814,7 +812,6 @@ name = "hypercolor-ui"
 version = "0.3.2"
 dependencies = [
  "bytes",
- "codee",
  "console_error_panic_hook",
  "console_log",
  "gloo-net 0.7.0",

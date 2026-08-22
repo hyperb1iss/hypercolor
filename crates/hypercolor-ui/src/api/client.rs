@@ -12,9 +12,8 @@
 use std::{cell::RefCell, fmt};
 
 use gloo_net::http::{Method, RequestBuilder, Response};
+use hypercolor_types::api::ApiResponse;
 use serde::{Serialize, de::DeserializeOwned};
-
-use super::ApiEnvelope;
 
 #[cfg(target_arch = "wasm32")]
 const API_KEY_STORAGE_KEY: &str = "hypercolor.api_key";
@@ -306,12 +305,12 @@ where
     }
 }
 
-/// Unwrap the [`ApiEnvelope`] from a successful response.
+/// Unwrap the canonical [`ApiResponse`] from a successful response.
 async fn parse_envelope<Res>(resp: Response) -> Result<Res, ApiError>
 where
     Res: DeserializeOwned,
 {
-    let envelope: ApiEnvelope<Res> = resp
+    let envelope: ApiResponse<Res> = resp
         .json()
         .await
         .map_err(|e| ApiError::Parse(e.to_string()))?;
@@ -392,7 +391,7 @@ fn stale_current_version(body: &serde_json::Value) -> Option<u64> {
 
 // ── GET helpers ─────────────────────────────────────────────────────────────
 
-/// GET `url`, unwrap the [`ApiEnvelope`], return the inner data.
+/// GET `url`, unwrap the canonical [`ApiResponse`], return the inner data.
 pub async fn fetch_json<T>(url: &str) -> Result<T, ApiError>
 where
     T: DeserializeOwned,
@@ -415,7 +414,7 @@ where
         return Ok(None);
     }
     let resp = ensure_success(resp).await?;
-    let envelope: ApiEnvelope<T> = resp
+    let envelope: ApiResponse<T> = resp
         .json()
         .await
         .map_err(|e| ApiError::Parse(e.to_string()))?;

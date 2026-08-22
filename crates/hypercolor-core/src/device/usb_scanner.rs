@@ -3,15 +3,14 @@
 use std::collections::{BTreeSet, HashMap};
 
 use anyhow::{Context, Result};
+use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior};
 use hypercolor_hal::database::{DeviceDescriptor, ProtocolDatabase};
-use hypercolor_hal::protocol::{Protocol, ProtocolZone};
+use hypercolor_hal::protocol::Protocol;
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFeatures, DeviceIdentifier,
     DeviceInfo, DeviceOrigin, DeviceTopologyHint, USB_OUTPUT_BACKEND_ID,
 };
 use hypercolor_types::portable::{PortableIdentityClaim, SerialNormalizerRegistry};
-
-use super::{DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner};
 
 /// The serial normalizations reviewed for cross-OS stability.
 ///
@@ -57,11 +56,7 @@ impl UsbScanner {
         device_id: hypercolor_types::device::DeviceId,
     ) -> DeviceInfo {
         let (segments, capabilities) = if let Some(protocol) = protocol {
-            let segments = protocol
-                .zones()
-                .into_iter()
-                .map(protocol_zone_to_segment_info)
-                .collect::<Vec<_>>();
+            let segments = protocol.zones();
             (segments, protocol.capabilities())
         } else {
             let fallback_led_count = 1_u32;
@@ -117,13 +112,9 @@ impl Default for UsbScanner {
     }
 }
 
-#[async_trait::async_trait]
-impl TransportScanner for UsbScanner {
-    fn name(&self) -> &'static str {
-        "USB HAL"
-    }
-
-    async fn scan(&mut self) -> Result<Vec<DiscoveredDevice>> {
+impl UsbScanner {
+    /// Discover USB devices supported by the enabled HAL driver set.
+    pub async fn scan(&mut self) -> Result<Vec<DiscoveredDevice>> {
         let devices = nusb::list_devices()
             .await
             .context("failed to enumerate USB devices")?;
@@ -151,7 +142,7 @@ impl TransportScanner for UsbScanner {
                 serial: usb.serial_number().map(ToOwned::to_owned),
                 usb_path: (!path.is_empty()).then_some(path.clone()),
             };
-            let fingerprint = identifier.fingerprint();
+            let fingerprint = identifier.fingerprint(&descriptor.driver_id());
             let info = Self::build_device_info(
                 &usb,
                 descriptor,
@@ -196,16 +187,6 @@ impl TransportScanner for UsbScanner {
         }
 
         Ok(discovered)
-    }
-}
-
-fn protocol_zone_to_segment_info(zone: ProtocolZone) -> hypercolor_types::device::SegmentInfo {
-    hypercolor_types::device::SegmentInfo {
-        name: zone.name,
-        led_count: zone.led_count,
-        topology: zone.topology,
-        color_format: zone.color_format,
-        layout_hint: zone.layout_hint,
     }
 }
 

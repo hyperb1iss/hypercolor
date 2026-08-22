@@ -27,11 +27,11 @@ use serde::{Serialize, Serializer};
 use tokio::sync::{broadcast, watch};
 
 use crate::input::{SourceFreshness, SourceKind, SourceState, SourceStatus};
-use crate::types::canvas::{Canvas, PublishedSurface};
-use crate::types::device::{DeviceId, DisplayFrameFormat};
-use crate::types::event::{FrameData, HypercolorEvent, SpectrumData};
-use crate::types::scene::{DisplayFaceBlendMode, DisplayFaceTarget, SceneId, ZoneId};
-use crate::types::spatial::{EdgeBehavior, NormalizedPosition};
+use hypercolor_types::canvas::{Canvas, PublishedSurface};
+use hypercolor_types::device::{DeviceId, DisplayFrameFormat};
+use hypercolor_types::event::{FrameData, HypercolorEvent, SpectrumData};
+use hypercolor_types::scene::{DisplayFaceBlendMode, DisplayFaceTarget, SceneId, ZoneId};
+use hypercolor_types::spatial::{EdgeBehavior, NormalizedPosition};
 
 // ── Constants ────────────────────────────────────────────────────────────
 
@@ -525,6 +525,175 @@ struct DisplayGroupOutputRouteRegistry {
     routes: HashMap<ZoneId, DisplayGroupOutputRoute>,
 }
 
+/// Immutable counters for one latest-value bus lane.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WatchLaneStats {
+    /// Number of active receivers derived from the watch sender.
+    pub receivers: usize,
+    /// Number of logical values published through the lane.
+    pub published: u64,
+    /// Number of successful watch value replacements.
+    pub revision: u64,
+}
+
+/// A typed latest-value channel with authoritative publication telemetry.
+#[derive(Debug)]
+pub struct WatchLane<T> {
+    sender: watch::Sender<T>,
+    published: AtomicU64,
+    revision: AtomicU64,
+}
+
+impl<T> WatchLane<T> {
+    /// Create a lane with its initial latest value.
+    #[must_use]
+    pub fn new(initial: T) -> Self {
+        let (sender, _) = watch::channel(initial);
+        Self {
+            sender,
+            published: AtomicU64::new(0),
+            revision: AtomicU64::new(0),
+        }
+    }
+
+    /// Subscribe to the latest value.
+    #[must_use]
+    pub fn subscribe(&self) -> watch::Receiver<T> {
+        self.sender.subscribe()
+    }
+
+    /// Borrow the latest published value.
+    #[must_use]
+    pub fn borrow(&self) -> watch::Ref<'_, T> {
+        self.sender.borrow()
+    }
+
+    /// Publish a value when at least one receiver exists.
+    pub fn send(&self, value: T) -> Result<(), watch::error::SendError<T>> {
+        self.send_weighted(value, 1)
+    }
+
+    /// Publish a value and count an explicit number of logical payloads.
+    pub fn send_weighted(
+        &self,
+        value: T,
+        published: u64,
+    ) -> Result<(), watch::error::SendError<T>> {
+        self.sender.send(value)?;
+        self.record_publication(published);
+        Ok(())
+    }
+
+    /// Replace the latest value even when no receivers exist.
+    pub fn send_replace(&self, value: T) -> T {
+        self.send_replace_weighted(value, 1)
+    }
+
+    /// Replace the latest value and count an explicit number of payloads.
+    pub fn send_replace_weighted(&self, value: T, published: u64) -> T {
+        let previous = self.sender.send_replace(value);
+        self.record_publication(published);
+        previous
+    }
+
+    /// Mutate the latest value in place and notify receivers.
+    pub fn send_modify(&self, modify: impl FnOnce(&mut T)) {
+        self.sender.send_modify(modify);
+        self.record_publication(1);
+    }
+
+    /// Mutate and publish only when the closure reports a value change.
+    pub fn send_if_modified(&self, modify: impl FnOnce(&mut T) -> bool) -> bool {
+        let modified = self.sender.send_if_modified(modify);
+        if modified {
+            self.record_publication(1);
+        }
+        modified
+    }
+
+    /// Snapshot receiver and publication telemetry.
+    #[must_use]
+    pub fn stats(&self) -> WatchLaneStats {
+        let revision = self.revision.load(Ordering::Acquire);
+        let published = self.published.load(Ordering::Relaxed);
+        WatchLaneStats {
+            receivers: self.sender.receiver_count(),
+            published,
+            revision,
+        }
+    }
+
+    fn record_publication(&self, published: u64) {
+        self.published.fetch_add(published, Ordering::Relaxed);
+        self.revision.fetch_add(1, Ordering::Release);
+    }
+}
+
+/// The homogeneous canvas-preview lanes owned by [`BusLanes`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PreviewKind {
+    Canvas,
+    SceneCanvas,
+    ScreenCanvas,
+    WebViewportCanvas,
+}
+
+/// Typed aggregate of all fixed latest-value channels on the bus.
+#[derive(Debug)]
+pub struct BusLanes {
+    frame: WatchLane<FrameData>,
+    spectrum: WatchLane<SpectrumData>,
+    previews: [WatchLane<CanvasFrame>; 4],
+    screen_zones: WatchLane<ScreenZonesFrame>,
+    zone_preview: WatchLane<Arc<[ZonePreviewFrame]>>,
+}
+
+impl BusLanes {
+    fn new() -> Self {
+        Self {
+            frame: WatchLane::new(FrameData::empty()),
+            spectrum: WatchLane::new(SpectrumData::empty()),
+            previews: std::array::from_fn(|_| WatchLane::new(CanvasFrame::empty())),
+            screen_zones: WatchLane::new(ScreenZonesFrame::default()),
+            zone_preview: WatchLane::new(Arc::from([])),
+        }
+    }
+
+    #[must_use]
+    pub const fn frame(&self) -> &WatchLane<FrameData> {
+        &self.frame
+    }
+
+    #[must_use]
+    pub const fn spectrum(&self) -> &WatchLane<SpectrumData> {
+        &self.spectrum
+    }
+
+    #[must_use]
+    pub const fn preview(&self, kind: PreviewKind) -> &WatchLane<CanvasFrame> {
+        &self.previews[preview_kind_index(kind)]
+    }
+
+    #[must_use]
+    pub const fn screen_zones(&self) -> &WatchLane<ScreenZonesFrame> {
+        &self.screen_zones
+    }
+
+    #[must_use]
+    pub const fn zone_preview(&self) -> &WatchLane<Arc<[ZonePreviewFrame]>> {
+        &self.zone_preview
+    }
+}
+
+const fn preview_kind_index(kind: PreviewKind) -> usize {
+    match kind {
+        PreviewKind::Canvas => 0,
+        PreviewKind::SceneCanvas => 1,
+        PreviewKind::ScreenCanvas => 2,
+        PreviewKind::WebViewportCanvas => 3,
+    }
+}
+
 // ── HypercolorBus ────────────────────────────────────────────────────────
 
 /// The central event bus. Owns all channels and provides typed
@@ -541,27 +710,8 @@ pub struct HypercolorBus {
     /// Last published input status per source, used to suppress duplicates.
     input_status_events: Arc<Mutex<HashMap<String, InputSourceStatusEvent>>>,
 
-    /// Latest LED color data for all zones.
-    frame: watch::Sender<FrameData>,
-
-    /// Latest audio spectrum analysis data.
-    spectrum: watch::Sender<SpectrumData>,
-
-    /// Latest render canvas snapshot.
-    canvas: watch::Sender<CanvasFrame>,
-
-    /// Latest authoritative full-scene canvas snapshot for scene consumers.
-    scene_canvas: watch::Sender<CanvasFrame>,
-
-    /// Latest screen-source canvas snapshot.
-    screen_canvas: watch::Sender<CanvasFrame>,
-    screen_zones: watch::Sender<ScreenZonesFrame>,
-
-    /// Latest high-resolution web viewport source canvas snapshot.
-    web_viewport_canvas: watch::Sender<CanvasFrame>,
-
-    /// Latest per-zone preview frames for Studio.
-    zone_preview: watch::Sender<Vec<ZonePreviewFrame>>,
+    /// Fixed typed latest-value channels and their authoritative telemetry.
+    lanes: Arc<BusLanes>,
 
     /// Latest per-render-group canvases for direct display consumption.
     group_canvases: Arc<Mutex<HashMap<ZoneId, watch::Sender<DisplayGroupFrame>>>>,
@@ -581,26 +731,10 @@ impl HypercolorBus {
     #[must_use]
     pub fn new() -> Self {
         let (events, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
-        let (frame, _) = watch::channel(FrameData::empty());
-        let (spectrum, _) = watch::channel(SpectrumData::empty());
-        let (canvas, _) = watch::channel(CanvasFrame::empty());
-        let (scene_canvas, _) = watch::channel(CanvasFrame::empty());
-        let (screen_canvas, _) = watch::channel(CanvasFrame::empty());
-        let (screen_zones, _) = watch::channel(ScreenZonesFrame::default());
-        let (web_viewport_canvas, _) = watch::channel(CanvasFrame::empty());
-        let (zone_preview, _) = watch::channel(Vec::new());
-
         Self {
             events,
             input_status_events: Arc::new(Mutex::new(HashMap::new())),
-            frame,
-            spectrum,
-            canvas,
-            scene_canvas,
-            screen_canvas,
-            screen_zones,
-            web_viewport_canvas,
-            zone_preview,
+            lanes: Arc::new(BusLanes::new()),
             group_canvases: Arc::new(Mutex::new(HashMap::new())),
             display_group_targets: Arc::new(Mutex::new(DisplayGroupTargetRegistry::default())),
             display_group_output_routes: Arc::new(Mutex::new(
@@ -670,148 +804,154 @@ impl HypercolorBus {
         FilteredEventReceiver::new(self.events.subscribe(), filter)
     }
 
-    /// Access the frame data watch sender (for the render loop to publish).
+    /// Access every fixed latest-value lane.
     #[must_use]
-    pub fn frame_sender(&self) -> &watch::Sender<FrameData> {
-        &self.frame
+    pub fn lanes(&self) -> &BusLanes {
+        &self.lanes
+    }
+
+    /// Access the frame data lane.
+    #[must_use]
+    pub fn frame_lane(&self) -> &WatchLane<FrameData> {
+        self.lanes.frame()
     }
 
     /// Subscribe to frame data (latest-value semantics).
     #[must_use]
     pub fn frame_receiver(&self) -> watch::Receiver<FrameData> {
-        self.frame.subscribe()
+        self.lanes.frame().subscribe()
     }
 
     /// Number of active frame watch receivers.
     #[must_use]
     pub fn frame_receiver_count(&self) -> usize {
-        self.frame.receiver_count()
+        self.lanes.frame().stats().receivers
     }
 
-    /// Access the spectrum data watch sender (for the audio processor to publish).
+    /// Access the spectrum data lane.
     #[must_use]
-    pub fn spectrum_sender(&self) -> &watch::Sender<SpectrumData> {
-        &self.spectrum
+    pub fn spectrum_lane(&self) -> &WatchLane<SpectrumData> {
+        self.lanes.spectrum()
     }
 
     /// Subscribe to spectrum data (latest-value semantics).
     #[must_use]
     pub fn spectrum_receiver(&self) -> watch::Receiver<SpectrumData> {
-        self.spectrum.subscribe()
+        self.lanes.spectrum().subscribe()
     }
 
     /// Number of active spectrum watch receivers.
     #[must_use]
     pub fn spectrum_receiver_count(&self) -> usize {
-        self.spectrum.receiver_count()
+        self.lanes.spectrum().stats().receivers
     }
 
-    /// Access the canvas watch sender (for render preview publication).
+    /// Access the composed-canvas preview lane.
     #[must_use]
-    pub fn canvas_sender(&self) -> &watch::Sender<CanvasFrame> {
-        &self.canvas
+    pub fn canvas_lane(&self) -> &WatchLane<CanvasFrame> {
+        self.lanes.preview(PreviewKind::Canvas)
     }
 
     /// Subscribe to canvas updates (latest-value semantics).
     #[must_use]
     pub fn canvas_receiver(&self) -> watch::Receiver<CanvasFrame> {
-        self.canvas.subscribe()
+        self.canvas_lane().subscribe()
     }
 
     /// Number of active canvas watch receivers.
     #[must_use]
     pub fn canvas_receiver_count(&self) -> usize {
-        self.canvas.receiver_count()
+        self.canvas_lane().stats().receivers
     }
 
-    /// Access the authoritative scene-canvas watch sender.
+    /// Access the authoritative scene-canvas lane.
     #[must_use]
-    pub fn scene_canvas_sender(&self) -> &watch::Sender<CanvasFrame> {
-        &self.scene_canvas
+    pub fn scene_canvas_lane(&self) -> &WatchLane<CanvasFrame> {
+        self.lanes.preview(PreviewKind::SceneCanvas)
     }
 
     /// Subscribe to authoritative scene-canvas updates.
     #[must_use]
     pub fn scene_canvas_receiver(&self) -> watch::Receiver<CanvasFrame> {
-        self.scene_canvas.subscribe()
+        self.scene_canvas_lane().subscribe()
     }
 
     /// Number of active authoritative scene-canvas receivers.
     #[must_use]
     pub fn scene_canvas_receiver_count(&self) -> usize {
-        self.scene_canvas.receiver_count()
+        self.scene_canvas_lane().stats().receivers
     }
 
-    /// Access the screen-canvas watch sender (for source preview publication).
+    /// Access the screen-source canvas lane.
     #[must_use]
-    pub fn screen_canvas_sender(&self) -> &watch::Sender<CanvasFrame> {
-        &self.screen_canvas
+    pub fn screen_canvas_lane(&self) -> &WatchLane<CanvasFrame> {
+        self.lanes.preview(PreviewKind::ScreenCanvas)
     }
 
     /// Subscribe to screen-canvas updates (latest-value semantics).
     #[must_use]
     pub fn screen_canvas_receiver(&self) -> watch::Receiver<CanvasFrame> {
-        self.screen_canvas.subscribe()
+        self.screen_canvas_lane().subscribe()
     }
 
     /// Number of active screen-canvas watch receivers.
     #[must_use]
     pub fn screen_canvas_receiver_count(&self) -> usize {
-        self.screen_canvas.receiver_count()
+        self.screen_canvas_lane().stats().receivers
     }
 
-    /// Access the ambilight screen-zones watch sender.
+    /// Access the ambilight screen-zones lane.
     #[must_use]
-    pub fn screen_zones_sender(&self) -> &watch::Sender<ScreenZonesFrame> {
-        &self.screen_zones
+    pub fn screen_zones_lane(&self) -> &WatchLane<ScreenZonesFrame> {
+        self.lanes.screen_zones()
     }
 
     /// Subscribe to ambilight screen-zone updates (latest-value semantics).
     #[must_use]
     pub fn screen_zones_receiver(&self) -> watch::Receiver<ScreenZonesFrame> {
-        self.screen_zones.subscribe()
+        self.screen_zones_lane().subscribe()
     }
 
     /// Number of active screen-zones watch receivers.
     #[must_use]
     pub fn screen_zones_receiver_count(&self) -> usize {
-        self.screen_zones.receiver_count()
+        self.screen_zones_lane().stats().receivers
     }
 
-    /// Access the web-viewport preview watch sender.
+    /// Access the web-viewport preview lane.
     #[must_use]
-    pub fn web_viewport_canvas_sender(&self) -> &watch::Sender<CanvasFrame> {
-        &self.web_viewport_canvas
+    pub fn web_viewport_canvas_lane(&self) -> &WatchLane<CanvasFrame> {
+        self.lanes.preview(PreviewKind::WebViewportCanvas)
     }
 
     /// Subscribe to web-viewport preview updates.
     #[must_use]
     pub fn web_viewport_canvas_receiver(&self) -> watch::Receiver<CanvasFrame> {
-        self.web_viewport_canvas.subscribe()
+        self.web_viewport_canvas_lane().subscribe()
     }
 
     /// Number of active web-viewport preview receivers.
     #[must_use]
     pub fn web_viewport_canvas_receiver_count(&self) -> usize {
-        self.web_viewport_canvas.receiver_count()
+        self.web_viewport_canvas_lane().stats().receivers
     }
 
-    /// Access the zone-preview watch sender.
+    /// Access the zone-preview lane.
     #[must_use]
-    pub fn zone_preview_sender(&self) -> &watch::Sender<Vec<ZonePreviewFrame>> {
-        &self.zone_preview
+    pub fn zone_preview_lane(&self) -> &WatchLane<Arc<[ZonePreviewFrame]>> {
+        self.lanes.zone_preview()
     }
 
     /// Subscribe to per-zone preview frame batches.
     #[must_use]
-    pub fn zone_preview_receiver(&self) -> watch::Receiver<Vec<ZonePreviewFrame>> {
-        self.zone_preview.subscribe()
+    pub fn zone_preview_receiver(&self) -> watch::Receiver<Arc<[ZonePreviewFrame]>> {
+        self.zone_preview_lane().subscribe()
     }
 
     /// Number of active zone-preview receivers.
     #[must_use]
     pub fn zone_preview_receiver_count(&self) -> usize {
-        self.zone_preview.receiver_count()
+        self.zone_preview_lane().stats().receivers
     }
 
     /// Access or create the per-group canvas sender for a zone.

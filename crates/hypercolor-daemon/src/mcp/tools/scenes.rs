@@ -2,16 +2,17 @@
 
 use serde_json::{Value, json};
 
-use super::{ToolDefinition, ToolError, default_output_schema};
-use crate::api::AppState;
-use crate::api::scenes::{asset_mime_types, current_media_config};
-use crate::domain::scene::{
-    ActivateScene, CreateScene, activate_scene, create_scene, evaluate_scene_media_admission,
-};
+use super::{ToolDefinition, ToolError, output_schema, serialize_result};
+use crate::app_state::AppState;
+use crate::domain::scene::{ActivateScene, CreateScene, activate_scene, create_scene};
 use crate::domain::scene_tree::{ClearScene, PatchLayerControls};
 use crate::domain::{DomainError, MutationContext};
+use crate::mcp::results::{
+    ActivateSceneResult, AdjustControlsResult, CreateSceneResult, SceneListItem, SceneListResult,
+};
 use crate::mcp::selector::SelectorCandidate;
-use hypercolor_types::api::scene::PatchControlsRequest;
+use hypercolor_types::api::scene::{PatchControlsRequest, SceneDocument};
+use hypercolor_types::api::scenes::ActivatedSceneRef;
 use hypercolor_types::scene::TransitionSpec;
 use hypercolor_types::scene::ZoneRole;
 use hypercolor_types::scene::{SceneKind, SceneMutationMode};
@@ -41,7 +42,7 @@ pub(super) fn build_activate_scene() -> ToolDefinition {
             "required": ["name"],
             "additionalProperties": false
         }),
-        output_schema: default_output_schema(),
+        output_schema: output_schema::<ActivateSceneResult>(),
         read_only: false,
         destructive: true,
         idempotent: true,
@@ -64,7 +65,7 @@ pub(super) fn build_list_scenes() -> ToolDefinition {
             },
             "additionalProperties": false
         }),
-        output_schema: default_output_schema(),
+        output_schema: output_schema::<SceneListResult>(),
         read_only: true,
         destructive: false,
         idempotent: true,
@@ -102,7 +103,7 @@ pub(super) fn build_create_scene() -> ToolDefinition {
             "required": ["name"],
             "additionalProperties": false
         }),
-        output_schema: default_output_schema(),
+        output_schema: output_schema::<CreateSceneResult>(),
         read_only: false,
         destructive: false,
         idempotent: false,
@@ -124,7 +125,7 @@ pub(super) fn build_clear_zone() -> ToolDefinition {
             },
             "additionalProperties": false
         }),
-        output_schema: default_output_schema(),
+        output_schema: output_schema::<SceneDocument>(),
         read_only: false,
         destructive: true,
         idempotent: true,
@@ -163,7 +164,7 @@ pub(super) fn build_adjust_controls() -> ToolDefinition {
             "required": ["zone", "layer"],
             "additionalProperties": false
         }),
-        output_schema: default_output_schema(),
+        output_schema: output_schema::<AdjustControlsResult>(),
         read_only: false,
         destructive: false,
         idempotent: true,
@@ -185,11 +186,8 @@ pub(super) async fn handle_activate_scene_with_state(
         .get("transition_ms")
         .and_then(Value::as_u64)
         .unwrap_or(1000);
-    let asset_mime_types = asset_mime_types(state).await;
-    let media_config = current_media_config(state);
-
     let scene = {
-        let scene_manager = state.scene_manager.read().await;
+        let scene_manager = state.scene_manager.snapshot().await;
         let candidates = scene_manager
             .list()
             .into_iter()
@@ -201,21 +199,13 @@ pub(super) async fn handle_activate_scene_with_state(
             .map_err(|error| ToolError::selector("name", error))?
     };
 
-    let admission = evaluate_scene_media_admission(&scene, &asset_mime_types, &media_config);
+    let admission = state.domains.scene.evaluate_media_admission(&scene).await;
     if let Some(details) = admission.violation.as_ref() {
-        return Ok(json!({
-            "activated": false,
-            "message": details.message,
-            "details": {
-                "caps": details.caps,
-                "counts": details.counts,
-                "layers": details.layers,
-            }
-        }));
+        return Err(ToolError::Conflict(details.message.clone()));
     }
 
     let activated = activate_scene(
-        state,
+        &state.domains.scene_library,
         ActivateScene {
             scene_id: scene.id,
             transition: Some(TransitionSpec {
@@ -223,18 +213,17 @@ pub(super) async fn handle_activate_scene_with_state(
                 ..scene.transition.clone()
             }),
         },
-        MutationContext::mcp(),
     )
     .await?;
 
-    Ok(json!({
-        "activated": true,
-        "scene": {
-            "id": activated.scene_id.to_string(),
-            "name": activated.scene_name
+    serialize_result(ActivateSceneResult {
+        activated: true,
+        scene: ActivatedSceneRef {
+            id: activated.scene_id.to_string(),
+            name: activated.scene_name,
         },
-        "transition_ms": transition_ms
-    }))
+        transition_ms,
+    })
 }
 
 pub(super) async fn handle_clear_zone_with_state(
@@ -243,16 +232,14 @@ pub(super) async fn handle_clear_zone_with_state(
 ) -> Result<Value, ToolError> {
     let Some(zone) = params.get("zone") else {
         let written = crate::domain::scene_tree::clear_scene(
-            state,
+            &state.domains.scene_tree,
             ClearScene {
                 zone: None,
                 expected_revision: None,
             },
-            MutationContext::mcp(),
         )
         .await?;
-        return serde_json::to_value(written.document)
-            .map_err(|error| ToolError::Internal(error.to_string()));
+        return serialize_result(written.document);
     };
     let Value::String(query) = zone else {
         return Err(ToolError::InvalidParam {
@@ -262,7 +249,7 @@ pub(super) async fn handle_clear_zone_with_state(
     };
 
     loop {
-        let document = crate::domain::scene_tree::read_document(state).await?;
+        let document = crate::domain::scene_tree::read_document(&state.domains.scene_tree).await?;
         let revision = document.revision;
         let candidates = document
             .zones
@@ -279,18 +266,16 @@ pub(super) async fn handle_clear_zone_with_state(
         }
 
         match crate::domain::scene_tree::clear_scene(
-            state,
+            &state.domains.scene_tree,
             ClearScene {
                 zone: Some(zone.id),
                 expected_revision: Some(revision),
             },
-            MutationContext::mcp(),
         )
         .await
         {
             Ok(written) => {
-                return serde_json::to_value(written.document)
-                    .map_err(|error| ToolError::Internal(error.to_string()));
+                return serialize_result(written.document);
             }
             Err(error) if scene_snapshot_was_superseded(&error) => {}
             Err(error) => return Err(error.into()),
@@ -324,7 +309,7 @@ pub(super) async fn handle_adjust_controls_with_state(
     })?;
 
     loop {
-        let document = crate::domain::scene_tree::read_document(state).await?;
+        let document = crate::domain::scene_tree::read_document(&state.domains.scene_tree).await?;
         let revision = document.revision;
         let zone_candidates = document
             .zones
@@ -352,16 +337,25 @@ pub(super) async fn handle_adjust_controls_with_state(
         let layer = crate::mcp::selector::resolve(layer_query, layer_candidates)
             .map_err(|error| ToolError::selector("layer", error))?;
 
+        let mut values = std::collections::HashMap::with_capacity(patch.values.len());
+        for (name, value) in &patch.values {
+            values.insert(
+                name.clone(),
+                value
+                    .to_effect_wire()
+                    .map_err(|error| ToolError::InvalidParam {
+                        param: format!("values.{name}"),
+                        reason: error.to_string(),
+                    })?,
+            );
+        }
+
         match crate::domain::scene_tree::patch_layer_controls(
-            state,
+            &state.domains.scene_tree,
             PatchLayerControls {
                 zone_id: zone.id,
                 layer_id: layer.id,
-                values: patch
-                    .values
-                    .iter()
-                    .map(|(id, value)| (id.clone(), value.clone()))
-                    .collect(),
+                values,
                 clear_bindings: patch.clear_bindings.clone(),
                 expected_revision: Some(revision),
             },
@@ -370,10 +364,10 @@ pub(super) async fn handle_adjust_controls_with_state(
         .await
         {
             Ok(written) => {
-                return Ok(json!({
-                    "zone": written.zone,
-                    "revision": written.revision,
-                }));
+                return serialize_result(AdjustControlsResult {
+                    zone: written.zone,
+                    revision: written.revision,
+                });
             }
             Err(error) if scene_snapshot_was_superseded(&error) => {}
             Err(error) => return Err(error.into()),
@@ -394,29 +388,25 @@ pub(super) async fn handle_list_scenes_with_state(
         .and_then(Value::as_bool)
         .unwrap_or(false);
 
-    let scene_manager = state.scene_manager.read().await;
+    let scene_manager = state.scene_manager.snapshot().await;
     let active_scene_id = scene_manager.active_scene_id().copied();
     let scenes = scene_manager
         .list()
         .into_iter()
         .filter(|scene| scene.kind != SceneKind::Ephemeral)
         .filter(|scene| !enabled_only || scene.enabled)
-        .map(|scene| {
-            json!({
-                "id": scene.id.to_string(),
-                "name": scene.name,
-                "description": scene.description,
-                "enabled": scene.enabled,
-                "mutation_mode": scene.mutation_mode,
-                "active": Some(scene.id) == active_scene_id
-            })
+        .map(|scene| SceneListItem {
+            id: scene.id.to_string(),
+            name: scene.name.clone(),
+            description: scene.description.clone(),
+            enabled: scene.enabled,
+            mutation_mode: scene.mutation_mode,
+            active: Some(scene.id) == active_scene_id,
         })
         .collect::<Vec<_>>();
 
-    Ok(json!({
-        "scenes": scenes,
-        "total": scenes.len()
-    }))
+    let total = scenes.len();
+    serialize_result(SceneListResult { scenes, total })
 }
 
 pub(super) async fn handle_create_scene_with_state(
@@ -443,7 +433,7 @@ pub(super) async fn handle_create_scene_with_state(
     };
 
     let created = create_scene(
-        state,
+        &state.domains.scene_library,
         CreateScene {
             name: name.to_owned(),
             description: params
@@ -454,14 +444,13 @@ pub(super) async fn handle_create_scene_with_state(
             mutation_mode: Some(mutation_mode),
             metadata: std::collections::HashMap::default(),
         },
-        MutationContext::mcp(),
     )
     .await?;
 
-    Ok(json!({
-        "scene_id": created.scene.id.to_string(),
-        "name": created.scene.name,
-        "enabled": created.scene.enabled,
-        "mutation_mode": created.scene.mutation_mode
-    }))
+    serialize_result(CreateSceneResult {
+        scene_id: created.scene.id.to_string(),
+        name: created.scene.name,
+        enabled: created.scene.enabled,
+        mutation_mode: created.scene.mutation_mode,
+    })
 }

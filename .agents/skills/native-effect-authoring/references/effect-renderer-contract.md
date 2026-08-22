@@ -8,10 +8,10 @@ The canonical audio-reactive effect. Key implementation patterns:
 
 ```rust
 pub struct AudioPulseRenderer {
-    base_color: [f32; 4],     // Linear RGBA — from Color control
+    base_color: [f32; 4],     // Linear RGBA from the Color control
     peak_color: [f32; 4],     // Linear RGBA
     sensitivity: f32,         // Multiplier for RMS level
-    beat_decay: f32,          // 0.85 typical — exponential per-frame decay
+    beat_decay: f32,          // 0.85 typical, exponential per-frame decay
     beat_flash: f32,          // Current decay state (0.0 to 1.0)
     brightness: f32,          // Master brightness scalar
 }
@@ -20,8 +20,11 @@ pub struct AudioPulseRenderer {
 ### Beat Decay Pattern
 
 ```rust
-fn tick(&mut self, input: &FrameInput<'_>) -> anyhow::Result<Canvas> {
-    let mut canvas = Canvas::new(input.canvas_width, input.canvas_height);
+fn render_into(
+    &mut self,
+    input: &FrameInput<'_>,
+    canvas: &mut Canvas,
+) -> anyhow::Result<()> {
 
     // RMS-driven base blend
     let rms_t = (input.audio.rms_level * self.sensitivity).clamp(0.0, 1.0);
@@ -49,15 +52,20 @@ fn tick(&mut self, input: &FrameInput<'_>) -> anyhow::Result<Canvas> {
     final_color.b *= self.brightness;
 
     canvas.fill(final_color.to_encoded());
-    Ok(canvas)
+    Ok(())
 }
 ```
 
-**Key insight**: `beat_decay` of 0.85 means the flash halves in ~4 frames at 30 FPS (~133ms). Adjust for desired tail length. Lower values = snappier, higher = smoother trails. Brightness is applied by direct field multiplication on `LinearRgba` -- there is no `scale_rgb` method on the type.
+**Key insight**: `beat_decay` of 0.85 means the flash halves in about 4 frames
+at 30 FPS (about 133ms). Adjust for the desired tail length. Lower values are
+snappier, while higher values produce smoother trails. Brightness is applied by
+direct field multiplication on `LinearRgba`; the type has no `scale_rgb` method.
 
 ### Color Control Value Handling
 
-Color controls arrive as `ControlValue::Color([f32; 4])` in **linear RGBA** (0.0-1.0 range). The UI color picker produces sRGB, which the API converts to linear before delivering to the renderer.
+Color controls arrive as `ControlValue::ColorLinear(LinearRgba)` in linear
+RGBA. The UI color picker produces sRGB, and admission converts it to linear
+before delivery.
 
 Do all math in linear space. Convert to sRGB only at the final `canvas.fill()` / `canvas.set_pixel()` step.
 
@@ -66,8 +74,11 @@ Do all math in linear space. Convert to sRGB only at the final `canvas.fill()` /
 Shows per-pixel rendering across the canvas:
 
 ```rust
-fn tick(&mut self, input: &FrameInput<'_>) -> anyhow::Result<Canvas> {
-    let mut canvas = Canvas::new(input.canvas_width, input.canvas_height);
+fn render_into(
+    &mut self,
+    input: &FrameInput<'_>,
+    canvas: &mut Canvas,
+) -> anyhow::Result<()> {
     let width = input.canvas_width as f32;
 
     for x in 0..input.canvas_width {
@@ -82,11 +93,13 @@ fn tick(&mut self, input: &FrameInput<'_>) -> anyhow::Result<Canvas> {
             canvas.set_pixel(x, y, srgb);
         }
     }
-    Ok(canvas)
+    Ok(())
 }
 ```
 
-**Pattern**: Iterate columns (x), compute color per column, fill all rows (y). This is efficient because most LED layouts sample horizontally — vertical variation is secondary.
+**Pattern**: Iterate columns (x), compute color per column, and fill all rows
+(y). Most LED layouts sample horizontally, while vertical variation is
+secondary.
 
 ## Gradient: Multi-Stop Interpolation
 
@@ -104,21 +117,22 @@ fn sample_gradient(stops: &[GradientStop], t: f32) -> LinearRgba {
 }
 ```
 
-Never interpolate gradients in sRGB — the midpoints desaturate. Oklch produces clean, vibrant transitions.
+Never interpolate gradients in sRGB because the midpoints desaturate. Oklch produces clean, vibrant transitions.
 
 ## Control Value Type Reference
 
-| ControlValue Variant          | Rust Type | Typical Use                   |
-| ----------------------------- | --------- | ----------------------------- |
-| `Float(f32)`                  | f32       | Speed, sensitivity, frequency |
-| `Boolean(bool)`               | bool      | Toggle features on/off        |
-| `Color([f32; 4])`             | [f32; 4]  | Linear RGBA, 0.0-1.0          |
-| `Gradient(Vec<GradientStop>)` | Vec       | Multi-stop color ramp         |
-| `Enum(String)`                | String    | Named options (palette, mode) |
-| `Integer(i32)`                | i32       | Discrete counts               |
-| `Text(String)`                | String    | Labels, names                 |
+| ControlValue Variant          | Rust Type    | Typical Use                   |
+| ----------------------------- | ------------ | ----------------------------- |
+| `Float(f64)`                  | f64          | Speed, sensitivity, frequency |
+| `Bool(bool)`                  | bool         | Toggle features on/off        |
+| `ColorLinear(LinearRgba)`     | LinearRgba   | Linear RGBA                   |
+| `Gradient(Vec<GradientStop>)` | Vec          | Multi-stop color ramp         |
+| `Enum(String)`                | String       | Named options (palette, mode) |
+| `Int(i64)`                    | i64          | Discrete counts               |
+| `Text(String)`                | String       | Labels, names                 |
 
-Use `value.as_f32()` for safe Float extraction. Match on the variant for everything else.
+Use `value.as_effect_f32()` for a range-checked renderer scalar. Match on the
+variant for everything else.
 
 ## Testing Native Effects
 
@@ -126,8 +140,13 @@ Use `value.as_f32()` for safe Float extraction. Match on the variant for everyth
 #[test]
 fn audio_pulse_fills_canvas_with_blended_color() {
     let mut renderer = AudioPulseRenderer::new();
-    renderer.set_control("base_color", &ControlValue::Color([1.0, 0.0, 0.0, 1.0]));
-    renderer.set_control("peak_color", &ControlValue::Color([0.0, 0.0, 1.0, 1.0]));
+    let changes = [
+        (ControlId::from("base_color"), ControlValue::ColorLinear(LinearRgba::new(1.0, 0.0, 0.0, 1.0))),
+        (ControlId::from("peak_color"), ControlValue::ColorLinear(LinearRgba::new(0.0, 0.0, 1.0, 1.0))),
+    ];
+    renderer
+        .apply_controls(&ControlDeltaBatch::new(SetRevision::default(), 0, &changes))
+        .expect("control batch");
 
     let audio = AudioData {
         rms_level: 0.5,
@@ -144,7 +163,10 @@ fn audio_pulse_fills_canvas_with_blended_color() {
         canvas_height: 200,
     };
 
-    let canvas = renderer.tick(&input).unwrap();
+    let mut canvas = Canvas::new(input.canvas_width, input.canvas_height);
+    renderer
+        .render_into(&input, &mut canvas)
+        .expect("effect render");
 
     // At 50% RMS, color should be midpoint blend
     let pixel = canvas.get_pixel(0, 0);
@@ -153,4 +175,5 @@ fn audio_pulse_fills_canvas_with_blended_color() {
 }
 ```
 
-Create mock `AudioData` and `FrameInput` to test rendering without daemon or audio input. Verify pixel values match expected blends.
+Create mock `AudioData` and `FrameInput` to test rendering without daemon or
+audio input. Verify pixel values match expected blends.

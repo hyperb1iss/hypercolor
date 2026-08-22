@@ -1,12 +1,12 @@
 use std::collections::HashSet;
+use std::sync::Arc;
 use std::time::Instant;
 
-use hypercolor_core::bus::{CanvasFrame, DisplayGroupFrame, ZonePreviewFrame};
-use hypercolor_core::types::audio::AudioData;
-use hypercolor_core::types::canvas::{Canvas, PublishedSurface, PublishedSurfaceStorageIdentity};
-use hypercolor_core::types::event::{FrameData, FrameTiming, HypercolorEvent, SpectrumData};
+use hypercolor_core::bus::{CanvasFrame, DisplayGroupFrame, WatchLane, ZonePreviewFrame};
+use hypercolor_types::audio::AudioData;
+use hypercolor_types::canvas::{Canvas, PublishedSurface, PublishedSurfaceStorageIdentity};
+use hypercolor_types::event::{FrameData, FrameTiming, HypercolorEvent, SpectrumData};
 use hypercolor_types::scene::{SceneId, ZoneId};
-use tokio::sync::watch;
 
 use crate::performance::FullFrameCopyMetrics;
 
@@ -141,7 +141,7 @@ pub(crate) fn publish_frame_updates(
     let mut publication_full_frame_copy = FullFrameCopyMetrics::default();
     let frame_data_start = Instant::now();
     update_published_frame(
-        state.event_bus.frame_sender(),
+        state.event_bus.frame_lane(),
         recycled_frame,
         frame_number,
         timestamp_ms,
@@ -152,7 +152,7 @@ pub(crate) fn publish_frame_updates(
         let audio_signal = audio_signal.as_ref().expect("audio signal should exist");
         state
             .event_bus
-            .spectrum_sender()
+            .spectrum_lane()
             .send_modify(|published_spectrum| {
                 update_spectrum_from_audio(published_spectrum, audio, audio_signal, timestamp_ms);
             });
@@ -216,7 +216,7 @@ pub(crate) fn publish_frame_updates(
     if scene_canvas_receivers > 0 {
         let tracked_scene_canvas_receivers = state.preview_runtime.scene_canvas_receiver_count();
         let publish_scene_canvas = {
-            let current = state.event_bus.scene_canvas_sender().borrow();
+            let current = state.event_bus.scene_canvas_lane().borrow();
             let changed = if let Some(surface) = surfaces.authoritative_scene_surface() {
                 should_publish_surface_frame(&current, surface)
             } else if surfaces.active_effect_surface_pending() {
@@ -244,9 +244,9 @@ pub(crate) fn publish_frame_updates(
             };
             publication_cadence.record_scene_canvas_publication(elapsed_ms);
             state
-                .preview_runtime
-                .record_scene_canvas_publication(frame_number, timestamp_ms);
-            let _ = state.event_bus.scene_canvas_sender().send(scene_frame);
+                .event_bus
+                .scene_canvas_lane()
+                .send_replace(scene_frame);
         }
     }
     let screen_canvas_receivers = state.event_bus.screen_canvas_receiver_count();
@@ -262,7 +262,7 @@ pub(crate) fn publish_frame_updates(
     if canvas_receivers > 0 {
         let tracked_canvas_receivers = state.preview_runtime.tracked_canvas_receiver_count();
         let publish_canvas = {
-            let current = state.event_bus.canvas_sender().borrow();
+            let current = state.event_bus.canvas_lane().borrow();
             let changed = if let Some(surface) = surfaces.canvas_preview_surface() {
                 should_publish_surface_frame(&current, surface)
             } else if let Some(canvas) = surfaces.canvas.as_ref() {
@@ -302,10 +302,7 @@ pub(crate) fn publish_frame_updates(
                 CanvasFrame::empty()
             };
             publication_cadence.record_canvas_publication(elapsed_ms);
-            state
-                .preview_runtime
-                .record_canvas_publication(frame_number, timestamp_ms);
-            let _ = state.event_bus.canvas_sender().send(canvas_frame);
+            state.event_bus.canvas_lane().send_replace(canvas_frame);
         }
     }
     state
@@ -314,7 +311,7 @@ pub(crate) fn publish_frame_updates(
     if screen_canvas_receivers > 0 {
         let tracked_screen_canvas_receivers = state.preview_runtime.screen_canvas_receiver_count();
         let publish_screen = {
-            let current = state.event_bus.screen_canvas_sender().borrow();
+            let current = state.event_bus.screen_canvas_lane().borrow();
             let changed = if let Some(surface) = screen_preview_surface.as_ref() {
                 should_publish_surface_frame(&current, surface)
             } else if surfaces.active_effect_surface_pending() {
@@ -338,9 +335,9 @@ pub(crate) fn publish_frame_updates(
             };
             publication_cadence.record_screen_canvas_publication(elapsed_ms);
             state
-                .preview_runtime
-                .record_screen_canvas_publication(frame_number, timestamp_ms);
-            let _ = state.event_bus.screen_canvas_sender().send(screen_frame);
+                .event_bus
+                .screen_canvas_lane()
+                .send_replace(screen_frame);
         }
     }
     state
@@ -350,7 +347,7 @@ pub(crate) fn publish_frame_updates(
     if web_viewport_canvas_receivers > 0 {
         let tracked_receivers = state.preview_runtime.web_viewport_canvas_receiver_count();
         let publish_web_viewport = {
-            let current = state.event_bus.web_viewport_canvas_sender().borrow();
+            let current = state.event_bus.web_viewport_canvas_lane().borrow();
             let changed = if let Some(surface) = surfaces.web_viewport_preview_surface.as_ref() {
                 should_publish_surface_frame(&current, surface)
             } else {
@@ -371,13 +368,10 @@ pub(crate) fn publish_frame_updates(
                 CanvasFrame::empty()
             };
             publication_cadence.record_web_viewport_publication(elapsed_ms);
-            state
-                .preview_runtime
-                .record_web_viewport_canvas_publication(frame_number, timestamp_ms);
             let _ = state
                 .event_bus
-                .web_viewport_canvas_sender()
-                .send(preview_frame);
+                .web_viewport_canvas_lane()
+                .send_replace(preview_frame);
         }
     }
     let preview_us = micros_u32(preview_start.elapsed());
@@ -412,23 +406,11 @@ fn publish_zone_previews(
 ) {
     let zone_preview_receivers = state.event_bus.zone_preview_receiver_count();
     let Some(scene_id) = scene_id else {
-        clear_zone_previews(
-            state,
-            publication_cadence,
-            elapsed_ms,
-            frame_number,
-            timestamp_ms,
-        );
+        clear_zone_previews(state, publication_cadence, elapsed_ms);
         return;
     };
     if zone_preview_receivers == 0 {
-        clear_zone_previews(
-            state,
-            publication_cadence,
-            elapsed_ms,
-            frame_number,
-            timestamp_ms,
-        );
+        clear_zone_previews(state, publication_cadence, elapsed_ms);
         return;
     }
     if !publication_cadence.zone_preview_due(
@@ -449,18 +431,12 @@ fn publish_zone_previews(
         publication_full_frame_copy,
     );
     if zone_previews.is_empty() {
-        clear_zone_previews(
-            state,
-            publication_cadence,
-            elapsed_ms,
-            frame_number,
-            timestamp_ms,
-        );
+        clear_zone_previews(state, publication_cadence, elapsed_ms);
         return;
     }
 
     let should_publish = {
-        let current = state.event_bus.zone_preview_sender().borrow();
+        let current = state.event_bus.zone_preview_lane().borrow();
         should_publish_zone_preview_frames(&current, &zone_previews)
     };
     if !should_publish {
@@ -468,29 +444,26 @@ fn publish_zone_previews(
     }
 
     publication_cadence.record_zone_preview_publication(elapsed_ms);
-    state.preview_runtime.record_zone_preview_publication(
-        frame_number,
-        timestamp_ms,
-        zone_previews.len(),
-    );
-    let _ = state.event_bus.zone_preview_sender().send(zone_previews);
+    let published = u64::try_from(zone_previews.len()).unwrap_or(u64::MAX);
+    state
+        .event_bus
+        .zone_preview_lane()
+        .send_replace_weighted(zone_previews.into(), published);
 }
 
 fn clear_zone_previews(
     state: &RenderThreadState,
     publication_cadence: &mut PublicationCadenceState,
     elapsed_ms: u64,
-    frame_number: u32,
-    timestamp_ms: u32,
 ) {
-    if state.event_bus.zone_preview_sender().borrow().is_empty() {
+    if state.event_bus.zone_preview_lane().borrow().is_empty() {
         return;
     }
     publication_cadence.record_zone_preview_publication(elapsed_ms);
     state
-        .preview_runtime
-        .record_zone_preview_publication(frame_number, timestamp_ms, 0);
-    let _ = state.event_bus.zone_preview_sender().send(Vec::new());
+        .event_bus
+        .zone_preview_lane()
+        .send_replace_weighted(Arc::from([]), 0);
 }
 
 fn collect_zone_previews(
@@ -614,7 +587,7 @@ fn should_publish_zone_preview_frames(
 }
 
 fn update_published_frame(
-    frame_sender: &watch::Sender<FrameData>,
+    frame_sender: &WatchLane<FrameData>,
     recycled_frame: &mut FrameData,
     frame_number: u32,
     timestamp_ms: u32,
@@ -792,23 +765,21 @@ impl AudioSignalSnapshot {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
     use std::sync::Arc;
 
     use hypercolor_core::asset::AssetLibrary;
-    use hypercolor_core::bus::CanvasFrame;
-    use hypercolor_core::bus::HypercolorBus;
+    use hypercolor_core::bus::{CanvasFrame, HypercolorBus, PreviewKind, WatchLane};
     use hypercolor_core::device::{BackendManager, DeviceRegistry};
     use hypercolor_core::effect::EffectRegistry;
     use hypercolor_core::engine::{FpsTier, RenderLoop};
     use hypercolor_core::input::InputManager;
     use hypercolor_core::scene::SceneManager;
     use hypercolor_core::spatial::SpatialEngine;
-    use hypercolor_core::types::audio::AudioData;
-    use hypercolor_core::types::canvas::{Canvas, PublishedSurface};
-    use hypercolor_core::types::event::{FrameData, FrameTiming, ZoneColors};
+    use hypercolor_types::audio::AudioData;
     use hypercolor_types::canvas::PublishedSurfaceStorageIdentity;
+    use hypercolor_types::canvas::{Canvas, PublishedSurface};
     use hypercolor_types::config::RenderAccelerationMode;
+    use hypercolor_types::event::{FrameData, FrameTiming, ZoneColors};
     use hypercolor_types::scene::{SceneId, ZoneId};
     use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
     use tokio::sync::{Mutex, RwLock, watch};
@@ -819,13 +790,13 @@ mod tests {
         canvas_frame_publication_identity, canvas_storage_publication_identity,
         publish_frame_updates, published_surface_publication_identity, update_published_frame,
     };
-    use crate::device_settings::DeviceSettingsStore;
+    use crate::domain::scene::SceneService;
+    use crate::output_power::OutputPowerState;
     use crate::performance::PerformanceTracker;
     use crate::preview_runtime::{PreviewPixelFormat, PreviewRuntime, PreviewStreamDemand};
     use crate::render_thread::producer_queue::ProducerFrame;
     use crate::render_thread::{CanvasDims, RenderThreadState};
     use crate::scene_transactions::SceneTransactionQueue;
-    use crate::session::OutputPowerState;
 
     fn sample_frame(
         zone_id: &str,
@@ -872,6 +843,8 @@ mod tests {
 
     fn minimal_render_thread_state() -> RenderThreadState {
         let event_bus = Arc::new(HypercolorBus::new());
+        let scene_manager = SceneService::in_memory(SceneManager::new(), Arc::clone(&event_bus));
+        let scene_plan = scene_manager.plan_reader();
         let (_, power_state) = watch::channel(OutputPowerState::default());
         let asset_tempdir = tempfile::tempdir().expect("test asset tempdir should be created");
         let asset_dir = asset_tempdir.path().join("assets");
@@ -881,7 +854,9 @@ mod tests {
             asset_library: Arc::new(RwLock::new(
                 AssetLibrary::open(asset_dir).expect("test asset library should open"),
             )),
-            spatial_engine: Arc::new(RwLock::new(SpatialEngine::new(empty_layout()))),
+            spatial_engine: crate::domain::spatial::SpatialService::new(SpatialEngine::new(
+                empty_layout(),
+            )),
             backend_manager: Arc::new(Mutex::new(BackendManager::new())),
             device_registry: DeviceRegistry::new(),
             performance: Arc::new(RwLock::new(PerformanceTracker::default())),
@@ -892,13 +867,11 @@ mod tests {
                 crate::zone_layout_preview::ZoneLayoutPreviewStore::default(),
             ),
             render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
-            scene_manager: Arc::new(RwLock::new(SceneManager::new())),
+            scene_manager,
+            scene_plan,
             input_manager: Arc::new(Mutex::new(InputManager::new())),
             interaction_routing: crate::interaction_routing::InteractionRoutingControl::default(),
             power_state,
-            device_settings: Arc::new(RwLock::new(DeviceSettingsStore::new(PathBuf::from(
-                "device-settings.json",
-            )))),
             scene_transactions: SceneTransactionQueue::default(),
             screen_capture_configured: false,
             canvas_dims: CanvasDims::new(4, 4),
@@ -994,7 +967,8 @@ mod tests {
 
     #[test]
     fn reused_frame_metadata_refresh_notifies_without_replacing_zones() {
-        let (sender, mut receiver) = watch::channel(sample_frame("zone", [1, 2, 3], 1, 10));
+        let sender = WatchLane::new(sample_frame("zone", [1, 2, 3], 1, 10));
+        let mut receiver = sender.subscribe();
         let mut recycled_frame = sample_frame("new-zone", [9, 9, 9], 99, 99);
 
         update_published_frame(&sender, &mut recycled_frame, 2, 20, true, true);
@@ -1015,7 +989,8 @@ mod tests {
 
     #[test]
     fn reused_frame_without_metadata_refresh_stays_quiet() {
-        let (sender, receiver) = watch::channel(sample_frame("zone", [1, 2, 3], 1, 10));
+        let sender = WatchLane::new(sample_frame("zone", [1, 2, 3], 1, 10));
+        let receiver = sender.subscribe();
         let mut recycled_frame = sample_frame("new-zone", [9, 9, 9], 99, 99);
 
         update_published_frame(&sender, &mut recycled_frame, 2, 20, true, false);
@@ -1475,7 +1450,8 @@ mod tests {
             state
                 .preview_runtime
                 .snapshot()
-                .scene_canvas_frames_published,
+                .preview(PreviewKind::SceneCanvas)
+                .frames_published,
             2
         );
     }

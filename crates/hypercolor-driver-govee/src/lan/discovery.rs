@@ -3,10 +3,11 @@ use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner};
+use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
-    DeviceFingerprint, DeviceInfo, DeviceOrigin, DeviceTopologyHint, SegmentInfo,
+    DeviceFingerprint, DeviceInfo, DeviceOrigin, DeviceTopologyHint, FingerprintNamespace,
+    SegmentInfo,
 };
 use hypercolor_types::portable::{NetworkAttachment, PortableIdentityClaim};
 use serde::{Deserialize, Serialize};
@@ -66,13 +67,9 @@ impl GoveeLanScanner {
     }
 }
 
-#[async_trait::async_trait]
-impl TransportScanner for GoveeLanScanner {
-    fn name(&self) -> &'static str {
-        "Govee LAN"
-    }
-
-    async fn scan(&mut self) -> Result<Vec<DiscoveredDevice>> {
+impl GoveeLanScanner {
+    /// Discover multicast-visible and configured Govee LAN devices.
+    pub async fn scan(&mut self) -> Result<Vec<DiscoveredDevice>> {
         let socket = bind_scan_socket().await?;
         let scan = encode_command(&LanCommand::Scan)?;
         socket
@@ -222,7 +219,7 @@ pub(crate) fn topology_for_family(family: SkuFamily) -> DeviceTopologyHint {
 }
 
 fn fingerprint_for_mac(mac: &str) -> DeviceFingerprint {
-    DeviceFingerprint(format!("net:govee:{}", normalize_mac(mac)))
+    DeviceFingerprint::mint(FingerprintNamespace::Net, "govee", &normalize_mac(mac))
 }
 
 fn normalize_mac(mac: &str) -> String {

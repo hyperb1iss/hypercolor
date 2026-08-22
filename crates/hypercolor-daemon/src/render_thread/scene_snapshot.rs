@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use hypercolor_core::bus::{DisplayGroupOutputRoute, DisplayGroupViewport};
-use hypercolor_core::scene::SceneManager;
+use hypercolor_core::scene::ScenePlanSnapshot;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceTopologyHint, DisplayFrameFormat};
 use hypercolor_types::display::{DisplayDescriptor, DisplayPixelFormat};
@@ -10,15 +10,16 @@ use hypercolor_types::layer::LayerSource;
 use hypercolor_types::scene::{ColorInterpolation, SceneId, UnassignedBehavior, Zone, ZoneId};
 use hypercolor_types::spatial::{EdgeBehavior, NormalizedPosition, SpatialLayout};
 
-use crate::session::OutputPowerState;
+use crate::output_power::OutputPowerState;
 
 use super::RenderThreadState;
 use super::scene_dependency::SceneDependencyKey;
-use super::scene_state::RenderSceneState;
+use super::scene_state::{RenderSceneState, TransitionFrame};
 use crate::display_output::{DISPLAY_FACE_DEFAULT_FPS, capped_group_direct_display_target_fps};
 
 #[derive(Debug, Clone)]
 pub(crate) struct SceneTransitionSnapshot {
+    pub epoch: u64,
     pub from_scene: Option<SceneId>,
     pub to_scene: Option<SceneId>,
     pub progress: f32,
@@ -29,6 +30,7 @@ pub(crate) struct SceneTransitionSnapshot {
 impl Default for SceneTransitionSnapshot {
     fn default() -> Self {
         Self {
+            epoch: 0,
             from_scene: None,
             to_scene: None,
             progress: 0.0,
@@ -193,11 +195,12 @@ impl SceneSnapshotCache {
 pub(crate) async fn build_frame_scene_snapshot(
     state: &RenderThreadState,
     scene_snapshot_cache: &mut SceneSnapshotCache,
-    render_scene_state: &RenderSceneState,
+    render_scene_state: &mut RenderSceneState,
     delta_secs: f32,
 ) -> FrameSceneSnapshot {
     let scene_runtime =
-        current_scene_runtime_snapshot(state, scene_snapshot_cache, delta_secs).await;
+        current_scene_runtime_snapshot(state, scene_snapshot_cache, render_scene_state, delta_secs)
+            .await;
     let effect_scene = current_effect_scene_snapshot(
         state,
         scene_snapshot_cache,
@@ -241,45 +244,25 @@ pub(crate) async fn refresh_effect_scene_snapshot(
 async fn current_scene_runtime_snapshot(
     state: &RenderThreadState,
     scene_snapshot_cache: &mut SceneSnapshotCache,
+    render_scene_state: &mut RenderSceneState,
     delta_secs: f32,
 ) -> SceneRuntimeSnapshot {
-    let transitioning = {
-        let manager = state.scene_manager.read().await;
-        manager.is_transitioning()
-    };
-
-    if transitioning {
-        // RENDER-LOCAL WRITER (Spec 76 §2.3). Transition progress
-        // advances every frame and belongs to the render thread, not to
-        // any commit — routing it through the commit path would mint a
-        // scene revision per frame and invalidate every in-flight
-        // candidate.
-        //
-        // It moves no state a commit means to own, but the reverse
-        // direction has a window: a candidate cloned before a tick and
-        // swapped in after it rewinds transition progress by the
-        // clone-to-commit delta, and can transiently resurrect a
-        // transition that completed inside that delta. The next tick
-        // re-advances it, so the effect is bounded by one frame and
-        // self-correcting. §6.1 closes it outright by moving progress
-        // into `FrameState` and out of the manager the commit installs.
-        let mut manager = state.scene_manager.write().await;
-        manager.tick_transition(delta_secs);
-        return snapshot_scene_runtime(state, scene_snapshot_cache, &manager).await;
-    }
-
-    let manager = state.scene_manager.read().await;
-    snapshot_scene_runtime(state, scene_snapshot_cache, &manager).await
+    let plan = state.scene_plan.load();
+    let transition_frame = render_scene_state
+        .frame_state_mut()
+        .reconcile(plan.transition.as_ref(), delta_secs);
+    snapshot_scene_runtime(state, scene_snapshot_cache, &plan, transition_frame).await
 }
 
 async fn snapshot_scene_runtime(
     state: &RenderThreadState,
     scene_snapshot_cache: &mut SceneSnapshotCache,
-    manager: &SceneManager,
+    plan: &ScenePlanSnapshot,
+    transition_frame: Option<TransitionFrame>,
 ) -> SceneRuntimeSnapshot {
-    let active_scene_id = manager.active_scene_id().copied();
-    let mut active_render_groups = manager.active_render_groups();
-    let active_render_groups_revision = manager.active_render_groups_revision();
+    let active_scene_id = plan.active_scene_id;
+    let mut active_render_groups = Arc::clone(&plan.zones);
+    let active_render_groups_revision = plan.zones_revision;
     let zone_layout_preview_generation = if let Some(scene_id) = active_scene_id {
         let (generation, overrides) = state
             .zone_layout_previews
@@ -290,11 +273,8 @@ async fn snapshot_scene_runtime(
     } else {
         state.zone_layout_previews.generation()
     };
-    let active_scene_name = manager.active_scene().map(|scene| scene.name.clone());
-    let unassigned_behavior = manager
-        .active_scene()
-        .map(|scene| scene.unassigned_behavior.clone())
-        .unwrap_or_default();
+    let active_scene_name = plan.active_scene_name.clone();
+    let unassigned_behavior = plan.unassigned_behavior.clone();
     let device_registry_generation = state.device_registry.generation();
     let (active_display_group_target_fps, active_display_group_output_routes) =
         snapshot_display_group_target_metadata(
@@ -319,15 +299,16 @@ async fn snapshot_scene_runtime(
     SceneRuntimeSnapshot {
         active_scene_id,
         active_scene_name,
-        active_transition: manager
-            .active_transition()
-            .map(|transition| SceneTransitionSnapshot {
+        active_transition: plan.transition.as_ref().zip(transition_frame).map(
+            |(transition, frame)| SceneTransitionSnapshot {
+                epoch: transition.epoch,
                 from_scene: Some(transition.from_scene),
                 to_scene: Some(transition.to_scene),
-                progress: transition.progress,
-                eased_progress: transition.eased_progress(),
+                progress: frame.progress,
+                eased_progress: frame.eased_progress,
                 color_interpolation: transition.spec.color_interpolation.clone(),
-            }),
+            },
+        ),
         active_render_groups,
         active_render_groups_revision,
         zone_layout_preview_generation,
@@ -589,7 +570,7 @@ async fn current_effect_scene_snapshot(
             continue;
         }
 
-        for layer in group.effective_layers() {
+        for layer in &group.layers {
             if !layer.enabled {
                 continue;
             }
@@ -636,11 +617,7 @@ fn effect_has_tag(tags: &[String], expected: &str) -> bool {
 }
 
 fn group_has_enabled_layer(group: &Zone) -> bool {
-    group.enabled
-        && group
-            .effective_layers()
-            .into_iter()
-            .any(|layer| layer.enabled)
+    group.enabled && group.layers.iter().any(|layer| layer.enabled)
 }
 
 async fn render_loop_snapshot(state: &RenderThreadState) -> RenderLoopSnapshot {
@@ -686,13 +663,12 @@ mod tests {
     use hypercolor_types::viewport::ViewportRect;
 
     use super::{default_display_group_viewport, display_descriptors_for_groups};
-    use crate::device_settings::DeviceSettingsStore;
     use crate::display_output::DISPLAY_FACE_DEFAULT_FPS;
+    use crate::output_power::OutputPowerState;
     use crate::performance::PerformanceTracker;
     use crate::preview_runtime::PreviewRuntime;
     use crate::render_thread::{CanvasDims, RenderThreadState};
     use crate::scene_transactions::SceneTransactionQueue;
-    use crate::session::OutputPowerState;
     use crate::zone_layout_preview::ZoneLayoutPreviewOwner;
     use hypercolor_types::display::DisplayPixelFormat;
 
@@ -824,10 +800,6 @@ mod tests {
             id: ZoneId::new(),
             name: "Test Group".into(),
             description: None,
-            effect_id: Some(effect_id),
-            controls: HashMap::new(),
-            control_bindings: HashMap::new(),
-            preset_id: None,
             layers: vec![SceneLayer::from_effect(
                 SceneLayerId::new(),
                 effect_id,
@@ -883,6 +855,11 @@ mod tests {
     fn minimal_render_thread_state(registry: EffectRegistry) -> RenderThreadState {
         let (_, power_state) = watch::channel(OutputPowerState::default());
         let event_bus = Arc::new(HypercolorBus::new());
+        let scene_manager = crate::domain::scene::SceneService::in_memory(
+            SceneManager::with_default(),
+            Arc::clone(&event_bus),
+        );
+        let scene_plan = scene_manager.plan_reader();
         let asset_tempdir = tempfile::tempdir().expect("test asset tempdir should be created");
         let asset_dir = asset_tempdir.path().join("assets");
         RenderThreadState {
@@ -890,7 +867,9 @@ mod tests {
             asset_library: Arc::new(RwLock::new(
                 AssetLibrary::open(asset_dir).expect("test asset library should open"),
             )),
-            spatial_engine: Arc::new(RwLock::new(SpatialEngine::new(sample_layout()))),
+            spatial_engine: crate::domain::spatial::SpatialService::new(SpatialEngine::new(
+                sample_layout(),
+            )),
             backend_manager: Arc::new(Mutex::new(BackendManager::new())),
             device_registry: DeviceRegistry::new(),
             performance: Arc::new(RwLock::new(PerformanceTracker::default())),
@@ -901,13 +880,11 @@ mod tests {
                 crate::zone_layout_preview::ZoneLayoutPreviewStore::default(),
             ),
             render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
-            scene_manager: Arc::new(RwLock::new(SceneManager::with_default())),
+            scene_manager,
+            scene_plan,
             input_manager: Arc::new(Mutex::new(InputManager::new())),
             interaction_routing: crate::interaction_routing::InteractionRoutingControl::default(),
             power_state,
-            device_settings: Arc::new(RwLock::new(DeviceSettingsStore::new(PathBuf::from(
-                "device-settings.json",
-            )))),
             scene_transactions: SceneTransactionQueue::default(),
             screen_capture_configured: false,
             canvas_dims: CanvasDims::new(320, 200),
@@ -923,7 +900,7 @@ mod tests {
     async fn build_frame_scene_snapshot_carries_render_loop_and_scene_state_values() {
         let state = minimal_render_thread_state(EffectRegistry::default());
         let mut scene_snapshot_cache = SceneSnapshotCache::new();
-        let render_scene_state = RenderSceneState::new(
+        let mut render_scene_state = RenderSceneState::new(
             SpatialEngine::new(SpatialLayout {
                 canvas_width: 512,
                 canvas_height: 288,
@@ -933,9 +910,13 @@ mod tests {
         );
         let expected_loop_snapshot = render_loop_snapshot(&state).await;
 
-        let snapshot =
-            build_frame_scene_snapshot(&state, &mut scene_snapshot_cache, &render_scene_state, 0.0)
-                .await;
+        let snapshot = build_frame_scene_snapshot(
+            &state,
+            &mut scene_snapshot_cache,
+            &mut render_scene_state,
+            0.0,
+        )
+        .await;
 
         assert_eq!(snapshot.frame_token, expected_loop_snapshot.frame_token);
         assert_eq!(snapshot.elapsed_ms, expected_loop_snapshot.elapsed_ms);
@@ -950,11 +931,16 @@ mod tests {
     async fn configured_capture_without_a_consumer_stays_idle() {
         let state = minimal_render_thread_state(EffectRegistry::default());
         let mut scene_snapshot_cache = SceneSnapshotCache::new();
-        let render_scene_state = RenderSceneState::new(SpatialEngine::new(sample_layout()), true);
+        let mut render_scene_state =
+            RenderSceneState::new(SpatialEngine::new(sample_layout()), true);
 
-        let snapshot =
-            build_frame_scene_snapshot(&state, &mut scene_snapshot_cache, &render_scene_state, 0.0)
-                .await;
+        let snapshot = build_frame_scene_snapshot(
+            &state,
+            &mut scene_snapshot_cache,
+            &mut render_scene_state,
+            0.0,
+        )
+        .await;
 
         assert!(!snapshot.effect_demand.effect_running);
         assert!(!snapshot.effect_demand.screen_capture_active);
@@ -1076,15 +1062,29 @@ mod tests {
         preview_layout.canvas_height = 360;
 
         let (scene_id, group_id) = {
-            let mut manager = state.scene_manager.write().await;
-            manager
-                .upsert_primary_group(&metadata, HashMap::new(), None, sample_layout())
+            let mut mutation = state.scene_manager.begin_mutation().await;
+            let zone = mutation
+                .upsert_primary_zone(
+                    &metadata,
+                    HashMap::new(),
+                    None,
+                    sample_layout(),
+                    hypercolor_types::event::ChangeTrigger::System,
+                    None,
+                )
                 .expect("test scene should accept a primary group");
-            let scene = manager
+            let scene = mutation
+                .scenes()
                 .active_scene()
                 .expect("default scene should be active");
-            let group = scene.groups.first().expect("primary group should exist");
-            (scene.id, group.id)
+            let scene_id = scene.id;
+            let group_id = zone.id;
+            state
+                .scene_manager
+                .commit_mutation(mutation)
+                .await
+                .expect("test scene should commit");
+            (scene_id, group_id)
         };
         state
             .zone_layout_previews
@@ -1097,8 +1097,8 @@ mod tests {
             .await;
 
         let mut scene_snapshot_cache = SceneSnapshotCache::new();
-        let manager = state.scene_manager.read().await;
-        let snapshot = snapshot_scene_runtime(&state, &mut scene_snapshot_cache, &manager).await;
+        let plan = state.scene_plan.load();
+        let snapshot = snapshot_scene_runtime(&state, &mut scene_snapshot_cache, &plan, None).await;
 
         assert_eq!(snapshot.active_render_groups[0].layout, preview_layout);
         assert_eq!(
@@ -1156,7 +1156,6 @@ mod tests {
         let effect_id = EffectId::from(Uuid::now_v7());
         let state = minimal_render_thread_state(EffectRegistry::default());
         let mut group = sample_group(effect_id);
-        group.effect_id = None;
         group.layers = vec![SceneLayer {
             id: SceneLayerId::new(),
             name: Some("Screen".into()),

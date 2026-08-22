@@ -27,10 +27,10 @@ use hypercolor_leptos_ext::ws::registry::{
 use hypercolor_leptos_ext::ws::topic::{TopicSelector, TopicSubscription};
 use hypercolor_leptos_ext::ws::{
     DisplayPreviewFrame as WireDisplayPreviewFrame, HYPERCOLOR_WS_PROTOCOL, HYPERCOLOR_WS_VERSION,
-    InteractivePreviewFrame as WireInteractivePreviewFrame, PREVIEW_CHUNK_FRAME_TAG,
-    PREVIEW_MIN_MESSAGE_BYTES, PreviewChunkFrame, PreviewFrame as WirePreviewFrame,
-    PreviewFrameChannel, PreviewPixelFormat as WirePreviewPixelFormat, PreviewStreamId,
-    PreviewTransportCapability, TimedInputEventPayload,
+    InteractivePreviewFrame as WireInteractivePreviewFrame, PREVIEW_MIN_MESSAGE_BYTES,
+    PreviewFrame as WirePreviewFrame, PreviewFrameChannel,
+    PreviewPixelFormat as WirePreviewPixelFormat, PreviewStreamId, PreviewTransportLimits,
+    TimedInputEventPayload,
 };
 use hypercolor_types::canvas::{
     Canvas, PublishedSurface, Rgba, linear_to_srgb_u8, srgb_u8_to_linear,
@@ -131,33 +131,34 @@ fn websocket_native_errors_project_canonical_domain_codes() {
     );
 }
 use super::relays::{
-    PreviewCursorQueue, PreviewOutboundError, PreviewOutboundItem, PreviewOutboundLimits,
-    PreviewOutboundReceiver, PreviewOutboundSender, PreviewPublication, PreviewPublishOutcome,
-    PreviewRelayPublish, PreviewSendCursor, build_device_metrics_message, build_metrics_message,
-    preview_outbound_channel, preview_outbound_channel_with_limits,
-    publish_preview_until_cancelled, publish_preview_while_subscribed, publish_subscriptions,
-    relay_device_metrics, relay_display_preview, relay_events, relay_frames, relay_metrics,
-    relay_screen_zones, relay_sensors, relay_spectrum, relay_zone_preview, sync_preview_receiver,
-    try_enqueue_json,
+    PreviewOutboundItem, PreviewOutboundLimits, PreviewOutboundReceiver, PreviewOutboundSender,
+    PreviewPublication, PreviewPublishOutcome, PreviewRelayPublish, PreviewSendCursor,
+    build_device_metrics_message, build_metrics_message, preview_outbound_channel,
+    preview_outbound_channel_with_limits, publish_preview_until_cancelled,
+    publish_preview_while_subscribed, publish_subscriptions, relay_device_metrics,
+    relay_display_preview, relay_events, relay_frames, relay_metrics, relay_screen_zones,
+    relay_sensors, relay_spectrum, relay_zone_preview, sync_preview_receiver, try_enqueue_json,
 };
 use super::session::{
     BrowserPreviewSession, WsInputDemandLeases, authorize_subscription_topics, build_hello_state,
-    commit_preview_transport, negotiate_preview_transport, spawn_test_local_socket,
-    stage_preview_transport, validated_zone_layout_preview,
+    spawn_test_local_socket, validated_zone_layout_preview,
 };
 
 #[tokio::test]
 async fn hello_reports_a_destructive_stop_as_not_running_and_paused() {
     let state = AppState::new();
     state.render_loop.write().await.start();
-    crate::session::set_output_stopped(&state.power_state, &state.event_bus);
+    state
+        .output_power
+        .set_output_stopped(&state.event_bus)
+        .await;
 
     let hello = build_hello_state(&state).await;
     assert!(!hello.running);
     assert!(hello.paused);
 }
-use crate::api::AppState;
 use crate::api::security::{RequestAuthContext, SecurityState};
+use crate::app_state::AppState;
 use crate::device_metrics::{DeviceMetrics, DeviceMetricsSnapshot};
 use crate::display_frames::{DisplayFrameRuntime, DisplayFrameSnapshot};
 use crate::interaction_routing::InteractionRoutingControl;
@@ -656,24 +657,24 @@ async fn metrics_message_includes_latest_frame_timeline() {
     let canvas_frame = CanvasFrame::from_canvas(&Canvas::new(2, 1), 88, 44);
     let scene_frame = CanvasFrame::from_canvas(&Canvas::new(2, 1), 66, 33);
     let screen_frame = CanvasFrame::from_canvas(&Canvas::new(1, 1), 45, 21);
-    let _ = state.event_bus.canvas_sender().send(canvas_frame.clone());
+    let _ = state.event_bus.canvas_lane().send(canvas_frame.clone());
     let _ = state
         .event_bus
-        .scene_canvas_sender()
+        .scene_canvas_lane()
         .send(scene_frame.clone());
     let _ = state
         .event_bus
-        .screen_canvas_sender()
+        .screen_canvas_lane()
         .send(screen_frame.clone());
     state
         .preview_runtime
-        .record_canvas_publication(canvas_frame.frame_number, canvas_frame.timestamp_ms);
+        .note_canvas_frame(canvas_frame.frame_number, canvas_frame.timestamp_ms);
     state
         .preview_runtime
-        .record_scene_canvas_publication(scene_frame.frame_number, scene_frame.timestamp_ms);
+        .note_scene_canvas_frame(scene_frame.frame_number, scene_frame.timestamp_ms);
     state
         .preview_runtime
-        .record_screen_canvas_publication(screen_frame.frame_number, screen_frame.timestamp_ms);
+        .note_screen_canvas_frame(screen_frame.frame_number, screen_frame.timestamp_ms);
     {
         let mut performance = state.performance.write().await;
         performance.record_effect_error();
@@ -733,10 +734,6 @@ async fn metrics_message_includes_latest_frame_timeline() {
             render_group_count: 1,
             scene_active: true,
             scene_transition_active: true,
-            render_surface_slot_count: 6,
-            render_surface_free_slots: 1,
-            render_surface_published_slots: 4,
-            render_surface_dequeued_slots: 1,
             scene_pool_saturation_reallocs: 0,
             direct_pool_saturation_reallocs: 0,
             scene_pool_grown_slots: 0,
@@ -826,8 +823,6 @@ async fn metrics_message_includes_latest_frame_timeline() {
     assert_eq!(json["timeline"]["gpu_sample_queue_saturated"], true);
     assert_eq!(json["timeline"]["gpu_sample_wait_blocked"], true);
     assert_eq!(json["timeline"]["gpu_sample_cpu_fallback"], true);
-    assert_eq!(json["timeline"]["cpu_sampling_late_readback"], false);
-    assert_eq!(json["timeline"]["led_sampling_readback"], false);
     assert_eq!(json["timeline"]["preview_surface"], true);
     assert_eq!(json["timeline"]["scene_canvas_forced_surface"], true);
     assert_eq!(json["timeline"]["cpu_readback_skipped"], true);
@@ -848,8 +843,6 @@ async fn metrics_message_includes_latest_frame_timeline() {
     assert_eq!(json["pacing"]["gpu_sample_queue_saturated"], 1);
     assert_eq!(json["pacing"]["gpu_sample_wait_blocked"], 1);
     assert_eq!(json["pacing"]["gpu_sample_cpu_fallback"], 1);
-    assert_eq!(json["pacing"]["cpu_sampling_late_readback"], 0);
-    assert_eq!(json["pacing"]["led_sampling_readback"], 0);
     assert_eq!(json["pacing"]["preview_surface"], 1);
     assert_eq!(json["pacing"]["scene_canvas_forced_surface"], 1);
     assert_eq!(json["pacing"]["gpu_readback_failed_frames"], 1);
@@ -1253,16 +1246,11 @@ async fn metrics_message_includes_latest_frame_timeline() {
     assert_eq!(json["stages"]["publish_preview_ms"], 0.08);
     assert_eq!(json["stages"]["publish_events_ms"], 0.01);
     assert_eq!(json["fps"]["ceiling"], 60);
-    assert_eq!(json["fps"]["capacity"], json["fps"]["actual"]);
+    assert!(json["fps"].get("actual").is_none());
     assert_eq!(json["fps"]["delivered"], 0.0);
-    assert_eq!(json["render_surfaces"]["slot_count"], 6);
-    assert_eq!(json["render_surfaces"]["published_slots"], 4);
     assert_eq!(json["render_surfaces"]["canvas_receivers"], 2);
-    assert_eq!(
-        json["render_surfaces"]["preview_pool_saturation_reallocs"],
-        0
-    );
-    assert_eq!(json["render_surfaces"]["preview_pool_grown_slots"], 0);
+    assert_eq!(json["render_surfaces"]["scene_pool_saturation_reallocs"], 0);
+    assert_eq!(json["render_surfaces"]["scene_pool_grown_slots"], 0);
     assert_eq!(json["preview"]["canvas_receivers"], 1);
     assert_eq!(json["preview"]["scene_canvas_receivers"], 1);
     assert_eq!(json["preview"]["screen_canvas_receivers"], 1);
@@ -1420,6 +1408,10 @@ fn device_metrics_message_uses_shared_snapshot() {
             last_transport_started_sequence: 302,
             last_transport_completed_sequence: 301,
             last_transport_failed_sequence: 302,
+            display_queue_generation: Some(44),
+            display_transport_started: 120,
+            display_transport_completed: 119,
+            display_transport_failed: 1,
         }],
     }));
 
@@ -1433,6 +1425,10 @@ fn device_metrics_message_uses_shared_snapshot() {
     assert_eq!(data.items[0].backend_id, "usb");
     assert!(data.items[0].uses_frame_sink);
     assert_eq!(data.items[0].worker_recoveries, 3);
+    assert_eq!(data.items[0].display_queue_generation, Some(44));
+    assert_eq!(data.items[0].display_transport_started, 120);
+    assert_eq!(data.items[0].display_transport_completed, 119);
+    assert_eq!(data.items[0].display_transport_failed, 1);
     assert_eq!(data.items[0].avg_queue_wait_ms, 3);
     assert_eq!(data.items[0].avg_write_ms, 8);
     assert_eq!(data.items[0].avg_transport_latency_ms, 8);
@@ -1453,10 +1449,7 @@ async fn relay_metrics_wakes_when_subscription_changes() {
     let relay_handle = tokio::spawn(relay_metrics(Arc::clone(&state), json_tx, subscriptions_rx));
 
     let subscriptions = initial_subscriptions
-        .subscribed_unkeyed(
-            &["metrics"],
-            serde_json::json!({"metrics": {"interval_ms": 100}}),
-        )
+        .subscribed_unkeyed(&["metrics"], serde_json::json!({"metrics": {"fps": 10.0}}))
         .expect("metrics subscribe applies");
     publish_subscriptions(&subscriptions_tx, &subscriptions);
 
@@ -1513,6 +1506,10 @@ async fn relay_device_metrics_wakes_when_subscription_changes() {
             last_transport_started_sequence: 42,
             last_transport_completed_sequence: 42,
             last_transport_failed_sequence: 0,
+            display_queue_generation: None,
+            display_transport_started: 0,
+            display_transport_completed: 0,
+            display_transport_failed: 0,
         }],
     }));
     let initial_subscriptions = SubscriptionState::default();
@@ -1528,7 +1525,7 @@ async fn relay_device_metrics_wakes_when_subscription_changes() {
     let subscriptions = initial_subscriptions
         .subscribed_unkeyed(
             &["device_metrics"],
-            serde_json::json!({"device_metrics": {"interval_ms": 100}}),
+            serde_json::json!({"device_metrics": {"fps": 10.0}}),
         )
         .expect("device metrics subscribe applies");
     publish_subscriptions(&subscriptions_tx, &subscriptions);
@@ -1656,7 +1653,7 @@ async fn relay_frames_wakes_when_subscription_changes() {
     let (json_tx, _json_rx) = tokio::sync::mpsc::channel::<Utf8Bytes>(1);
     let (binary_tx, mut binary_rx) = tokio::sync::mpsc::channel::<Bytes>(1);
     let state = Arc::new(AppState::new());
-    let _ = state.event_bus.frame_sender().send(sample_frame());
+    let _ = state.event_bus.frame_lane().send(sample_frame());
 
     let relay_handle = tokio::spawn(relay_frames(
         Arc::clone(&state),
@@ -1701,10 +1698,7 @@ async fn relay_spectrum_subscribes_lazily() {
     let (json_tx, _json_rx) = tokio::sync::mpsc::channel::<Utf8Bytes>(1);
     let (binary_tx, mut binary_rx) = tokio::sync::mpsc::channel::<Bytes>(1);
     let state = Arc::new(AppState::new());
-    let _ = state
-        .event_bus
-        .spectrum_sender()
-        .send(SpectrumData::empty());
+    let _ = state.event_bus.spectrum_lane().send(SpectrumData::empty());
 
     let relay_handle = tokio::spawn(relay_spectrum(
         Arc::clone(&state),
@@ -1881,191 +1875,13 @@ fn jpeg_test_payload(width: u16, height: u16, payload_len: usize) -> Vec<u8> {
 }
 
 #[test]
-fn subscribe_wire_negotiates_preview_transport_before_publication() {
-    let peer = PreviewTransportCapability {
-        max_decoded_publication_bytes: 1024 * 1024,
-        max_encoded_publication_bytes: 1024,
-        max_connection_bytes: 2048,
-        max_streams: 4,
-        max_tombstones: 8,
-        max_idle_ms: 1000,
-        max_message_bytes: 256,
-        max_chunk_count: 128,
-        ..PreviewTransportCapability::default().legacy_v1()
-    };
-    let message: ClientMessage = serde_json::from_value(serde_json::json!({
-        "type": "subscribe",
-        "topics": [{ "topic": "canvas", "config": { "format": "jpeg" } }],
-        "preview_transport": peer.encode()
-    }))
-    .expect("capability-bearing subscribe parses");
-    let ClientMessage::Subscribe {
-        preview_transport: Some(encoded_capability),
-        ..
-    } = message
-    else {
-        panic!("expected capability-bearing subscribe");
-    };
-
-    let (sender, receiver) = preview_outbound_channel();
-    let mut capability = PreviewTransportCapability::default();
-    let mut cursors = PreviewCursorQueue::new(capability.max_streams);
-    let negotiated =
-        negotiate_preview_transport(&encoded_capability, &sender, &mut cursors, &mut capability)
-            .expect("transport negotiation succeeds before publication");
-    assert_eq!(negotiated, peer);
-    assert_eq!(capability, peer);
-
-    sender
-        .publish(
-            PreviewStreamId::Passive(PreviewFrameChannel::Canvas),
-            preview_test_frame(PreviewFrameChannel::Canvas, 1, 512),
-            None,
-        )
-        .expect("publication fits negotiated byte budgets");
-    let publication =
-        try_receive_preview_publication(&receiver).expect("negotiated publication arrives");
-    let mut cursor = PreviewSendCursor::with_capability(publication, negotiated)
-        .expect("negotiated cursor builds");
-    let mut message_count = 0_u32;
-    while let Some(message) = cursor.next_message().expect("chunk encoding") {
-        assert!(message.len() <= peer.max_message_bytes);
-        assert_eq!(message[0], PREVIEW_CHUNK_FRAME_TAG);
-        let chunk = PreviewChunkFrame::decode_bytes(&message).expect("chunk decodes");
-        assert!(chunk.chunk_count <= peer.max_chunk_count);
-        message_count += 1;
-    }
-    assert!(message_count > 1);
-
-    sender
-        .publish(
-            PreviewStreamId::Passive(PreviewFrameChannel::Canvas),
-            preview_test_frame(PreviewFrameChannel::Canvas, 2, 512),
-            None,
-        )
-        .expect("negotiated headroom admits a latest replacement while the old cursor is active");
-    let Some(PreviewOutboundItem::Cancellation(cancellation)) = receiver.try_recv() else {
-        panic!("latest replacement must cancel the active publication first");
-    };
-    assert_eq!(
-        cancellation.publication_id,
-        cursor.publication().publication_id()
-    );
-    receiver.complete(cursor.publication());
-    let replacement = try_receive_preview_publication(&receiver)
-        .expect("latest replacement follows its cancellation");
-    assert!(replacement.publication_id() > cancellation.publication_id);
-    assert!(receiver.is_current(&replacement));
-    receiver.complete(&replacement);
-    assert!(!receiver.is_current(&replacement));
-
-    let ack = serde_json::to_value(ServerMessage::Subscribed {
-        topics: Vec::new(),
-        preview_transport: negotiated.encode(),
-    })
-    .expect("subscribe acknowledgment serializes");
-    assert_eq!(ack["preview_transport"], peer.encode());
-
-    let (byte_sender, byte_receiver) = preview_outbound_channel();
-    let mut byte_capability = PreviewTransportCapability::default();
-    let mut byte_cursors = PreviewCursorQueue::new(byte_capability.max_streams);
-    negotiate_preview_transport(
-        &peer.encode(),
-        &byte_sender,
-        &mut byte_cursors,
-        &mut byte_capability,
-    )
-    .expect("byte-accounting transport negotiation");
-    byte_sender
-        .publish(
-            PreviewStreamId::Passive(PreviewFrameChannel::Canvas),
-            preview_test_frame(PreviewFrameChannel::Canvas, 1, 512),
-            None,
-        )
-        .expect("first byte-accounted publication");
-    let _in_flight_one =
-        try_receive_preview_publication(&byte_receiver).expect("first publication moves in flight");
-    assert!(matches!(
-        byte_sender.negotiate_transport(peer),
-        Err(PreviewOutboundError::TransportAlreadyActive)
-    ));
-    byte_sender
-        .publish(
-            PreviewStreamId::Passive(PreviewFrameChannel::ScreenCanvas),
-            preview_test_frame(PreviewFrameChannel::ScreenCanvas, 2, 700),
-            None,
-        )
-        .expect("second byte-accounted publication");
-    let _in_flight_two = try_receive_preview_publication(&byte_receiver)
-        .expect("second publication moves in flight");
-    byte_sender
-        .publish(
-            PreviewStreamId::Passive(PreviewFrameChannel::WebViewportCanvas),
-            preview_test_frame(PreviewFrameChannel::WebViewportCanvas, 3, 700),
-            None,
-        )
-        .expect("third byte-accounted publication");
-    let _in_flight_three =
-        try_receive_preview_publication(&byte_receiver).expect("third publication moves in flight");
-    assert!(matches!(
-        byte_sender.publish(
-            PreviewStreamId::Display(test_display_device().to_string()),
-            display_preview_test_frame(4, 700),
-            None,
-        ),
-        Err(PreviewOutboundError::ConnectionBusy { .. })
-    ));
-
-    let (stream_sender, _stream_receiver) = preview_outbound_channel();
-    let mut stream_capability = PreviewTransportCapability::default();
-    let mut stream_cursors = PreviewCursorQueue::new(stream_capability.max_streams);
-    let stream_peer = PreviewTransportCapability {
-        max_streams: 2,
-        ..peer
-    };
-    negotiate_preview_transport(
-        &stream_peer.encode(),
-        &stream_sender,
-        &mut stream_cursors,
-        &mut stream_capability,
-    )
-    .expect("stream-accounting transport negotiation");
-    for (channel, frame_number) in [
-        (PreviewFrameChannel::Canvas, 1),
-        (PreviewFrameChannel::ScreenCanvas, 2),
-    ] {
-        stream_sender
-            .publish(
-                PreviewStreamId::Passive(channel),
-                preview_test_frame(channel, frame_number, 400),
-                None,
-            )
-            .expect("stream fits negotiated count and byte budgets");
-    }
-    assert!(matches!(
-        stream_sender.publish(
-            PreviewStreamId::Passive(PreviewFrameChannel::WebViewportCanvas),
-            preview_test_frame(PreviewFrameChannel::WebViewportCanvas, 3, 32),
-            None,
-        ),
-        Err(PreviewOutboundError::StreamBudgetExceeded { maximum: 2 })
-    ));
-}
-
-#[test]
-fn a_subscribe_without_a_transport_capability_stays_on_the_server_default() {
+fn subscribe_wire_has_no_transport_negotiation() {
     let message: ClientMessage = serde_json::from_value(serde_json::json!({
         "type": "subscribe",
         "topics": [{ "topic": "events" }]
     }))
-    .expect("a subscribe without preview_transport parses");
-    assert!(matches!(
-        message,
-        ClientMessage::Subscribe {
-            preview_transport: None,
-            ..
-        }
-    ));
+    .expect("subscribe parses");
+    assert!(matches!(message, ClientMessage::Subscribe { .. }));
 }
 
 async fn receive_direct_preview(receiver: &PreviewOutboundReceiver) -> Bytes {
@@ -2110,8 +1926,10 @@ async fn relay_screen_zones_paces_each_connection_and_sends_the_latest_frame() {
     assert_eq!(initial.frame_number, 0);
 
     for frame_number in [1, 2] {
-        state.event_bus.screen_zones_sender().send_replace(
-            hypercolor_core::bus::ScreenZonesFrame {
+        state
+            .event_bus
+            .screen_zones_lane()
+            .send_replace(hypercolor_core::bus::ScreenZonesFrame {
                 frame_number,
                 timestamp_ms: frame_number,
                 source_width: 1,
@@ -2125,8 +1943,7 @@ async fn relay_screen_zones_paces_each_connection_and_sends_the_latest_frame() {
                     3,
                 ]]
                 .into(),
-            },
-        );
+            });
         tokio::task::yield_now().await;
     }
 
@@ -2168,14 +1985,14 @@ async fn relay_zone_preview_cancels_streams_retired_by_scene_changes() {
     let zone_b = ZoneId::new();
     let mut canvas = Canvas::new(1, 1);
     canvas.set_pixel(0, 0, Rgba::new(1, 2, 3, 255));
-    state
-        .event_bus
-        .zone_preview_sender()
-        .send_replace(vec![ZonePreviewFrame {
+    state.event_bus.zone_preview_lane().send_replace(
+        vec![ZonePreviewFrame {
             scene_id: scene_a,
             zone_id: zone_a,
             frame: CanvasFrame::from_canvas(&canvas, 1, 1),
-        }]);
+        }]
+        .into(),
+    );
 
     let first = tokio::time::timeout(Duration::from_millis(250), async {
         loop {
@@ -2194,14 +2011,14 @@ async fn relay_zone_preview_cancels_streams_retired_by_scene_changes() {
         }
     );
 
-    state
-        .event_bus
-        .zone_preview_sender()
-        .send_replace(vec![ZonePreviewFrame {
+    state.event_bus.zone_preview_lane().send_replace(
+        vec![ZonePreviewFrame {
             scene_id: scene_b,
             zone_id: zone_b,
             frame: CanvasFrame::from_canvas(&canvas, 2, 2),
-        }]);
+        }]
+        .into(),
+    );
 
     let retired_stream = PreviewStreamId::Zone {
         scene_id: *scene_a.0.as_bytes(),
@@ -2886,8 +2703,8 @@ fn parse_subscriptions_refuses_two_entries_for_one_subscription() {
     // itself about which config wins; resolving that silently would hide
     // it from the only party who can fix it.
     let error = parse_subscriptions(&[
-        TopicSubscription::unkeyed("metrics").with_config(serde_json::json!({"interval_ms": 200})),
-        TopicSubscription::unkeyed("metrics").with_config(serde_json::json!({"interval_ms": 300})),
+        TopicSubscription::unkeyed("metrics").with_config(serde_json::json!({"fps": 5.0})),
+        TopicSubscription::unkeyed("metrics").with_config(serde_json::json!({"fps": 4.0})),
     ])
     .expect_err("a repeated subscription is refused");
     assert_eq!(error.code, "malformed_request");
@@ -3108,11 +2925,11 @@ fn zone_layout_preview_client_messages_deserialize() {
 #[tokio::test]
 async fn zone_layout_preview_rejects_invalid_sampling_radii() {
     let state = AppState::new();
-    let manager = state.scene_manager.read().await;
+    let manager = state.scene_manager.snapshot().await;
     let scene = manager
         .get(&SceneId::DEFAULT)
         .expect("default scene should exist");
-    let group = scene.primary_group().expect("primary zone should exist");
+    let group = scene.primary_zone().expect("primary zone should exist");
 
     for radius in [-1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
         let mut layout = group.layout.clone();
@@ -3147,8 +2964,8 @@ fn topic_config_apply_patch_supports_every_configurable_topic() {
                 "canvas": {"fps": 60, "format": "jpeg", "width": 320, "height": 0},
                 "screen_canvas": {"fps": 24, "format": "jpeg", "width": 480, "height": 270},
                 "screen_zones": {"fps": 12},
-                "metrics": {"interval_ms": 500},
-                "device_metrics": {"interval_ms": 250}
+                "metrics": {"fps": 2.0},
+                "device_metrics": {"fps": 4.0}
             }),
         )
         .expect("full channel config patch should be accepted");
@@ -3166,8 +2983,8 @@ fn topic_config_apply_patch_supports_every_configurable_topic() {
     assert_eq!(json["screen_canvas"]["format"], "jpeg");
     assert_eq!(json["screen_canvas"]["width"], 480);
     assert_eq!(json["screen_canvas"]["height"], 270);
-    assert_eq!(json["metrics"]["interval_ms"], 500);
-    assert_eq!(json["device_metrics"]["interval_ms"], 250);
+    assert_eq!(json["metrics"]["fps"], 2.0);
+    assert_eq!(json["device_metrics"]["fps"], 4.0);
 }
 
 #[test]
@@ -3242,8 +3059,8 @@ fn topic_config_defaults_are_stable() {
     assert_eq!(json["screen_canvas"]["fps"], 15);
     assert_eq!(json["screen_canvas"]["width"], 0);
     assert_eq!(json["screen_canvas"]["height"], 0);
-    assert_eq!(json["metrics"]["interval_ms"], 1000);
-    assert_eq!(json["device_metrics"]["interval_ms"], 1000);
+    assert_eq!(json["metrics"]["fps"], 1.0);
+    assert_eq!(json["device_metrics"]["fps"], 1.0);
 }
 
 #[test]
@@ -3264,7 +3081,7 @@ fn non_null_config_for_a_configless_topic_is_refused() {
 
 #[test]
 fn a_subscribe_carries_its_config_inside_each_selector() {
-    let raw = r#"{"type":"subscribe","topics":[{"topic":"metrics","config":{"interval_ms":900}},{"topic":"display_preview","key":"device-abc","config":{"fps":9}}]}"#;
+    let raw = r#"{"type":"subscribe","topics":[{"topic":"metrics","config":{"fps":0.5}},{"topic":"display_preview","key":"device-abc","config":{"fps":9}}]}"#;
     let message: ClientMessage = serde_json::from_str(raw).expect("a keyed subscribe parses");
     let ClientMessage::Subscribe { topics, .. } = message else {
         panic!("expected a subscribe");
@@ -3274,8 +3091,8 @@ fn a_subscribe_carries_its_config_inside_each_selector() {
     assert_eq!(topics[0].topic, "metrics");
     assert_eq!(topics[0].key, None);
     assert_eq!(
-        topics[0].config.as_ref().expect("metrics config")["interval_ms"],
-        900
+        topics[0].config.as_ref().expect("metrics config")["fps"],
+        0.5
     );
     assert_eq!(topics[1].topic, "display_preview");
     assert_eq!(topics[1].key.as_deref(), Some("device-abc"));
@@ -3286,7 +3103,7 @@ fn a_subscribe_carries_its_config_inside_each_selector() {
 fn a_subscribe_entry_refuses_fields_it_does_not_define() {
     // The entry owns exactly three fields; anything else is a client
     // mistake the wire must not silently drop.
-    let raw = r#"{"type":"subscribe","topics":[{"topic":"metrics","cfg":{"interval_ms":900}}]}"#;
+    let raw = r#"{"type":"subscribe","topics":[{"topic":"metrics","cfg":{"fps":0.5}}]}"#;
     serde_json::from_str::<ClientMessage>(raw)
         .expect_err("an unknown selector field must fail loudly");
 }
@@ -3315,15 +3132,12 @@ fn an_absent_or_null_selector_config_is_no_config_at_all() {
 #[test]
 fn a_null_stanza_leaves_a_configurable_topic_alone() {
     let state = SubscriptionState::default()
-        .subscribed_unkeyed(
-            &["metrics"],
-            serde_json::json!({"metrics": {"interval_ms": 250}}),
-        )
+        .subscribed_unkeyed(&["metrics"], serde_json::json!({"metrics": {"fps": 4.0}}))
         .expect("metrics subscribe applies")
         .subscribed_unkeyed(&["metrics"], serde_json::json!({"metrics": null}))
         .expect("a null stanza is not a patch");
 
-    assert_eq!(state.config_by_topic()["metrics"]["interval_ms"], 250);
+    assert_eq!(state.config_by_topic()["metrics"]["fps"], 4.0);
 }
 
 #[test]
@@ -3334,16 +3148,13 @@ fn config_for_an_unrecognized_channel_is_ignored() {
 
     let config = state.config_by_topic();
     assert!(config.get("lasers").is_none());
-    assert_eq!(config["metrics"]["interval_ms"], 1000);
+    assert_eq!(config["metrics"]["fps"], 1.0);
 }
 
 #[test]
 fn unsubscribing_keeps_the_config_a_resubscribe_reinstates() {
     let configured = SubscriptionState::default()
-        .subscribed_unkeyed(
-            &["metrics"],
-            serde_json::json!({"metrics": {"interval_ms": 250}}),
-        )
+        .subscribed_unkeyed(&["metrics"], serde_json::json!({"metrics": {"fps": 4.0}}))
         .expect("metrics subscribe applies");
     assert!(configured.live_table_agrees_with_membership());
     assert!(!configured.has_dormant_config(TopicId::Metrics, None));
@@ -3360,8 +3171,8 @@ fn unsubscribing_keeps_the_config_a_resubscribe_reinstates() {
         .subscribed_unkeyed(&["metrics"], serde_json::Value::Null)
         .expect("resubscribe applies");
     assert_eq!(
-        restored.config_by_topic()["metrics"]["interval_ms"],
-        250,
+        restored.config_by_topic()["metrics"]["fps"],
+        4.0,
         "a resubscribe reinstates the client's own cadence, not the default"
     );
     assert!(restored.live_table_agrees_with_membership());
@@ -3463,50 +3274,6 @@ fn one_topic_holds_a_subscription_per_key() {
     assert!(remaining.holds(TopicId::DisplayPreview, Some("device-b")));
     assert!(remaining.contains(TopicId::DisplayPreview));
     assert!(remaining.live_table_agrees_with_membership());
-}
-
-#[test]
-fn staging_a_preview_transport_does_not_adopt_it() {
-    let peer = PreviewTransportCapability {
-        max_encoded_publication_bytes: 1024,
-        max_connection_bytes: 2048,
-        max_message_bytes: 256,
-        ..PreviewTransportCapability::default().legacy_v1()
-    };
-    let (sender, receiver) = preview_outbound_channel();
-    let mut capability = PreviewTransportCapability::default();
-    let mut cursors = PreviewCursorQueue::new(capability.max_streams);
-
-    let staged =
-        stage_preview_transport(&peer.encode(), &sender, &cursors).expect("capability stages");
-    assert_eq!(
-        capability,
-        PreviewTransportCapability::default(),
-        "staging must not adopt the peer's capability"
-    );
-
-    // The peer's byte budget is not in force yet, so a publication that
-    // only the server's own budget admits still goes through.
-    let frame = preview_test_frame(PreviewFrameChannel::Canvas, 1, 4096);
-    assert!(
-        frame.len() > peer.max_encoded_publication_bytes,
-        "the fixture frame must exceed the peer's budget to be a real test"
-    );
-    sender
-        .publish(
-            PreviewStreamId::Passive(PreviewFrameChannel::Canvas),
-            frame,
-            None,
-        )
-        .expect("the staged budget is not in force");
-    try_receive_preview_publication(&receiver).expect("publication under the old budget");
-
-    // Adopting it now refuses, because the transport is busy — and it
-    // refuses without having changed anything.
-    let error = commit_preview_transport(staged, &sender, &mut cursors, &mut capability)
-        .expect_err("an active transport cannot renegotiate");
-    assert_eq!(error.code, "malformed_request");
-    assert_eq!(capability, PreviewTransportCapability::default());
 }
 
 #[test]
@@ -4341,12 +4108,16 @@ fn browser_preview_test_context() -> (
 async fn browser_preview_test_executor(
     routing: InteractionRoutingControl,
 ) -> Arc<InteractivePreviewExecutor> {
+    let event_bus = Arc::new(HypercolorBus::new());
     Arc::new(
         InteractivePreviewExecutor::start_cpu(InteractivePreviewContext {
-            scene_manager: Arc::new(RwLock::new(SceneManager::new())),
+            scene_manager: crate::domain::scene::SceneService::in_memory(
+                SceneManager::new(),
+                Arc::clone(&event_bus),
+            ),
             effect_registry: Arc::new(RwLock::new(EffectRegistry::new(Vec::new()))),
             asset_library: None,
-            event_bus: Arc::new(HypercolorBus::new()),
+            event_bus,
             input_graph: InputGraphHandle::default(),
             sensor_snapshots: None,
             interaction_routing: routing,
@@ -4652,39 +4423,6 @@ async fn a_refused_preview_subscribe_restores_the_shape_it_had_already_resized()
     if let PreviewOutboundItem::Publication(publication) = &in_flight {
         frames.complete(publication);
     }
-}
-
-#[tokio::test]
-async fn interactive_preview_transport_commits_before_its_relay_resumes() {
-    let (_source, handle, routing) = browser_preview_test_context();
-    let executor = browser_preview_test_executor(routing.clone()).await;
-    let (mut session, outbound, frames) = browser_preview_session(handle, routing, executor);
-    let peer = PreviewTransportCapability::default().legacy_v1();
-    let mut capability = PreviewTransportCapability::default();
-    let mut cursors = PreviewCursorQueue::new(capability.max_streams);
-    let staged = stage_preview_transport(&peer.encode(), &outbound, &cursors)
-        .expect("initial transport should stage");
-    let subscriptions = SubscriptionState::default()
-        .subscribed(vec![
-            TopicSubscription::keyed("interactive_preview", "main").with_config(
-                serde_json::to_value(interactive_preview_config()).expect("config serializes"),
-            ),
-        ])
-        .expect("interactive preview subscribe applies");
-
-    session
-        .reconcile_with_commit(&subscriptions, || {
-            assert!(
-                frames.try_recv().is_none(),
-                "the interactive relay stays quiescent until transport commit"
-            );
-            commit_preview_transport(staged, &outbound, &mut cursors, &mut capability).map(|_| ())
-        })
-        .await
-        .expect("transport and preview commit together");
-
-    assert_eq!(capability, peer);
-    assert!(session.publication_id("main").is_some());
 }
 
 #[tokio::test]
@@ -5086,7 +4824,7 @@ fn websocket_manifest_matches_protocol_constants() {
         manifest["default_subscriptions"],
         serde_json::json!(default_subscriptions)
     );
-    let preview_defaults = PreviewTransportCapability::default();
+    let preview_defaults = PreviewTransportLimits::default();
     assert_eq!(
         manifest["preview_transport"]["max_publication_decoded_bytes"],
         preview_defaults.max_decoded_publication_bytes
@@ -5102,10 +4840,6 @@ fn websocket_manifest_matches_protocol_constants() {
     assert_eq!(
         manifest["preview_transport"]["max_message_bytes"],
         preview_defaults.max_message_bytes
-    );
-    assert_eq!(
-        manifest["preview_transport"]["max_chunk_count"],
-        preview_defaults.max_chunk_count
     );
     assert_eq!(
         manifest["preview_transport"]["max_reassembly_state_bytes"],
@@ -5124,14 +4858,6 @@ fn websocket_manifest_matches_protocol_constants() {
         preview_defaults.max_cursor_state_bytes
     );
     assert_eq!(
-        manifest["preview_transport"]["max_reassembly_streams"],
-        preview_defaults.max_streams
-    );
-    assert_eq!(
-        manifest["preview_transport"]["max_reassembly_tombstones"],
-        preview_defaults.max_tombstones
-    );
-    assert_eq!(
         manifest["preview_transport"]["partial_idle_ms"],
         preview_defaults.max_idle_ms
     );
@@ -5140,18 +4866,7 @@ fn websocket_manifest_matches_protocol_constants() {
         PREVIEW_MIN_MESSAGE_BYTES
     );
     assert_eq!(manifest["preview_transport"]["jpeg_max_axis"], u16::MAX);
-    assert_eq!(
-        manifest["preview_transport"]["negotiation"]["client_subscribe_field"],
-        "preview_transport"
-    );
-    assert_eq!(
-        manifest["preview_transport"]["negotiation"]["server_subscribed_field"],
-        "preview_transport"
-    );
-    assert_eq!(
-        manifest["preview_transport"]["negotiation"]["legacy_client_policy"],
-        "server defaults"
-    );
+    assert!(manifest["preview_transport"].get("negotiation").is_none());
     for channel in [
         "canvas",
         "screen_canvas",

@@ -197,16 +197,16 @@ const fn capture_resource_operation(kind: CaptureResourceKind) -> &'static str {
         CaptureResourceKind::PointerShape => "reserve Windows pointer shape",
         CaptureResourceKind::CanonicalDesktop => "reserve Windows canonical desktop",
         CaptureResourceKind::PointerTexture => "reserve Windows pointer texture",
-        CaptureResourceKind::CompatibilityReductionConstantBuffer => {
-            "reserve Windows compatibility reduction constant buffer"
+        CaptureResourceKind::AnalysisReductionConstantBuffer => {
+            "reserve Windows analysis reduction constant buffer"
         }
-        CaptureResourceKind::CompatibilityReductionTextures => {
-            "reserve Windows compatibility reduction textures"
+        CaptureResourceKind::AnalysisReductionTextures => {
+            "reserve Windows analysis reduction textures"
         }
-        CaptureResourceKind::CompatibilityCpuStagingTexture => {
-            "reserve Windows compatibility CPU staging texture"
+        CaptureResourceKind::AnalysisCpuStagingTexture => {
+            "reserve Windows analysis CPU staging texture"
         }
-        CaptureResourceKind::CompatibilityFramePlane => "reserve Windows compatibility frame plane",
+        CaptureResourceKind::RgbaFramePlane => "reserve Windows RGBA frame plane",
     }
 }
 
@@ -888,7 +888,7 @@ impl WindowsScreenCaptureInput {
         )
     }
 
-    /// Create a source with caller-calibrated compatibility and exact CPU fences.
+    /// Create a source with caller-calibrated analysis and exact CPU fences.
     #[must_use]
     pub fn with_compute_capacity_policy(
         config: CaptureConfig,
@@ -3744,7 +3744,7 @@ fn run_worker(
                 Ok(_) => rejected_analysis_work = None,
                 Err(error) => {
                     clear_capture_publication(publication);
-                    warn!(%error, "Windows compatibility screen analysis exceeds admitted CPU compute");
+                    warn!(%error, "Windows screen analysis exceeds admitted CPU compute");
                     if let Some(status) = status_session.load() {
                         status.unavailable(screen_analysis_admission_issue(&error));
                     }

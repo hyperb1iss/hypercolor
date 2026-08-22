@@ -2,6 +2,7 @@
 //! MCP server, and system integration.
 
 pub mod api;
+pub mod app_state;
 pub mod attachment_profiles;
 pub mod daemon;
 pub(crate) mod deadline;
@@ -27,9 +28,10 @@ pub mod macos_tcc_canary;
 pub mod mcp;
 pub mod mdns;
 pub mod network;
+pub mod output_power;
 pub mod path_migration;
 pub mod performance;
-pub mod persistence;
+pub use hypercolor_core::persistence;
 pub mod playlist_runtime;
 pub mod preview_runtime;
 pub mod process;

@@ -93,7 +93,7 @@ fn static_layer_surface_cache_stays_bounded() {
 }
 
 #[test]
-fn unmaterialized_legacy_effect_does_not_forge_a_layer_identity() {
+fn empty_layer_stack_does_not_forge_a_layer_identity() {
     let mut group = sample_group(4, 4);
     group.layers.clear();
 
@@ -101,9 +101,12 @@ fn unmaterialized_legacy_effect_does_not_forge_a_layer_identity() {
 }
 
 #[test]
-fn materialized_single_effect_layer_can_passthrough_layer_compositor() {
+fn single_effect_layer_can_passthrough_layer_compositor() {
     let mut group = sample_group(4, 4);
-    let effect_id = group.effect_id.expect("sample group should have an effect");
+    let effect_id = group
+        .effect_ids()
+        .next()
+        .expect("sample group should have an effect");
     let layer_id = SceneLayerId::new();
     group.layers = vec![SceneLayer::from_effect(
         layer_id,
@@ -122,7 +125,10 @@ fn materialized_single_effect_layer_can_passthrough_layer_compositor() {
 #[test]
 fn stacked_layers_use_layer_compositor() {
     let mut group = sample_group(4, 4);
-    let effect_id = group.effect_id.expect("sample group should have an effect");
+    let effect_id = group
+        .effect_ids()
+        .next()
+        .expect("sample group should have an effect");
     let effect_layer = SceneLayer::from_effect(
         SceneLayerId::new(),
         effect_id,
@@ -151,7 +157,10 @@ fn stacked_layers_use_layer_compositor() {
 #[test]
 fn adjusted_effect_layer_uses_layer_compositor() {
     let mut group = sample_group(4, 4);
-    let effect_id = group.effect_id.expect("sample group should have an effect");
+    let effect_id = group
+        .effect_ids()
+        .next()
+        .expect("sample group should have an effect");
     let mut layer = SceneLayer::from_effect(
         SceneLayerId::new(),
         effect_id,
@@ -170,8 +179,6 @@ fn missing_media_layer_renders_transparent_black_and_reports_health() {
     let mut runtime = ZoneRuntime::new(4, 4);
     let registry = EffectRegistry::new(Vec::new());
     let mut group = sample_group(4, 4);
-    group.effect_id = None;
-    group.controls.clear();
     group.layers = vec![SceneLayer {
         id: hypercolor_types::layer::SceneLayerId::new(),
         name: Some("Missing Media".into()),
@@ -218,8 +225,6 @@ fn screen_region_layer_uses_latest_capture_canvas() {
     let mut runtime = ZoneRuntime::new(4, 4);
     let registry = EffectRegistry::new(Vec::new());
     let mut group = sample_display_group(2, 1);
-    group.effect_id = None;
-    group.controls.clear();
     group.layers = vec![SceneLayer {
         id: hypercolor_types::layer::SceneLayerId::new(),
         name: Some("Screen".into()),
@@ -285,8 +290,6 @@ fn gif_asset_layer_can_drive_direct_display_group() {
     let mut runtime = ZoneRuntime::with_asset_library(4, 4, asset_library);
     let registry = EffectRegistry::new(Vec::new());
     let mut group = sample_display_group(2, 2);
-    group.effect_id = None;
-    group.controls.clear();
     group.layers = vec![SceneLayer {
         id: hypercolor_types::layer::SceneLayerId::new(),
         name: Some("GIF".into()),
@@ -345,8 +348,6 @@ fn stream_media_layer_reports_loading_until_first_frame() {
     let mut runtime = ZoneRuntime::with_asset_library(4, 4, asset_library);
     let registry = EffectRegistry::new(Vec::new());
     let mut group = sample_group(4, 4);
-    group.effect_id = None;
-    group.controls.clear();
     group.layers = vec![SceneLayer {
         id: hypercolor_types::layer::SceneLayerId::new(),
         name: Some("Stream".into()),

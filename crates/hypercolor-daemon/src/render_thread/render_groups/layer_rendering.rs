@@ -35,7 +35,7 @@ impl ZoneRuntime {
     ) -> Result<Option<ProducerFrame>> {
         let mut composition_layers = Vec::new();
         let mut gpu_source_layers = Vec::new();
-        for layer in group.effective_layers() {
+        for layer in &group.layers {
             if !layer.enabled {
                 continue;
             }
@@ -344,7 +344,7 @@ impl ZoneRuntime {
         group: &Zone,
         context: GroupFrameContext<'_>,
     ) -> Result<()> {
-        for layer in group.effective_layers() {
+        for layer in &group.layers {
             if !layer.enabled {
                 continue;
             }

@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 use crate::display::DisplayDescriptor;
 use crate::effect::{ControlValue, EffectMetadata};
@@ -13,7 +14,7 @@ use crate::scene::{DisplayFaceBlendMode, Zone};
 /// `default` persists across scenes (the display's own face); `scene`
 /// writes into the active scene's display zone, which always wins while
 /// that scene is active.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum DisplayFaceScope {
     #[default]
@@ -34,7 +35,7 @@ impl DisplayFaceScope {
 }
 
 /// Summary row from `GET /api/v1/displays`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct DisplaySummary {
     pub id: String,
     pub name: String,
@@ -50,11 +51,12 @@ pub struct DisplaySummary {
 
 /// Response from `GET /api/v1/displays/{id}/face` and every face mutation
 /// route.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct DisplayFaceResponse {
     pub device_id: String,
     pub scene_id: String,
     pub effect: EffectMetadata,
+    #[schema(value_type = Object)]
     pub zone: Zone,
     /// Which layer the returned assignment lives on.
     #[serde(default)]
@@ -68,12 +70,13 @@ pub struct DisplayFaceResponse {
 }
 
 /// Request body for `PUT /api/v1/displays/{id}/face`.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct SetDisplayFaceRequest {
     pub effect_id: String,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub controls: HashMap<String, ControlValue>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>)]
     pub blend_mode: Option<DisplayFaceBlendMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opacity: Option<f32>,
@@ -82,30 +85,30 @@ pub struct SetDisplayFaceRequest {
 }
 
 /// Query parameters for `DELETE /api/v1/displays/{id}/face`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema, utoipa::IntoParams,
+)]
 pub struct DisplayFaceScopeQuery {
     #[serde(default)]
+    #[param(required = false)]
     pub scope: DisplayFaceScope,
 }
 
-/// Request body for `PATCH /api/v1/displays/{id}/face/controls`.
-///
-/// The payload carries only the overrides the caller wants to change;
-/// existing control values on the zone are preserved unless their
-/// key appears in this map. `controls` is typed as raw JSON (rather than
-/// `HashMap<String, ControlValue>`) so callers can send natural shapes
-/// like `{"accent": 0.5}` instead of `{"accent": {"float": 0.5}}`, which
-/// mirrors the effects controls patch endpoint.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct UpdateDisplayFaceControlsRequest {
+/// Response from `DELETE /api/v1/displays/{id}/face`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct DeleteDisplayFaceResponse {
+    pub device_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub controls: Option<serde_json::Value>,
+    pub scene_id: Option<String>,
+    pub scope: DisplayFaceScope,
+    pub deleted: bool,
 }
 
 /// Request body for `PATCH /api/v1/displays/{id}/face/composition`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct UpdateDisplayFaceCompositionRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>)]
     pub blend_mode: Option<DisplayFaceBlendMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opacity: Option<f32>,

@@ -11,7 +11,9 @@ use hypercolor_core::input::{
     InputData, InputSource, SourceIssue, SourceKind, SourceStatusHandle, SourceStatusReporter,
 };
 use hypercolor_core::scene::OutputPlacement;
-use hypercolor_daemon::api::{self, AppState};
+use hypercolor_daemon::api;
+use hypercolor_daemon::app_state::AppState;
+use hypercolor_daemon::device_settings::DeviceSettingsStore;
 use hypercolor_daemon::mcp;
 use hypercolor_daemon::mcp::prompts::{
     build_prompt_definitions, get_prompt_messages, is_valid_prompt,
@@ -34,7 +36,8 @@ use hypercolor_types::effect::{
 use hypercolor_types::event::{
     ChangeTrigger, EffectStopReason, HypercolorEvent, SceneChangeReason, ZoneChangeKind,
 };
-use hypercolor_types::scene::SceneId;
+use hypercolor_types::layer::LayerSource;
+use hypercolor_types::scene::{SceneId, Zone};
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection,
@@ -47,6 +50,13 @@ use uuid::Uuid;
 
 const INIT_BODY: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}"#;
 static DATA_DIR_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+fn effect_controls(zone: &Zone) -> Option<&HashMap<String, ControlValue>> {
+    zone.layers.iter().find_map(|layer| match &layer.source {
+        LayerSource::Effect { controls, .. } => Some(controls),
+        _ => None,
+    })
+}
 
 async fn spawn_router(router: axum::Router) -> (Client, String) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -275,9 +285,16 @@ async fn mcp_status_surfaces_are_exact_while_input_manager_is_held() {
 #[tokio::test]
 async fn mcp_status_surfaces_report_effective_session_pause() {
     let state = fresh_app_state();
+    let generation = state.output_power.begin_session_transition();
     state
-        .power_state
-        .send_modify(|power| power.session_sleeping = true);
+        .output_power
+        .pause_for_session(
+            &state.event_bus,
+            generation,
+            hypercolor_types::session::OffOutputBehavior::Static,
+            [0, 0, 0],
+        )
+        .await;
 
     let status = execute_tool_with_state("get_status", &json!({}), &state)
         .await
@@ -291,9 +308,10 @@ async fn mcp_status_surfaces_report_effective_session_pause() {
     assert_eq!(resource["running"], false);
     assert_eq!(resource["paused"], true);
 
-    state.power_state.send_modify(|power| {
-        power.output_override = hypercolor_daemon::session::OutputOverride::Stopped;
-    });
+    state
+        .output_power
+        .set_output_stopped(&state.event_bus)
+        .await;
 
     let stopped_status = execute_tool_with_state("get_status", &json!({}), &state)
         .await
@@ -382,8 +400,7 @@ async fn insert_test_display_face_effect(state: &Arc<AppState>, name: &str) -> E
         modified: std::time::SystemTime::now(),
         state: hypercolor_types::effect::EffectState::Loading,
     };
-    let mut registry = state.effect_registry.write().await;
-    let _ = registry.register(entry);
+    let _ = state.domains.effects.register(entry).await;
     metadata
 }
 
@@ -427,8 +444,7 @@ async fn insert_test_effect(state: &Arc<AppState>, name: &str) -> EffectMetadata
         modified: std::time::SystemTime::now(),
         state: hypercolor_types::effect::EffectState::Loading,
     };
-    let mut registry = state.effect_registry.write().await;
-    let _ = registry.register(entry);
+    let _ = state.domains.effects.register(entry).await;
     metadata
 }
 
@@ -480,21 +496,31 @@ async fn seed_multi_zone_primary_assignment(
 ) -> SpatialLayout {
     let primary_layout = test_layout("primary-layout", vec![test_device_zone("primary-zone")]);
     let custom_zone = test_device_zone("custom-zone");
-    let mut manager = state.scene_manager.write().await;
-    manager
-        .upsert_primary_group(metadata, HashMap::new(), None, primary_layout.clone())
+    let mut mutation = state.scene_manager.begin_mutation().await;
+    mutation
+        .upsert_primary_zone(
+            metadata,
+            HashMap::new(),
+            None,
+            primary_layout.clone(),
+            hypercolor_types::event::ChangeTrigger::System,
+            None,
+        )
         .expect("primary group should be seeded");
-    let custom_id = manager
-        .create_render_group(&SceneId::DEFAULT, "Custom".to_owned(), None, (320, 200))
+    let custom_id = mutation
+        .create_zone(SceneId::DEFAULT, "Custom".to_owned(), None, (320, 200))
         .expect("custom group should be created");
-    manager
-        .assign_device_zone(
-            &SceneId::DEFAULT,
+    mutation
+        .assign_output(
+            SceneId::DEFAULT,
             custom_id,
             custom_zone,
             OutputPlacement::AutoGrid,
         )
         .expect("custom group should claim a zone");
+    hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
+        .await
+        .expect("multi-zone scene should commit");
     primary_layout
 }
 
@@ -508,18 +534,18 @@ fn scenes_path(state: &AppState) -> PathBuf {
 
 #[derive(Debug, PartialEq)]
 struct McpMutationSnapshot {
-    power: hypercolor_daemon::session::OutputPowerState,
+    power: hypercolor_daemon::output_power::OutputPowerState,
     active_scene_id: Option<SceneId>,
     revision: u64,
     scenes: Value,
 }
 
 async fn mcp_mutation_snapshot(state: &AppState) -> McpMutationSnapshot {
-    let manager = state.scene_manager.read().await;
+    let manager = state.scene_manager.snapshot().await;
     McpMutationSnapshot {
-        power: *state.power_state.borrow(),
+        power: state.output_power.snapshot(),
         active_scene_id: manager.active_scene_id().copied(),
-        revision: state.scene_commits.revision(),
+        revision: state.scene_manager.revision(),
         scenes: serde_json::to_value(manager.list()).expect("scenes should serialize"),
     }
 }
@@ -1018,8 +1044,11 @@ async fn stateful_display_face_tool_assigns_and_clears_face_groups() {
         assign_result["zone"]["display_target"]["device_id"],
         display_id.to_string()
     );
-    assert_eq!(assign_result["zone"]["layout"]["canvas_width"], 320);
-    assert_eq!(assign_result["zone"]["controls"]["title"]["text"], "CPU");
+    assert_eq!(assign_result["device"]["width"], 320);
+    assert_eq!(
+        assign_result["zone"]["layers"][0]["source"]["controls"]["title"]["text"],
+        "CPU"
+    );
 
     let assign_snapshot = runtime_state::load(&state.runtime_state_path)
         .expect("runtime snapshot should load")
@@ -1065,7 +1094,6 @@ async fn stateful_display_face_tool_assigns_and_clears_face_groups() {
         clear_result["zone"]["display_target"]["device_id"],
         display_id.to_string()
     );
-    assert!(clear_result["zone"]["effect_id"].is_null());
     assert_eq!(
         clear_result["zone"]["layers"].as_array().map(Vec::len),
         Some(0)
@@ -1080,7 +1108,7 @@ async fn stateful_display_face_tool_assigns_and_clears_face_groups() {
         .iter()
         .find(|group| group.role == hypercolor_types::scene::ZoneRole::Display)
         .expect("display screen surface should survive face clear");
-    assert_eq!(display_group.effect_id, None);
+    assert_eq!(display_group.effect_ids().next(), None);
     assert!(display_group.layers.is_empty());
 
     let mut saw_clear_event = false;
@@ -1236,10 +1264,10 @@ async fn malformed_declared_arguments_never_reach_mutating_handlers() {
     .expect("baseline effect should apply");
 
     let (zone_id, layer_id) = {
-        let manager = state.scene_manager.read().await;
+        let manager = state.scene_manager.snapshot().await;
         let zone = manager
             .active_scene()
-            .and_then(|scene| scene.primary_group())
+            .and_then(|scene| scene.primary_zone())
             .expect("baseline primary zone should exist");
         let layer = zone.layers.first().expect("baseline layer should exist");
         (zone.id.to_string(), layer.id.to_string())
@@ -1371,12 +1399,12 @@ async fn a_refused_deleted_parameter_leaves_the_scene_untouched() {
         "the refusal names the parameter: {error}"
     );
 
-    let manager = state.scene_manager.read().await;
+    let manager = state.scene_manager.snapshot().await;
     assert!(
         manager
             .active_scene()
-            .and_then(|scene| scene.primary_group())
-            .and_then(|zone| zone.effect_id)
+            .and_then(|scene| scene.primary_zone())
+            .and_then(|zone| zone.effect_ids().next())
             .is_none(),
         "a refused call must not load the effect"
     );
@@ -1422,7 +1450,7 @@ async fn adjust_controls_resolves_the_zone_and_requires_an_id_for_unnamed_layers
         &json!({
             "zone": zone_name,
             "layer": "aurora",
-            "values": { "speed": { "float": 8.5 } }
+            "values": { "speed": { "kind": "float", "value": 8.5 } }
         }),
         state.as_ref(),
     )
@@ -1438,7 +1466,7 @@ async fn adjust_controls_resolves_the_zone_and_requires_an_id_for_unnamed_layers
         &json!({
             "zone": zone_name,
             "layer": layer_id,
-            "values": { "speed": { "float": 8.5 } }
+            "values": { "speed": { "kind": "float", "value": 8.5 } }
         }),
         state.as_ref(),
     )
@@ -1562,7 +1590,7 @@ async fn stateful_set_effect_and_clear_zone_sync_scene_runtime_and_events() {
     );
 
     let (scene_id, active_group) = {
-        let manager = state.scene_manager.read().await;
+        let manager = state.scene_manager.snapshot().await;
         (
             manager
                 .active_scene_id()
@@ -1570,14 +1598,14 @@ async fn stateful_set_effect_and_clear_zone_sync_scene_runtime_and_events() {
                 .expect("default scene should stay active"),
             manager
                 .active_scene()
-                .and_then(|scene| scene.primary_group())
+                .and_then(|scene| scene.primary_zone())
                 .cloned()
                 .expect("primary group should exist after MCP set_effect"),
         )
     };
-    assert_eq!(active_group.effect_id, Some(effect.id));
+    assert_eq!(active_group.effect_ids().next(), Some(effect.id));
     assert_eq!(
-        active_group.controls.get("speed"),
+        effect_controls(&active_group).and_then(|controls| controls.get("speed")),
         Some(&ControlValue::Float(7.5))
     );
 
@@ -1586,13 +1614,12 @@ async fn stateful_set_effect_and_clear_zone_sync_scene_runtime_and_events() {
         .expect("runtime snapshot should exist");
     assert_eq!(active_snapshot.default_scene_groups.len(), 1);
     assert_eq!(
-        active_snapshot.default_scene_groups[0].effect_id,
+        active_snapshot.default_scene_groups[0].effect_ids().next(),
         Some(effect.id)
     );
     assert_eq!(
-        active_snapshot.default_scene_groups[0]
-            .controls
-            .get("speed"),
+        effect_controls(&active_snapshot.default_scene_groups[0])
+            .and_then(|controls| controls.get("speed")),
         Some(&ControlValue::Float(7.5))
     );
 
@@ -1649,19 +1676,17 @@ async fn stateful_set_effect_and_clear_zone_sync_scene_runtime_and_events() {
         .expect("runtime snapshot should load")
         .expect("runtime snapshot should exist");
     assert_eq!(stopped_snapshot.default_scene_groups.len(), 1);
-    assert_eq!(stopped_snapshot.default_scene_groups[0].effect_id, None);
-    assert!(stopped_snapshot.default_scene_groups[0].controls.is_empty());
+    assert!(stopped_snapshot.default_scene_groups[0].layers.is_empty());
 
     let cleared_group = {
-        let manager = state.scene_manager.read().await;
+        let manager = state.scene_manager.snapshot().await;
         manager
             .active_scene()
-            .and_then(|scene| scene.primary_group())
+            .and_then(|scene| scene.primary_zone())
             .cloned()
             .expect("primary group should remain present after stop")
     };
-    assert_eq!(cleared_group.effect_id, None);
-    assert!(cleared_group.controls.is_empty());
+    assert!(cleared_group.layers.is_empty());
 
     let mut saw_stopped_event = false;
     let mut saw_updated_group = false;
@@ -1710,14 +1735,14 @@ async fn stateful_set_effect_preserves_primary_assignment_when_custom_zones_exis
     .expect("set_effect should succeed");
 
     let active_group = {
-        let manager = state.scene_manager.read().await;
+        let manager = state.scene_manager.snapshot().await;
         manager
             .active_scene()
-            .and_then(|scene| scene.primary_group())
+            .and_then(|scene| scene.primary_zone())
             .cloned()
             .expect("primary group should exist after MCP set_effect")
     };
-    assert_eq!(active_group.effect_id, Some(next.id));
+    assert_eq!(active_group.effect_ids().next(), Some(next.id));
     assert_eq!(active_group.layout, expected_layout);
 }
 
@@ -1749,14 +1774,17 @@ async fn stateful_set_color_syncs_scene_runtime_state() {
         .expect("runtime snapshot should exist");
     assert_eq!(snapshot.default_scene_groups.len(), 1);
     assert_eq!(
-        snapshot.default_scene_groups[0].effect_id,
+        snapshot.default_scene_groups[0].effect_ids().next(),
         Some(solid_effect.id)
     );
     assert_eq!(
-        snapshot.default_scene_groups[0].controls.get("brightness"),
+        effect_controls(&snapshot.default_scene_groups[0])
+            .and_then(|controls| controls.get("brightness")),
         Some(&ControlValue::Float(0.5))
     );
-    match snapshot.default_scene_groups[0].controls.get("color") {
+    match effect_controls(&snapshot.default_scene_groups[0])
+        .and_then(|controls| controls.get("color"))
+    {
         Some(ControlValue::Color([r, g, b, a])) => {
             assert_eq!((*r, *g, *b, *a), (1.0, 106.0 / 255.0, 193.0 / 255.0, 1.0));
         }
@@ -1784,15 +1812,33 @@ async fn stateful_set_color_preserves_primary_assignment_when_custom_zones_exist
     .expect("set_color should succeed");
 
     let active_group = {
-        let manager = state.scene_manager.read().await;
+        let manager = state.scene_manager.snapshot().await;
         manager
             .active_scene()
-            .and_then(|scene| scene.primary_group())
+            .and_then(|scene| scene.primary_zone())
             .cloned()
             .expect("primary group should exist after MCP set_color")
     };
-    assert_eq!(active_group.effect_id, Some(solid_effect.id));
+    assert_eq!(active_group.effect_ids().next(), Some(solid_effect.id));
     assert_eq!(active_group.layout, expected_layout);
+}
+
+#[tokio::test]
+async fn read_only_tool_results_match_their_declared_schemas() {
+    let (state, _tempdir) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    insert_test_effect(&state, "Aurora").await;
+
+    for (name, params) in [
+        ("list_effects", json!({})),
+        ("get_audio_state", json!({})),
+        ("get_sensor_data", json!({})),
+        ("get_layout", json!({})),
+    ] {
+        execute_tool_with_state(name, &params, state.as_ref())
+            .await
+            .unwrap_or_else(|error| panic!("{name} should match its output schema: {error}"));
+    }
 }
 
 #[test]
@@ -1804,7 +1850,33 @@ fn tool_definitions_have_valid_schemas() {
             .iter()
             .all(|tool| tool.input_schema["type"] == "object")
     );
-    assert!(tools.iter().all(|tool| tool.output_schema.is_object()));
+    for tool in &tools {
+        assert!(tool.output_schema.is_object(), "{} output", tool.name);
+        assert!(
+            jsonschema::validator_for(&tool.output_schema).is_ok(),
+            "{} must publish a valid, self-contained output schema",
+            tool.name
+        );
+        assert_eq!(
+            tool.output_schema["additionalProperties"],
+            json!(false),
+            "{} must close its typed output shape",
+            tool.name
+        );
+        assert!(
+            tool.output_schema["properties"].is_object(),
+            "{} must publish field-level output properties",
+            tool.name
+        );
+        assert!(
+            !tool
+                .output_schema
+                .to_string()
+                .contains("intentionally broad"),
+            "{} still advertises the deleted fallback schema",
+            tool.name
+        );
+    }
     assert!(tools.iter().any(|tool| tool.name == "set_display_face"));
     assert!(tools.iter().any(|tool| tool.name == "clear_zone"));
     assert!(tools.iter().any(|tool| tool.name == "adjust_controls"));
@@ -2036,7 +2108,7 @@ fn fuzzy_color_shorthand_hex_requires_an_explicit_hash() {
 
 #[tokio::test]
 async fn set_output_power_tool_validates_desired_state() {
-    let state = fresh_app_state();
+    let (state, _tempdir) = isolated_state_with_tempdir();
 
     let error = execute_tool_with_state("set_output_power", &json!({ "state": "off" }), &state)
         .await
@@ -2046,7 +2118,8 @@ async fn set_output_power_tool_validates_desired_state() {
 
 #[tokio::test]
 async fn stateful_set_output_power_is_reversible_and_idempotent() {
-    let state = Arc::new(fresh_app_state());
+    let (state, _tempdir) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
 
     let paused = execute_tool_with_state(
         "set_output_power",
@@ -2056,7 +2129,7 @@ async fn stateful_set_output_power_is_reversible_and_idempotent() {
     .await
     .expect("pause should succeed");
     assert_eq!(paused["state"], "paused");
-    assert!(state.power_state.borrow().manually_paused());
+    assert!(state.output_power.snapshot().manually_paused());
 
     let paused_again = execute_tool_with_state(
         "set_output_power",
@@ -2075,7 +2148,7 @@ async fn stateful_set_output_power_is_reversible_and_idempotent() {
     .await
     .expect("resume should succeed");
     assert_eq!(running["state"], "running");
-    assert!(!state.power_state.borrow().sleeping());
+    assert!(!state.output_power.snapshot().sleeping());
 }
 
 /// `set_brightness` is a projection of the output service, so the tool
@@ -2083,7 +2156,7 @@ async fn stateful_set_output_power_is_reversible_and_idempotent() {
 /// same store the REST route does.
 #[tokio::test]
 async fn set_brightness_tool_projects_the_output_service() {
-    let (state, _tmp) = isolated_state_with_tempdir();
+    let (state, tmp) = isolated_state_with_tempdir();
 
     let response =
         execute_tool_with_state("set_brightness", &json!({ "brightness": 35.0 }), &state)
@@ -2091,9 +2164,12 @@ async fn set_brightness_tool_projects_the_output_service() {
             .expect("brightness should be accepted");
     assert_eq!(response["brightness"], 35);
     assert_eq!(response["previous_brightness"], 100);
-    assert!((state.power_state.borrow().global_brightness - 0.35).abs() < 1e-6);
-    assert!(
-        (state.device_settings.read().await.global_brightness() - 0.35).abs() < 1e-6,
+    assert!((state.output_power.global_brightness() - 0.35).abs() < 1e-6);
+    assert_eq!(
+        DeviceSettingsStore::load(&tmp.path().join("data/device-settings.json"))
+            .expect("device settings should reload")
+            .global_brightness(),
+        0.35,
         "the tool must persist through the same store the REST route writes"
     );
 
@@ -2101,6 +2177,58 @@ async fn set_brightness_tool_projects_the_output_service() {
         .await
         .expect_err("out-of-range brightness should be rejected");
     assert!(matches!(error, ToolError::InvalidParam { .. }));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_brightness_tools_report_serialized_predecessors() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    let first_state = Arc::clone(&state);
+    let second_state = Arc::clone(&state);
+
+    let first = tokio::spawn(async move {
+        execute_tool_with_state(
+            "set_brightness",
+            &json!({ "brightness": 25 }),
+            first_state.as_ref(),
+        )
+        .await
+        .expect("first brightness should succeed")
+    });
+    let second = tokio::spawn(async move {
+        execute_tool_with_state(
+            "set_brightness",
+            &json!({ "brightness": 75 }),
+            second_state.as_ref(),
+        )
+        .await
+        .expect("second brightness should succeed")
+    });
+    let first = first.await.expect("first brightness task should join");
+    let second = second.await.expect("second brightness task should join");
+    let transitions = [
+        (
+            first["previous_brightness"]
+                .as_u64()
+                .expect("first predecessor should be numeric"),
+            first["brightness"]
+                .as_u64()
+                .expect("first brightness should be numeric"),
+        ),
+        (
+            second["previous_brightness"]
+                .as_u64()
+                .expect("second predecessor should be numeric"),
+            second["brightness"]
+                .as_u64()
+                .expect("second brightness should be numeric"),
+        ),
+    ];
+
+    assert!(
+        transitions.contains(&(100, 25)) && transitions.contains(&(25, 75))
+            || transitions.contains(&(100, 75)) && transitions.contains(&(75, 25))
+    );
 }
 
 #[test]
@@ -2241,11 +2369,11 @@ async fn stateful_display_face_tool_defaults_to_the_persistent_scope() {
     assert!(
         state
             .scene_manager
-            .read()
+            .snapshot()
             .await
             .active_render_groups()
             .iter()
-            .any(|zone| zone.effect_id == Some(face.id))
+            .any(|zone| zone.has_effect(face.id))
     );
 
     let clear_result = execute_tool_with_state(

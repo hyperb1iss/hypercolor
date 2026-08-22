@@ -13,7 +13,7 @@ use std::sync::Mutex as StdMutex;
 use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
-use tokio::sync::{Mutex, RwLock, watch};
+use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
 
 use hypercolor_core::asset::AssetLibrary;
@@ -27,9 +27,7 @@ use hypercolor_core::effect::EffectRegistry;
 use hypercolor_core::engine::RenderLoop;
 use hypercolor_core::input::screen::ScreenCapacityStatusHandle;
 use hypercolor_core::input::{InputManager, SourceStatusRegistry};
-use hypercolor_core::scene::SceneManager;
-use hypercolor_core::spatial::SpatialEngine;
-use hypercolor_driver_api::CredentialStore;
+use hypercolor_driver_support::CredentialStore;
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::device::DeviceId;
@@ -38,21 +36,25 @@ use hypercolor_types::spatial::SpatialLayout;
 
 use crate::attachment_profiles::ComponentProfileStore;
 use crate::device_metrics::DeviceMetricsSnapshotStore;
-use crate::device_settings::DeviceSettingsStore;
+use crate::device_settings::DeviceSettingsAccess;
 use crate::discovery;
 use crate::display_output::DisplayOutputThread;
 use crate::display_preferences::DisplayPreferencesStore;
+use crate::domain::context::DomainContexts;
+use crate::domain::scene::SceneService;
+use crate::domain::spatial::SpatialService;
 use crate::extensions::{ApiExtension, DaemonLifecycleExtension, ExtensionRegistry};
 use crate::interaction_routing::InteractionRoutingControl;
 use crate::layout_auto_exclusions;
 use crate::logical_devices::LogicalDevice;
 use crate::network::DaemonDriverHost;
+use crate::output_power::OutputPower;
 use crate::performance::PerformanceTracker;
 use crate::preview_runtime::PreviewRuntime;
 use crate::render_thread::{ConfiguredFpsTier, InputPublicationDemandHandle, RenderThread};
 use crate::scene_store::SceneStore;
 use crate::scene_transactions::SceneTransactionQueue;
-use crate::session::{OutputPowerState, SessionController};
+use crate::session::SessionController;
 use crate::simulators::{SimulatedDisplayRuntime, SimulatedDisplayStore};
 use crate::zone_layout_preview::ZoneLayoutPreviewStore;
 
@@ -88,6 +90,9 @@ pub use signals::{SUPERVISED_PARENT_PID_ENV, install_signal_handlers};
 /// Fields are `pub` because the API and MCP modules (built by other agents)
 /// will need direct access to subsystems.
 pub struct DaemonState {
+    /// Complete domain service graph shared by every transport.
+    pub domains: DomainContexts,
+
     /// Live configuration manager (lock-free reads via `arc_swap`).
     pub config_manager: Arc<ConfigManager>,
 
@@ -107,16 +112,10 @@ pub struct DaemonState {
     pub effect_registry: Arc<RwLock<EffectRegistry>>,
 
     /// Scene manager — scene lifecycle, priority stack, transitions.
-    pub scene_manager: Arc<RwLock<SceneManager>>,
+    pub scene_manager: SceneService,
 
     /// Persisted named-scene store.
     pub scene_store: Arc<RwLock<SceneStore>>,
-
-    /// Ordered publication chain and revision counter for scene commits
-    /// (Spec 76 §2.3). Shared with every `AppState` built from this
-    /// state: the compare-and-swap and the publication order are only
-    /// meaningful when one sequencer sees every commit.
-    pub scene_commits: Arc<crate::domain::commit::SceneCommitSequencer>,
 
     /// Event bus — broadcast events, frame data, spectrum data.
     pub event_bus: Arc<HypercolorBus>,
@@ -150,7 +149,7 @@ pub struct DaemonState {
     pub configured_max_fps_tier: ConfiguredFpsTier,
 
     /// Spatial sampling engine — maps canvas pixels to LED positions.
-    pub spatial_engine: Arc<RwLock<SpatialEngine>>,
+    pub spatial_engine: SpatialService,
 
     /// Device backend router — pushes colors to hardware.
     pub backend_manager: Arc<Mutex<BackendManager>>,
@@ -213,7 +212,7 @@ pub struct DaemonState {
     pub display_preferences: Arc<RwLock<DisplayPreferencesStore>>,
 
     /// Persisted global and per-device output settings.
-    pub device_settings: Arc<RwLock<DeviceSettingsStore>>,
+    pub device_settings: DeviceSettingsAccess,
 
     /// Persisted virtual display simulator definitions.
     pub simulated_displays: Arc<RwLock<SimulatedDisplayStore>>,
@@ -239,14 +238,17 @@ pub struct DaemonState {
     /// Persistent JSON file for startup runtime session state.
     pub runtime_state_path: PathBuf,
 
+    /// Persistent portable identity overlay in the machine-local state tier.
+    pub device_aliases_path: PathBuf,
+
+    pub(super) startup_device_aliases: Option<crate::device_aliases::DeviceAliasFile>,
+    pub(super) startup_runtime_snapshot: Option<crate::runtime_state::RuntimeSessionSnapshot>,
+
     /// Global discovery scan lock shared across startup and API-triggered scans.
     pub discovery_in_progress: Arc<AtomicBool>,
 
-    /// Shared session-driven output power state for the render thread.
-    pub power_state: watch::Sender<OutputPowerState>,
-
-    /// Serializes output state changes with hardware hold reconciliation.
-    pub output_power_transition: Arc<Mutex<()>>,
+    /// Canonical global output power and brightness authority.
+    pub output_power: OutputPower,
 
     /// Frame-boundary scene changes mirrored into the render thread.
     pub scene_transactions: SceneTransactionQueue,

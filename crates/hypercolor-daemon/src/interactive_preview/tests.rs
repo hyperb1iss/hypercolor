@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -54,11 +53,15 @@ impl PreviewTestRig {
             InteractionRoutePolicy::Browser,
         );
         let demands = InputPublicationDemandHandle::new();
+        let event_bus = Arc::new(HypercolorBus::new());
         let executor = InteractivePreviewExecutor::start_cpu(InteractivePreviewContext {
-            scene_manager: Arc::new(RwLock::new(scene_manager(color))),
+            scene_manager: crate::domain::scene::SceneService::in_memory(
+                scene_manager(color),
+                Arc::clone(&event_bus),
+            ),
             effect_registry: Arc::new(RwLock::new(EffectRegistry::new(Vec::new()))),
             asset_library: None,
-            event_bus: Arc::new(HypercolorBus::new()),
+            event_bus,
             input_graph: InputManager::new().input_graph_handle(),
             sensor_snapshots: None,
             interaction_routing: routing,
@@ -106,7 +109,7 @@ fn resource_ledger_keeps_transport_payload_and_metadata_disjoint() {
 
 fn scene_manager(color: [f32; 4]) -> SceneManager {
     let mut scene = make_scene("Interactive Preview Test");
-    scene.groups = vec![color_group(color)];
+    scene.zones = vec![color_group(color)];
     scene.unassigned_behavior = UnassignedBehavior::Off;
     let scene_id = scene.id;
     let mut manager = SceneManager::new();
@@ -122,10 +125,6 @@ fn color_group(color: [f32; 4]) -> Zone {
         id: ZoneId::new(),
         name: "Preview".to_owned(),
         description: None,
-        effect_id: None,
-        controls: HashMap::new(),
-        control_bindings: HashMap::new(),
-        preset_id: None,
         layers: vec![SceneLayer {
             id: SceneLayerId::new(),
             name: None,

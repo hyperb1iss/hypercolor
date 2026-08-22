@@ -4,7 +4,7 @@
 //! All features operate on the linear-bin FFT output (`fft_size/2 + 1` bins)
 //! or on the 200-bin log-frequency spectrum, as documented per function.
 
-use crate::types::audio::{CHROMA_BINS, SPECTRUM_BINS};
+use hypercolor_types::audio::{CHROMA_BINS, SPECTRUM_BINS};
 
 // ── Mel Filterbank ───────────────────────────────────────────────────────
 
@@ -345,7 +345,7 @@ impl ArraySmoother {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::audio::MEL_BANDS;
+    use hypercolor_types::audio::MEL_BANDS;
 
     #[test]
     fn mel_hz_roundtrip() {

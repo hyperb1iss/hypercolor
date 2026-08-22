@@ -2,6 +2,9 @@
 
 use std::net::IpAddr;
 
+use hypercolor_types::api::system::{
+    MacosAuthorizationState, MacosCapabilityOwner, MacosProtectedSourceState,
+};
 use hypercolor_types::config::{HypercolorConfig, NetworkAccessMode, NetworkClientScope};
 use hypercolor_types::session::{OffOutputBehavior, SleepBehavior};
 use leptos::prelude::*;
@@ -492,11 +495,13 @@ fn macos_screen_needs_authorization(status: &InputStatus) -> bool {
             return false;
         };
         matches!(
-            state.as_deref(),
-            Some("needs_user_action" | "permission_denied" | "revoked")
+            state,
+            MacosProtectedSourceState::NeedsUserAction
+                | MacosProtectedSourceState::PermissionDenied
+                | MacosProtectedSourceState::Revoked
         ) || matches!(
-            tcc.as_deref(),
-            Some("not_determined" | "denied" | "revoked")
+            tcc,
+            MacosAuthorizationState::NotDetermined | MacosAuthorizationState::Denied
         )
     })
 }
@@ -509,7 +514,7 @@ fn macos_screen_needs_restart(status: &InputStatus) -> bool {
         matches!(
             source.platform.as_ref(),
             Some(InputSourcePlatformStatus::MacosScreen { state, .. })
-                if state.as_deref() == Some("needs_process_restart")
+                if *state == MacosProtectedSourceState::NeedsProcessRestart
         )
     })
 }
@@ -520,18 +525,19 @@ fn macos_screen_restart_coordinates(status: &SystemStatus) -> Option<(String, u6
         .flatten()
         .and_then(|ownership| {
             Some((
-                validate_macos_restart_owner(ownership.active_owner.as_deref()?)?,
-                ownership.owner_epoch?,
+                validate_macos_restart_owner(ownership.active_owner)?,
+                ownership.owner_epoch,
             ))
         })
 }
 
-pub(super) fn validate_macos_restart_owner(owner: &str) -> Option<String> {
+pub(super) fn validate_macos_restart_owner(owner: MacosCapabilityOwner) -> Option<String> {
     match owner {
-        "app_sidecar" | "launchd_service" | "homebrew_service" | "standalone" => {
-            Some(owner.to_owned())
-        }
-        _ => None,
+        MacosCapabilityOwner::AppSidecar
+        | MacosCapabilityOwner::LaunchdService
+        | MacosCapabilityOwner::HomebrewService
+        | MacosCapabilityOwner::Standalone => Some(owner.as_str().to_owned()),
+        MacosCapabilityOwner::App | MacosCapabilityOwner::Broker => None,
     }
 }
 
@@ -622,8 +628,8 @@ pub(super) fn MacosCaptureOwnerRestartAction(
 #[cfg(test)]
 mod macos_capture_tests {
     use crate::api::{
-        InputSourcePlatformStatus, InputSourceStatus, InputStatus, MacosDaemonOwnershipStatus,
-        SystemStatus,
+        InputSourcePlatformStatus, InputSourceStatus, InputStatus, MacosAuthorizationState,
+        MacosCapabilityOwner, MacosDaemonOwnershipStatus, MacosProtectedSourceState, SystemStatus,
     };
 
     use super::{macos_screen_restart_coordinates, validate_macos_restart_owner};
@@ -648,6 +654,7 @@ mod macos_capture_tests {
             capabilities: Vec::new(),
             input,
             macos_daemon_ownership,
+            ..SystemStatus::default()
         }
     }
 
@@ -658,21 +665,22 @@ mod macos_capture_tests {
                 sources: vec![InputSourceStatus {
                     kind: "screen".to_owned(),
                     platform: Some(InputSourcePlatformStatus::MacosScreen {
-                        state: Some("needs_process_restart".to_owned()),
-                        tcc: Some("authorized".to_owned()),
-                        owner: Some("launchd_service".to_owned()),
-                        selection: None,
-                        tahoe: None,
+                        state: MacosProtectedSourceState::NeedsProcessRestart,
+                        tcc: MacosAuthorizationState::Authorized,
+                        owner: MacosCapabilityOwner::LaunchdService,
+                        selection: Default::default(),
+                        tahoe: Default::default(),
                         tahoe_selection: None,
                         owner_conflict: None,
+                        telemetry: Default::default(),
                     }),
                     ..InputSourceStatus::default()
                 }],
                 ..InputStatus::default()
             },
             Some(MacosDaemonOwnershipStatus {
-                active_owner: Some("launchd_service".to_owned()),
-                owner_epoch: Some(31),
+                active_owner: MacosCapabilityOwner::LaunchdService,
+                owner_epoch: 31,
                 ..MacosDaemonOwnershipStatus::default()
             }),
         );
@@ -691,10 +699,13 @@ mod macos_capture_tests {
     #[test]
     fn owner_command_names_are_closed() {
         assert_eq!(
-            validate_macos_restart_owner("homebrew_service").as_deref(),
+            validate_macos_restart_owner(MacosCapabilityOwner::HomebrewService).as_deref(),
             Some("homebrew_service")
         );
-        assert_eq!(validate_macos_restart_owner("future_owner"), None);
+        assert_eq!(
+            validate_macos_restart_owner(MacosCapabilityOwner::Broker),
+            None
+        );
     }
 }
 

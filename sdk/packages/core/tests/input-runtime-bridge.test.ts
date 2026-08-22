@@ -125,7 +125,7 @@ describe('LightScript input availability bridge', () => {
         expect(input.mouse.wheel).toBe(-240)
     })
 
-    test('keeps an idle healthy routed source available', () => {
+    test('keeps an idle source healthy and routed', () => {
         runtime.__hypercolorApplyFramePayload?.({
             canvas: { height: 200, width: 320 },
             inputAvailability: {
@@ -140,7 +140,6 @@ describe('LightScript input availability bridge', () => {
 
         const input = getInputData()
 
-        expect(input.available).toBeTrue()
         expect(input.declared).toBeTrue()
         expect(input.routed).toBeTrue()
         expect(input.healthy).toBeTrue()
@@ -179,7 +178,6 @@ describe('LightScript input availability bridge', () => {
 
         const input = getInputData()
 
-        expect(input.available).toBeFalse()
         expect(input.healthy).toBeFalse()
         expect(input.fresh).toBeFalse()
         expect(input.keyboard.events).toHaveLength(1)

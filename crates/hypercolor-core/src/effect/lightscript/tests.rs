@@ -59,6 +59,11 @@ fn bootstrap_script_contains_runtime_shape_and_frame_adapter() {
     assert!(script.contains("window.engine.height = 200"));
     assert!(script.contains("window.engine.audio.freq = new Int8Array(200)"));
     assert!(script.contains("window.engine.audio.frequencyWeighted = new Float32Array(200)"));
+    assert!(script.contains("window.engine.audio.levelDb = -100"));
+    assert!(script.contains("window.engine.audio.levelLinear = 0"));
+    assert!(script.contains("engine.audio.levelDb = finiteNumber(audio.levelDb, -100)"));
+    assert!(!script.contains("window.engine.audio.level ="));
+    assert!(!script.contains("window.engine.audio.levelRaw ="));
     assert!(script.contains("window.engine.zone.hue = new Int16Array(560)"));
     assert!(script.contains("window.engine.getSensorValue = function(name)"));
     assert!(script.contains("window.engine.keyboard.isKeyDown = function(key)"));
@@ -97,7 +102,7 @@ fn frame_payload_json_serializes_typed_payload_only() {
         .expect("first quiet frame should emit payload JSON");
 
     assert!(!payload.contains("window.__hypercolorApplyFramePayload"));
-    assert!(!payload.contains("window.engine.audio.level ="));
+    assert!(!payload.contains("window.engine.audio.levelDb ="));
     assert_eq!(
         payload_from_json(&payload)["timing"]["frameNumber"],
         serde_json::json!(42)

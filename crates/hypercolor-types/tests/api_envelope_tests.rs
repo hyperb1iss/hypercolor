@@ -1,6 +1,5 @@
 //! Wire-shape coverage for the canonical envelope conventions
-//! (Spec 76 §4.3). The meta block must match what v1 already emits so
-//! canonical and legacy envelopes stay mergeable in clients.
+//! (Spec 76 §4.3).
 
 use hypercolor_types::api::envelope::{
     ApiErrorBody, ApiErrorDetail, ApiResponse, ListResponse, PageInfo, ResponseMeta,
@@ -15,7 +14,7 @@ fn meta() -> ResponseMeta {
 }
 
 #[test]
-fn success_envelope_matches_the_v1_field_set() {
+fn success_envelope_has_the_canonical_field_set() {
     let body = ApiResponse {
         data: serde_json::json!({"value": 1}),
         meta: meta(),
@@ -35,6 +34,27 @@ fn success_envelope_matches_the_v1_field_set() {
         .map(String::as_str)
         .collect();
     assert_eq!(meta_keys, ["api_version", "request_id", "timestamp"]);
+}
+
+#[test]
+fn success_envelope_rejects_unknown_top_level_and_meta_fields() {
+    let unknown_top_level = serde_json::json!({
+        "data": {"value": 1},
+        "meta": serde_json::to_value(meta()).expect("meta serializes"),
+        "legacy": true,
+    });
+    assert!(serde_json::from_value::<ApiResponse<serde_json::Value>>(unknown_top_level).is_err());
+
+    let unknown_meta = serde_json::json!({
+        "data": {"value": 1},
+        "meta": {
+            "api_version": "1.0",
+            "request_id": "req_test",
+            "timestamp": "2026-08-16T00:00:00Z",
+            "legacy": true,
+        },
+    });
+    assert!(serde_json::from_value::<ApiResponse<serde_json::Value>>(unknown_meta).is_err());
 }
 
 #[test]

@@ -5,7 +5,7 @@
 
 use serde_json::{Value, json};
 
-use crate::api::AppState;
+use crate::app_state::AppState;
 
 /// Definition of a single MCP resource.
 #[derive(Debug, Clone)]
@@ -66,13 +66,19 @@ pub fn build_resource_definitions() -> Vec<ResourceDefinition> {
 /// Read a resource by URI using live daemon state.
 pub async fn read_resource_with_state(uri: &str, state: &AppState) -> Option<Value> {
     match uri {
-        "hypercolor://state" => Some(super::payload::build_status_payload(state).await),
+        "hypercolor://state" => Some(
+            serde_json::to_value(super::payload::build_status_payload(state).await)
+                .expect("typed MCP status resources should serialize"),
+        ),
         "hypercolor://devices" => Some(
-            super::payload::build_device_inventory_payload(
-                state,
-                super::payload::DeviceInventoryFilter::default(),
+            serde_json::to_value(
+                super::payload::build_device_inventory_payload(
+                    state,
+                    super::payload::DeviceInventoryFilter::default(),
+                )
+                .await,
             )
-            .await,
+            .expect("typed MCP device resources should serialize"),
         ),
         "hypercolor://effects" => Some(read_effects_with_state(state).await),
         "hypercolor://scenes" => Some(read_scenes_with_state(state).await),
@@ -96,21 +102,22 @@ pub fn is_valid_resource_uri(uri: &str) -> bool {
 // ── Resource Readers ──────────────────────────────────────────────────────
 
 async fn read_effects_with_state(state: &AppState) -> Value {
-    let effects = {
-        let registry = state.effect_registry.read().await;
-        registry
-            .iter()
-            .map(|(_, entry)| {
-                json!({
-                    "id": entry.metadata.id.to_string(),
-                    "name": entry.metadata.name,
-                    "description": entry.metadata.description,
-                    "category": format!("{}", entry.metadata.category),
-                    "tags": entry.metadata.tags
-                })
+    let effects = state
+        .domains
+        .effects
+        .all_metadata()
+        .await
+        .into_iter()
+        .map(|metadata| {
+            json!({
+                "id": metadata.id.to_string(),
+                "name": metadata.name,
+                "description": metadata.description,
+                "category": format!("{}", metadata.category),
+                "tags": metadata.tags
             })
-            .collect::<Vec<_>>()
-    };
+        })
+        .collect::<Vec<_>>();
 
     json!({
         "effects": effects,
@@ -119,7 +126,7 @@ async fn read_effects_with_state(state: &AppState) -> Value {
 }
 
 async fn read_scenes_with_state(state: &AppState) -> Value {
-    let scene_manager = state.scene_manager.read().await;
+    let scene_manager = state.scene_manager.snapshot().await;
     let active_scene_id = scene_manager.active_scene_id().copied();
     let payload = scene_manager
         .list()

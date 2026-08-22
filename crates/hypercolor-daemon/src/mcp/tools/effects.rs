@@ -6,10 +6,11 @@ use std::collections::HashMap;
 use serde_json::{Value, json};
 
 use super::{
-    ToolDefinition, ToolError, default_output_schema, find_effect_metadata, resolve_effect_selector,
+    ToolDefinition, ToolError, find_effect_metadata, output_schema, resolve_effect_selector,
+    serialize_result,
 };
-use crate::api::AppState;
 use crate::api::effects::normalize_control_payload;
+use crate::app_state::AppState;
 use crate::domain::MutationContext;
 use crate::domain::effect::{
     ApplyEffect, EffectCatalogQuery, RequestedTransition, apply_effect, list_catalog,
@@ -17,6 +18,8 @@ use crate::domain::effect::{
 use hypercolor_types::api::scene::{ApplyEffectResponse, TransitionType};
 use hypercolor_types::effect::{ControlValue, EffectCategory};
 use strum::VariantNames;
+
+use crate::mcp::results::{EffectCatalogItem, EffectCatalogResult, EffectControlItem};
 
 // ── Tool Definitions ──────────────────────────────────────────────────────
 
@@ -53,7 +56,7 @@ pub(super) fn build_set_effect() -> ToolDefinition {
             "required": ["query"],
             "additionalProperties": false
         }),
-        output_schema: default_output_schema(),
+        output_schema: output_schema::<ApplyEffectResponse>(),
         read_only: false,
         destructive: true,
         idempotent: false,
@@ -100,7 +103,7 @@ pub(super) fn build_list_effects() -> ToolDefinition {
             },
             "additionalProperties": false
         }),
-        output_schema: default_output_schema(),
+        output_schema: output_schema::<EffectCatalogResult>(),
         read_only: true,
         destructive: false,
         idempotent: true,
@@ -129,7 +132,7 @@ pub(super) fn build_set_color() -> ToolDefinition {
             "required": ["color"],
             "additionalProperties": false
         }),
-        output_schema: default_output_schema(),
+        output_schema: output_schema::<ApplyEffectResponse>(),
         read_only: false,
         destructive: true,
         idempotent: false,
@@ -178,7 +181,7 @@ pub(super) async fn handle_set_effect_with_state(
     // so the reason is resolved here and rendered in the tool's own
     // frozen shape.
     {
-        let scene_manager = state.scene_manager.read().await;
+        let scene_manager = state.scene_manager.snapshot().await;
         crate::domain::scene::active_scene_for_runtime_mutation(
             &scene_manager,
             "applying an effect",
@@ -187,7 +190,7 @@ pub(super) async fn handle_set_effect_with_state(
     }
 
     let applied = apply_effect(
-        state,
+        &state.domains.effects,
         ApplyEffect {
             effect,
             controls: normalized_controls,
@@ -219,7 +222,7 @@ pub(super) async fn handle_list_effects_with_state(
             params.get("query").and_then(Value::as_str),
         )?
     };
-    let filtered = list_catalog(state, &query).await;
+    let filtered = list_catalog(&state.domains.effects, &query).await;
 
     let total = filtered.len();
     let limit = usize::try_from(limit_u64).unwrap_or(20);
@@ -229,36 +232,38 @@ pub(super) async fn handle_list_effects_with_state(
 
     let effects = filtered[start..end]
         .iter()
-        .map(|metadata| {
-            json!({
-                "id": metadata.id.to_string(),
-                "name": metadata.name,
-                "description": metadata.description,
-                "category": format!("{}", metadata.category),
-                "audio_reactive": metadata.audio_reactive,
-                "tags": metadata.tags,
-                "controls": metadata.controls.iter().map(|control| json!({
-                    "id": control.control_id(),
-                    "name": control.name,
-                    "kind": control.kind,
-                    "default": control.default_value,
-                    "min": control.min,
-                    "max": control.max,
-                    "step": control.step,
-                    "options": control.labels,
-                    "tooltip": control.tooltip,
-                })).collect::<Vec<_>>()
-            })
+        .map(|metadata| EffectCatalogItem {
+            id: metadata.id.to_string(),
+            name: metadata.name.clone(),
+            description: metadata.description.clone(),
+            category: metadata.category,
+            audio_reactive: metadata.audio_reactive,
+            tags: metadata.tags.clone(),
+            controls: metadata
+                .controls
+                .iter()
+                .map(|control| EffectControlItem {
+                    id: control.control_id().to_owned(),
+                    name: control.name.clone(),
+                    kind: control.kind.clone(),
+                    default: control.default_value.clone(),
+                    min: control.min,
+                    max: control.max,
+                    step: control.step,
+                    options: control.labels.clone(),
+                    tooltip: control.tooltip.clone(),
+                })
+                .collect(),
         })
         .collect::<Vec<_>>();
 
-    Ok(json!({
-        "effects": effects,
-        "total": total,
-        "has_more": end < total,
-        "limit": limit_u64,
-        "offset": offset_u64
-    }))
+    serialize_result(EffectCatalogResult {
+        effects,
+        total,
+        has_more: end < total,
+        limit: limit_u64,
+        offset: offset_u64,
+    })
 }
 
 pub(super) async fn handle_set_color_with_state(
@@ -311,7 +316,7 @@ pub(super) async fn handle_set_color_with_state(
     // so the reason is resolved here and rendered in the tool's own
     // frozen shape.
     {
-        let scene_manager = state.scene_manager.read().await;
+        let scene_manager = state.scene_manager.snapshot().await;
         crate::domain::scene::active_scene_for_runtime_mutation(
             &scene_manager,
             "applying an effect",
@@ -320,7 +325,7 @@ pub(super) async fn handle_set_color_with_state(
     }
 
     let applied = apply_effect(
-        state,
+        &state.domains.effects,
         ApplyEffect {
             effect: solid_effect.clone(),
             controls,
@@ -365,10 +370,9 @@ fn parse_transition(value: Option<&Value>) -> Result<(), ToolError> {
 fn serialize_apply_response(
     applied: crate::domain::effect::EffectApplied,
 ) -> Result<Value, ToolError> {
-    serde_json::to_value(ApplyEffectResponse {
+    serialize_result(ApplyEffectResponse {
         zone: crate::domain::scene_tree::zone_resource(&applied.zone),
         transition: TransitionType::Cut,
         output: applied.output,
     })
-    .map_err(|error| ToolError::Internal(error.to_string()))
 }

@@ -8,11 +8,11 @@
 use std::collections::HashMap;
 
 use hypercolor_types::asset::AssetId;
-use hypercolor_types::effect::EffectId;
+use hypercolor_types::effect::{EffectCategory, EffectId};
 use hypercolor_types::layer::{LayerBlendMode, LayerSource, MediaPlayback};
 use hypercolor_types::scene::ZoneRole;
 
-use crate::api::LiveZoneView;
+use crate::api::ZoneResource;
 use hypercolor_types::viewport::FitMode;
 use uuid::Uuid;
 
@@ -72,8 +72,8 @@ impl EffectPickerMode {
     }
 
     #[must_use]
-    pub fn includes_category(self, category: &str) -> bool {
-        let is_display = category.eq_ignore_ascii_case("display");
+    pub const fn includes_category(self, category: EffectCategory) -> bool {
+        let is_display = matches!(category, EffectCategory::Display);
         match self {
             Self::Effects => !is_display,
             Self::Faces | Self::Mixed => true,
@@ -81,8 +81,8 @@ impl EffectPickerMode {
     }
 
     #[must_use]
-    pub fn sort_bucket(self, category: &str) -> u8 {
-        if self == Self::Faces && category.eq_ignore_ascii_case("display") {
+    pub const fn sort_bucket(self, category: EffectCategory) -> u8 {
+        if matches!(self, Self::Faces) && matches!(category, EffectCategory::Display) {
             0
         } else {
             1
@@ -138,20 +138,20 @@ pub fn effect_picker_mode(
 }
 
 #[must_use]
-pub fn effect_category_label(category: &str) -> String {
-    if category.eq_ignore_ascii_case("display") {
+pub fn effect_category_label(category: EffectCategory) -> String {
+    if category == EffectCategory::Display {
         "face".to_owned()
     } else {
-        category.to_owned()
+        category.as_str().to_owned()
     }
 }
 
 #[must_use]
-pub fn effect_picker_matches_query(name: &str, category: &str, query: &str) -> bool {
+pub fn effect_picker_matches_query(name: &str, category: EffectCategory, query: &str) -> bool {
     let query = query.trim().to_lowercase();
     query.is_empty()
         || name.to_lowercase().contains(&query)
-        || category.to_lowercase().contains(&query)
+        || category.as_str().contains(&query)
         || effect_category_label(category)
             .to_lowercase()
             .contains(&query)
@@ -161,7 +161,7 @@ pub fn effect_picker_matches_query(name: &str, category: &str, query: &str) -> b
 /// nothing to scope to, and a scope that would target nothing is dropped
 /// (§6.6), so a result shorter than two means "show no selector".
 #[must_use]
-pub fn available_add_layer_scopes(groups: &[LiveZoneView]) -> Vec<AddLayerScope> {
+pub fn available_add_layer_scopes(groups: &[ZoneResource]) -> Vec<AddLayerScope> {
     if groups.len() < 2 {
         return Vec::new();
     }
@@ -184,7 +184,7 @@ pub fn available_add_layer_scopes(groups: &[LiveZoneView]) -> Vec<AddLayerScope>
 #[must_use]
 pub fn resolve_add_layer_targets(
     scope: AddLayerScope,
-    groups: &[LiveZoneView],
+    groups: &[ZoneResource],
     selected_group_id: &str,
 ) -> Vec<String> {
     match scope {

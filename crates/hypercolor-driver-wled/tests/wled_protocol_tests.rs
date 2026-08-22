@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use hypercolor_driver_api::{
     DeviceBackend, DeviceDeliveryId, DeviceDeliveryObserver, DeviceDeliveryStatus,
-    DeviceWriteOutcome, DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner,
+    DeviceWriteOutcome, DiscoveredDevice, DiscoveryConnectBehavior,
 };
 use hypercolor_driver_wled::{
     DdpPacket, DdpSequence, E131Packet, E131SequenceTracker, WledBackend, WledColorFormat,
@@ -21,8 +21,9 @@ use hypercolor_driver_wled::{
     build_ddp_frame, universes_needed,
 };
 use hypercolor_types::device::{
-    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
-    DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, SegmentInfo,
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceError, DeviceFamily,
+    DeviceFeatures, DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint,
+    SegmentInfo,
 };
 use mdns_sd::{ServiceDaemon, ServiceInfo};
 use tokio::net::UdpSocket;
@@ -966,9 +967,61 @@ fn negotiated_target_fps_uses_unreported_heuristics() {
 
 // ── WledBackend Lifecycle Tests ────────────────────────────────────────
 
+fn adopt_test_device(backend: &WledBackend, device_id: DeviceId, ip: IpAddr, info: WledDeviceInfo) {
+    let color_format = if info.rgbw {
+        DeviceColorFormat::Rgbw
+    } else {
+        DeviceColorFormat::Rgb
+    };
+    let discovered = DiscoveredDevice {
+        fingerprint: DeviceFingerprint::mint(
+            hypercolor_types::device::FingerprintNamespace::Net,
+            "wled",
+            &device_id.to_string(),
+        ),
+        connect_behavior: DiscoveryConnectBehavior::AutoConnect,
+        info: DeviceInfo {
+            id: device_id,
+            name: info.name.clone(),
+            vendor: "WLED".to_owned(),
+            family: DeviceFamily::new_static("wled", "WLED"),
+            model: None,
+            connection_type: ConnectionType::Network,
+            origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
+            segments: vec![SegmentInfo {
+                name: "Main".to_owned(),
+                led_count: u32::from(info.led_count),
+                topology: DeviceTopologyHint::Strip,
+                color_format,
+                layout_hint: None,
+            }],
+            firmware_version: Some(info.firmware_version.clone()),
+            capabilities: DeviceCapabilities {
+                led_count: u32::from(info.led_count),
+                supports_direct: true,
+                supports_brightness: true,
+                has_display: false,
+                display_resolution: None,
+                max_fps: info.negotiated_target_fps(),
+                color_space: hypercolor_types::device::DeviceColorSpace::default(),
+                features: DeviceFeatures::default(),
+            },
+        },
+        metadata: HashMap::from([
+            ("ip".to_owned(), ip.to_string()),
+            ("arch".to_owned(), info.arch),
+            ("mac".to_owned(), info.mac),
+        ]),
+        claim: None,
+    };
+    backend
+        .adopt_device(&discovered)
+        .expect("WLED backend should adopt test discovery metadata");
+}
+
 #[tokio::test]
 async fn backend_info() {
-    let backend = WledBackend::new(vec![]);
+    let backend = WledBackend::new();
     let info = DeviceBackend::info(&backend);
 
     assert_eq!(info.id, "wled");
@@ -977,42 +1030,22 @@ async fn backend_info() {
 }
 
 #[tokio::test]
-async fn backend_discover_no_ips() {
-    let mut backend = WledBackend::new(vec![]);
-    let discovered = backend.discover().await.expect("discover should succeed");
-    assert!(discovered.is_empty(), "no known IPs means no discoveries");
-}
-
-#[tokio::test]
-async fn backend_discover_unreachable_ip_graceful() {
-    // Use an RFC 5737 documentation address that won't be routable
-    let ip: IpAddr = "192.0.2.1".parse().expect("valid IP");
-    let mut backend = WledBackend::new(vec![ip]);
-
-    let discovered = backend.discover().await.expect("discover should succeed");
-    assert!(
-        discovered.is_empty(),
-        "unreachable IP should not produce discoveries"
-    );
-}
-
-#[tokio::test]
-async fn backend_connect_without_discover_fails() {
-    let mut backend = WledBackend::new(vec![]);
+async fn backend_connect_without_adoption_fails() {
+    let backend = WledBackend::new();
     let unknown_id = hypercolor_types::device::DeviceId::new();
 
-    let result = backend.connect(&unknown_id).await;
-    assert!(
-        result.is_err(),
-        "connecting without prior discovery should fail"
-    );
+    let error = backend
+        .connect(&unknown_id)
+        .await
+        .expect_err("connecting without prior adoption should fail");
+    assert!(matches!(error, DeviceError::NotAdopted { .. }));
 }
 
 #[tokio::test]
 async fn backend_connects_from_scanner_seed_without_backend_discover() {
-    let mut backend = WledBackend::new(vec![]);
+    let mut backend = WledBackend::new();
     backend.set_realtime_http_enabled(false);
-    let fingerprint = DeviceFingerprint("net:aabbccddeeff".to_owned());
+    let fingerprint = DeviceFingerprint::from_persisted("net:aabbccddeeff".to_owned());
     let device_id = fingerprint.stable_device_id();
     let discovered = DiscoveredDevice {
         fingerprint,
@@ -1051,7 +1084,9 @@ async fn backend_connects_from_scanner_seed_without_backend_discover() {
         claim: None,
     };
 
-    backend.remember_discovered_device(&discovered);
+    backend
+        .adopt_device(&discovered)
+        .expect("WLED backend should adopt scanner metadata");
     backend
         .connect(&device_id)
         .await
@@ -1062,11 +1097,14 @@ async fn backend_connects_from_scanner_seed_without_backend_discover() {
 
 #[tokio::test]
 async fn backend_disconnect_unknown_fails() {
-    let mut backend = WledBackend::new(vec![]);
+    let backend = WledBackend::new();
     let unknown_id = hypercolor_types::device::DeviceId::new();
 
-    let result = backend.disconnect(&unknown_id).await;
-    assert!(result.is_err(), "disconnecting unknown device should fail");
+    let error = backend
+        .disconnect(&unknown_id)
+        .await
+        .expect_err("disconnecting unknown device should fail");
+    assert!(matches!(error, DeviceError::Disconnected { .. }));
 }
 
 #[tokio::test]
@@ -1075,11 +1113,12 @@ async fn backend_disconnect_unused_device_sends_no_packets() {
     let receiver = UdpSocket::bind("127.0.0.1:4048")
         .await
         .expect("bind loopback DDP receiver");
-    let mut backend = WledBackend::new(vec![]);
+    let mut backend = WledBackend::new();
     backend.set_realtime_http_enabled(false);
 
     let device_id = DeviceId::new();
-    backend.remember_device(
+    adopt_test_device(
+        &backend,
         device_id,
         "127.0.0.1".parse().expect("valid loopback IP"),
         test_wled_info(4, false, 30, true),
@@ -1109,11 +1148,12 @@ async fn backend_disconnect_sends_final_black_frame_after_output() {
     let receiver = UdpSocket::bind("127.0.0.1:4048")
         .await
         .expect("bind loopback DDP receiver");
-    let mut backend = WledBackend::new(vec![]);
+    let mut backend = WledBackend::new();
     backend.set_realtime_http_enabled(false);
 
     let device_id = DeviceId::new();
-    backend.remember_device(
+    adopt_test_device(
+        &backend,
         device_id,
         "127.0.0.1".parse().expect("valid loopback IP"),
         test_wled_info(4, false, 30, true),
@@ -1155,32 +1195,34 @@ async fn backend_disconnect_sends_final_black_frame_after_output() {
 
 #[tokio::test]
 async fn backend_write_to_disconnected_fails() {
-    let mut backend = WledBackend::new(vec![]);
+    let backend = WledBackend::new();
     let unknown_id = hypercolor_types::device::DeviceId::new();
 
     let colors = vec![[0xFF, 0x00, 0x00]; 30];
-    let result = backend.write_colors(&unknown_id, &colors).await;
-    assert!(
-        result.is_err(),
-        "writing to disconnected device should fail"
-    );
+    let error = backend
+        .write_colors(&unknown_id, &colors)
+        .await
+        .expect_err("writing to disconnected device should fail");
+    assert!(matches!(error, DeviceError::Disconnected { .. }));
 }
 
 #[tokio::test]
 async fn backend_connect_reuses_shared_socket_and_allocates_e131_universes() {
-    let mut backend = WledBackend::new(vec![]);
+    let mut backend = WledBackend::new();
     backend.set_realtime_http_enabled(false);
     backend.set_protocol(WledProtocol::E131);
 
     let device_a = DeviceId::new();
     let device_b = DeviceId::new();
 
-    backend.remember_device(
+    adopt_test_device(
+        &backend,
         device_a,
         "127.0.0.2".parse().expect("valid loopback IP"),
         test_wled_info(300, false, 30, true),
     );
-    backend.remember_device(
+    adopt_test_device(
+        &backend,
         device_b,
         "127.0.0.3".parse().expect("valid loopback IP"),
         test_wled_info(300, false, 30, true),
@@ -1216,11 +1258,12 @@ async fn backend_write_colors_pads_dedups_and_keeps_alive() {
     let receiver = UdpSocket::bind("127.0.0.1:4048")
         .await
         .expect("bind loopback DDP receiver");
-    let mut backend = WledBackend::new(vec![]);
+    let mut backend = WledBackend::new();
     backend.set_realtime_http_enabled(false);
 
     let device_id = DeviceId::new();
-    backend.remember_device(
+    adopt_test_device(
+        &backend,
         device_id,
         "127.0.0.1".parse().expect("valid loopback IP"),
         test_wled_info(4, false, 30, true),
@@ -1280,11 +1323,12 @@ async fn frame_sink_reports_wled_dedup_as_suppressed() {
     let receiver = UdpSocket::bind("127.0.0.1:4048")
         .await
         .expect("bind loopback DDP receiver");
-    let mut backend = WledBackend::new(vec![]);
+    let mut backend = WledBackend::new();
     backend.set_realtime_http_enabled(false);
 
     let device_id = DeviceId::new();
-    backend.remember_device(
+    adopt_test_device(
+        &backend,
         device_id,
         "127.0.0.1".parse().expect("valid loopback IP"),
         test_wled_info(2, false, 30, true),
@@ -1350,12 +1394,13 @@ async fn backend_write_colors_allows_duplicate_frames_when_dedup_is_disabled() {
     let receiver = UdpSocket::bind("127.0.0.1:4048")
         .await
         .expect("bind loopback DDP receiver");
-    let mut backend = WledBackend::new(vec![]);
+    let mut backend = WledBackend::new();
     backend.set_realtime_http_enabled(false);
     backend.set_dedup_threshold(0);
 
     let device_id = DeviceId::new();
-    backend.remember_device(
+    adopt_test_device(
+        &backend,
         device_id,
         "127.0.0.1".parse().expect("valid loopback IP"),
         test_wled_info(2, false, 30, true),
@@ -1395,11 +1440,12 @@ async fn backend_write_colors_preserves_chroma_on_rgbw_devices() {
     let receiver = UdpSocket::bind("127.0.0.1:4048")
         .await
         .expect("bind loopback DDP receiver");
-    let mut backend = WledBackend::new(vec![]);
+    let mut backend = WledBackend::new();
     backend.set_realtime_http_enabled(false);
 
     let device_id = DeviceId::new();
-    backend.remember_device(
+    adopt_test_device(
+        &backend,
         device_id,
         "127.0.0.1".parse().expect("valid loopback IP"),
         test_wled_info(2, true, 30, true),
@@ -1435,11 +1481,12 @@ async fn backend_write_colors_truncates_oversized_frames() {
     let receiver = UdpSocket::bind("127.0.0.1:4048")
         .await
         .expect("bind loopback DDP receiver");
-    let mut backend = WledBackend::new(vec![]);
+    let mut backend = WledBackend::new();
     backend.set_realtime_http_enabled(false);
 
     let device_id = DeviceId::new();
-    backend.remember_device(
+    adopt_test_device(
+        &backend,
         device_id,
         "127.0.0.1".parse().expect("valid loopback IP"),
         test_wled_info(2, false, 30, true),

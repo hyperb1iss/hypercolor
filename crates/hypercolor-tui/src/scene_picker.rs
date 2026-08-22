@@ -78,7 +78,7 @@ impl ScenePicker {
             id: Some(scene.id.clone()),
             name: scene.name.clone(),
             locked: scene.mutation_mode == SceneMutationMode::Snapshot,
-            active: active.is_some_and(|current| current.id == scene.id),
+            active: active.is_some_and(|current| current.id.to_string() == scene.id),
         }));
 
         self.entries = entries;

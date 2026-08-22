@@ -1,0 +1,27 @@
+[package]
+name = "hypercolor-driver-support"
+description = "Native host utilities shared by Hypercolor driver implementations"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+hypercolor-driver-api = { workspace = true }
+hypercolor-types = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+mdns-sd = { workspace = true }
+aes-gcm = { workspace = true }
+rand = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

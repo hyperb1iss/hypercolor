@@ -9,9 +9,9 @@ use super::status::{
     MacosCapabilityOwner, SourceStatusError, SourceStatusHandle, SourceStatusReporter,
 };
 use crate::input::audio::{AudioRuntimeRetirement, PreparedAudioReconfiguration};
-use crate::types::audio::{AudioData, AudioPipelineConfig};
-use crate::types::canvas::{PublishedSurface, SurfaceResourceOwner};
-use crate::types::event::{PointerScrollUnit, TimedInputEvent, ZoneColors};
+use hypercolor_types::audio::{AudioData, AudioPipelineConfig};
+use hypercolor_types::canvas::{PublishedSurface, SurfaceResourceOwner};
+use hypercolor_types::event::{PointerScrollUnit, TimedInputEvent, ZoneColors};
 use hypercolor_types::sensor::SystemSnapshot;
 use std::ops::Deref;
 use std::sync::Arc;

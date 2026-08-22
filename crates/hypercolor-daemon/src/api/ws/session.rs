@@ -20,9 +20,7 @@ use hypercolor_leptos_ext::ws::registry::{
     ScreenZonesConfig, SpectrumConfig, TopicId,
 };
 use hypercolor_leptos_ext::ws::topic::ActiveSubscription;
-use hypercolor_leptos_ext::ws::{
-    HYPERCOLOR_WS_VERSION, PreviewStreamId, PreviewTransportCapability,
-};
+use hypercolor_leptos_ext::ws::{HYPERCOLOR_WS_VERSION, PreviewStreamId, PreviewTransportLimits};
 use serde::Serialize;
 use serde_json::json;
 use tokio::sync::watch;
@@ -61,12 +59,12 @@ use super::relays::{
     publish_subscriptions,
 };
 use super::topics::{RelayContext, spawn_relays};
-use crate::api::AppState;
 use crate::api::layouts::validate_layout_sampling_radii;
 use crate::api::local::{
     TrustedLocalSocketTransport, TrustedLocalWebSocket, trusted_local_socket_pair,
 };
 use crate::api::security::RequestAuthContext;
+use crate::app_state::AppState;
 use crate::interaction_routing::{
     AuthoritativeClaimError, AuthoritativeClaimOutcome, InteractionRoutingControl,
 };
@@ -80,7 +78,6 @@ use crate::render_thread::{
     InputPublicationConsumer, InputPublicationDemand, InputPublicationDemandHandle,
     InputPublicationDemandRegistration, InputScreenBranchDemand,
 };
-use crate::session::current_global_brightness;
 use crate::zone_layout_preview::ZoneLayoutPreviewOwner;
 
 const WS_PING_INTERVAL: Duration = Duration::from_secs(30);
@@ -324,10 +321,8 @@ async fn handle_socket(
     let mut ping_sent_at = Instant::now();
     let zone_layout_preview_owner = ZoneLayoutPreviewOwner::new();
     let mut zone_layout_preview_keys = HashSet::<(SceneId, ZoneId)>::new();
-    // The advertised default is v2; a v1 client negotiates back down
-    // on subscribe (Spec 78 §7.1).
-    let mut preview_capability = PreviewTransportCapability::default();
-    let mut preview_cursors = PreviewCursorQueue::with_capability(preview_capability);
+    let preview_limits = PreviewTransportLimits::default();
+    let mut preview_cursors = PreviewCursorQueue::with_limits(preview_limits);
     // Main loop: multiplex between incoming client messages and outbound events.
     loop {
         tokio::select! {
@@ -378,7 +373,7 @@ async fn handle_socket(
                     PreviewOutboundItem::Publication(publication) => {
                         let stream = publication.stream().clone();
                         let publication_id = publication.publication_id();
-                        match PreviewSendCursor::with_capability(publication, preview_capability) {
+                        match PreviewSendCursor::with_limits(publication, preview_limits) {
                             Ok(cursor) => match preview_cursors.try_insert(cursor) {
                                 Ok(Some(replaced)) => preview_rx.complete(replaced.publication()),
                                 Ok(None) => {}
@@ -490,8 +485,6 @@ async fn handle_socket(
                             &mut zone_layout_preview_keys,
                             &mut browser_previews,
                             &preview_tx,
-                            &mut preview_capability,
-                            &mut preview_cursors,
                             &mut socket,
                         )
                         .await;
@@ -850,17 +843,6 @@ impl BrowserPreviewSession {
         &mut self,
         subscriptions: &SubscriptionState,
     ) -> Result<(), WsProtocolError> {
-        self.reconcile_with_commit(subscriptions, || Ok(())).await
-    }
-
-    pub(super) async fn reconcile_with_commit<F>(
-        &mut self,
-        subscriptions: &SubscriptionState,
-        commit: F,
-    ) -> Result<(), WsProtocolError>
-    where
-        F: FnOnce() -> Result<(), WsProtocolError>,
-    {
         let desired =
             subscriptions.keyed_configs::<InteractivePreviewConfig>(TopicId::InteractivePreview);
 
@@ -913,12 +895,6 @@ impl BrowserPreviewSession {
             self.resume_relays(&changed_existing);
             return Err(WsProtocolError::invalid_request(error.to_string()));
         }
-        if let Err(error) = commit() {
-            self.undo(applied).await;
-            self.resume_relays(&changed_existing);
-            return Err(error);
-        }
-
         let changed = applied
             .iter()
             .map(|change| match change {
@@ -1334,72 +1310,6 @@ fn subscription_projection(
     projection
 }
 
-/// A transport capability both ends have agreed on but neither has
-/// adopted yet.
-pub(super) struct StagedPreviewTransport {
-    peer: PreviewTransportCapability,
-    negotiated: PreviewTransportCapability,
-}
-
-/// Work out the capability this subscribe would settle on, touching
-/// nothing. A subscribe that goes on to fail its demand projection must
-/// leave the connection speaking exactly the transport it spoke before.
-pub(super) fn stage_preview_transport(
-    encoded_capability: &str,
-    preview_outbound: &PreviewOutboundSender,
-    preview_cursors: &PreviewCursorQueue,
-) -> Result<StagedPreviewTransport, WsProtocolError> {
-    let peer = PreviewTransportCapability::decode(encoded_capability).map_err(|error| {
-        WsProtocolError::invalid_request(format!("Invalid preview_transport capability: {error}"))
-    })?;
-    let negotiated = preview_outbound
-        .project_negotiation(peer)
-        .map_err(|error| WsProtocolError::invalid_request(error.to_string()))?;
-    preview_cursors
-        .check_capability(negotiated)
-        .map_err(|error| WsProtocolError::invalid_request(error.to_string()))?;
-    Ok(StagedPreviewTransport { peer, negotiated })
-}
-
-/// Adopt a staged capability. The sender re-checks and swaps under one
-/// lock, and the cursor queue already proved it fits, so this either
-/// lands whole or refuses without changing anything.
-pub(super) fn commit_preview_transport(
-    staged: StagedPreviewTransport,
-    preview_outbound: &PreviewOutboundSender,
-    preview_cursors: &mut PreviewCursorQueue,
-    preview_capability: &mut PreviewTransportCapability,
-) -> Result<PreviewTransportCapability, WsProtocolError> {
-    let negotiated = preview_outbound
-        .negotiate_transport(staged.peer)
-        .map_err(|error| WsProtocolError::invalid_request(error.to_string()))?;
-    debug_assert_eq!(
-        negotiated, staged.negotiated,
-        "committing a staged transport must settle on what staging projected"
-    );
-    preview_cursors
-        .set_capability(negotiated)
-        .map_err(|error| WsProtocolError::invalid_request(error.to_string()))?;
-    *preview_capability = negotiated;
-    Ok(negotiated)
-}
-
-#[cfg(test)]
-pub(super) fn negotiate_preview_transport(
-    encoded_capability: &str,
-    preview_outbound: &PreviewOutboundSender,
-    preview_cursors: &mut PreviewCursorQueue,
-    preview_capability: &mut PreviewTransportCapability,
-) -> Result<PreviewTransportCapability, WsProtocolError> {
-    let staged = stage_preview_transport(encoded_capability, preview_outbound, preview_cursors)?;
-    commit_preview_transport(
-        staged,
-        preview_outbound,
-        preview_cursors,
-        preview_capability,
-    )
-}
-
 /// Process a client subscription/unsubscription message.
 async fn handle_client_message(
     text: &str,
@@ -1412,8 +1322,6 @@ async fn handle_client_message(
     zone_layout_preview_keys: &mut HashSet<(SceneId, ZoneId)>,
     browser_previews: &mut BrowserPreviewSession,
     preview_outbound: &PreviewOutboundSender,
-    preview_capability: &mut PreviewTransportCapability,
-    preview_cursors: &mut PreviewCursorQueue,
     socket: &mut SessionSocket,
 ) {
     let msg = match serde_json::from_str::<ClientMessage>(text) {
@@ -1430,10 +1338,7 @@ async fn handle_client_message(
     };
 
     match msg {
-        ClientMessage::Subscribe {
-            topics,
-            preview_transport,
-        } => {
+        ClientMessage::Subscribe { topics } => {
             // Validate the whole request first. Every step below builds
             // a candidate and refuses on its own terms, so a request
             // that names four subscriptions and mis-configures the fourth
@@ -1463,18 +1368,6 @@ async fn handle_client_message(
                 }
             };
 
-            let staged_transport = match preview_transport
-                .as_deref()
-                .map(|encoded| stage_preview_transport(encoded, preview_outbound, preview_cursors))
-                .transpose()
-            {
-                Ok(staged) => staged,
-                Err(error) => {
-                    let _ = send_json(socket, &error.into_message()).await;
-                    return;
-                }
-            };
-
             let projected_demand = match input_demand_leases.project(&next_subscriptions) {
                 Ok(projected) => projected,
                 Err(error) => {
@@ -1483,28 +1376,7 @@ async fn handle_client_message(
                 }
             };
 
-            // Commit phase, ordered by what a refusal costs. The
-            // interactive preview lanes go first because they are the only
-            // step whose refusal is undoable: reconciling back to the
-            // subscriptions this request is abandoning to closes whatever
-            // it opened. Adopting the transport goes second because it
-            // refuses without having changed anything, so a refusal there
-            // only has to undo the lanes.
-            let transport_commit = || {
-                if let Some(staged) = staged_transport {
-                    commit_preview_transport(
-                        staged,
-                        preview_outbound,
-                        preview_cursors,
-                        preview_capability,
-                    )?;
-                }
-                Ok(())
-            };
-            if let Err(error) = browser_previews
-                .reconcile_with_commit(&next_subscriptions, transport_commit)
-                .await
-            {
+            if let Err(error) = browser_previews.reconcile(&next_subscriptions).await {
                 let _ = send_json(socket, &error.into_message()).await;
                 return;
             }
@@ -1513,7 +1385,6 @@ async fn handle_client_message(
 
             let ack = ServerMessage::Subscribed {
                 topics: subscription_projection(subscriptions, browser_previews),
-                preview_transport: preview_capability.encode(),
             };
             publish_subscriptions(subscriptions_tx, subscriptions);
             let _ = send_json(socket, &ack).await;
@@ -1650,21 +1521,13 @@ async fn handle_zone_layout_preview(
     layout: SpatialLayout,
 ) -> Result<(), WsProtocolError> {
     let zone_id = parse_zone_preview_id(&zone_id_raw)?;
-    let manager = state.scene_manager.read().await;
-    let scene = manager
-        .active_scene()
+    let scene_id = state
+        .scene_manager
+        .stage_zone_layout_preview(owner, zone_id, |scene| {
+            validated_zone_layout_preview(scene, zone_id, layout)
+        })
+        .await?
         .ok_or_else(|| WsProtocolError::invalid_request("No active scene"))?;
-    let scene_id = scene.id;
-    let layout = validated_zone_layout_preview(scene, zone_id, layout)?;
-
-    // Keep the scene read guard until insertion. A concurrent scene or
-    // zone deletion must commit after this write so its cleanup cannot
-    // run first and leave a newly stranded preview behind.
-    state
-        .zone_layout_previews
-        .set(owner, scene_id, zone_id, layout)
-        .await;
-    drop(manager);
     zone_layout_preview_keys.insert((scene_id, zone_id));
     Ok(())
 }
@@ -1703,7 +1566,7 @@ pub(super) fn validated_zone_layout_preview(
         )));
     }
 
-    let Some(group) = scene.groups.iter().find(|group| group.id == zone_id) else {
+    let Some(group) = scene.zones.iter().find(|group| group.id == zone_id) else {
         return Err(WsProtocolError::invalid_request(format!(
             "Zone not found: {zone_id}"
         )));
@@ -1780,7 +1643,7 @@ pub(super) async fn build_hello_state(state: &AppState) -> HelloState {
         };
 
     let active_scene = {
-        let scene_manager = state.scene_manager.read().await;
+        let scene_manager = state.scene_manager.snapshot().await;
         scene_manager.active_scene().map(|scene| SceneRef {
             id: scene.id.to_string(),
             name: scene.name.clone(),
@@ -1794,16 +1657,15 @@ pub(super) async fn build_hello_state(state: &AppState) -> HelloState {
         acc.saturating_add(led_count)
     });
 
-    let power_state = *state.power_state.borrow();
+    let power_state = state.output_power.snapshot();
     HelloState {
         running: !power_state.sleeping(),
         paused: power_state.reported_paused(),
-        brightness: brightness_percent(current_global_brightness(&state.power_state)),
+        brightness: brightness_percent(state.output_power.global_brightness()),
         fps: HelloFps {
             target: target_fps,
             capacity: (capacity_fps * 10.0).round() / 10.0,
             delivered: (delivered_fps * 10.0).round() / 10.0,
-            actual: (capacity_fps * 10.0).round() / 10.0,
         },
         scene: active_scene,
         layout: None,
@@ -1851,17 +1713,29 @@ async fn send_json(
 
 #[cfg(test)]
 mod hello_state_tests {
+    use hypercolor_types::session::OffOutputBehavior;
+
     use super::build_hello_state;
-    use crate::api::AppState;
-    use crate::session::{OutputOverride, set_global_brightness};
+    use crate::app_state::AppState;
 
     #[tokio::test]
     async fn hello_reports_effective_pause_and_actual_brightness() {
         let state = AppState::new();
-        set_global_brightness(&state.power_state, 0.42);
         state
-            .power_state
-            .send_modify(|power| power.session_sleeping = true);
+            .output_power
+            .set_global_brightness(&state.event_bus, 0.42)
+            .await
+            .expect("brightness should persist");
+        let generation = state.output_power.begin_session_transition();
+        state
+            .output_power
+            .pause_for_session(
+                &state.event_bus,
+                generation,
+                OffOutputBehavior::Static,
+                [0, 0, 0],
+            )
+            .await;
 
         let hello = build_hello_state(&state).await;
 
@@ -1873,8 +1747,9 @@ mod hello_state_tests {
     async fn hello_reports_a_destructive_stop_as_paused() {
         let state = AppState::new();
         state
-            .power_state
-            .send_modify(|power| power.output_override = OutputOverride::Stopped);
+            .output_power
+            .set_output_stopped(&state.event_bus)
+            .await;
 
         let hello = build_hello_state(&state).await;
 
@@ -1909,8 +1784,7 @@ mod zone_layout_preview_race_tests {
     use tokio::sync::oneshot;
 
     use super::{ZoneLayoutPreviewOwner, handle_zone_layout_preview};
-    use crate::api::AppState;
-    use crate::domain::MutationContext;
+    use crate::app_state::AppState;
     use crate::domain::scene::{ActivateScene, activate_scene};
     use crate::domain::zone::{CreateZone, DeleteZone, create_zone, delete_zone};
 
@@ -1930,7 +1804,7 @@ mod zone_layout_preview_race_tests {
     async fn wait_for_preview_scene_read(state: &AppState) {
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
-                if state.scene_manager.try_write().is_err() {
+                if state.scene_manager.scene_write_is_blocked_for_test() {
                     break;
                 }
                 tokio::task::yield_now().await;
@@ -1944,21 +1818,27 @@ mod zone_layout_preview_race_tests {
     async fn scene_switch_cleanup_cannot_run_before_a_preview_insert() {
         let tempdir = tempfile::tempdir().expect("tempdir");
         let state = Arc::new(AppState::new_with_data_dir(tempdir.path().join("data")));
-        let (zone_id, layout, next_scene_id) = {
-            let mut manager = state.scene_manager.write().await;
+        let (zone_id, layout, next) = {
+            let manager = state.scene_manager.snapshot().await;
             let active = manager.active_scene().expect("default scene").clone();
             let (zone_id, layout) = {
-                let zone = active.primary_group().expect("default primary zone");
+                let zone = active.primary_zone().expect("default primary zone");
                 (zone.id, zone.layout.clone())
             };
             let mut next = active;
             next.id = SceneId::new();
             next.name = "next".to_owned();
             next.kind = SceneKind::Named;
-            let next_scene_id = next.id;
-            manager.create(next).expect("next scene should be created");
-            (zone_id, layout, next_scene_id)
+            (zone_id, layout, next)
         };
+        let next_scene_id = next.id;
+        let mut mutation = state.scene_manager.begin_mutation().await;
+        mutation
+            .create_scene(next)
+            .expect("next scene should be created");
+        crate::domain::scene::commit_scene(&state.domains.scene, mutation)
+            .await
+            .expect("next scene should commit");
 
         let (release, blocker) = block_preview_writes(&state).await;
         let setter_state = Arc::clone(&state);
@@ -1978,12 +1858,11 @@ mod zone_layout_preview_race_tests {
         let activation_state = Arc::clone(&state);
         let activation = tokio::spawn(async move {
             activate_scene(
-                &activation_state,
+                &activation_state.domains.scene_library,
                 ActivateScene {
                     scene_id: next_scene_id,
                     transition: None,
                 },
-                MutationContext::api(),
             )
             .await
         });
@@ -2015,15 +1894,13 @@ mod zone_layout_preview_race_tests {
         let tempdir = tempfile::tempdir().expect("tempdir");
         let state = Arc::new(AppState::new_with_data_dir(tempdir.path().join("data")));
         let created = create_zone(
-            &state,
+            &state.domains.scene,
             CreateZone {
-                target: SceneId::DEFAULT.into(),
                 name: "temporary".to_owned(),
                 color: None,
                 fallback_canvas: (640, 480),
                 expected_revision: None,
             },
-            MutationContext::api(),
         )
         .await
         .expect("custom zone should be created");
@@ -2048,13 +1925,11 @@ mod zone_layout_preview_race_tests {
         let delete_state = Arc::clone(&state);
         let deletion = tokio::spawn(async move {
             delete_zone(
-                &delete_state,
+                &delete_state.domains.scene,
                 DeleteZone {
-                    target: SceneId::DEFAULT.into(),
                     zone_id,
                     expected_revision: None,
                 },
-                MutationContext::api(),
             )
             .await
         });
@@ -2112,7 +1987,7 @@ mod security_tests {
 #[cfg(test)]
 mod origin_tests {
     use super::{header_value_eq_origin, is_loopback_origin, ws_origin_allowed};
-    use crate::api::AppState;
+    use crate::app_state::AppState;
     use axum::http::{HeaderMap, HeaderValue, header};
 
     #[test]

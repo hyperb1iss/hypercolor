@@ -87,7 +87,7 @@ fn SurfaceStage() -> impl IntoView {
     Effect::new(move |_| {
         let hidden = match (studio.active_scene.get(), studio.selected_surface_id.get()) {
             (Some(scene), Some(zone)) => {
-                let key = hidden_outputs_storage_key(&scene.id, &zone);
+                let key = hidden_outputs_storage_key(&scene.id.to_string(), &zone);
                 studio
                     .hidden_outputs
                     .with(|map| map.get(&key).cloned().unwrap_or_default())
@@ -115,8 +115,9 @@ fn SurfaceStage() -> impl IntoView {
         else {
             return false;
         };
-        ws.layer_health
-            .with(|map| group_has_degraded_layer(map, &scene.id, &surface.id, &surface.layer_ids))
+        ws.layer_health.with(|map| {
+            group_has_degraded_layer(map, &scene.id.to_string(), &surface.id, &surface.layer_ids)
+        })
     });
 
     // A Light keeps the canvas live, so it reserves the same preview
@@ -506,7 +507,7 @@ fn UnassignedStage() -> impl IntoView {
             return;
         };
         spawn_local(async move {
-            match api::zones::update_unassigned_behavior(&behavior, Some(scene.revision)).await {
+            match api::zones::update_unassigned_behavior(&behavior, scene.revision).await {
                 Ok(ZoneOutcome::Applied(_)) => {
                     toasts::toast_success("Unassigned-lights policy updated");
                     studio.refresh_scene.run(());

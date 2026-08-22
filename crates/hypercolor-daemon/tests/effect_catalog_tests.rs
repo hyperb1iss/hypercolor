@@ -10,7 +10,8 @@ use std::sync::Arc;
 use axum::body::Body;
 use http::{Request, StatusCode};
 use hypercolor_core::effect::EffectEntry;
-use hypercolor_daemon::api::{self, AppState};
+use hypercolor_daemon::api;
+use hypercolor_daemon::app_state::AppState;
 use hypercolor_types::effect::{
     ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory, EffectId,
     EffectMetadata, EffectSource, EffectState, PresetTemplate,
@@ -119,13 +120,16 @@ async fn register(state: &Arc<AppState>, shape: &EffectShape) {
         license: None,
     };
 
-    let mut registry = state.effect_registry.write().await;
-    let _ = registry.register(EffectEntry {
-        metadata,
-        source_path: format!("/tmp/{}.html", shape.name).into(),
-        modified: std::time::SystemTime::now(),
-        state: EffectState::Loading,
-    });
+    let _ = state
+        .domains
+        .effects
+        .register(EffectEntry {
+            metadata,
+            source_path: format!("/tmp/{}.html", shape.name).into(),
+            modified: std::time::SystemTime::now(),
+            state: EffectState::Loading,
+        })
+        .await;
 }
 
 /// Four effects that differ on every filterable axis.

@@ -1,5 +1,5 @@
 use hypercolor_core::blend_math::apply_layer_adjust_rgba_pixels_in_place;
-use hypercolor_core::types::canvas::{Canvas, Rgba};
+use hypercolor_types::canvas::{Canvas, Rgba};
 use hypercolor_types::viewport::FitMode;
 
 use super::{CompositionAdjust, CompositionTransform};

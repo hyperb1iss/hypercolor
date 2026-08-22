@@ -1,6 +1,6 @@
 # hypercolor-driver-nanoleaf
 
-*Nanoleaf network driver for Hypercolor — UDP streaming to light panel controllers.*
+*Nanoleaf network driver for Hypercolor: UDP streaming to light panel controllers.*
 
 This driver targets Nanoleaf light panel controllers (Canvas, Shapes, Lines, Elements,
 Aurora). It discovers controllers via mDNS (`_nanoleafapi._tcp`) and known IP probing,
@@ -13,25 +13,26 @@ the layout on demand.
 
 ## Position in the Workspace
 
-- Depends on: `hypercolor-driver-api`, `hypercolor-types`, `anyhow`, `async-trait`,
-  `reqwest`, `serde`, `serde_json`, `tokio`, `tracing`
+- Depends on: `hypercolor-driver-api`, `hypercolor-driver-support`,
+  `hypercolor-types`, `anyhow`, `async-trait`, `reqwest`, `serde`,
+  `serde_json`, `tokio`, `tracing`
 - Consumed by: `hypercolor-driver-builtin` (via the `nanoleaf` feature)
 
 ## Key Public Surface
 
-- `NanoleafDriverModule` — `DriverModule` implementation; `new(credential_store, mdns_enabled)`
-- `DESCRIPTOR: DriverDescriptor` — static descriptor (`id = "nanoleaf"`)
-- `NanoleafBackend`, `NanoleafConfig` — backend and config types
-- `NanoleafScanner`, `NanoleafKnownDevice` — device discovery
+- `NanoleafDriverModule`: `DriverModule` implementation; `new(credential_store)`
+- `DESCRIPTOR: DriverDescriptor`: static descriptor (`id = "nanoleaf"`)
+- `NanoleafBackend`, `NanoleafConfig`: backend and config types
+- `NanoleafScanner`, `NanoleafKnownDevice`: device discovery
 - `NanoleafStreamSession`, `encode_frame_into`, `DEFAULT_NANOLEAF_API_PORT`,
-  `DEFAULT_NANOLEAF_STREAM_PORT` — UDP streaming
-- `NanoleafShapeType` — panel shape enum used in topology mapping
+  `DEFAULT_NANOLEAF_STREAM_PORT`: UDP streaming
+- `NanoleafShapeType`: panel shape enum used in topology mapping
 - `NanoleafDeviceInfo`, `NanoleafDiscoveredDevice`, `NanoleafPanelLayout`,
-  `panel_ids_from_layout` — device info and topology types
+  `panel_ids_from_layout`: device info and topology types
 - `pair_device_with_status`, `pair_nanoleaf_device_at_ip`, `NanoleafPairResult`,
-  `StoredNanoleafPairingResult` — pairing helpers
-- `nanoleaf_driver_control_surface`, `nanoleaf_device_control_surface` — control surface builders
-- `resolve_nanoleaf_probe_devices_from_sources` — discovery helper
+  `StoredNanoleafPairingResult`: pairing helpers
+- `nanoleaf_driver_control_surface`, `nanoleaf_device_control_surface`: control surface builders
+- `resolve_nanoleaf_probe_devices_from_sources`: discovery helper
 
 ## Devices and Protocol
 
@@ -46,5 +47,5 @@ None.
 
 ---
 
-Part of [Hypercolor](https://github.com/hyperb1iss/hypercolor) — open-source RGB
+Part of [Hypercolor](https://github.com/hyperb1iss/hypercolor), open-source RGB
 lighting orchestration for Linux. Licensed under Apache-2.0.

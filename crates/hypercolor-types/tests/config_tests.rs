@@ -3,11 +3,10 @@
 use hypercolor_types::config::{
     AudioConfig, CaptureCadenceMode, CaptureConfig, CaptureConfigValidationError, CapturePlatform,
     DaemonConfig, DbusConfig, DiscoveryConfig, DisplayConfig, EffectEngineConfig,
-    EffectErrorFallbackPolicy, FeatureFlags, GoveeConfig, HypercolorConfig, InputConfig,
-    InteractionRoutePolicy, LogLevel, McpConfig, MediaConfig, NetworkAccessMode,
-    NetworkClientScope, NetworkConfig, RenderAccelerationMode, RenderingConfig,
-    ServoGpuImportConfig, ServoGpuImportMode, ShutdownBehavior, TuiConfig, WebConfig,
-    default_driver_configs,
+    EffectErrorFallbackPolicy, FeatureFlags, HypercolorConfig, InputConfig, InteractionRoutePolicy,
+    LogLevel, McpConfig, MediaConfig, NetworkAccessMode, NetworkClientScope, NetworkConfig,
+    RenderAccelerationMode, RenderingConfig, ServoGpuImportConfig, ServoGpuImportMode,
+    ShutdownBehavior, TuiConfig, WebConfig, default_driver_configs,
 };
 use hypercolor_types::session::{OffOutputBehavior, SessionConfig};
 
@@ -496,15 +495,6 @@ fn network_defaults_match_spec() {
 fn driver_registry_defaults_are_driver_agnostic() {
     let drivers = default_driver_configs();
     assert!(drivers.is_empty());
-}
-
-#[test]
-fn govee_defaults_match_spec() {
-    let g = GoveeConfig::default();
-    assert!(g.known_ips.is_empty());
-    assert!(!g.power_off_on_disconnect);
-    assert_eq!(g.lan_state_fps, 10);
-    assert_eq!(g.razer_fps, 25);
 }
 
 #[test]

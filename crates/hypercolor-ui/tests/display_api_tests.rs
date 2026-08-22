@@ -439,8 +439,9 @@ fn display_face_response_decodes_the_daemon_shape() {
         wire["zone"]["display_target"]["device_id"]
     );
     // The zone's patched control survives the tolerant decode.
-    assert!(
-        decoded.zone.controls.contains_key("label"),
-        "zone controls should carry the fixture's label control"
-    );
+    assert!(matches!(
+        &decoded.zone.layers[0].source,
+        hypercolor_types::layer::LayerSource::Effect { controls, .. }
+            if controls.contains_key("label")
+    ));
 }

@@ -813,7 +813,12 @@ fn run_daemon(
     let runtime = daemon::build_main_runtime()?;
     runtime.block_on(async move {
         let shutdown_rx = install_signal_handlers();
-        daemon::run_with_extensions(options, shutdown_rx, extension_installers).await
+        Box::pin(daemon::run_with_extensions(
+            options,
+            shutdown_rx,
+            extension_installers,
+        ))
+        .await
     })
 }
 
@@ -830,9 +835,7 @@ fn run_prepared_macos_daemon(
             let _run_loop_stop = MainRunLoopStop;
             let result = runtime.block_on(async move {
                 let shutdown_rx = install_signal_handlers();
-                prepared
-                    .run_with_extensions(shutdown_rx, extension_installers)
-                    .await
+                Box::pin(prepared.run_with_extensions(shutdown_rx, extension_installers)).await
             });
             let _ = result_tx.send(result);
         })

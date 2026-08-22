@@ -1,5 +1,7 @@
 //! Native Corsair Lighting Node direct RGB protocol.
 
+use hypercolor_types::device::SegmentInfo;
+
 use std::borrow::Cow;
 use std::time::Duration;
 
@@ -16,7 +18,7 @@ use crate::drivers::corsair::types::{
 };
 use crate::protocol::{
     CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolKeepalive, ProtocolResponse,
-    ProtocolZone, ResponseStatus, TransferType,
+    ResponseStatus, TransferType,
 };
 
 const MAX_LEDS_PER_CHANNEL: u32 = 204;
@@ -281,11 +283,11 @@ impl Protocol for CorsairLightingNodeProtocol {
         })
     }
 
-    fn zones(&self) -> Vec<ProtocolZone> {
+    fn zones(&self) -> Vec<SegmentInfo> {
         self.channel_leds
             .iter()
             .enumerate()
-            .map(|(index, &led_count)| ProtocolZone {
+            .map(|(index, &led_count)| SegmentInfo {
                 name: format!("Channel {}", index + 1),
                 led_count,
                 topology: DeviceTopologyHint::Strip,

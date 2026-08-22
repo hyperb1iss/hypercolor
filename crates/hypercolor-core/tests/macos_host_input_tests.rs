@@ -1,12 +1,12 @@
 //! macOS host-input folding and deterministic adapter-boundary contracts.
 
 use hypercolor_core::input::{MacosHostInput, PointerMode, Q16_16_SCALE};
-use hypercolor_core::types::event::{
-    InputButtonState, InputEvent, PointerScrollPhase, PointerScrollUnit,
-};
 use hypercolor_macos_input::{
     MacosInputBatch, MacosInputEvent, MacosInputGapReason, MacosModifierFlags, MacosPointerButton,
     MacosScrollPhase, MacosScrollUnit, MacosVirtualDesktop,
+};
+use hypercolor_types::event::{
+    InputButtonState, InputEvent, PointerScrollPhase, PointerScrollUnit,
 };
 
 fn desktop(topology_generation: u64) -> MacosVirtualDesktop {
@@ -19,7 +19,7 @@ fn fold(
     events: &[MacosInputEvent],
 ) -> (
     hypercolor_core::input::InteractionData,
-    Vec<hypercolor_core::types::event::TimedInputEvent>,
+    Vec<hypercolor_types::event::TimedInputEvent>,
 ) {
     input.fold_and_snapshot(MacosInputBatch {
         epoch: input.epoch(),
@@ -29,7 +29,7 @@ fn fold(
     })
 }
 
-fn key_states(events: &[hypercolor_core::types::event::TimedInputEvent]) -> Vec<InputButtonState> {
+fn key_states(events: &[hypercolor_types::event::TimedInputEvent]) -> Vec<InputButtonState> {
     events
         .iter()
         .filter_map(|event| match event.event {

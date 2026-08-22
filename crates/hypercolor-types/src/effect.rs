@@ -19,7 +19,7 @@ use crate::viewport::ViewportRect;
 ///
 /// Generated at discovery time and used as the primary key across
 /// the registry, event bus, API, and UI.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
 pub struct EffectId(pub Uuid);
 
 impl EffectId {
@@ -67,6 +67,7 @@ impl From<Uuid> for EffectId {
     Display,
     VariantNames,
     Default,
+    ToSchema,
 )]
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
@@ -94,27 +95,49 @@ pub enum EffectCategory {
     Display,
 }
 
+impl EffectCategory {
+    /// Canonical wire spelling for this category.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Ambient => "ambient",
+            Self::Audio => "audio",
+            Self::Generative => "generative",
+            Self::Particle => "particle",
+            Self::Scenic => "scenic",
+            Self::Interactive => "interactive",
+            Self::Fun => "fun",
+            Self::Source => "source",
+            Self::Utility => "utility",
+            Self::Display => "display",
+        }
+    }
+}
+
 // ── EffectSource ──────────────────────────────────────────────────────────────
 
 /// Identifies the rendering path and source location for an effect.
 ///
 /// Determines which renderer handles the effect (wgpu vs. Servo).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum EffectSource {
     /// Native WGSL/GLSL shader rendered by `WgpuRenderer`.
     Native {
         /// Path to the shader file, relative to the effects root.
+        #[schema(value_type = String)]
         path: PathBuf,
     },
     /// HTML/Canvas/WebGL effect rendered by `ServoRenderer`.
     Html {
         /// Path to the `.html` file on disk.
+        #[schema(value_type = String)]
         path: PathBuf,
     },
     /// GPU compute or fragment shader in raw SPIR-V or WGSL.
     Shader {
         /// Path to the shader source file.
+        #[schema(value_type = String)]
         path: PathBuf,
     },
 }
@@ -141,7 +164,7 @@ impl EffectSource {
 ///
 /// Tracks the effect from initial discovery through rendering and teardown.
 /// Only one effect (or composition) can be `Running` at a time per render loop.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum EffectState {
     /// Source files discovered, metadata being parsed and validated.
@@ -246,6 +269,7 @@ pub enum ControlKind {
 /// | `Asset`          | `Text(String)`             |
 /// | `Rect`           | `Rect(ViewportRect)`       |
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[schema(as = EffectControlValue)]
 #[serde(rename_all = "snake_case")]
 pub enum ControlValue {
     /// Floating-point numeric value. Used by `Slider` controls.
@@ -601,7 +625,7 @@ pub struct PresetTemplate {
 /// Serialized as TOML for native effects and as JSON for the REST API
 /// and WebSocket protocol. This is the canonical metadata attached to
 /// every effect regardless of rendering path.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct EffectMetadata {
     /// Stable unique identifier.
     pub id: EffectId,

@@ -47,8 +47,25 @@ WS_CAPABILITIES: Final = (
     "interactive_previews",
     "wide_preview_frames",
     "preview_chunking",
-    "preview_transport_v2:decoded=536870912,encoded=536936448,connection=1073872896,reassembly=8388608,tombstones=4194304,sender=8388608,cursors=8388608,idle_ms=5000,message=1048576",
-    "preview_transport_v1:decoded=536870912,encoded=536936448,connection=1073872896,streams=256,tombstones=1024,idle_ms=5000,message=1048576,chunks=4096",
+)
+
+PREVIEW_TRANSPORT: Final = MappingProxyType(
+    {
+        "dimension_type": "u32",
+        "passive_zero_dimension": "auto",
+        "interactive_zero_dimension": "invalid",
+        "max_publication_decoded_bytes": 536870912,
+        "max_publication_encoded_bytes": 536936448,
+        "max_connection_bytes": 1073872896,
+        "partial_idle_ms": 5000,
+        "max_message_bytes": 1048576,
+        "max_reassembly_state_bytes": 8388608,
+        "max_tombstone_bytes": 4194304,
+        "max_sender_state_bytes": 8388608,
+        "max_cursor_state_bytes": 8388608,
+        "min_message_bytes": 184,
+        "jpeg_max_axis": 65535,
+    }
 )
 
 JSON_PAYLOAD_CONTRACTS: Final = MappingProxyType(

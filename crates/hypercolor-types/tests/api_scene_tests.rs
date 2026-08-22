@@ -136,7 +136,7 @@ fn the_transition_vocabulary_is_closed_and_tagged() {
 #[test]
 fn control_patches_carry_values_and_binding_clears() {
     let patch: PatchControlsRequest = serde_json::from_value(json!({
-        "values": {"speed": {"float": 0.5}},
+        "values": {"speed": {"kind": "float", "value": 0.5}},
         "clear_bindings": ["speed"]
     }))
     .expect("full form decodes");
@@ -161,7 +161,7 @@ fn apply_takes_the_minimal_and_full_forms() {
 
     let full: ApplyEffectRequest = serde_json::from_value(json!({
         "zone": "0198c5b6-1111-7000-8000-000000000002",
-        "controls": {"speed": {"float": 1.0}},
+        "controls": {"speed": {"kind": "float", "value": 1.0}},
         "preset_id": "0198c5b6-1111-7000-8000-000000000005",
         "transition": {"type": "cut"}
     }))
@@ -201,7 +201,10 @@ fn replace_is_the_creation_shape() {
         "source": {"type": "effect", "effect_id": "0198c5b6-1111-7000-8000-000000000004", "controls": {}}
     }))
     .expect("creation shape decodes");
-    let same: CreateLayerRequest = request;
+    let replacement_wire = serde_json::to_value(&request).expect("replacement serializes");
+    let same: CreateLayerRequest = request.into();
+    let creation_wire = serde_json::to_value(&same).expect("creation serializes");
+    assert_eq!(replacement_wire, creation_wire, "request shapes stay equal");
     assert!(
         same.name.is_none(),
         "replacement is creation (Spec 78 §1.4)"

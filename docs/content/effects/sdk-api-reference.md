@@ -246,7 +246,7 @@ const PITCH_CLASSES = 12   // chromagram length (C..B)
 ```
 
 `AudioData` is a wide per-frame struct. Key fields (all `0-1` unless noted):
-`level`, `levelRaw` (dB), `bass`, `mid`, `treble`, `beat`, `beatPulse`
+`levelLinear`, `levelDb`, `bass`, `mid`, `treble`, `beat`, `beatPulse`
 (decaying, prefer this over raw `beat`), `beatPhase`, `beatConfidence`, `tempo`
 (BPM), `frequency` (200, `Float32Array`), `frequencyRaw` (200, `Int8Array`),
 `frequencyWeighted` (200), `melBands` / `melBandsNormalized` (24), `chromagram`
@@ -279,7 +279,6 @@ getHarmonicColor(audio: AudioData, saturation?: number, lightness?: number): [nu
 getMoodColor(audio: AudioData, ...): [number, number, number]
 getBeatAnticipation(audio: AudioData, anticipation?: number): number
 isOnBeat(audio: AudioData, division?: number, tolerance?: number): boolean
-normalizeAudioLevel(level: number): number
 normalizeFrequencyBin(value: number, max?: number): number
 smoothValue(currentValue: number, previousValue: number, smoothing?: number): number
 ```

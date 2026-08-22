@@ -8,6 +8,7 @@ use serde::Deserialize;
 use hypercolor_types::api::scene::{
     PatchControlsRequest, ReorderLayersRequest, SceneDocument, ZoneResource,
 };
+use hypercolor_types::control::ControlValue as CanonicalControlValue;
 use hypercolor_types::effect::ControlValue;
 use hypercolor_types::layer::{SceneLayer, SceneLayerId};
 
@@ -20,15 +21,13 @@ pub struct LayerStackResponse {
     pub revision: u64,
 }
 
-pub use hypercolor_types::api::scene::{
-    CreateLayerRequest, ReplaceLayerRequest as UpdateLayerRequest,
-};
+pub use hypercolor_types::api::scene::{CreateLayerRequest, ReplaceLayerRequest};
 
 /// Build a whole-layer replacement request from the fields the canonical
 /// resource accepts. Replacement mints a new layer identity.
 #[must_use]
-pub fn update_request_from_layer(layer: &SceneLayer) -> UpdateLayerRequest {
-    UpdateLayerRequest {
+pub fn update_request_from_layer(layer: &SceneLayer) -> ReplaceLayerRequest {
+    ReplaceLayerRequest {
         name: layer.name.clone(),
         source: layer.source.clone(),
         blend: Some(layer.blend),
@@ -70,7 +69,7 @@ pub async fn create_layer(
 pub async fn update_layer(
     zone_id: &str,
     layer_id: &str,
-    request: &UpdateLayerRequest,
+    request: &ReplaceLayerRequest,
     expected_revision: Option<u64>,
 ) -> Result<LayerStackOutcome, String> {
     let outcome = client::send_json_versioned::<_, ZoneResource>(
@@ -111,6 +110,7 @@ pub async fn patch_layer_controls(
         .iter()
         .map(|(name, value)| {
             control_value_from_json(value)
+                .and_then(|value| CanonicalControlValue::try_from(value).ok())
                 .map(|value| (name.clone(), value))
                 .ok_or_else(|| format!("Unsupported control value for {name}"))
         })

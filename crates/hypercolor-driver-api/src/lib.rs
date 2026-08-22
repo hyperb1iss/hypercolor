@@ -7,18 +7,14 @@
 
 pub mod backend;
 pub mod config;
-pub mod control_apply;
-pub mod control_surface;
 pub mod controls;
 pub mod descriptor;
 pub mod discovery;
 pub mod driver_discovery;
+pub mod error;
 pub mod host;
 pub mod module;
-pub mod net;
 pub mod pairing;
-pub mod support;
-pub mod validation;
 
 pub use backend::{
     BackendInfo, ConnectExecution, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId,
@@ -31,18 +27,18 @@ pub use controls::{
     DriverControlProvider, DriverControlStore, DriverLifecycleActions, ValidatedControlChanges,
 };
 pub use descriptor::{DRIVER_API_SCHEMA_VERSION, DriverDescriptor};
-pub use discovery::{DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner};
-pub use driver_discovery::{
-    DiscoveryCapability, DiscoveryRequest, DiscoveryResult, DriverDiscoveredDevice,
-};
+pub use discovery::{DiscoveredDevice, DiscoveryConnectBehavior};
+pub use driver_discovery::{DiscoveryCapability, DiscoveryRequest};
+pub use error::{DriverError, ErrorRecoverability};
 pub use host::{
     DriverCredentialStore, DriverDiscoveryState, DriverHost, DriverRuntimeActions,
     DriverTrackedDevice, TrackedDeviceCtx,
 };
+pub use hypercolor_types::device::DeviceError;
 pub use module::{
-    DriverModule, DriverPresentationProvider, DriverProtocolCatalog, DriverRuntimeCacheProvider,
+    DeviceBackendFactory, DriverModule, DriverPresentationProvider, DriverProtocolCatalog,
+    DriverRuntimeCacheProvider, OutputBinding,
 };
-pub use net::{CredentialStore, MdnsBrowser, MdnsService};
 pub use pairing::{
     ClearPairingOutcome, DeviceAuthState, DeviceAuthSummary, PairDeviceOutcome, PairDeviceRequest,
     PairDeviceStatus, PairingCapability, PairingDescriptor, PairingFieldDescriptor,

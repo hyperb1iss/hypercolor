@@ -2,14 +2,17 @@ use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 
-use hypercolor_driver_api::CredentialStore;
+use anyhow::Result;
+use async_trait::async_trait;
 use hypercolor_driver_api::{
-    DriverConfigProvider, DriverModule, DriverTrackedDevice, TrackedDeviceCtx,
+    DriverConfigProvider, DriverCredentialStore, DriverDiscoveryState, DriverError, DriverHost,
+    DriverModule, DriverRuntimeActions, DriverTrackedDevice, TrackedDeviceCtx,
 };
 use hypercolor_driver_hue::{
     HueConfig, HueDriverModule, hue_device_control_surface, hue_driver_control_surface,
     resolve_hue_probe_bridges_from_sources,
 };
+use hypercolor_driver_support::CredentialStore;
 use hypercolor_types::controls::{
     ApplyImpact, ControlAccess, ControlAvailabilityState, ControlSurfaceScope, ControlValue,
 };
@@ -87,12 +90,9 @@ fn resolve_hue_probe_bridges_merges_tracked_metadata() {
 #[test]
 fn hue_module_advertises_presentation_metadata() {
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
-    let module = HueDriverModule::new(
-        Arc::new(
-            CredentialStore::open_blocking(tempdir.path()).expect("credential store should open"),
-        ),
-        false,
-    );
+    let module = HueDriverModule::new(Arc::new(
+        CredentialStore::open_blocking(tempdir.path()).expect("credential store should open"),
+    ));
 
     let descriptor = module.module_descriptor();
     assert!(descriptor.capabilities.presentation);
@@ -109,15 +109,41 @@ fn hue_module_advertises_presentation_metadata() {
     );
 }
 
+#[tokio::test]
+async fn hue_auth_summary_propagates_credential_store_failure() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let module = HueDriverModule::new(Arc::new(
+        CredentialStore::open_blocking(tempdir.path()).expect("credential store should open"),
+    ));
+    let tracked = tracked_hue_device();
+    let device = TrackedDeviceCtx {
+        device_id: tracked.info.id,
+        info: &tracked.info,
+        metadata: Some(&tracked.metadata),
+        current_state: &tracked.current_state,
+    };
+
+    let error = module
+        .pairing()
+        .expect("Hue should expose pairing")
+        .auth_summary(&FailingDriverHost, &device)
+        .await
+        .expect_err("credential failure should cross the pairing boundary");
+
+    assert!(matches!(error, DriverError::Pairing { .. }));
+    assert!(
+        error
+            .to_string()
+            .contains("injected credential read failure")
+    );
+}
+
 #[test]
 fn hue_config_validation_rejects_non_routable_bridge_ips() {
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
-    let module = HueDriverModule::new(
-        Arc::new(
-            CredentialStore::open_blocking(tempdir.path()).expect("credential store should open"),
-        ),
-        false,
-    );
+    let module = HueDriverModule::new(Arc::new(
+        CredentialStore::open_blocking(tempdir.path()).expect("credential store should open"),
+    ));
     let mut config = module
         .config()
         .expect("Hue should expose config provider")
@@ -219,4 +245,69 @@ fn hue_device_control_surface_exposes_tracked_metadata() {
         surface.availability["ip"].state,
         ControlAvailabilityState::Available
     );
+}
+
+struct FailingDriverHost;
+
+#[async_trait]
+impl DriverCredentialStore for FailingDriverHost {
+    async fn get_json(&self, driver_id: &str, key: &str) -> Result<Option<serde_json::Value>> {
+        let _ = (driver_id, key);
+        anyhow::bail!("injected credential read failure")
+    }
+
+    async fn set_json(&self, driver_id: &str, key: &str, value: serde_json::Value) -> Result<()> {
+        let _ = (driver_id, key, value);
+        Ok(())
+    }
+
+    async fn remove(&self, driver_id: &str, key: &str) -> Result<()> {
+        let _ = (driver_id, key);
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl DriverRuntimeActions for FailingDriverHost {
+    async fn activate_device(&self, device_id: DeviceId, backend_id: &str) -> Result<bool> {
+        let _ = (device_id, backend_id);
+        Ok(false)
+    }
+
+    async fn disconnect_device(
+        &self,
+        device_id: DeviceId,
+        backend_id: &str,
+        will_retry: bool,
+    ) -> Result<bool> {
+        let _ = (device_id, backend_id, will_retry);
+        Ok(false)
+    }
+}
+
+#[async_trait]
+impl DriverDiscoveryState for FailingDriverHost {
+    async fn tracked_devices(&self, driver_id: &str) -> Vec<DriverTrackedDevice> {
+        let _ = driver_id;
+        Vec::new()
+    }
+
+    fn load_cached_json(&self, driver_id: &str, key: &str) -> Result<Option<serde_json::Value>> {
+        let _ = (driver_id, key);
+        Ok(None)
+    }
+}
+
+impl DriverHost for FailingDriverHost {
+    fn credentials(&self) -> &dyn DriverCredentialStore {
+        self
+    }
+
+    fn runtime(&self) -> &dyn DriverRuntimeActions {
+        self
+    }
+
+    fn discovery_state(&self) -> &dyn DriverDiscoveryState {
+        self
+    }
 }

@@ -13,7 +13,7 @@ T = TypeVar("T", bound="ConfigMutationResponse")
 
 @_attrs_define
 class ConfigMutationResponse:
-    """The outcome of a config write, reset, or whole-config reset.
+    """Outcome of a config write, key reset, or whole-config reset.
 
     Attributes:
         live (bool): Whether the daemon re-applied the change to a running subsystem.

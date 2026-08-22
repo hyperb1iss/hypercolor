@@ -25,9 +25,9 @@ only, via `[target.cfg]` — not a feature flag).
 
 **Protocol abstraction**
 
-- `Protocol`, `ProtocolCommand`, `ProtocolResponse`, `ProtocolZone`,
-  `ResponseStatus`, `ProtocolError` — implement `Protocol` to add a new
-  driver family.
+- `Protocol`, `ProtocolCommand`, `ProtocolResponse`, `ResponseStatus`,
+  `ProtocolError`, and `hypercolor_types::device::SegmentInfo`. Implement
+  `Protocol` to add a new driver family.
 - `ProtocolDatabase` — static device registry; maps `(vid, pid)` pairs to
   `DeviceDescriptor` records.
 - `DeviceDescriptor`, `ProtocolBinding`, `ProtocolFactory`, `TransportType`

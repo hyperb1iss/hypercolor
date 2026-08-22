@@ -8,14 +8,15 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior};
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
-use super::{DiscoveredDevice, DiscoveryConnectBehavior};
-use crate::types::device::{
+use hypercolor_types::device::{
     ConnectionType, DeviceFingerprint, DeviceId, DeviceInfo, DeviceState, DeviceUserSettings,
+    FingerprintNamespace,
 };
-use crate::types::portable::{PortableDeviceKey, PortableIdentityClaim};
+use hypercolor_types::portable::{PortableDeviceKey, PortableIdentityClaim};
 
 // ── TrackedDevice ────────────────────────────────────────────────────────
 
@@ -146,7 +147,11 @@ impl DeviceRegistry {
     /// updated in place and the existing `DeviceId` is returned. Otherwise a
     /// new entry is created.
     pub async fn add(&self, info: DeviceInfo) -> DeviceId {
-        let fallback_fingerprint = DeviceFingerprint(info.id.as_uuid().to_string());
+        let fallback_fingerprint = DeviceFingerprint::mint(
+            FingerprintNamespace::Bridge,
+            "registry",
+            &info.id.as_uuid().to_string(),
+        );
         self.add_with_fingerprint(info, fallback_fingerprint).await
     }
 
@@ -320,7 +325,11 @@ impl DeviceRegistry {
             if let Some(fingerprint) = inner.id_to_fingerprint.remove(id) {
                 inner.fingerprints.remove(&fingerprint);
             } else {
-                let fallback = DeviceFingerprint(id.as_uuid().to_string());
+                let fallback = DeviceFingerprint::mint(
+                    FingerprintNamespace::Bridge,
+                    "registry",
+                    &id.as_uuid().to_string(),
+                );
                 inner.fingerprints.remove(&fallback);
             }
             inner.fingerprints.retain(|_, mapped_id| mapped_id != id);
@@ -792,8 +801,8 @@ fn resolve_portable_fingerprint(
 
     debug!(
         key = %claim.key(),
-        raw_fingerprint = %fingerprint.0,
-        pinned_fingerprint = %pinned.0,
+        raw_fingerprint = %fingerprint.as_str(),
+        pinned_fingerprint = %pinned.as_str(),
         "Portable key resolved a re-attached device to its pinned identity"
     );
     pinned

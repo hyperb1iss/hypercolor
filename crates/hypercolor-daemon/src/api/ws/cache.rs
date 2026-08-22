@@ -33,7 +33,7 @@ use super::preview_encode::{
     PreviewJpegEncoder, PreviewRawEncoder, encode_canvas_jpeg_payload_scaled_stateless,
 };
 use super::protocol::{ActiveFramesConfig, FrameZoneSelection, validate_preview_surface_bytes};
-use crate::api::AppState;
+use crate::app_state::AppState;
 use crate::display_frames::DisplayFrameSnapshot;
 
 /// Maximum number of events that can be buffered per WebSocket client.

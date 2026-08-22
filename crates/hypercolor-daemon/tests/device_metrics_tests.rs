@@ -69,6 +69,10 @@ fn sample_stats_with_received(
         last_transport_started_sequence: frames_sent.saturating_add(errors_total),
         last_transport_completed_sequence: frames_sent,
         last_transport_failed_sequence: errors_total,
+        display_queue_generation: None,
+        display_transport_started: 0,
+        display_transport_completed: 0,
+        display_transport_failed: 0,
     }
 }
 
@@ -95,6 +99,26 @@ fn collector_reports_zero_rates_without_a_baseline() {
     assert_eq!(collected.items[0].fps_actual, 0.0);
     assert_eq!(collected.items[0].payload_bps_estimate, 0);
     assert_eq!(collected.items[0].worker_recoveries, 2);
+}
+
+#[test]
+fn collector_preserves_display_lane_telemetry() {
+    let device_id = DeviceId::new();
+    let snapshot = Arc::new(ArcSwap::from_pointee(DeviceMetricsSnapshot::default()));
+    let mut collector = DeviceMetricsCollector::new(Arc::clone(&snapshot));
+    let mut statistics = sample_stats(device_id, 4, 128, 0, None);
+    statistics.display_queue_generation = Some(9);
+    statistics.display_transport_started = 7;
+    statistics.display_transport_completed = 6;
+    statistics.display_transport_failed = 1;
+
+    let published = collector.update_from_statistics_at(vec![statistics], Instant::now(), 42);
+
+    assert_eq!(published.items.len(), 1);
+    assert_eq!(published.items[0].display_queue_generation, Some(9));
+    assert_eq!(published.items[0].display_transport_started, 7);
+    assert_eq!(published.items[0].display_transport_completed, 6);
+    assert_eq!(published.items[0].display_transport_failed, 1);
 }
 
 #[test]

@@ -15,9 +15,8 @@ use hypercolor_types::library::{
     EffectPlaylist, PlaylistId, PlaylistItem, PlaylistItemId, PlaylistItemTarget,
 };
 
-use crate::api::AppState;
-use crate::api::effects::resolve_effect_metadata;
-use crate::api::envelope::ApiResponse;
+use crate::api::envelope;
+use crate::app_state::AppState;
 use crate::domain::{DomainError, ResourceKind};
 use crate::playlist_runtime::ActivePlaylistRuntime;
 
@@ -40,14 +39,10 @@ pub async fn list_playlists(State(state): State<Arc<AppState>>) -> Response {
     let items = state.library_store.list_playlists().await;
     let total = items.len();
 
-    ApiResponse::ok(PlaylistListResponse {
+    envelope::ok(PlaylistListResponse {
         items,
-        pagination: crate::api::devices::Pagination {
-            offset: 0,
-            limit: 50,
-            total,
-            has_more: false,
-        },
+        total: u64::try_from(total).expect("playlist count fits in u64"),
+        page: None,
     })
 }
 
@@ -61,7 +56,7 @@ pub async fn get_playlist(State(state): State<Arc<AppState>>, Path(id): Path<Str
         return DomainError::not_found(ResourceKind::Playlist, &id).into_response();
     };
 
-    ApiResponse::ok(playlist)
+    envelope::ok(playlist)
 }
 
 /// `POST /api/v1/library/playlists` — create a new playlist.
@@ -99,7 +94,7 @@ pub async fn create_playlist(
             kind: LibraryChangeKind::Upserted,
         });
 
-    ApiResponse::created(playlist)
+    envelope::created(playlist)
 }
 
 /// `PUT /api/v1/library/playlists/{id}` — update an existing playlist.
@@ -158,7 +153,7 @@ pub async fn update_playlist(
     };
     stop_runtime(active);
 
-    ApiResponse::ok(playlist)
+    envelope::ok(playlist)
 }
 
 /// `DELETE /api/v1/library/playlists/{id}` — remove a playlist.
@@ -199,7 +194,7 @@ pub async fn delete_playlist(
     };
     stop_runtime(active);
 
-    ApiResponse::ok(DeletePlaylistResponse {
+    envelope::ok(DeletePlaylistResponse {
         id: playlist_id.to_string(),
         deleted: true,
     })
@@ -267,7 +262,7 @@ pub async fn activate_playlist(
         runtime.active = Some(active);
     }
 
-    ApiResponse::ok(ActivatePlaylistResponse {
+    envelope::ok(ActivatePlaylistResponse {
         playlist: response_payload,
         active: true,
     })
@@ -280,7 +275,7 @@ pub async fn get_active_playlist(State(state): State<Arc<AppState>>) -> Response
         return DomainError::not_found(ResourceKind::Playlist, "active").into_response();
     };
 
-    ApiResponse::ok(ActivePlaylistStateResponse {
+    envelope::ok(ActivePlaylistStateResponse {
         playlist: active_playlist_payload(active),
         state: "running".to_owned(),
     })
@@ -299,7 +294,7 @@ pub async fn deactivate_playlist(State(state): State<Arc<AppState>>) -> Response
     let payload = active_playlist_payload(&active);
     stop_runtime(Some(active));
 
-    ApiResponse::ok(DeactivatePlaylistResponse {
+    envelope::ok(DeactivatePlaylistResponse {
         playlist: payload,
         deactivated: true,
     })
@@ -444,7 +439,7 @@ async fn activate_playlist_item(state: &Arc<AppState>, item: &PlaylistItem) -> R
     };
 
     let (controls, rejected) =
-        crate::api::effects::normalize_control_values(&metadata, &requested_controls);
+        crate::domain::effect::normalize_control_values(&metadata, &requested_controls);
     if !rejected.is_empty() {
         warn!(
             effect_id = %metadata.id,
@@ -455,7 +450,7 @@ async fn activate_playlist_item(state: &Arc<AppState>, item: &PlaylistItem) -> R
     }
 
     crate::domain::effect::apply_effect(
-        state,
+        &state.domains.effects,
         crate::domain::effect::ApplyEffect {
             effect: metadata,
             controls,
@@ -485,10 +480,7 @@ async fn build_playlist_items(
     for item in items_payload {
         let target = match &item.target {
             PlaylistTargetRequest::Effect { effect } => {
-                let resolved = {
-                    let registry = state.effect_registry.read().await;
-                    resolve_effect_metadata(&registry, effect)
-                };
+                let resolved = state.domains.effects.resolve_metadata(effect).await;
                 let Some(resolved) = resolved else {
                     return Err(format!("Playlist references unknown effect: {effect}"));
                 };

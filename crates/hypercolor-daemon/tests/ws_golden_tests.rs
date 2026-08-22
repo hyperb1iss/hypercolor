@@ -573,7 +573,7 @@ fn golden_preview_cancel() -> PreviewCancelFrame {
 // ── Fixture table ────────────────────────────────────────────────────────
 
 fn preview_segments(frame: &PreviewFrame) -> Vec<Segment> {
-    let wide = !frame.uses_legacy_layout();
+    let wide = !frame.uses_compact_layout();
     let mut segments = Vec::new();
     if wide {
         segments.push(seg(1, "tag (wide passive preview)"));
@@ -596,7 +596,7 @@ fn preview_segments(frame: &PreviewFrame) -> Vec<Segment> {
 }
 
 fn zone_preview_segments(frame: &ZonePreviewFrame) -> Vec<Segment> {
-    let wide = !frame.uses_legacy_layout();
+    let wide = !frame.uses_compact_layout();
     let mut segments = vec![
         seg(
             1,
@@ -624,7 +624,7 @@ fn zone_preview_segments(frame: &ZonePreviewFrame) -> Vec<Segment> {
 }
 
 fn display_preview_segments(frame: &DisplayPreviewFrame) -> Vec<Segment> {
-    let wide = !frame.uses_legacy_layout();
+    let wide = !frame.uses_compact_layout();
     let mut segments = vec![
         seg(
             1,
@@ -652,7 +652,7 @@ fn display_preview_segments(frame: &DisplayPreviewFrame) -> Vec<Segment> {
 }
 
 fn interactive_preview_segments(frame: &InteractivePreviewFrame) -> Vec<Segment> {
-    let wide = !frame.uses_legacy_layout();
+    let wide = !frame.uses_compact_layout();
     let mut segments = vec![
         seg(
             1,
@@ -682,7 +682,7 @@ fn interactive_preview_segments(frame: &InteractivePreviewFrame) -> Vec<Segment>
 fn screen_zones_segments(frame: &ScreenZonesFrame) -> Vec<Segment> {
     let mut segments = vec![seg(1, "tag"), seg(4, "frame_number u32le")];
     segments.push(seg(4, "timestamp_ms u32le"));
-    if frame.uses_legacy_layout() {
+    if frame.uses_compact_layout() {
         segments.push(seg(2, "source_width u16le"));
         segments.push(seg(2, "source_height u16le"));
         segments.push(seg(1, "grid_cols u8"));

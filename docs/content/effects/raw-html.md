@@ -167,7 +167,8 @@ Effects that declare `audio-reactive="true"` get a runtime audio surface injecte
 ```javascript
 const audio = window.engine?.audio;
 if (audio) {
-  const level = audio.level;     // 0-1 RMS
+  const level = audio.levelLinear; // 0-1 RMS
+  const levelDb = audio.levelDb;   // -100 to 0 dB
   const bass = audio.bass;       // 0-1
   const beat = audio.beat;       // 0 or 1 this frame
   const beatPulse = audio.beatPulse;

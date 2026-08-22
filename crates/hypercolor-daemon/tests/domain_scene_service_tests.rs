@@ -11,7 +11,9 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use hypercolor_core::asset::{AssetTypeHint, AssetUploadOptions};
+use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::effect::EffectEntry;
+use hypercolor_core::scene::SceneManager;
 use hypercolor_types::asset::AssetId;
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
@@ -28,18 +30,17 @@ use hypercolor_types::layer::{
 };
 use hypercolor_types::scene::{
     ColorInterpolation, DisplayFaceTarget, EasingFunction, Scene, SceneId, SceneKind,
-    SceneMutationMode, ScenePriority, SceneScope, TransitionSpec, UnassignedBehavior, Zone, ZoneId,
-    ZoneRole,
+    SceneMutationMode, ScenePriority, TransitionSpec, UnassignedBehavior, Zone, ZoneId, ZoneRole,
 };
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 use uuid::Uuid;
 
-use hypercolor_daemon::api::AppState;
+use hypercolor_daemon::app_state::AppState;
 use hypercolor_daemon::domain::commit::CommitDurability;
 use hypercolor_daemon::domain::effect::{ApplyEffect, RequestedTransition, apply_effect};
 use hypercolor_daemon::domain::scene::{
-    ActivateScene, CreateScene, SnapshotScene, UpdateScene, activate_scene, commit_scene,
-    create_scene, deactivate_scene, delete_scene, snapshot_scene, update_scene,
+    ActivateScene, CreateScene, SceneService, SnapshotScene, activate_scene, commit_scene,
+    create_scene, deactivate_scene, delete_scene, snapshot_scene,
 };
 use hypercolor_daemon::domain::scene_tree::{
     ClearScene, PatchLayerControls, clear_scene, patch_layer_controls, read_document,
@@ -55,6 +56,63 @@ fn isolated_state() -> (Arc<AppState>, tempfile::TempDir) {
     let data_dir = tempdir.path().join("data");
     std::fs::create_dir_all(&data_dir).expect("temp data dir should be created");
     (Arc::new(AppState::new_with_data_dir(data_dir)), tempdir)
+}
+
+async fn seed_scene(state: &Arc<AppState>, scene: Scene) {
+    let mut mutation = state.scene_manager.begin_mutation().await;
+    mutation
+        .create_scene(scene)
+        .expect("test scene should be created");
+    commit_scene(&state.domains.scene, mutation)
+        .await
+        .expect("test scene should commit");
+}
+
+async fn seed_active_scene(state: &Arc<AppState>, scene: Scene) {
+    let scene_id = scene.id;
+    let mut mutation = state.scene_manager.begin_mutation().await;
+    mutation
+        .create_scene(scene)
+        .expect("test scene should be created");
+    mutation
+        .activate(
+            scene_id,
+            None,
+            hypercolor_types::event::SceneChangeReason::UserActivate,
+        )
+        .expect("test scene should activate");
+    commit_scene(&state.domains.scene, mutation)
+        .await
+        .expect("test scene should commit");
+}
+
+#[tokio::test]
+async fn scene_service_returns_owned_snapshots_and_lock_free_plans() {
+    let service =
+        SceneService::in_memory(SceneManager::with_default(), Arc::new(HypercolorBus::new()));
+    let sibling = service.clone();
+    let mut snapshot = service.snapshot().await;
+    snapshot.deactivate_current();
+
+    assert_eq!(
+        sibling.snapshot().await.active_scene_id(),
+        Some(&SceneId::DEFAULT)
+    );
+    let plan = sibling.plan_reader().load();
+    assert_eq!(plan.generation, 0);
+    assert_eq!(plan.active_scene_id, Some(SceneId::DEFAULT));
+}
+
+#[tokio::test]
+async fn scene_service_clones_share_one_commit_revision() {
+    let service =
+        SceneService::in_memory(SceneManager::with_default(), Arc::new(HypercolorBus::new()));
+
+    assert_eq!(service.revision(), service.clone().revision());
+    assert_eq!(
+        service.begin_mutation().await.base_revision(),
+        service.revision()
+    );
 }
 
 fn test_effect_metadata(name: &str) -> EffectMetadata {
@@ -82,10 +140,10 @@ fn test_effect_metadata(name: &str) -> EffectMetadata {
 async fn clearing_a_zone_retires_its_transient_layout_preview() {
     let (state, _tempdir) = isolated_state();
     let (zone_id, layout) = {
-        let manager = state.scene_manager.read().await;
+        let manager = state.scene_manager.snapshot().await;
         let zone = manager
             .active_scene()
-            .and_then(Scene::primary_group)
+            .and_then(Scene::primary_zone)
             .expect("default scene should have a primary zone");
         (zone.id, zone.layout.clone())
     };
@@ -100,12 +158,11 @@ async fn clearing_a_zone_retires_its_transient_layout_preview() {
         .await;
 
     clear_scene(
-        &state,
+        &state.domains.scene_tree,
         ClearScene {
             zone: Some(zone_id),
             expected_revision: None,
         },
-        MutationContext::api(),
     )
     .await
     .expect("zone clear should commit");
@@ -122,30 +179,24 @@ async fn clearing_a_zone_retires_its_transient_layout_preview() {
 #[tokio::test]
 async fn control_patch_refuses_a_revision_resolved_before_a_scene_switch() {
     let (state, _tempdir) = isolated_state();
-    let stale = read_document(&state)
+    let stale = read_document(&state.domains.scene_tree)
         .await
         .expect("default scene should be readable");
     let next_scene = named_scene("next");
     let next_scene_id = next_scene.id;
-    state
-        .scene_manager
-        .write()
-        .await
-        .create(next_scene)
-        .expect("next scene should be created");
+    seed_scene(&state, next_scene).await;
     activate_scene(
-        &state,
+        &state.domains.scene_library,
         ActivateScene {
             scene_id: next_scene_id,
             transition: None,
         },
-        MutationContext::api(),
     )
     .await
     .expect("next scene should activate");
 
     let error = patch_layer_controls(
-        &state,
+        &state.domains.scene_tree,
         PatchLayerControls {
             zone_id: stale.zones[0].id,
             layer_id: SceneLayerId::new(),
@@ -178,7 +229,7 @@ async fn insert_effect(state: &AppState, metadata: &EffectMetadata) {
         modified: SystemTime::now(),
         state: EffectState::Loading,
     };
-    let _ = state.effect_registry.write().await.register(entry);
+    let _ = state.domains.effects.register(entry).await;
 }
 
 fn named_scene(name: &str) -> Scene {
@@ -186,10 +237,8 @@ fn named_scene(name: &str) -> Scene {
         id: SceneId::new(),
         name: name.to_owned(),
         description: None,
-        scope: SceneScope::Full,
-        zone_assignments: Vec::new(),
-        groups: Vec::new(),
-        groups_revision: 0,
+        zones: Vec::new(),
+        zones_revision: 0,
         transition: TransitionSpec {
             duration_ms: 1000,
             easing: EasingFunction::Linear,
@@ -260,10 +309,6 @@ fn imported_display_zone(device_id: DeviceId) -> Zone {
         id: ZoneId::new(),
         name: "Imported display".to_owned(),
         description: None,
-        effect_id: None,
-        controls: HashMap::new(),
-        control_bindings: HashMap::new(),
-        preset_id: None,
         layers: Vec::new(),
         layout: SpatialLayout {
             canvas_width: 1,
@@ -332,9 +377,13 @@ async fn apply_effect_loads_the_primary_zone_and_commits_durably() {
     let metadata = test_effect_metadata("aurora");
     insert_effect(&state, &metadata).await;
 
-    let applied = apply_effect(&state, apply_command(&metadata), MutationContext::api())
-        .await
-        .expect("apply should succeed");
+    let applied = apply_effect(
+        &state.domains.effects,
+        apply_command(&metadata),
+        MutationContext::api(),
+    )
+    .await
+    .expect("apply should succeed");
 
     assert_eq!(applied.effect.id, metadata.id.to_string());
     assert_eq!(applied.effect.name, "aurora");
@@ -344,12 +393,12 @@ async fn apply_effect_loads_the_primary_zone_and_commits_durably() {
     assert_eq!(applied.commit.durability(), CommitDurability::Written);
     assert!(applied.commit.retry_error().is_none());
 
-    let manager = state.scene_manager.read().await;
+    let manager = state.scene_manager.snapshot().await;
     let primary = manager
         .active_scene()
-        .and_then(Scene::primary_group)
+        .and_then(Scene::primary_zone)
         .expect("the active scene should have a primary zone");
-    assert_eq!(primary.effect_id, Some(metadata.id));
+    assert!(primary.has_effect(metadata.id));
 }
 
 #[tokio::test]
@@ -360,12 +409,20 @@ async fn apply_effect_reports_the_outgoing_effect_of_the_target_zone() {
     insert_effect(&state, &first).await;
     insert_effect(&state, &second).await;
 
-    apply_effect(&state, apply_command(&first), MutationContext::api())
-        .await
-        .expect("first apply should succeed");
-    let applied = apply_effect(&state, apply_command(&second), MutationContext::api())
-        .await
-        .expect("second apply should succeed");
+    apply_effect(
+        &state.domains.effects,
+        apply_command(&first),
+        MutationContext::api(),
+    )
+    .await
+    .expect("first apply should succeed");
+    let applied = apply_effect(
+        &state.domains.effects,
+        apply_command(&second),
+        MutationContext::api(),
+    )
+    .await
+    .expect("second apply should succeed");
 
     let previous = applied
         .previous_effect
@@ -381,9 +438,13 @@ async fn apply_effect_refuses_a_display_face() {
     metadata.category = EffectCategory::Display;
     insert_effect(&state, &metadata).await;
 
-    let error = apply_effect(&state, apply_command(&metadata), MutationContext::api())
-        .await
-        .expect_err("a display face should not reach the LED pipeline");
+    let error = apply_effect(
+        &state.domains.effects,
+        apply_command(&metadata),
+        MutationContext::api(),
+    )
+    .await
+    .expect_err("a display face should not reach the LED pipeline");
     assert!(
         matches!(error, DomainError::Validation { .. }),
         "expected Validation, got {error:?}"
@@ -401,7 +462,7 @@ async fn apply_effect_refuses_an_unimplemented_transition_from_either_transport(
     for trigger in [MutationContext::api(), MutationContext::mcp()] {
         let mut command = apply_command(&metadata);
         command.transition = RequestedTransition::of_duration(500);
-        let error = apply_effect(&state, command, trigger)
+        let error = apply_effect(&state.domains.effects, command, trigger)
             .await
             .expect_err("a non-zero transition is not implemented");
         match error {
@@ -415,7 +476,7 @@ async fn apply_effect_refuses_an_unimplemented_transition_from_either_transport(
 
     // A zero-duration cut is the one request the daemon can honor.
     let applied = apply_effect(
-        &state,
+        &state.domains.effects,
         ApplyEffect {
             transition: RequestedTransition::of_duration(0),
             ..apply_command(&metadata)
@@ -435,18 +496,15 @@ async fn apply_effect_conflicts_when_the_active_scene_is_snapshot_locked() {
 
     let mut scene = named_scene("frozen");
     scene.mutation_mode = SceneMutationMode::Snapshot;
-    let scene_id = scene.id;
-    {
-        let mut manager = state.scene_manager.write().await;
-        manager.create(scene).expect("scene should be created");
-        manager
-            .activate(&scene_id, None)
-            .expect("scene should activate");
-    }
+    seed_active_scene(&state, scene).await;
 
-    let error = apply_effect(&state, apply_command(&metadata), MutationContext::mcp())
-        .await
-        .expect_err("a snapshot scene refuses runtime rewriting");
+    let error = apply_effect(
+        &state.domains.effects,
+        apply_command(&metadata),
+        MutationContext::mcp(),
+    )
+    .await
+    .expect_err("a snapshot scene refuses runtime rewriting");
     assert!(
         matches!(error, DomainError::Conflict { .. }),
         "expected Conflict, got {error:?}"
@@ -460,19 +518,15 @@ async fn activate_scene_switches_the_current_scene_and_publishes_once() {
     let (state, _tempdir) = isolated_state();
     let scene = named_scene("evening");
     let scene_id = scene.id;
-    {
-        let mut manager = state.scene_manager.write().await;
-        manager.create(scene).expect("scene should be created");
-    }
+    seed_scene(&state, scene).await;
     let mut events = state.event_bus.subscribe_all();
 
     let activated = activate_scene(
-        &state,
+        &state.domains.scene_library,
         ActivateScene {
             scene_id,
             transition: None,
         },
-        MutationContext::api(),
     )
     .await
     .expect("activation should succeed");
@@ -493,7 +547,7 @@ async fn activate_scene_switches_the_current_scene_and_publishes_once() {
     }
     assert_eq!(active_changed, 1, "exactly one activation announcement");
 
-    let manager = state.scene_manager.read().await;
+    let manager = state.scene_manager.snapshot().await;
     assert_eq!(manager.active_scene_id().copied(), Some(scene_id));
 }
 
@@ -517,34 +571,28 @@ async fn activation_hydrates_only_existing_connected_display_zones() {
 
     let mut scene = named_scene("imported");
     scene.mutation_mode = SceneMutationMode::Snapshot;
-    scene.groups.push(imported_display_zone(assigned_device));
+    scene.zones.push(imported_display_zone(assigned_device));
     let scene_id = scene.id;
-    state
-        .scene_manager
-        .write()
-        .await
-        .create(scene)
-        .expect("scene should be created");
+    seed_scene(&state, scene).await;
 
     activate_scene(
-        &state,
+        &state.domains.scene_library,
         ActivateScene {
             scene_id,
             transition: None,
         },
-        MutationContext::api(),
     )
     .await
     .expect("snapshot activation should hydrate derived geometry");
 
-    let manager = state.scene_manager.read().await;
+    let manager = state.scene_manager.snapshot().await;
     let active = manager.active_scene().expect("scene should be active");
     let assigned = active
-        .display_group_for(assigned_device)
+        .display_zone_for(assigned_device)
         .expect("assigned display zone should remain");
     assert_eq!(assigned.layout.canvas_width, 320);
     assert_eq!(assigned.layout.canvas_height, 200);
-    assert!(active.display_group_for(unassigned_device).is_none());
+    assert!(active.display_zone_for(unassigned_device).is_none());
 }
 
 #[tokio::test]
@@ -554,25 +602,26 @@ async fn activation_commits_before_layout_failure_and_still_applies_brightness()
     scene.layout_id = Some(LayoutId::new("missing-layout").expect("valid layout id"));
     scene.activation_brightness = Some(0.42);
     let scene_id = scene.id;
-    {
-        let mut manager = state.scene_manager.write().await;
-        manager.create(scene).expect("scene should be created");
-    }
+    seed_scene(&state, scene).await;
     let mut events = state.event_bus.subscribe_all();
 
     let activated = activate_scene(
-        &state,
+        &state.domains.scene_library,
         ActivateScene {
             scene_id,
             transition: None,
         },
-        MutationContext::api(),
     )
     .await
     .expect("post-commit side effects must not turn activation into an error");
 
     assert_eq!(
-        state.scene_manager.read().await.active_scene_id().copied(),
+        state
+            .scene_manager
+            .snapshot()
+            .await
+            .active_scene_id()
+            .copied(),
         Some(scene_id)
     );
     assert_eq!(
@@ -589,7 +638,7 @@ async fn activation_commits_before_layout_failure_and_still_applies_brightness()
     );
     assert!(activated.brightness.applied);
     assert_eq!(
-        hypercolor_daemon::domain::output::get_output(&state).brightness,
+        hypercolor_daemon::domain::output::get_output(&state.domains.output).brightness,
         0.42
     );
 
@@ -614,7 +663,7 @@ async fn activation_applies_a_named_layout_without_reentering_its_guard() {
     let layout = SpatialLayout {
         id: layout_id.to_string(),
         name: "Activation Layout".to_owned(),
-        ..state.spatial_engine.read().await.layout().as_ref().clone()
+        ..state.spatial_engine.snapshot().layout().as_ref().clone()
     };
     state
         .layouts
@@ -625,20 +674,14 @@ async fn activation_applies_a_named_layout_without_reentering_its_guard() {
     let mut scene = named_scene("layout scene");
     scene.layout_id = Some(layout_id.clone());
     let scene_id = scene.id;
-    state
-        .scene_manager
-        .write()
-        .await
-        .create(scene)
-        .expect("scene should be created");
+    seed_scene(&state, scene).await;
 
     let activation = activate_scene(
-        &state,
+        &state.domains.scene_library,
         ActivateScene {
             scene_id,
             transition: None,
         },
-        MutationContext::api(),
     );
     tokio::pin!(activation);
     let activated = tokio::time::timeout(Duration::from_secs(2), async {
@@ -674,7 +717,7 @@ async fn activation_applies_a_named_layout_without_reentering_its_guard() {
     assert!(activated.layout.applied);
     assert_eq!(activated.layout.layout_id, Some(layout_id));
     assert_eq!(
-        state.spatial_engine.read().await.layout().id,
+        state.spatial_engine.snapshot().layout().id,
         "activation-layout"
     );
 }
@@ -685,19 +728,15 @@ async fn activate_scene_honors_a_transition_override() {
     let first = named_scene("evening");
     let second = named_scene("night");
     let (first_id, second_id) = (first.id, second.id);
-    {
-        let mut manager = state.scene_manager.write().await;
-        manager.create(first).expect("scene should be created");
-        manager.create(second).expect("scene should be created");
-    }
+    seed_scene(&state, first).await;
+    seed_scene(&state, second).await;
 
     activate_scene(
-        &state,
+        &state.domains.scene_library,
         ActivateScene {
             scene_id: first_id,
             transition: None,
         },
-        MutationContext::api(),
     )
     .await
     .expect("first activation should succeed");
@@ -706,7 +745,7 @@ async fn activate_scene_honors_a_transition_override() {
     // than echoing it, which is why it is a command field and not an
     // adapter detail.
     activate_scene(
-        &state,
+        &state.domains.scene_library,
         ActivateScene {
             scene_id: second_id,
             transition: Some(TransitionSpec {
@@ -715,14 +754,13 @@ async fn activate_scene_honors_a_transition_override() {
                 color_interpolation: ColorInterpolation::Oklab,
             }),
         },
-        MutationContext::mcp(),
     )
     .await
     .expect("second activation should succeed");
 
-    let manager = state.scene_manager.read().await;
+    let manager = state.scene_manager.snapshot().await;
     let transition = manager
-        .active_transition()
+        .transition_plan()
         .expect("a non-zero override should start a transition");
     assert_eq!(transition.spec.duration_ms, 2_500);
 }
@@ -733,19 +771,15 @@ async fn activating_another_scene_retires_transient_layout_previews() {
     let first = named_scene("evening");
     let second = named_scene("night");
     let (first_id, second_id) = (first.id, second.id);
-    {
-        let mut manager = state.scene_manager.write().await;
-        manager.create(first).expect("scene should be created");
-        manager.create(second).expect("scene should be created");
-    }
+    seed_scene(&state, first).await;
+    seed_scene(&state, second).await;
 
     activate_scene(
-        &state,
+        &state.domains.scene_library,
         ActivateScene {
             scene_id: first_id,
             transition: None,
         },
-        MutationContext::api(),
     )
     .await
     .expect("first activation should succeed");
@@ -762,22 +796,20 @@ async fn activating_another_scene_retires_transient_layout_previews() {
         .await;
 
     activate_scene(
-        &state,
+        &state.domains.scene_library,
         ActivateScene {
             scene_id: second_id,
             transition: None,
         },
-        MutationContext::api(),
     )
     .await
     .expect("second activation should succeed");
     activate_scene(
-        &state,
+        &state.domains.scene_library,
         ActivateScene {
             scene_id: first_id,
             transition: None,
         },
-        MutationContext::api(),
     )
     .await
     .expect("first scene should reactivate");
@@ -793,84 +825,14 @@ async fn activating_another_scene_retires_transient_layout_previews() {
 }
 
 #[tokio::test]
-async fn activation_retires_a_preview_set_after_the_candidate_snapshot() {
-    let (state, _tempdir) = isolated_state();
-    let first = named_scene("first");
-    let second = named_scene("second");
-    let (first_id, second_id) = (first.id, second.id);
-    {
-        let mut manager = state.scene_manager.write().await;
-        manager
-            .create(first)
-            .expect("first scene should be created");
-        manager
-            .create(second)
-            .expect("second scene should be created");
-        manager
-            .activate(&first_id, None)
-            .expect("first scene should activate");
-    }
-
-    let mut mutation = state.begin_scene_mutation().await;
-    mutation
-        .activate(second_id, None)
-        .expect("candidate should activate second scene");
-    mutation.retire_scene_previews(first_id);
-
-    let zone_id = ZoneId::new();
-    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
-    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
-    let setter_state = Arc::clone(&state);
-    let setter = tokio::spawn(async move {
-        let scene_guard = setter_state.scene_manager.read().await;
-        let _ = entered_tx.send(());
-        let _ = release_rx.await;
-        setter_state
-            .zone_layout_previews
-            .set(
-                ZoneLayoutPreviewOwner::new(),
-                first_id,
-                zone_id,
-                preview_layout(),
-            )
-            .await;
-        drop(scene_guard);
-    });
-    entered_rx
-        .await
-        .expect("setter should hold the scene read lock");
-
-    let commit_state = Arc::clone(&state);
-    let commit = tokio::spawn(async move { commit_scene(&commit_state, mutation).await });
-    tokio::task::yield_now().await;
-    assert!(!commit.is_finished(), "commit waits for the preview setter");
-    let _ = release_tx.send(());
-    setter.await.expect("preview setter should finish");
-    commit
-        .await
-        .expect("commit task should finish")
-        .expect("scene activation should commit");
-
-    assert!(
-        state
-            .zone_layout_previews
-            .scene_overrides(first_id)
-            .await
-            .is_empty(),
-        "the activation boundary retires every preview from the departed scene"
-    );
-}
-
-#[tokio::test]
 async fn activate_scene_refuses_an_unknown_scene() {
     let (state, _tempdir) = isolated_state();
     let error = activate_scene(
-        &state,
+        &state.domains.scene_library,
         ActivateScene {
             scene_id: SceneId::new(),
             transition: None,
         },
-        MutationContext::api(),
     )
     .await
     .expect_err("an unknown scene should not activate");
@@ -892,7 +854,7 @@ async fn mcp_scene_activation_applies_media_soft_admission() {
     // a 60ms soft cap. Lottie carries no hard cap, so this exercises the
     // soft path without tripping the hard one.
     let mut zone = {
-        let spatial = state.spatial_engine.read().await;
+        let spatial = state.spatial_engine.snapshot();
         hypercolor_core::scene::default_primary_group(spatial.layout().as_ref().clone())
     };
     for index in 0..8u8 {
@@ -901,12 +863,9 @@ async fn mcp_scene_activation_applies_media_soft_admission() {
     }
 
     let mut scene = named_scene("cinema");
-    scene.groups = vec![zone];
+    scene.zones = vec![zone];
     let scene_id = scene.id;
-    {
-        let mut manager = state.scene_manager.write().await;
-        manager.create(scene).expect("scene should be created");
-    }
+    seed_scene(&state, scene).await;
 
     let tier_before = state.render_loop.read().await.stats().tier;
     assert!(
@@ -930,7 +889,7 @@ async fn mcp_scene_activation_applies_media_soft_admission() {
         "an over-budget scene downshifts the render tier on activation"
     );
 
-    let manager = state.scene_manager.read().await;
+    let manager = state.scene_manager.snapshot().await;
     assert_eq!(manager.active_scene_id().copied(), Some(scene_id));
 }
 
@@ -942,27 +901,41 @@ async fn a_stale_base_revision_is_rejected_before_admission() {
     let metadata = test_effect_metadata("aurora");
     insert_effect(&state, &metadata).await;
     let layout = {
-        let spatial = state.spatial_engine.read().await;
+        let spatial = state.spatial_engine.snapshot();
         spatial.layout().as_ref().clone()
     };
 
     // Two candidates from the same base revision. The first wins.
-    let mut stale = state.begin_scene_mutation().await;
-    let mut winner = state.begin_scene_mutation().await;
+    let mut stale = state.scene_manager.begin_mutation().await;
+    let mut winner = state.scene_manager.begin_mutation().await;
     assert_eq!(stale.base_revision(), winner.base_revision());
 
     winner
-        .upsert_primary_zone(&metadata, HashMap::new(), None, layout.clone())
+        .upsert_primary_zone(
+            &metadata,
+            HashMap::new(),
+            None,
+            layout.clone(),
+            hypercolor_types::event::ChangeTrigger::System,
+            None,
+        )
         .expect("candidate mutation should apply");
-    let commit = commit_scene(&state, winner)
+    let commit = commit_scene(&state.domains.scene, winner)
         .await
         .expect("the first commit wins");
     assert_eq!(commit.durability(), CommitDurability::Written);
 
     stale
-        .upsert_primary_zone(&metadata, HashMap::new(), None, layout)
+        .upsert_primary_zone(
+            &metadata,
+            HashMap::new(),
+            None,
+            layout,
+            hypercolor_types::event::ChangeTrigger::System,
+            None,
+        )
         .expect("candidate mutation should apply");
-    let error = commit_scene(&state, stale)
+    let error = commit_scene(&state.domains.scene, stale)
         .await
         .expect_err("a candidate built from a dead revision must not land");
     // Losing the commit compare-and-swap is a conflict, not a failed
@@ -993,31 +966,42 @@ async fn a_rejected_candidate_leaves_the_live_state_untouched() {
     insert_effect(&state, &metadata).await;
     insert_effect(&state, &other).await;
     let layout = {
-        let spatial = state.spatial_engine.read().await;
+        let spatial = state.spatial_engine.snapshot();
         spatial.layout().as_ref().clone()
     };
 
-    let mut stale = state.begin_scene_mutation().await;
+    let mut stale = state.scene_manager.begin_mutation().await;
     stale
-        .upsert_primary_zone(&other, HashMap::new(), None, layout)
+        .upsert_primary_zone(
+            &other,
+            HashMap::new(),
+            None,
+            layout,
+            hypercolor_types::event::ChangeTrigger::System,
+            None,
+        )
         .expect("candidate mutation should apply");
 
-    apply_effect(&state, apply_command(&metadata), MutationContext::api())
-        .await
-        .expect("the winning apply should succeed");
+    apply_effect(
+        &state.domains.effects,
+        apply_command(&metadata),
+        MutationContext::api(),
+    )
+    .await
+    .expect("the winning apply should succeed");
 
     let mut events = state.event_bus.subscribe_all();
-    commit_scene(&state, stale)
+    commit_scene(&state.domains.scene, stale)
         .await
         .expect_err("the stale candidate must be refused");
 
     // Nothing about the rejected candidate reached the world.
-    let manager = state.scene_manager.read().await;
+    let manager = state.scene_manager.snapshot().await;
     let primary = manager
         .active_scene()
-        .and_then(Scene::primary_group)
+        .and_then(Scene::primary_zone)
         .expect("the active scene should have a primary zone");
-    assert_eq!(primary.effect_id, Some(metadata.id));
+    assert!(primary.has_effect(metadata.id));
     assert!(
         events.try_recv().is_err(),
         "a rejected candidate publishes nothing"
@@ -1030,28 +1014,35 @@ async fn dropping_an_uncommitted_mutation_is_a_no_op() {
     let metadata = test_effect_metadata("aurora");
     insert_effect(&state, &metadata).await;
     let layout = {
-        let spatial = state.spatial_engine.read().await;
+        let spatial = state.spatial_engine.snapshot();
         spatial.layout().as_ref().clone()
     };
 
     let revision_before = {
-        let mut abandoned = state.begin_scene_mutation().await;
+        let mut abandoned = state.scene_manager.begin_mutation().await;
         abandoned
-            .upsert_primary_zone(&metadata, HashMap::new(), None, layout)
+            .upsert_primary_zone(
+                &metadata,
+                HashMap::new(),
+                None,
+                layout,
+                hypercolor_types::event::ChangeTrigger::System,
+                None,
+            )
             .expect("candidate mutation should apply");
         abandoned.base_revision()
     };
 
     // A later candidate still sees the original revision, so the drop
     // consumed no generation and moved no state.
-    let next = state.begin_scene_mutation().await;
+    let next = state.scene_manager.begin_mutation().await;
     assert_eq!(next.base_revision(), revision_before);
-    let manager = state.scene_manager.read().await;
+    let manager = state.scene_manager.snapshot().await;
     assert!(
         manager
             .active_scene()
-            .and_then(Scene::primary_group)
-            .and_then(|zone| zone.effect_id)
+            .and_then(Scene::primary_zone)
+            .and_then(|zone| zone.effect_ids().next())
             .is_none(),
         "an abandoned candidate never touches live state"
     );
@@ -1078,9 +1069,13 @@ async fn a_non_durable_write_reports_retrying_and_publishes_nothing() {
     writer.set_injected_replace_failures(usize::MAX);
 
     let mut events = state.event_bus.subscribe_all();
-    let applied = apply_effect(&state, apply_command(&metadata), MutationContext::api())
-        .await
-        .expect("a non-durable write is not a rejection");
+    let applied = apply_effect(
+        &state.domains.effects,
+        apply_command(&metadata),
+        MutationContext::api(),
+    )
+    .await
+    .expect("a non-durable write is not a rejection");
 
     assert_eq!(applied.commit.durability(), CommitDurability::Retrying);
     assert!(applied.commit.retry_error().is_some());
@@ -1101,9 +1096,13 @@ async fn commit_generations_advance_the_scene_revision_in_order() {
 
     let mut generations = Vec::new();
     for _ in 0..3 {
-        let applied = apply_effect(&state, apply_command(&metadata), MutationContext::api())
-            .await
-            .expect("apply should succeed");
+        let applied = apply_effect(
+            &state.domains.effects,
+            apply_command(&metadata),
+            MutationContext::api(),
+        )
+        .await
+        .expect("apply should succeed");
         generations.push(applied.commit.generation());
         assert_eq!(applied.commit.generation(), applied.commit.revision());
     }
@@ -1131,7 +1130,7 @@ async fn create_scene_seeds_a_default_zone_and_announces_the_scene() {
     let (state, _tempdir) = isolated_state();
     let mut events = state.event_bus.subscribe_all();
 
-    let created = create_scene(&state, create_command("evening"), MutationContext::api())
+    let created = create_scene(&state.domains.scene_library, create_command("evening"))
         .await
         .expect("scene should be created");
 
@@ -1139,14 +1138,14 @@ async fn create_scene_seeds_a_default_zone_and_announces_the_scene() {
     assert!(created.scene.enabled);
     assert_eq!(created.scene.mutation_mode, SceneMutationMode::Live);
     assert_eq!(
-        created.scene.groups.len(),
+        created.scene.zones.len(),
         1,
         "every scene is born with a Default zone to select"
     );
-    assert_eq!(created.scene.groups[0].role, ZoneRole::Primary);
+    assert_eq!(created.scene.zones[0].role, ZoneRole::Primary);
     assert_eq!(created.commit.durability(), CommitDurability::Written);
 
-    let manager = state.scene_manager.read().await;
+    let manager = state.scene_manager.snapshot().await;
     assert!(manager.get(&created.scene.id).is_some());
     drop(manager);
 
@@ -1161,25 +1160,28 @@ async fn snapshot_scene_preserves_the_live_tree_and_captures_the_active_layout()
     let (state, _tempdir) = isolated_state();
     let metadata = test_effect_metadata("aurora");
     insert_effect(&state, &metadata).await;
-    apply_effect(&state, apply_command(&metadata), MutationContext::api())
-        .await
-        .expect("the live scene should contain one effect layer");
+    apply_effect(
+        &state.domains.effects,
+        apply_command(&metadata),
+        MutationContext::api(),
+    )
+    .await
+    .expect("the live scene should contain one effect layer");
     let active = state
         .scene_manager
-        .read()
+        .snapshot()
         .await
         .active_scene()
         .cloned()
         .expect("the default scene should be active");
-    let active_layout_id = state.spatial_engine.read().await.layout().id.clone();
+    let active_layout_id = state.spatial_engine.snapshot().layout().id.clone();
 
     let snapshot = snapshot_scene(
-        &state,
+        &state.domains.scene_library,
         SnapshotScene {
             name: "Captured desk".to_owned(),
             description: Some("Runtime state".to_owned()),
         },
-        MutationContext::api(),
     )
     .await
     .expect("snapshot should commit");
@@ -1189,7 +1191,7 @@ async fn snapshot_scene_preserves_the_live_tree_and_captures_the_active_layout()
     assert_eq!(snapshot.scene.description.as_deref(), Some("Runtime state"));
     assert_eq!(snapshot.scene.kind, SceneKind::Named);
     assert_eq!(snapshot.scene.mutation_mode, SceneMutationMode::Snapshot);
-    assert_eq!(snapshot.scene.groups, active.groups);
+    assert_eq!(snapshot.scene.zones, active.zones);
     assert_eq!(
         snapshot.scene.layout_id.as_ref().map(LayoutId::as_str),
         Some(active_layout_id.as_str())
@@ -1197,7 +1199,7 @@ async fn snapshot_scene_preserves_the_live_tree_and_captures_the_active_layout()
     assert_eq!(snapshot.scene.activation_brightness, None);
     assert_eq!(snapshot.commit.durability(), CommitDurability::Written);
 
-    let manager = state.scene_manager.read().await;
+    let manager = state.scene_manager.snapshot().await;
     assert_eq!(manager.active_scene_id(), Some(&active.id));
     assert_eq!(manager.get(&snapshot.scene.id), Some(&snapshot.scene));
 }
@@ -1210,14 +1212,14 @@ async fn snapshot_scene_preserves_the_live_tree_and_captures_the_active_layout()
 async fn create_scene_behaves_identically_for_both_transports() {
     let (state, _tempdir) = isolated_state();
 
-    let via_api = create_scene(&state, create_command("api-made"), MutationContext::api())
+    let via_api = create_scene(&state.domains.scene_library, create_command("api-made"))
         .await
         .expect("api create should succeed");
-    let via_mcp = create_scene(&state, create_command("mcp-made"), MutationContext::mcp())
+    let via_mcp = create_scene(&state.domains.scene_library, create_command("mcp-made"))
         .await
         .expect("mcp create should succeed");
 
-    assert_eq!(via_api.scene.groups.len(), via_mcp.scene.groups.len());
+    assert_eq!(via_api.scene.zones.len(), via_mcp.scene.zones.len());
     assert_eq!(via_api.scene.kind, via_mcp.scene.kind);
     assert_eq!(via_api.scene.priority, via_mcp.scene.priority);
     assert_eq!(
@@ -1234,7 +1236,7 @@ async fn create_scene_carries_adapter_metadata_onto_the_scene() {
     command.mutation_mode = Some(SceneMutationMode::Snapshot);
     command.enabled = Some(false);
 
-    let created = create_scene(&state, command, MutationContext::mcp())
+    let created = create_scene(&state.domains.scene_library, command)
         .await
         .expect("scene should be created");
 
@@ -1251,76 +1253,17 @@ async fn create_scene_carries_adapter_metadata_onto_the_scene() {
 }
 
 #[tokio::test]
-async fn update_scene_rewrites_the_named_fields_and_keeps_the_rest() {
-    let (state, _tempdir) = isolated_state();
-    let created = create_scene(&state, create_command("evening"), MutationContext::api())
-        .await
-        .expect("scene should be created");
-    let mut events = state.event_bus.subscribe_all();
-
-    let updated = update_scene(
-        &state,
-        UpdateScene {
-            scene_id: created.scene.id,
-            name: "midnight".to_owned(),
-            description: None,
-            enabled: Some(false),
-            mutation_mode: None,
-        },
-        MutationContext::api(),
-    )
-    .await
-    .expect("scene should update");
-
-    assert_eq!(updated.scene.name, "midnight");
-    assert!(!updated.scene.enabled);
-    assert_eq!(updated.scene.mutation_mode, created.scene.mutation_mode);
-    assert_eq!(
-        updated.scene.groups.len(),
-        created.scene.groups.len(),
-        "an update must not drop the scene's zones"
-    );
-    assert_eq!(
-        library_events(&mut events),
-        vec![(created.scene.id, SceneLibraryChangeKind::Updated)]
-    );
-}
-
-#[tokio::test]
-async fn update_scene_refuses_an_unknown_scene() {
-    let (state, _tempdir) = isolated_state();
-    let error = update_scene(
-        &state,
-        UpdateScene {
-            scene_id: SceneId::new(),
-            name: "ghost".to_owned(),
-            description: None,
-            enabled: None,
-            mutation_mode: None,
-        },
-        MutationContext::api(),
-    )
-    .await
-    .expect_err("an unknown scene has nothing to update");
-    assert!(
-        matches!(error, DomainError::NotFound { .. }),
-        "expected NotFound, got {error:?}"
-    );
-}
-
-#[tokio::test]
 async fn delete_scene_deactivates_it_and_announces_both_changes() {
     let (state, _tempdir) = isolated_state();
-    let created = create_scene(&state, create_command("evening"), MutationContext::api())
+    let created = create_scene(&state.domains.scene_library, create_command("evening"))
         .await
         .expect("scene should be created");
     activate_scene(
-        &state,
+        &state.domains.scene_library,
         ActivateScene {
             scene_id: created.scene.id,
             transition: None,
         },
-        MutationContext::api(),
     )
     .await
     .expect("scene should activate");
@@ -1335,7 +1278,7 @@ async fn delete_scene_deactivates_it_and_announces_both_changes() {
         .await;
     let mut events = state.event_bus.subscribe_all();
 
-    let deleted = delete_scene(&state, created.scene.id, MutationContext::api())
+    let deleted = delete_scene(&state.domains.scene_library, created.scene.id)
         .await
         .expect("scene should be deleted");
 
@@ -1347,7 +1290,7 @@ async fn delete_scene_deactivates_it_and_announces_both_changes() {
         "deleting the active scene must fall back to Default"
     );
 
-    let manager = state.scene_manager.read().await;
+    let manager = state.scene_manager.snapshot().await;
     assert!(manager.get(&created.scene.id).is_none());
     drop(manager);
     assert!(
@@ -1380,7 +1323,7 @@ async fn delete_scene_deactivates_it_and_announces_both_changes() {
 #[tokio::test]
 async fn delete_scene_refuses_the_default_scene() {
     let (state, _tempdir) = isolated_state();
-    let error = delete_scene(&state, SceneId::DEFAULT, MutationContext::api())
+    let error = delete_scene(&state.domains.scene_library, SceneId::DEFAULT)
         .await
         .expect_err("the default scene is not deletable");
     assert!(
@@ -1392,21 +1335,20 @@ async fn delete_scene_refuses_the_default_scene() {
 #[tokio::test]
 async fn deactivate_scene_returns_to_default_and_reports_both_ends() {
     let (state, _tempdir) = isolated_state();
-    let created = create_scene(&state, create_command("evening"), MutationContext::api())
+    let created = create_scene(&state.domains.scene_library, create_command("evening"))
         .await
         .expect("scene should be created");
     activate_scene(
-        &state,
+        &state.domains.scene_library,
         ActivateScene {
             scene_id: created.scene.id,
             transition: None,
         },
-        MutationContext::api(),
     )
     .await
     .expect("scene should activate");
 
-    let deactivated = deactivate_scene(&state, MutationContext::api())
+    let deactivated = deactivate_scene(&state.domains.scene_library)
         .await
         .expect("deactivation should succeed");
 
@@ -1418,7 +1360,7 @@ async fn deactivate_scene_returns_to_default_and_reports_both_ends() {
         deactivated.current_scene.map(|scene| scene.id),
         Some(SceneId::DEFAULT)
     );
-    let manager = state.scene_manager.read().await;
+    let manager = state.scene_manager.snapshot().await;
     assert_eq!(manager.active_scene_id().copied(), Some(SceneId::DEFAULT));
 }
 
@@ -1444,69 +1386,12 @@ fn library_events(
         .collect()
 }
 
-// ── The commit path is the only scene writer ─────────────────────────────
+// ── Scene ownership fences ──────────────────────────────────────────────
 
-/// The revision compare-and-swap in `commit_scene` only sees commits: it
-/// advances in `SceneCommitSequencer::admit`, which nothing but
-/// `commit_scene` calls. A site that takes `scene_manager.write()`
-/// directly therefore moves live scene state without moving the
-/// revision, and because the commit installs a whole manager, such a
-/// write landing inside a candidate's window is discarded with no error
-/// to either caller. That is the lost-update class this wave closed, and
-/// the fence is structural: reproducing it behaviorally would mean
-/// racing a commit against a hand-rolled writer that no longer exists,
-/// so the property is pinned against the sources instead.
-///
-/// Three writers are accounted for, each with a reason it cannot commit:
-///
-/// - `render_thread/scene_snapshot.rs` ticks transition progress every
-///   frame. Committing it would mint a scene revision per frame and
-///   invalidate every in-flight candidate, and progress is render-local
-///   state no commit means to own. The reverse direction has a bounded
-///   window — a candidate cloned before a tick and swapped in after it
-///   rewinds progress by the clone-to-commit delta — which the next tick
-///   re-advances, and which §6.1 closes by moving progress out of the
-///   manager entirely.
-/// - `scene_transactions.rs` publishes a prepared layout at the frame
-///   boundary, holding the scene lock and the spatial lock together so
-///   the renderer never sees a layout and a zone set that disagree.
-///   `commit_scene` takes neither the spatial lock nor an `AppState` the
-///   render thread can reach; Spec 76 §6.1 re-points commit at this
-///   transaction rather than the reverse.
-/// - `startup/lifecycle.rs` holds five, of different kinds. Four are
-///   pre-init: the persisted-session restore and configured start-scene
-///   paths run inside `DaemonState::initialize`, before the render thread
-///   starts and before the API binds. The fifth is post-teardown: shutdown's
-///   deactivate runs after the render thread has been awaited out, so
-///   the one cadence reader of scene state is already gone. None can
-///   build an `AppState` because `from_daemon_state` requires a live input
-///   publication pump, which exists in neither phase, and none has a
-///   competing writer to order against.
-///
-/// A sixth entry means some new site can silently discard a commit or be
-/// discarded by one. Route it through `commit_scene` instead of
-/// widening this list, unless it genuinely belongs to one of the three
-/// reasons above.
-///
-/// This scan matches the receiver by name, so it fences the idiom the
-/// tree actually uses rather than the type system. A future writer that
-/// binds the handle to a differently named local slips past it, which is
-/// why `the_scene_manager_handle_stays_where_it_is` pins the set of
-/// modules that can reach the handle at all: gaining one is the review
-/// event. The durable fence is Spec 76 §6.3's manager idiom, which moves
-/// the lock inside a `SceneService` and makes the write lock
-/// unreachable from outside the domain.
+/// Production callers operate through `SceneService`; none can take its
+/// scene lock directly and bypass commit admission or ordered events.
 #[test]
 fn no_scene_writer_lives_outside_the_commit_path() {
-    /// Every file allowed to take the scene write lock, and how many
-    /// times, in production code.
-    const EXPECTED: [(&str, usize); 4] = [
-        ("domain/scene.rs", 1),                 // commit_scene's install
-        ("render_thread/scene_snapshot.rs", 1), // per-frame transition tick
-        ("scene_transactions.rs", 1),           // frame-boundary layout publish
-        ("startup/lifecycle.rs", 5),            // restore x2, configured x2, shutdown deactivate
-    ];
-
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut found: Vec<(String, usize)> = Vec::new();
     let mut pending = vec![src.clone()];
@@ -1541,42 +1426,17 @@ fn no_scene_writer_lives_outside_the_commit_path() {
     }
     found.sort();
 
-    let mut expected = EXPECTED
-        .iter()
-        .map(|(file, count)| ((*file).to_owned(), *count))
-        .collect::<Vec<_>>();
-    expected.sort();
     assert_eq!(
-        found, expected,
-        "every scene write lock outside commit_scene can silently discard a \
-         concurrent commit; route the new site through commit_scene"
+        found,
+        Vec::<(String, usize)>::new(),
+        "scene callers must use SceneService intents rather than its lock"
     );
 }
 
-/// Which modules can reach the scene handle at all.
-///
-/// A write lock has to come from somewhere, and every path to one starts
-/// with an `Arc<RwLock<SceneManager>>` in scope. Nine modules name the
-/// type; five of them only ever read or forward it, and pinning the set
-/// means a tenth cannot appear without a reviewer seeing it — including
-/// the case the sibling scan is blind to, where a new module binds the
-/// handle to a local named anything at all.
-///
-/// Widening this list is a decision about who may touch scene state, not
-/// a formality. Prefer handing the new module a domain service.
+/// The owning service is the only production type allowed to hold the lock.
 #[test]
 fn the_scene_manager_handle_stays_where_it_is() {
-    const EXPECTED: [&str; 9] = [
-        "api/mod.rs",                  // AppState's field
-        "discovery/mod.rs",            // reads the active scene's targets
-        "interactive_preview.rs",      // reads zones for preview routing
-        "network/host.rs",             // forwards the handle to drivers
-        "render_thread.rs",            // render-thread state
-        "scene_transactions.rs",       // frame-boundary layout publish
-        "scene_transactions/tests.rs", // that transaction's own tests
-        "startup/discovery_worker.rs", // forwards the handle
-        "startup/mod.rs",              // DaemonState's field
-    ];
+    const EXPECTED: [&str; 1] = ["domain/scene.rs"];
 
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut found = Vec::new();
@@ -1610,7 +1470,7 @@ fn the_scene_manager_handle_stays_where_it_is() {
     expected.sort();
     assert_eq!(
         found, expected,
-        "a module that holds the scene handle can take the write lock under any local name,          which the write-site scan cannot see; hand it a domain service instead"
+        "only SceneService may own the scene-manager lock"
     );
 }
 
@@ -1618,13 +1478,7 @@ fn the_scene_manager_handle_stays_where_it_is() {
 /// source, ignoring comments and tolerating the rustfmt line breaks that
 /// split the receiver from the call.
 ///
-/// `#[cfg(test)] mod` blocks are dropped first: a test that drives the
-/// manager directly races nothing. They are dropped as blocks rather
-/// than by truncating at the first one, because several files carry a
-/// test module in the middle and a truncating scan would go blind to
-/// every writer below it — which is exactly where `api/mod.rs` keeps
-/// two. The block's end is the closing brace at the attribute's own
-/// indentation, which rustfmt guarantees and `just fmt-check` enforces.
+/// Inline test modules are dropped before scanning production source.
 fn scene_write_lock_sites(source: &str) -> usize {
     let lines = source.lines().collect::<Vec<_>>();
     let mut production: Vec<&str> = Vec::with_capacity(lines.len());

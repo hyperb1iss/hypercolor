@@ -6,8 +6,8 @@ use tracing::{info, warn};
 use hypercolor_core::bus::{CanvasFrame, DisplayGroupFrame};
 use hypercolor_core::device::BackendManager;
 use hypercolor_core::input::screen::PixelExtent;
-use hypercolor_core::types::canvas::{Canvas, Rgba};
-use hypercolor_core::types::event::FrameTiming;
+use hypercolor_types::canvas::{Canvas, Rgba};
+use hypercolor_types::event::FrameTiming;
 use hypercolor_types::event::{FrameData, HypercolorEvent, Severity};
 use hypercolor_types::session::OffOutputBehavior;
 
@@ -78,6 +78,7 @@ pub(crate) async fn service_scene_transactions(
                     height,
                 } = prepared;
                 let completion = activation.clone();
+                let mut reconcile_error = None;
                 let publication = publish_prepared_layout_activation(
                     &state.spatial_engine,
                     &state.scene_manager,
@@ -97,13 +98,21 @@ pub(crate) async fn service_scene_transactions(
                         render
                             .sparkleflinger
                             .apply_projected_scene_resources(prepared_projected_scene);
-                        render
+                        if let Err(error) = render
                             .render_group_runtime
-                            .commit_reconcile(prepared_groups);
+                            .commit_reconcile(prepared_groups)
+                        {
+                            reconcile_error = Some(error.to_string());
+                        }
                         scene.render_state.replace_spatial_engine(spatial_engine);
                     },
                 )
                 .await;
+                let publication = publication.and_then(|()| {
+                    reconcile_error.map_or(Ok(()), |message| {
+                        Err(LayoutTransactionRejection::PreparationFailed { message })
+                    })
+                });
                 completion.complete(publication);
             }
         }
@@ -298,7 +307,11 @@ pub(crate) async fn execute_frame(
     );
     let reused_canvas = matches!(skip_decision, SkipDecision::ReuseCanvas);
 
-    service_scene_transactions(state, scene, frame_loop, render).await;
+    if state.scene_transactions.has_pending() || render.pending_layout_activation.is_some() {
+        // Layout preparation owns large staged GPU resources. Keep its future
+        // off the hot render future unless the control plane has work queued.
+        Box::pin(service_scene_transactions(state, scene, frame_loop, render)).await;
+    }
     if render.pending_layout_activation.is_some() {
         let mut render_loop = state.render_loop.write().await;
         return runtime
@@ -308,7 +321,7 @@ pub(crate) async fn execute_frame(
     let mut scene_snapshot = build_frame_scene_snapshot(
         state,
         &mut scene.snapshot_cache,
-        &scene.render_state,
+        &mut scene.render_state,
         delta_secs,
     )
     .await;
@@ -595,27 +608,23 @@ pub(crate) async fn execute_frame(
                 manager.reuse_routed_frame_outputs(unassigned_output_plan.layout())
             }
             OutputFrameSource::PublishedFrame => {
-                let published_frame = state.event_bus.frame_sender().borrow();
+                let published_frame = state.event_bus.frame_lane().borrow();
                 let zones = unassigned_output_plan.zones_for(&published_frame.zones);
-                manager
-                    .write_frame_with_brightness(
-                        &zones,
-                        unassigned_output_plan.layout(),
-                        global_brightness,
-                        None,
-                    )
-                    .await
+                manager.write_frame_with_brightness(
+                    &zones,
+                    unassigned_output_plan.layout(),
+                    global_brightness,
+                    None,
+                )
             }
             OutputFrameSource::CurrentFrame => {
                 let zones = unassigned_output_plan.zones_for(render.output_artifacts.zones());
-                manager
-                    .write_frame_with_brightness(
-                        &zones,
-                        unassigned_output_plan.layout(),
-                        global_brightness,
-                        None,
-                    )
-                    .await
+                manager.write_frame_with_brightness(
+                    &zones,
+                    unassigned_output_plan.layout(),
+                    global_brightness,
+                    None,
+                )
             }
         };
         frame_loop
@@ -880,12 +889,12 @@ async fn force_static_sleep_snapshot(
     let zones = scene_snapshot.spatial_engine.sample(&canvas);
 
     let (write_stats, async_failures) = if let Some(manager) = backend_manager {
-        let write_stats = manager.write_frame(&zones, layout.as_ref()).await;
+        let write_stats = manager.write_frame(&zones, layout.as_ref());
         let async_failures = manager.async_write_failures();
         (write_stats, async_failures)
     } else {
         let mut manager = state.backend_manager.lock().await;
-        let write_stats = manager.write_frame(&zones, layout.as_ref()).await;
+        let write_stats = manager.write_frame(&zones, layout.as_ref());
         let async_failures = manager.async_write_failures();
         (write_stats, async_failures)
     };
@@ -917,21 +926,21 @@ async fn force_static_sleep_snapshot(
     }
     state
         .event_bus
-        .frame_sender()
+        .frame_lane()
         .send_replace(FrameData::new(zones, frame_number, elapsed_ms));
     state
         .event_bus
-        .scene_canvas_sender()
+        .scene_canvas_lane()
         .send_replace(canvas_frame.clone());
-    state.event_bus.canvas_sender().send_replace(canvas_frame);
+    state.event_bus.canvas_lane().send_replace(canvas_frame);
     state
         .preview_runtime
-        .record_canvas_publication(frame_number, elapsed_ms);
+        .note_canvas_frame(frame_number, elapsed_ms);
 }
 
 fn should_switch_to_late_sleep_frame(
-    frame_output_power: crate::session::OutputPowerState,
-    latest_output_power: crate::session::OutputPowerState,
+    frame_output_power: crate::output_power::OutputPowerState,
+    latest_output_power: crate::output_power::OutputPowerState,
 ) -> bool {
     !frame_output_power.sleeping() && latest_output_power.sleeping()
 }
@@ -946,6 +955,7 @@ const fn output_frame_source_kind(source: OutputFrameSource) -> OutputFrameSourc
 
 #[cfg(test)]
 mod tests {
+    use crate::output_power::OutputPowerState;
     use crate::performance::CompositorBackendKind;
     use crate::render_thread::frame_composer::RenderStageStats;
     use crate::render_thread::frame_sampling::LedSamplingStrategy;
@@ -957,10 +967,9 @@ mod tests {
     use crate::render_thread::pipeline_runtime::SceneTransitionKey;
     use crate::render_thread::pipeline_runtime::needs_gpu_preview_advance;
     use crate::render_thread::sparkleflinger::ComposedFrameSet;
-    use crate::session::OutputPowerState;
     use hypercolor_core::spatial::SpatialEngine;
-    use hypercolor_core::types::canvas::{Canvas, PublishedSurface};
-    use hypercolor_core::types::event::{FrameData, ZoneColors};
+    use hypercolor_types::canvas::{Canvas, PublishedSurface};
+    use hypercolor_types::event::{FrameData, ZoneColors};
     use hypercolor_types::scene::{ColorInterpolation, SceneId};
     use hypercolor_types::session::OffOutputBehavior;
     use hypercolor_types::spatial::{
@@ -1199,6 +1208,7 @@ mod tests {
             &base_layout,
             &current_layout,
             SceneTransitionKey {
+                epoch: 1,
                 from_scene: SceneId::new(),
                 to_scene: SceneId::new(),
             },

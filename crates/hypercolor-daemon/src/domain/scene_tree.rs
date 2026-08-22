@@ -12,7 +12,7 @@
 //! One wire version governs the tree: the commit generation
 //! ([`SceneCommit::revision`](super::commit::SceneCommit::revision)),
 //! served as `ETag` and checked by [`check_scene_revision`]. The
-//! per-subresource counters the engine keeps (`groups_revision`,
+//! per-subresource counters the engine keeps (`zones_revision`,
 //! `layers_version`, `controls_version`) stay internal bookkeeping and
 //! never reach this surface.
 
@@ -22,23 +22,44 @@ use hypercolor_types::api::scene::{
     AssignMembersRequest, MemberPlacement, SceneDocument, ZoneLayoutResource, ZoneMember,
     ZoneMemberId, ZoneResource,
 };
-use hypercolor_types::effect::{ControlValue, EffectId};
-use hypercolor_types::event::{
-    EventControlValue, HypercolorEvent, LayerStackChangeKind, SceneLibraryChangeKind,
-    SceneSettingsChangeKind, ZoneChangeKind,
-};
+use hypercolor_types::effect::ControlValue;
 use hypercolor_types::layer::{LayerSource, SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{Scene, SceneId, UnassignedBehavior, Zone, ZoneId, ZoneRole};
-use hypercolor_types::spatial::{EdgeBehavior, Output, SamplingMode, SpatialLayout};
+use hypercolor_types::spatial::{Output, SpatialLayout};
 
 use hypercolor_core::scene::{LayerMutationError, OutputPlacement};
 
-use crate::api::AppState;
 use crate::domain::commit::SceneCommit;
-use crate::domain::scene::{
-    MediaAdmissionContext, SceneMutation, commit_scene, zone_changed_event,
-};
+use crate::domain::context::{DeviceContext, SceneContext};
+use crate::domain::effect::EffectContext;
+use crate::domain::output::OutputContext;
+use crate::domain::scene::SceneMutation;
 use crate::domain::{DomainError, MutationContext, ResourceKind};
+
+/// Live scene-tree authority shared by REST and MCP adapters.
+#[derive(Clone)]
+pub struct SceneTreeContext {
+    scene: SceneContext,
+    effects: EffectContext,
+    devices: DeviceContext,
+    output: OutputContext,
+}
+
+impl SceneTreeContext {
+    pub(crate) fn new(
+        scene: SceneContext,
+        effects: EffectContext,
+        devices: DeviceContext,
+        output: OutputContext,
+    ) -> Self {
+        Self {
+            scene,
+            effects,
+            devices,
+            output,
+        }
+    }
+}
 
 // ── Projection ───────────────────────────────────────────────────────────
 
@@ -52,9 +73,9 @@ use crate::domain::{DomainError, MutationContext, ResourceKind};
 ///
 /// [`DomainError::NotFound`] when no scene is active, which the
 /// always-a-default invariant makes unreachable in practice.
-pub async fn read_document(state: &AppState) -> Result<SceneDocument, DomainError> {
-    let manager = state.scene_manager.read().await;
-    let revision = state.scene_commits.revision();
+pub async fn read_document(ctx: &SceneTreeContext) -> Result<SceneDocument, DomainError> {
+    let manager = ctx.scene.snapshot().await;
+    let revision = ctx.scene.revision();
     let scene = manager
         .active_scene()
         .ok_or_else(|| DomainError::not_found(ResourceKind::Scene, "active"))?;
@@ -68,16 +89,16 @@ pub async fn read_document(state: &AppState) -> Result<SceneDocument, DomainErro
 /// [`DomainError::NotFound`] for an unknown zone or a missing active
 /// scene.
 pub async fn read_zone(
-    state: &AppState,
+    ctx: &SceneTreeContext,
     zone_id: ZoneId,
 ) -> Result<(ZoneResource, u64), DomainError> {
-    let manager = state.scene_manager.read().await;
-    let revision = state.scene_commits.revision();
+    let manager = ctx.scene.snapshot().await;
+    let revision = ctx.scene.revision();
     let scene = manager
         .active_scene()
         .ok_or_else(|| DomainError::not_found(ResourceKind::Scene, "active"))?;
     scene
-        .groups
+        .zones
         .iter()
         .find(|zone| zone.id == zone_id)
         .map(|zone| (zone_resource(zone), revision))
@@ -103,15 +124,14 @@ pub fn scene_document(scene: &Scene, revision: u64) -> SceneDocument {
         metadata: scene.metadata.clone(),
         mutation_mode: scene.mutation_mode,
         revision,
-        zones: scene.groups.iter().map(zone_resource).collect(),
+        zones: scene.zones.iter().map(zone_resource).collect(),
     }
 }
 
 /// Project one zone onto the wire resource.
 ///
-/// The layer stack comes from `effective_layers`, which is what the
-/// renderer reads, so a client patches the id the daemon actually
-/// addresses rather than synthesizing one (Spec 78 §1.3).
+/// The layer stack is the authored stack read by the renderer, so a
+/// client patches the id the daemon actually addresses.
 #[must_use]
 pub fn zone_resource(zone: &Zone) -> ZoneResource {
     ZoneResource {
@@ -125,7 +145,7 @@ pub fn zone_resource(zone: &Zone) -> ZoneResource {
         display_target: zone.display_target.clone(),
         members: zone.layout.zones.iter().map(zone_member).collect(),
         layout: zone_layout_resource(zone),
-        layers: zone.effective_layers(),
+        layers: zone.layers.clone(),
     }
 }
 
@@ -286,12 +306,9 @@ pub struct ZoneWritten {
 /// default scene, [`DomainError::PreconditionFailed`] for a stale
 /// revision, and the commit path's own refusals.
 pub async fn patch_scene(
-    state: &AppState,
+    ctx: &SceneTreeContext,
     command: PatchScene,
-    meta: MutationContext,
 ) -> Result<TreeWritten, DomainError> {
-    let _ = meta;
-
     if let Some(name) = &command.name
         && name.trim().is_empty()
     {
@@ -301,7 +318,7 @@ pub async fn patch_scene(
         ));
     }
 
-    let mut mutation = state.begin_scene_mutation().await;
+    let mut mutation = ctx.scene.begin_mutation().await;
     check_scene_revision(&mutation, command.expected_revision)?;
     let scene_id = mutation.active_scene_for_runtime_mutation("patching the scene")?;
 
@@ -315,32 +332,18 @@ pub async fn patch_scene(
         let mut scene = active_scene(&mutation)?;
         scene.name = name;
         mutation.update_scene(scene.clone())?;
-        mutation.record(HypercolorEvent::SceneLibraryChanged {
-            scene_id,
-            kind: SceneLibraryChangeKind::Updated,
-            name: Some(scene.name),
-        });
     }
 
     if let Some(behavior) = command.unassigned_behavior {
         mutation
             .set_unassigned_behavior(scene_id, behavior)
             .map_err(|_| DomainError::not_found(ResourceKind::Scene, scene_id))?;
-        let revision = mutation
-            .base_revision()
-            .checked_add(1)
-            .expect("scene revision must not exhaust u64");
-        mutation.record(HypercolorEvent::SceneSettingsChanged {
-            scene_id,
-            revision,
-            kind: SceneSettingsChangeKind::UnassignedBehavior,
-        });
     }
 
-    let commit = commit_scene(state, mutation).await?;
-    crate::api::save_runtime_session_snapshot(state).await;
+    let commit = ctx.scene.commit(mutation).await?;
+    ctx.scene.save_runtime_session().await;
     Ok(TreeWritten {
-        document: read_document(state).await?,
+        document: read_document(ctx).await?,
         commit,
     })
 }
@@ -356,18 +359,15 @@ pub async fn patch_scene(
 /// [`DomainError::PreconditionFailed`] for a stale revision, and the
 /// commit path's own refusals.
 pub async fn clear_scene(
-    state: &AppState,
+    ctx: &SceneTreeContext,
     command: ClearScene,
-    meta: MutationContext,
 ) -> Result<TreeWritten, DomainError> {
-    let _ = meta;
-
     let effect_refs = if command.zone.is_none() {
-        super::effect::effect_ref_index(state).await
+        super::effect::effect_ref_index(&ctx.effects).await
     } else {
         HashMap::new()
     };
-    let mut mutation = state.begin_scene_mutation().await;
+    let mut mutation = ctx.scene.begin_mutation().await;
     check_scene_revision(&mutation, command.expected_revision)?;
     let scene_id = mutation.active_scene_for_runtime_mutation("clearing the scene")?;
 
@@ -375,7 +375,7 @@ pub async fn clear_scene(
         Some(zone_id) => {
             let scene = active_scene(&mutation)?;
             let zone = scene
-                .groups
+                .zones
                 .iter()
                 .find(|zone| zone.id == zone_id)
                 .ok_or_else(|| DomainError::not_found(ResourceKind::Zone, zone_id))?;
@@ -388,7 +388,7 @@ pub async fn clear_scene(
             vec![zone_id]
         }
         None => active_scene(&mutation)?
-            .groups
+            .zones
             .iter()
             .filter(|zone| zone.role != ZoneRole::Display)
             .map(|zone| zone.id)
@@ -397,13 +397,14 @@ pub async fn clear_scene(
 
     let stopped_effects = if command.zone.is_none() {
         active_scene(&mutation)?
-            .groups
+            .zones
             .iter()
             .filter(|zone| zone.role != ZoneRole::Display)
             .filter_map(|zone| {
-                zone.effect_id
+                zone.effect_ids()
+                    .next()
                     .and_then(|effect_id| effect_refs.get(&effect_id).cloned())
-                    .map(|effect| (zone.id, (zone.name.clone(), effect)))
+                    .map(|effect| (zone.id, effect))
             })
             .collect::<HashMap<_, _>>()
     } else {
@@ -412,27 +413,21 @@ pub async fn clear_scene(
 
     for zone_id in targets {
         mutation.retire_zone_preview(scene_id, zone_id);
-        if let Some(zone) = mutation.clear_zone_effect(zone_id) {
-            if let Some((zone_name, effect)) = stopped_effects.get(&zone_id) {
-                mutation.record(HypercolorEvent::EffectStopped {
-                    effect: effect.clone(),
-                    reason: hypercolor_types::event::EffectStopReason::Stopped,
-                    zone_id: Some(zone_id),
-                    zone_name: Some(zone_name.clone()),
-                });
-            }
-            mutation.record(zone_changed_event(scene_id, &zone, ZoneChangeKind::Updated));
-        }
+        mutation.clear_zone_effect(
+            zone_id,
+            stopped_effects.get(&zone_id).cloned(),
+            hypercolor_types::event::EffectStopReason::Stopped,
+        );
     }
 
-    let commit = commit_scene(state, mutation).await?;
+    let commit = ctx.scene.commit(mutation).await?;
     if command.zone.is_none() {
-        crate::api::effects::quiesce_output_after_effect_stop(state).await;
+        ctx.output.quiesce_after_effect_stop().await;
     }
-    crate::api::save_runtime_session_snapshot(state).await;
+    ctx.scene.save_runtime_session().await;
 
     Ok(TreeWritten {
-        document: read_document(state).await?,
+        document: read_document(ctx).await?,
         commit,
     })
 }
@@ -449,46 +444,39 @@ pub async fn clear_scene(
 /// [`DomainError::Validation`] for an invalid layer payload,
 /// [`DomainError::PreconditionFailed`] for a stale revision.
 pub async fn replace_layer(
-    state: &AppState,
+    ctx: &SceneTreeContext,
     command: ReplaceLayer,
-    meta: MutationContext,
 ) -> Result<ZoneWritten, DomainError> {
-    let _ = meta;
-
-    let media_admission = MediaAdmissionContext::for_layer(state, &command.layer).await;
-    let mut mutation = state.begin_scene_mutation().await;
+    let media_admission = ctx.scene.media_admission_for_layer(&command.layer).await;
+    let mut mutation = ctx.scene.begin_mutation().await;
     check_scene_revision(&mutation, command.expected_revision)?;
     let scene_id = mutation.active_scene_for_runtime_mutation("replacing a layer")?;
     ensure_live_zone_mutable(&mutation, command.zone_id)?;
 
     let index = active_scene(&mutation)?
-        .groups
+        .zones
         .iter()
         .find(|zone| zone.id == command.zone_id)
         .ok_or_else(|| DomainError::not_found(ResourceKind::Zone, command.zone_id))?
-        .effective_layers()
+        .layers
         .iter()
         .position(|layer| layer.id == command.layer_id)
         .ok_or_else(|| DomainError::not_found(ResourceKind::Layer, command.layer_id))?;
 
-    mutation
-        .remove_layer(scene_id, command.zone_id, command.layer_id, None)
-        .map_err(|error| layer_error(error, command.zone_id, Some(command.layer_id)))?;
     let zone = mutation
-        .insert_layer(scene_id, command.zone_id, command.layer, Some(index), None)
-        .map_err(|error| layer_error(error, command.zone_id, None))?;
+        .replace_layer(
+            scene_id,
+            command.zone_id,
+            command.layer_id,
+            command.layer,
+            index,
+        )
+        .map_err(|error| layer_error(error, command.zone_id, Some(command.layer_id)))?;
     if let Some(media_admission) = media_admission {
         media_admission.validate(&active_scene(&mutation)?)?;
     }
 
-    finish_layer_mutation(
-        state,
-        mutation,
-        scene_id,
-        zone,
-        LayerStackChangeKind::Updated,
-    )
-    .await
+    finish_layer_mutation(ctx, mutation, zone).await
 }
 
 /// Write control values and drop named bindings on one layer.
@@ -504,7 +492,7 @@ pub async fn replace_layer(
 /// request does not clear, [`DomainError::NotFound`] for an unknown zone
 /// or layer.
 pub async fn patch_layer_controls(
-    state: &AppState,
+    ctx: &SceneTreeContext,
     command: PatchLayerControls,
     meta: MutationContext,
 ) -> Result<ZoneWritten, DomainError> {
@@ -515,39 +503,18 @@ pub async fn patch_layer_controls(
     }
 
     loop {
-        let mut mutation = state.begin_scene_mutation().await;
+        let mut mutation = ctx.scene.begin_mutation().await;
         check_scene_revision(&mutation, command.expected_revision)?;
         let scene_id = mutation.active_scene_for_runtime_mutation("patching layer controls")?;
         ensure_live_zone_mutable(&mutation, command.zone_id)?;
         let normalized = normalize_against_layer(
-            state,
+            ctx,
             &mutation,
             command.zone_id,
             command.layer_id,
             command.values.clone(),
         )
         .await?;
-        let control_events = normalized.event_context.map_or_else(Vec::new, |context| {
-            normalized
-                .values
-                .iter()
-                .filter_map(|(control_id, new_value)| {
-                    let old_value = context.previous.get(control_id)?;
-                    if old_value == new_value {
-                        return None;
-                    }
-                    Some(HypercolorEvent::EffectControlChanged {
-                        effect_id: context.effect_id.to_string(),
-                        control_id: control_id.clone(),
-                        old_value: event_control_value(old_value)?,
-                        new_value: event_control_value(new_value)?,
-                        zone_id: command.zone_id,
-                        layer_id: command.layer_id,
-                        trigger: meta.trigger.clone(),
-                    })
-                })
-                .collect()
-        });
         let zone = mutation
             .patch_layer_controls_and_bindings(
                 scene_id,
@@ -556,19 +523,12 @@ pub async fn patch_layer_controls(
                 normalized.values,
                 &command.clear_bindings,
                 None,
+                meta.trigger.clone(),
+                &normalized.previous,
             )
             .map_err(|error| layer_error(error, command.zone_id, Some(command.layer_id)))?;
 
-        match finish_layer_mutation_with_events(
-            state,
-            mutation,
-            scene_id,
-            zone,
-            LayerStackChangeKind::ControlsPatched,
-            control_events,
-        )
-        .await
-        {
+        match finish_layer_mutation(ctx, mutation, zone).await {
             Err(error) if scene_commit_was_superseded(&error) => {}
             outcome => return outcome,
         }
@@ -588,24 +548,21 @@ pub async fn patch_layer_controls(
 /// a segment neither the scene nor the device knows;
 /// [`DomainError::PreconditionFailed`] for a stale revision.
 pub async fn assign_members(
-    state: &AppState,
+    ctx: &SceneTreeContext,
     command: AssignMembers,
-    meta: MutationContext,
 ) -> Result<ZoneWritten, DomainError> {
-    let _ = meta;
+    let minted = mint_missing_outputs(ctx, &command.request).await?;
 
-    let minted = mint_missing_outputs(state, &command.request).await?;
-
-    let mut mutation = state.begin_scene_mutation().await;
+    let mut mutation = ctx.scene.begin_mutation().await;
     check_scene_revision(&mutation, command.expected_revision)?;
     let scene_id = mutation.active_scene_for_runtime_mutation("assigning zone members")?;
     ensure_live_zone_mutable(&mutation, command.zone_id)?;
 
     let scene = active_scene(&mutation)?;
-    if !scene.groups.iter().any(|zone| zone.id == command.zone_id) {
+    if !scene.zones.iter().any(|zone| zone.id == command.zone_id) {
         return Err(DomainError::not_found(ResourceKind::Zone, command.zone_id));
     }
-    let previous_zones = scene.groups.clone();
+    let previous_zones = scene.zones.clone();
     let outputs = resolve_members(&scene, &command.request, minted)?;
 
     for output in outputs {
@@ -615,9 +572,9 @@ pub async fn assign_members(
     }
 
     let zone = zone_in_candidate(&mutation, command.zone_id)?;
-    let written = finish_zone_mutation(state, mutation, scene_id, zone).await?;
-    crate::api::sync_connectivity(state).await;
-    reconcile_member_exclusions(state, scene_id, &previous_zones).await;
+    let written = finish_zone_mutation(ctx, mutation, scene_id, zone).await?;
+    ctx.devices.sync_connectivity().await;
+    reconcile_member_exclusions(ctx, scene_id, &previous_zones).await;
     Ok(written)
 }
 
@@ -629,38 +586,35 @@ pub async fn assign_members(
 /// zone does not hold, [`DomainError::PreconditionFailed`] for a stale
 /// revision.
 pub async fn unassign_member(
-    state: &AppState,
+    ctx: &SceneTreeContext,
     zone_id: ZoneId,
     member: &ZoneMemberId,
     expected_revision: Option<u64>,
-    meta: MutationContext,
 ) -> Result<ZoneWritten, DomainError> {
-    let _ = meta;
-
-    let mut mutation = state.begin_scene_mutation().await;
+    let mut mutation = ctx.scene.begin_mutation().await;
     check_scene_revision(&mutation, expected_revision)?;
     let scene_id = mutation.active_scene_for_runtime_mutation("unassigning a zone member")?;
     ensure_live_zone_mutable(&mutation, zone_id)?;
 
     let scene = active_scene(&mutation)?;
     let zone = scene
-        .groups
+        .zones
         .iter()
         .find(|zone| zone.id == zone_id)
         .ok_or_else(|| DomainError::not_found(ResourceKind::Zone, zone_id))?;
     if !zone.layout.zones.iter().any(|output| output.id == member.0) {
         return Err(DomainError::not_found(ResourceKind::Device, &member.0));
     }
-    let previous_zones = scene.groups.clone();
+    let previous_zones = scene.zones.clone();
 
     mutation
         .unassign_output(scene_id, &member.0)
         .map_err(|_| DomainError::not_found(ResourceKind::Device, &member.0))?;
 
     let zone = zone_in_candidate(&mutation, zone_id)?;
-    let written = finish_zone_mutation(state, mutation, scene_id, zone).await?;
-    crate::api::sync_connectivity(state).await;
-    reconcile_member_exclusions(state, scene_id, &previous_zones).await;
+    let written = finish_zone_mutation(ctx, mutation, scene_id, zone).await?;
+    ctx.devices.sync_connectivity().await;
+    reconcile_member_exclusions(ctx, scene_id, &previous_zones).await;
     Ok(written)
 }
 
@@ -677,21 +631,18 @@ pub async fn unassign_member(
 /// zone's current members, [`DomainError::PreconditionFailed`] for a
 /// stale revision.
 pub async fn set_zone_layout(
-    state: &AppState,
+    ctx: &SceneTreeContext,
     zone_id: ZoneId,
     placements: Vec<MemberPlacement>,
     expected_revision: Option<u64>,
-    meta: MutationContext,
 ) -> Result<ZoneWritten, DomainError> {
-    let _ = meta;
-
-    let mut mutation = state.begin_scene_mutation().await;
+    let mut mutation = ctx.scene.begin_mutation().await;
     check_scene_revision(&mutation, expected_revision)?;
     let scene_id = mutation.active_scene_for_runtime_mutation("laying out a zone")?;
     ensure_live_zone_mutable(&mutation, zone_id)?;
 
     let stored = active_scene(&mutation)?
-        .groups
+        .zones
         .iter()
         .find(|zone| zone.id == zone_id)
         .ok_or_else(|| DomainError::not_found(ResourceKind::Zone, zone_id))?
@@ -703,34 +654,20 @@ pub async fn set_zone_layout(
         .map_err(|error| zone_layout_error(error, zone_id))?;
     mutation.retire_zone_preview(scene_id, zone_id);
 
-    let written = finish_zone_mutation(state, mutation, scene_id, zone).await?;
+    let written = finish_zone_mutation(ctx, mutation, scene_id, zone).await?;
     Ok(written)
 }
 
 // ── Shared steps ─────────────────────────────────────────────────────────
 
 async fn finish_zone_mutation(
-    state: &AppState,
+    ctx: &SceneTreeContext,
     mutation: SceneMutation,
-    scene_id: SceneId,
+    _scene_id: SceneId,
     zone: Zone,
 ) -> Result<ZoneWritten, DomainError> {
-    finish_zone_mutation_with_events(state, mutation, scene_id, zone, Vec::new()).await
-}
-
-async fn finish_zone_mutation_with_events(
-    state: &AppState,
-    mut mutation: SceneMutation,
-    scene_id: SceneId,
-    zone: Zone,
-    events: Vec<HypercolorEvent>,
-) -> Result<ZoneWritten, DomainError> {
-    mutation.record(zone_changed_event(scene_id, &zone, ZoneChangeKind::Updated));
-    for event in events {
-        mutation.record(event);
-    }
-    let commit = commit_scene(state, mutation).await?;
-    crate::api::save_runtime_session_snapshot(state).await;
+    let commit = ctx.scene.commit(mutation).await?;
+    ctx.scene.save_runtime_session().await;
     Ok(ZoneWritten {
         zone: zone_resource(&zone),
         revision: commit.revision(),
@@ -739,44 +676,12 @@ async fn finish_zone_mutation_with_events(
 }
 
 async fn finish_layer_mutation(
-    state: &AppState,
+    ctx: &SceneTreeContext,
     mutation: SceneMutation,
-    scene_id: SceneId,
     zone: Zone,
-    kind: LayerStackChangeKind,
 ) -> Result<ZoneWritten, DomainError> {
-    finish_layer_mutation_with_events(state, mutation, scene_id, zone, kind, Vec::new()).await
-}
-
-async fn finish_layer_mutation_with_events(
-    state: &AppState,
-    mut mutation: SceneMutation,
-    scene_id: SceneId,
-    zone: Zone,
-    kind: LayerStackChangeKind,
-    events: Vec<HypercolorEvent>,
-) -> Result<ZoneWritten, DomainError> {
-    let zone_kind = if kind == LayerStackChangeKind::ControlsPatched {
-        ZoneChangeKind::ControlsPatched
-    } else {
-        ZoneChangeKind::Updated
-    };
-    mutation.record(zone_changed_event(scene_id, &zone, zone_kind));
-    for event in events {
-        mutation.record(event);
-    }
-    let revision = mutation
-        .base_revision()
-        .checked_add(1)
-        .expect("scene revision must not exhaust u64");
-    mutation.record(HypercolorEvent::LayerStackChanged {
-        scene_id,
-        zone_id: zone.id,
-        revision,
-        kind,
-    });
-    let commit = commit_scene(state, mutation).await?;
-    crate::api::save_runtime_session_snapshot(state).await;
+    let commit = ctx.scene.commit(mutation).await?;
+    ctx.scene.save_runtime_session().await;
     Ok(ZoneWritten {
         zone: zone_resource(&zone),
         revision: commit.revision(),
@@ -799,7 +704,7 @@ pub(crate) fn ensure_live_zone_mutable(
     let zone = mutation
         .scenes()
         .active_scene()
-        .and_then(|scene| scene.groups.iter().find(|zone| zone.id == zone_id))
+        .and_then(|scene| scene.zones.iter().find(|zone| zone.id == zone_id))
         .ok_or_else(|| DomainError::not_found(ResourceKind::Zone, zone_id))?;
     if zone.role == ZoneRole::Display {
         return Err(DomainError::validation(
@@ -813,7 +718,7 @@ fn zone_in_candidate(mutation: &SceneMutation, zone_id: ZoneId) -> Result<Zone, 
     mutation
         .scenes()
         .active_scene()
-        .and_then(|scene| scene.groups.iter().find(|zone| zone.id == zone_id).cloned())
+        .and_then(|scene| scene.zones.iter().find(|zone| zone.id == zone_id).cloned())
         .ok_or_else(|| DomainError::not_found(ResourceKind::Zone, zone_id))
 }
 
@@ -885,18 +790,13 @@ pub(crate) fn layer_error(
 /// A layer whose effect the registry does not know keeps the caller's
 /// values as written: the schema is what validates, and without one
 /// there is nothing to validate against.
-struct EffectControlEventContext {
-    effect_id: EffectId,
+struct NormalizedLayerControls {
+    values: HashMap<String, ControlValue>,
     previous: HashMap<String, ControlValue>,
 }
 
-struct NormalizedLayerControls {
-    values: HashMap<String, ControlValue>,
-    event_context: Option<EffectControlEventContext>,
-}
-
 async fn normalize_against_layer(
-    state: &AppState,
+    ctx: &SceneTreeContext,
     mutation: &SceneMutation,
     zone_id: ZoneId,
     layer_id: SceneLayerId,
@@ -908,13 +808,14 @@ async fn normalize_against_layer(
             .active_scene()
             .ok_or_else(|| DomainError::not_found(ResourceKind::Scene, "active"))?;
         let zone = scene
-            .groups
+            .zones
             .iter()
             .find(|zone| zone.id == zone_id)
             .ok_or_else(|| DomainError::not_found(ResourceKind::Zone, zone_id))?;
-        zone.effective_layers()
-            .into_iter()
+        zone.layers
+            .iter()
             .find(|layer| layer.id == layer_id)
+            .cloned()
             .ok_or_else(|| DomainError::not_found(ResourceKind::Layer, layer_id))
             .map(|layer| match layer.source {
                 LayerSource::Effect {
@@ -929,21 +830,17 @@ async fn normalize_against_layer(
     let Some((effect_id, layer_controls)) = effect else {
         return Ok(NormalizedLayerControls {
             values,
-            event_context: None,
+            previous: HashMap::new(),
         });
     };
-    let metadata = {
-        let registry = state.effect_registry.read().await;
-        registry.get(&effect_id).map(|entry| entry.metadata.clone())
-    };
+    let metadata = ctx.effects.metadata(effect_id).await;
     let mut previous = metadata
         .as_ref()
-        .map_or_else(HashMap::new, crate::api::effects::default_control_values);
+        .map_or_else(HashMap::new, super::effect::default_control_values);
     previous.extend(layer_controls);
 
     let values = if let Some(metadata) = metadata {
-        let (normalized, rejected) =
-            crate::api::effects::normalize_control_values(&metadata, &values);
+        let (normalized, rejected) = super::effect::normalize_control_values(&metadata, &values);
         if !rejected.is_empty() {
             return Err(DomainError::validation_details(
                 "one or more control values were rejected",
@@ -955,13 +852,7 @@ async fn normalize_against_layer(
         values
     };
 
-    Ok(NormalizedLayerControls {
-        values,
-        event_context: Some(EffectControlEventContext {
-            effect_id,
-            previous,
-        }),
-    })
+    Ok(NormalizedLayerControls { values, previous })
 }
 
 fn scene_commit_was_superseded(error: &DomainError) -> bool {
@@ -975,19 +866,6 @@ fn scene_commit_was_superseded(error: &DomainError) -> bool {
     )
 }
 
-fn event_control_value(value: &ControlValue) -> Option<EventControlValue> {
-    match value {
-        ControlValue::Float(_) | ControlValue::Integer(_) => {
-            value.as_f32().map(EventControlValue::Number)
-        }
-        ControlValue::Boolean(value) => Some(EventControlValue::Boolean(*value)),
-        ControlValue::Enum(value) | ControlValue::Text(value) => {
-            Some(EventControlValue::String(value.clone()))
-        }
-        ControlValue::Color(_) | ControlValue::Rect(_) | ControlValue::Gradient(_) => None,
-    }
-}
-
 // ── Member resolution ────────────────────────────────────────────────────
 
 /// Resolve the requested segments against the scene, falling back to
@@ -998,7 +876,7 @@ fn resolve_members(
     minted: Vec<Output>,
 ) -> Result<Vec<Output>, DomainError> {
     let held: Vec<&Output> = scene
-        .groups
+        .zones
         .iter()
         .flat_map(|zone| zone.layout.zones.iter())
         .filter(|output| output.device_id == request.device_id)
@@ -1059,36 +937,10 @@ fn resolve_members(
 /// A device that is not connected mints nothing; the caller then
 /// reports whichever segment it could not resolve.
 async fn mint_missing_outputs(
-    state: &AppState,
+    ctx: &SceneTreeContext,
     request: &AssignMembersRequest,
 ) -> Result<Vec<Output>, DomainError> {
-    let tracked = state.device_registry.list().await;
-    for device in &tracked {
-        let layout_device_id =
-            crate::api::devices::resolved_layout_device_id(state, &device.info).await;
-        if layout_device_id != request.device_id {
-            continue;
-        }
-        let mut scratch = SpatialLayout {
-            id: format!("mint-{layout_device_id}"),
-            name: device.info.name.clone(),
-            description: None,
-            canvas_width: 1,
-            canvas_height: 1,
-            zones: Vec::new(),
-            default_sampling_mode: SamplingMode::Bilinear,
-            default_edge_behavior: EdgeBehavior::Clamp,
-            spaces: None,
-            version: 1,
-        };
-        let _minted = crate::discovery::auto_layout::append_auto_layout_zones_for_device(
-            &mut scratch,
-            &layout_device_id,
-            &device.info,
-        );
-        return Ok(scratch.zones);
-    }
-    Ok(Vec::new())
+    Ok(ctx.devices.layout_outputs_for(&request.device_id).await)
 }
 
 /// Rebuild a zone's stored layout from the compact placement contract.
@@ -1145,13 +997,15 @@ fn layout_from_placements(
 
 /// Carry the discovery auto-sync exclusions across a membership edit,
 /// the same way the structural zone services do.
-async fn reconcile_member_exclusions(state: &AppState, scene_id: SceneId, previous: &[Zone]) {
+async fn reconcile_member_exclusions(ctx: &SceneTreeContext, scene_id: SceneId, previous: &[Zone]) {
     let updated = {
-        let manager = state.scene_manager.read().await;
+        let manager = ctx.scene.snapshot().await;
         manager
             .get(&scene_id)
-            .map(|scene| scene.groups.clone())
+            .map(|scene| scene.zones.clone())
             .unwrap_or_default()
     };
-    crate::domain::zone::reconcile_zone_auto_exclusions(state, scene_id, previous, &updated).await;
+    ctx.devices
+        .reconcile_zone_auto_exclusions(scene_id, previous, &updated)
+        .await;
 }

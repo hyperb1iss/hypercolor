@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any, Self, TypeVar
 from urllib.parse import quote
 
@@ -26,7 +26,10 @@ from ._generated.api.devices import (
 )
 from ._generated.api.drivers import list_drivers as generated_list_drivers
 from ._generated.api.effects import (
+    apply_effect as generated_apply_effect,
+    apply_effect_preset as generated_apply_effect_preset,
     get_effect as generated_get_effect,
+    list_effect_presets as generated_list_effect_presets,
     list_effects as generated_list_effects,
 )
 from ._generated.api.layouts import (
@@ -36,18 +39,62 @@ from ._generated.api.layouts import (
 )
 from ._generated.api.scenes import (
     activate_scene as generated_activate_scene,
+    assign_live_zone_members as generated_assign_live_zone_members,
+    clear_scene as generated_clear_scene,
+    create_live_zone as generated_create_live_zone,
+    create_scene as generated_create_scene,
+    deactivate_scene as generated_deactivate_scene,
+    delete_live_zone as generated_delete_live_zone,
+    delete_scene as generated_delete_scene,
+    get_live_scene as generated_get_live_scene,
+    get_live_zone as generated_get_live_zone,
+    get_scene as generated_get_scene,
     list_scenes as generated_list_scenes,
+    patch_live_layer_controls as generated_patch_live_layer_controls,
+    patch_live_scene as generated_patch_live_scene,
+    patch_live_zone as generated_patch_live_zone,
+    put_live_zone_layout as generated_put_live_zone_layout,
+    snapshot_scene as generated_snapshot_scene,
+    unassign_live_zone_member as generated_unassign_live_zone_member,
+    update_scene as generated_update_scene,
 )
 from ._generated.api.system import (
+    get_system as generated_get_system,
     health_check as generated_health_check,
     list_audio_devices as generated_list_audio_devices,
 )
-from ._generated.models.apply_control_changes_request import ApplyControlChangesRequest
+from ._generated.models.activate_scene_response import ActivateSceneResponse
+from ._generated.models.apply_effect_request import ApplyEffectRequest
+from ._generated.models.apply_effect_response import ApplyEffectResponse
+from ._generated.models.assign_members_request import AssignMembersRequest
+from ._generated.models.clear_scene_request import ClearSceneRequest
+from ._generated.models.create_scene_request import CreateSceneRequest
+from ._generated.models.create_zone_request import CreateZoneRequest
+from ._generated.models.delete_scene_response import DeleteSceneResponse
 from ._generated.models.discover_request import DiscoverRequest
+from ._generated.models.effect_detail_response import EffectDetailResponse
+from ._generated.models.effect_preset_summary import EffectPresetSummary
+from ._generated.models.effect_preset_summary_list_response import EffectPresetSummaryListResponse
+from ._generated.models.effect_summary import EffectSummary
+from ._generated.models.effect_summary_list_response import EffectSummaryListResponse
+from ._generated.models.get_system_response_200 import GetSystemResponse200
+from ._generated.models.health_response import HealthResponse
 from ._generated.models.identify_request import IdentifyRequest
 from ._generated.models.invoke_control_action_request import InvokeControlActionRequest
+from ._generated.models.patch_controls_request import PatchControlsRequest
+from ._generated.models.patch_zone_request import PatchZoneRequest
+from ._generated.models.replace_scene_request import ReplaceSceneRequest
+from ._generated.models.scene_document import SceneDocument
+from ._generated.models.scene_patch_request import ScenePatchRequest
+from ._generated.models.scene_summary import SceneSummary
+from ._generated.models.scene_summary_list_response import SceneSummaryListResponse
+from ._generated.models.snapshot_scene_request import SnapshotSceneRequest
+from ._generated.models.system_status import SystemStatus
 from ._generated.models.update_device_request import UpdateDeviceRequest
+from ._generated.models.zone_layout_request import ZoneLayoutRequest
+from ._generated.models.zone_resource import ZoneResource
 from ._generated.types import UNSET
+from ._model_validation import validate_generated_model
 from .constants import API_PREFIX, DEFAULT_HOST, DEFAULT_PORT, DEFAULT_TIMEOUT, WS_PATH
 from .exceptions import (
     ApiErrorDetails,
@@ -72,22 +119,15 @@ from .models.control import ControlActionResult, ControlApplyResult, ControlSurf
 from .models.device import Device
 from .models.display import DisplayFaceAssignment, DisplaySummary
 from .models.driver import Driver
-from .models.effect import (
-    ApplyEffectResponse,
-    Effect,
-    EffectCoverImage,
-    EffectPreset,
-    EffectSummary,
-)
-from .models.layout import Layout, LayoutSummary
+from .models.effect import EffectCoverImage
+from .models.layout import LayoutSummary
 from .models.library import (
     Favorite,
     Playlist,
     Preset,
 )
-from .models.scene import ActivateSceneResult, ReplaceSceneRequest, Scene, SceneDocument
-from .models.system import HealthStatus, OutputState, SystemResource, SystemState
-from .models.zone import Zone
+from .models.output import OutputState
+from .models.spatial import SpatialLayout
 from .websocket import HypercolorEventStream
 
 ModelT = TypeVar("ModelT")
@@ -102,10 +142,14 @@ class _Unset:
 _UNSET_SENTINEL = _Unset()
 
 
-def _if_match_headers(revision: int | None) -> dict[str, str] | None:
+def _with_if_match(kwargs: dict[str, Any], revision: int | None) -> dict[str, Any]:
     if revision is None:
-        return None
-    return {"If-Match": f'"{revision}"'}
+        return kwargs
+    kwargs["headers"] = {
+        **dict(kwargs.get("headers") or {}),
+        "If-Match": f'"{revision}"',
+    }
+    return kwargs
 
 
 def _etag_revision(response: httpx.Response) -> int | None:
@@ -116,19 +160,6 @@ def _etag_revision(response: httpx.Response) -> int | None:
         return int(etag.strip().strip('"'))
     except ValueError:
         return None
-
-
-_DEVICE_FILTERS = {
-    "offset",
-    "limit",
-    "status",
-    "backend",
-    "backend_id",
-    "driver",
-    "q",
-    "include",
-}
-_SCENE_FILTERS: set[str] = set()
 
 
 class HypercolorClient:
@@ -174,26 +205,35 @@ class HypercolorClient:
         """Create a WebSocket event stream bound to this client."""
         return HypercolorEventStream(self)
 
-    async def health(self) -> HealthStatus:
+    async def health(self) -> HealthResponse:
         """Run the daemon health check."""
-        return await self._generated_model(
-            generated_health_check._get_kwargs(),
-            HealthStatus,
-            envelope=False,
+        payload = await self._generated_payload(
+            generated_health_check._get_kwargs(), envelope=False
         )
+        try:
+            health = HealthResponse.from_dict(_mapping(payload))
+            validate_generated_model(health)
+        except (KeyError, TypeError, ValueError, AttributeError) as error:
+            raise HypercolorApiError("Malformed Hypercolor health response") from error
+        return health
 
-    async def get_status(self) -> SystemState:
+    async def get_status(self) -> SystemStatus:
         """Return the current daemon status snapshot."""
-
-        system = await self._request_model("GET", "/system", SystemResource)
-        if system.status is None:
+        payload = await self._generated_request(generated_get_system._get_kwargs())
+        self._unwrap_data(payload)
+        try:
+            system = GetSystemResponse200.from_dict(_mapping(payload)).data
+        except (KeyError, TypeError, ValueError, AttributeError) as error:
+            raise HypercolorApiError("Malformed Hypercolor system resource") from error
+        if system.status is None or system.status is UNSET:
             raise HypercolorAuthenticationError("System status requires daemon read access")
+        if not isinstance(system.status, SystemStatus):
+            raise HypercolorApiError("Malformed Hypercolor system status")
+        try:
+            validate_generated_model(system.status)
+        except TypeError as error:
+            raise HypercolorApiError("Malformed Hypercolor system status") from error
         return system.status
-
-    async def get_state(self) -> SystemState:
-        """Backward-compatible alias for :meth:`get_status`."""
-
-        return await self.get_status()
 
     async def get_output(self) -> OutputState:
         """Return global output power and brightness."""
@@ -248,20 +288,27 @@ class HypercolorClient:
 
         return await self.set_output_power(paused=False)
 
-    async def get_devices(self, **filters: Any) -> list[Device]:
+    async def get_devices(
+        self,
+        *,
+        offset: int | None = None,
+        limit: int | None = None,
+        status: str | None = None,
+        backend_id: str | None = None,
+        driver: str | None = None,
+        q: str | None = None,
+        include: str | None = None,
+    ) -> list[Device]:
         """List devices."""
-        if any(key not in _DEVICE_FILTERS for key in filters):
-            return await self._request_items("GET", "/devices", Device, params=filters)
-        backend_id = filters.get("backend_id", filters.get("backend"))
         return await self._generated_items(
             generated_list_devices._get_kwargs(
-                offset=_generated_param(filters.get("offset")),
-                limit=_generated_param(filters.get("limit")),
-                status=_generated_param(filters.get("status")),
+                offset=_generated_param(offset),
+                limit=_generated_param(limit),
+                status=_generated_param(status),
                 backend_id=_generated_param(backend_id),
-                driver=_generated_param(filters.get("driver")),
-                q=_generated_param(filters.get("q")),
-                include=_generated_param(filters.get("include")),
+                driver=_generated_param(driver),
+                q=_generated_param(q),
+                include=_generated_param(include),
             ),
             Device,
         )
@@ -329,29 +376,44 @@ class HypercolorClient:
             Driver,
         )
 
-    async def get_effects(self, **filters: Any) -> list[EffectSummary]:
+    async def get_effects(
+        self,
+        *,
+        category: str | None = None,
+        audio_reactive: bool | None = None,
+        screen_reactive: bool | None = None,
+        input_reactive: bool | None = None,
+        source: str | None = None,
+        q: str | None = None,
+        include: str | None = None,
+    ) -> list[EffectSummary]:
         """List available effects."""
-        if filters:
-            return await self._request_items("GET", "/effects", EffectSummary, params=filters)
-        return await self._generated_items(
-            generated_list_effects._get_kwargs(),
-            EffectSummary,
+        payload = await self._generated_payload(
+            generated_list_effects._get_kwargs(
+                category=_generated_param(category),
+                audio_reactive=_generated_param(audio_reactive),
+                screen_reactive=_generated_param(screen_reactive),
+                input_reactive=_generated_param(input_reactive),
+                source=_generated_param(source),
+                q=_generated_param(q),
+                include=_generated_param(include),
+            )
         )
+        return EffectSummaryListResponse.from_dict(_mapping(payload)).items
 
-    async def get_effect(self, effect_id: str) -> Effect:
+    async def get_effect(self, effect_id: str) -> EffectDetailResponse:
         """Fetch a single effect with controls."""
-        return await self._generated_model(
+        return await self._generated_contract(
             generated_get_effect._get_kwargs(effect_id),
-            Effect,
+            EffectDetailResponse.from_dict,
         )
 
-    async def get_effect_presets(self, effect_id: str) -> list[EffectPreset]:
+    async def get_effect_presets(self, effect_id: str) -> list[EffectPresetSummary]:
         """List bundled and saved presets for one effect."""
-        return await self._request_items(
-            "GET",
-            f"/effects/{_quote_path(effect_id)}/presets",
-            EffectPreset,
+        payload = await self._generated_payload(
+            generated_list_effect_presets._get_kwargs(effect_id)
         )
+        return EffectPresetSummaryListResponse.from_dict(_mapping(payload)).items
 
     def effect_cover_image_url(self, effect_id: str) -> str:
         """Return the absolute cover image URL for an effect."""
@@ -380,10 +442,13 @@ class HypercolorClient:
         ``zone`` targets a specific zone by id; omitted applies to
         the scene's primary zone.
         """
-        body = _drop_none(
+        data = _drop_none(
             {
                 "controls": (
-                    {str(name): _effect_control_value(value) for name, value in controls.items()}
+                    {
+                        str(name): _canonical_control_value(value)
+                        for name, value in controls.items()
+                    }
                     if controls is not None
                     else None
                 ),
@@ -392,12 +457,13 @@ class HypercolorClient:
                 "zone": zone,
             }
         )
-        return await self._request_model(
-            "POST",
-            f"/effects/{_quote_path(effect_id)}/apply",
-            ApplyEffectResponse,
-            body=body or None,
-            headers=_if_match_headers(if_match),
+        kwargs = generated_apply_effect._get_kwargs(
+            effect_id,
+            **({"body": ApplyEffectRequest.from_dict(data)} if data else {}),
+        )
+        return await self._generated_contract(
+            _with_if_match(kwargs, if_match),
+            ApplyEffectResponse.from_dict,
         )
 
     async def apply_effect_preset(
@@ -411,10 +477,13 @@ class HypercolorClient:
         if_match: int | None = None,
     ) -> ApplyEffectResponse:
         """Apply a bundled or saved preset to an effect and optional zone."""
-        body = _drop_none(
+        data = _drop_none(
             {
                 "controls": (
-                    {str(name): _effect_control_value(value) for name, value in controls.items()}
+                    {
+                        str(name): _canonical_control_value(value)
+                        for name, value in controls.items()
+                    }
                     if controls is not None
                     else None
                 ),
@@ -422,12 +491,14 @@ class HypercolorClient:
                 "zone": zone,
             }
         )
-        return await self._request_model(
-            "POST",
-            f"/effects/{_quote_path(effect_id)}/presets/{_quote_path(preset_id)}/apply",
-            ApplyEffectResponse,
-            body=body or None,
-            headers=_if_match_headers(if_match),
+        kwargs = generated_apply_effect_preset._get_kwargs(
+            effect_id,
+            preset_id,
+            **({"body": ApplyEffectRequest.from_dict(data)} if data else {}),
+        )
+        return await self._generated_contract(
+            _with_if_match(kwargs, if_match),
+            ApplyEffectResponse.from_dict,
         )
 
     async def upload_effect(
@@ -465,18 +536,22 @@ class HypercolorClient:
         values: Mapping[str, Any],
         *,
         clear_bindings: list[str] | None = None,
-    ) -> Zone:
+    ) -> ZoneResource:
         """Patch values on one live scene layer."""
         body: dict[str, Any] = {
-            "values": {str(name): _effect_control_value(value) for name, value in values.items()}
+            "values": {
+                str(name): _canonical_control_value(value) for name, value in values.items()
+            }
         }
         if clear_bindings:
             body["clear_bindings"] = clear_bindings
-        return await self._request_model(
-            "PATCH",
-            f"/scene/zones/{_quote_path(zone)}/layers/{_quote_path(layer)}/controls",
-            Zone,
-            body=body,
+        return await self._generated_contract(
+            generated_patch_live_layer_controls._get_kwargs(
+                zone,
+                layer,
+                body=PatchControlsRequest.from_dict(body),
+            ),
+            ZoneResource.from_dict,
         )
 
     async def get_control_surfaces(
@@ -525,17 +600,9 @@ class HypercolorClient:
         self,
         surface_id: str,
         values: Mapping[str, Any],
-        *,
-        dry_run: bool = False,
-        expected_revision: int | None = None,
     ) -> ControlApplyResult:
         """Apply one or more control values to a control surface."""
-        body = _control_changes_request(
-            surface_id,
-            values,
-            dry_run=dry_run,
-            expected_revision=expected_revision,
-        )
+        body = _patch_controls_request(values)
         return await self._generated_model(
             generated_apply_control_surface_values._get_kwargs(
                 surface_id,
@@ -570,12 +637,12 @@ class HypercolorClient:
             LayoutSummary,
         )
 
-    async def get_active_layout(self) -> Layout | None:
+    async def get_active_layout(self) -> SpatialLayout | None:
         """Return the active layout if one exists."""
         try:
             return await self._generated_model(
                 generated_get_active_layout._get_kwargs(),
-                Layout,
+                SpatialLayout,
             )
         except HypercolorNotFoundError:
             return None
@@ -587,22 +654,24 @@ class HypercolorClient:
             MutationResult,
         )
 
-    async def get_scenes(self, **filters: Any) -> list[Scene]:
+    async def get_scenes(self) -> list[SceneSummary]:
         """List available scenes."""
-        if any(key not in _SCENE_FILTERS for key in filters):
-            return await self._request_items("GET", "/scenes", Scene, params=filters)
-        return await self._generated_items(
-            generated_list_scenes._get_kwargs(),
-            Scene,
-        )
+        payload = await self._generated_payload(generated_list_scenes._get_kwargs())
+        return SceneSummaryListResponse.from_dict(_mapping(payload)).items
 
     async def get_scene(self, scene_id: str) -> SceneDocument:
         """Fetch a complete stored scene document."""
-        return await self._request_model("GET", f"/scenes/{_quote_path(scene_id)}", SceneDocument)
+        return await self._generated_contract(
+            generated_get_scene._get_kwargs(scene_id),
+            SceneDocument.from_dict,
+        )
 
     async def get_live_scene(self) -> SceneDocument:
         """Return the full live scene tree."""
-        return await self._request_model("GET", "/scene", SceneDocument)
+        return await self._generated_contract(
+            generated_get_live_scene._get_kwargs(),
+            SceneDocument.from_dict,
+        )
 
     async def patch_live_scene(
         self,
@@ -617,18 +686,20 @@ class HypercolorClient:
             if isinstance(unassigned_behavior, Mapping)
             else unassigned_behavior
         )
-        body = _drop_none({"name": name, "unassigned_behavior": behavior})
-        return await self._request_model(
-            "PATCH",
-            "/scene",
-            SceneDocument,
-            body=body,
-            headers=_if_match_headers(if_match),
+        body = ScenePatchRequest.from_dict(
+            _drop_none({"name": name, "unassigned_behavior": behavior})
+        )
+        return await self._generated_contract(
+            _with_if_match(generated_patch_live_scene._get_kwargs(body=body), if_match),
+            SceneDocument.from_dict,
         )
 
     async def deactivate_scene(self) -> SceneDocument:
         """Return to the auto-managed default scene."""
-        return await self._request_model("POST", "/scene/deactivate", SceneDocument)
+        return await self._generated_contract(
+            generated_deactivate_scene._get_kwargs(),
+            SceneDocument.from_dict,
+        )
 
     async def clear_scene(
         self,
@@ -637,13 +708,13 @@ class HypercolorClient:
         if_match: int | None = None,
     ) -> SceneDocument:
         """Clear one zone's layer stack, or every non-display zone."""
-        body = _drop_none({"zone": zone})
-        return await self._request_model(
-            "POST",
-            "/scene/clear",
-            SceneDocument,
-            body=body or None,
-            headers=_if_match_headers(if_match),
+        data = _drop_none({"zone": zone})
+        kwargs = generated_clear_scene._get_kwargs(
+            **({"body": ClearSceneRequest.from_dict(data)} if data else {})
+        )
+        return await self._generated_contract(
+            _with_if_match(kwargs, if_match),
+            SceneDocument.from_dict,
         )
 
     async def create_scene(
@@ -653,7 +724,7 @@ class HypercolorClient:
         description: str | None = None,
         enabled: bool | None = None,
         mutation_mode: str | None = None,
-    ) -> Scene:
+    ) -> SceneSummary:
         """Create a scene."""
         body = _drop_none(
             {
@@ -663,23 +734,29 @@ class HypercolorClient:
                 "mutation_mode": mutation_mode,
             }
         )
-        return await self._request_model("POST", "/scenes", Scene, body=body)
+        return await self._generated_contract(
+            generated_create_scene._get_kwargs(body=CreateSceneRequest.from_dict(body)),
+            SceneSummary.from_dict,
+        )
 
     async def snapshot_scene(
         self,
         name: str,
         *,
         description: str | None = None,
-    ) -> Scene:
+    ) -> SceneSummary:
         """Save the current runtime scene as a snapshot-locked scene."""
         body = _drop_none({"name": name, "description": description})
-        return await self._request_model("POST", "/scenes/snapshot", Scene, body=body)
+        return await self._generated_contract(
+            generated_snapshot_scene._get_kwargs(body=SnapshotSceneRequest.from_dict(body)),
+            SceneSummary.from_dict,
+        )
 
-    async def activate_scene(self, scene_id: str) -> ActivateSceneResult:
+    async def activate_scene(self, scene_id: str) -> ActivateSceneResponse:
         """Trigger a scene manually."""
-        return await self._generated_model(
+        return await self._generated_contract(
             generated_activate_scene._get_kwargs(scene_id),
-            ActivateSceneResult,
+            ActivateSceneResponse.from_dict,
         )
 
     async def update_scene(
@@ -691,28 +768,31 @@ class HypercolorClient:
     ) -> SceneDocument:
         """Replace a complete stored scene document."""
         replacement = (
-            ReplaceSceneRequest.from_document(document)
+            ReplaceSceneRequest.from_dict(document.to_dict())
             if isinstance(document, SceneDocument)
             else document
         )
-        body = msgspec.to_builtins(replacement)
-        return await self._request_model(
-            "PUT",
-            f"/scenes/{_quote_path(scene_id)}",
-            SceneDocument,
-            body=body,
-            headers=_if_match_headers(if_match),
+        return await self._generated_contract(
+            _with_if_match(
+                generated_update_scene._get_kwargs(scene_id, body=replacement),
+                if_match,
+            ),
+            SceneDocument.from_dict,
         )
 
-    async def delete_scene(self, scene_id: str) -> MutationResult:
+    async def delete_scene(self, scene_id: str) -> DeleteSceneResponse:
         """Delete a scene."""
-        return await self._request_model(
-            "DELETE", f"/scenes/{_quote_path(scene_id)}", MutationResult
+        return await self._generated_contract(
+            generated_delete_scene._get_kwargs(scene_id),
+            DeleteSceneResponse.from_dict,
         )
 
-    async def get_zone(self, zone: str) -> Zone:
+    async def get_zone(self, zone: str) -> ZoneResource:
         """Fetch one zone from the live scene tree."""
-        return await self._request_model("GET", f"/scene/zones/{_quote_path(zone)}", Zone)
+        return await self._generated_contract(
+            generated_get_live_zone._get_kwargs(zone),
+            ZoneResource.from_dict,
+        )
 
     async def create_zone(
         self,
@@ -721,15 +801,15 @@ class HypercolorClient:
         role: str | None = None,
         color: str | None = None,
         if_match: int | None = None,
-    ) -> Zone:
+    ) -> ZoneResource:
         """Create a zone in the live scene tree."""
         body = _drop_none({"name": name, "role": role, "color": color})
-        return await self._request_model(
-            "POST",
-            "/scene/zones",
-            Zone,
-            body=body,
-            headers=_if_match_headers(if_match),
+        return await self._generated_contract(
+            _with_if_match(
+                generated_create_live_zone._get_kwargs(body=CreateZoneRequest.from_dict(body)),
+                if_match,
+            ),
+            ZoneResource.from_dict,
         )
 
     async def update_zone(
@@ -741,7 +821,7 @@ class HypercolorClient:
         brightness: float | None = None,
         enabled: bool | None = None,
         if_match: int | None = None,
-    ) -> Zone:
+    ) -> ZoneResource:
         """Patch one live zone; an explicit ``None`` clears its color."""
         body: dict[str, Any] = _drop_none(
             {
@@ -752,12 +832,15 @@ class HypercolorClient:
         )
         if not isinstance(color, _Unset):
             body["color"] = color
-        return await self._request_model(
-            "PATCH",
-            f"/scene/zones/{_quote_path(zone)}",
-            Zone,
-            body=body,
-            headers=_if_match_headers(if_match),
+        return await self._generated_contract(
+            _with_if_match(
+                generated_patch_live_zone._get_kwargs(
+                    zone,
+                    body=PatchZoneRequest.from_dict(body),
+                ),
+                if_match,
+            ),
+            ZoneResource.from_dict,
         )
 
     async def delete_zone(
@@ -767,11 +850,9 @@ class HypercolorClient:
         if_match: int | None = None,
     ) -> SceneDocument:
         """Delete one zone from the live scene tree."""
-        return await self._request_model(
-            "DELETE",
-            f"/scene/zones/{_quote_path(zone)}",
-            SceneDocument,
-            headers=_if_match_headers(if_match),
+        return await self._generated_contract(
+            _with_if_match(generated_delete_live_zone._get_kwargs(zone), if_match),
+            SceneDocument.from_dict,
         )
 
     async def assign_members(
@@ -781,14 +862,15 @@ class HypercolorClient:
         *,
         segments: list[str] | None = None,
         if_match: int | None = None,
-    ) -> Zone:
+    ) -> ZoneResource:
         """Assign a device and selected segments to one live zone."""
-        return await self._request_model(
-            "POST",
-            f"/scene/zones/{_quote_path(zone)}/members",
-            Zone,
-            body={"device_id": device_id, "segments": segments or []},
-            headers=_if_match_headers(if_match),
+        body = AssignMembersRequest.from_dict({"device_id": device_id, "segments": segments or []})
+        return await self._generated_contract(
+            _with_if_match(
+                generated_assign_live_zone_members._get_kwargs(zone, body=body),
+                if_match,
+            ),
+            ZoneResource.from_dict,
         )
 
     async def unassign_member(
@@ -797,13 +879,14 @@ class HypercolorClient:
         member: str,
         *,
         if_match: int | None = None,
-    ) -> Zone:
+    ) -> ZoneResource:
         """Remove one membership from a live zone."""
-        return await self._request_model(
-            "DELETE",
-            f"/scene/zones/{_quote_path(zone)}/members/{_quote_path(member)}",
-            Zone,
-            headers=_if_match_headers(if_match),
+        return await self._generated_contract(
+            _with_if_match(
+                generated_unassign_live_zone_member._get_kwargs(zone, member),
+                if_match,
+            ),
+            ZoneResource.from_dict,
         )
 
     async def set_zone_layout(
@@ -812,14 +895,15 @@ class HypercolorClient:
         layout: Mapping[str, Any],
         *,
         if_match: int | None = None,
-    ) -> Zone:
+    ) -> ZoneResource:
         """Replace a live zone's compact member-placement layout."""
-        return await self._request_model(
-            "PUT",
-            f"/scene/zones/{_quote_path(zone)}/layout",
-            Zone,
-            body={str(key): value for key, value in layout.items()},
-            headers=_if_match_headers(if_match),
+        body = ZoneLayoutRequest.from_dict({str(key): value for key, value in layout.items()})
+        return await self._generated_contract(
+            _with_if_match(
+                generated_put_live_zone_layout._get_kwargs(zone, body=body),
+                if_match,
+            ),
+            ZoneResource.from_dict,
         )
 
     async def set_unassigned_behavior(
@@ -990,6 +1074,14 @@ class HypercolorClient:
         items = data["items"] if isinstance(data, dict) else []
         return [self._convert(item, item_type) for item in items]
 
+    async def _generated_contract(
+        self,
+        kwargs: Mapping[str, Any],
+        decoder: Callable[[Mapping[str, Any]], ModelT],
+    ) -> ModelT:
+        payload = await self._generated_payload(kwargs)
+        return decoder(_mapping(payload))
+
     async def _generated_payload(
         self,
         kwargs: Mapping[str, Any],
@@ -997,8 +1089,7 @@ class HypercolorClient:
         envelope: bool = True,
     ) -> Any:
         response = await self._generated_request(kwargs)
-        payload = self._unwrap_data(response) if envelope else response
-        return _normalize_payload(payload)
+        return self._unwrap_data(response) if envelope else response
 
     async def _generated_request(self, kwargs: Mapping[str, Any]) -> Any:
         try:
@@ -1168,8 +1259,17 @@ class HypercolorClient:
 
     @staticmethod
     def _unwrap_data(response: Any) -> Any:
-        if not isinstance(response, dict) or "data" not in response:
+        if not isinstance(response, dict) or set(response) != {"data", "meta"}:
             message = "Unexpected Hypercolor response envelope"
+            raise HypercolorApiError(message)
+        meta = response["meta"]
+        required_meta = {"api_version", "request_id", "timestamp"}
+        if (
+            not isinstance(meta, dict)
+            or set(meta) != required_meta
+            or any(not isinstance(meta[field], str) for field in required_meta)
+        ):
+            message = "Unexpected Hypercolor response metadata"
             raise HypercolorApiError(message)
         return response["data"]
 
@@ -1258,16 +1358,23 @@ def _drop_none(data: Mapping[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in data.items() if value is not None}
 
 
+def _mapping(value: Any) -> Mapping[str, Any]:
+    if isinstance(value, Mapping):
+        return value
+    message = "Unexpected Hypercolor resource payload"
+    raise HypercolorApiError(message)
+
+
 def _generated_param(value: Any) -> Any:
     return UNSET if value is None else value
 
 
 def _drop_unset_json_body(kwargs: Mapping[str, Any]) -> dict[str, Any]:
     request = dict(kwargs)
-    if request.get("json") is not UNSET:
+    if "json" in request and request["json"] is not UNSET:
         return request
 
-    request.pop("json")
+    request.pop("json", None)
     headers = dict(request.get("headers") or {})
     if headers.get("Content-Type") == "application/json":
         headers.pop("Content-Type")
@@ -1278,25 +1385,13 @@ def _drop_unset_json_body(kwargs: Mapping[str, Any]) -> dict[str, Any]:
     return request
 
 
-def _control_changes_request(
-    surface_id: str,
-    values: Mapping[str, Any],
-    *,
-    dry_run: bool,
-    expected_revision: int | None,
-) -> ApplyControlChangesRequest:
-    body: dict[str, Any] = {
-        "surface_id": surface_id,
-        "changes": [
-            {"field_id": str(field_id), "value": _control_api_value(value)}
-            for field_id, value in values.items()
-        ],
+def _patch_controls_request(values: Mapping[str, Any]) -> PatchControlsRequest:
+    body = {
+        "values": {
+            str(field_id): _canonical_control_value(value) for field_id, value in values.items()
+        }
     }
-    if dry_run:
-        body["dry_run"] = True
-    if expected_revision is not None:
-        body["expected_revision"] = expected_revision
-    return ApplyControlChangesRequest.from_dict(body)
+    return PatchControlsRequest.from_dict(body)
 
 
 def _control_api_value(value: Any) -> dict[str, Any]:
@@ -1342,29 +1437,48 @@ def _display_control_value(value: Any) -> dict[str, Any]:
     return result
 
 
-def _effect_control_value(value: Any) -> dict[str, Any]:
+def _canonical_control_value(value: Any) -> dict[str, Any]:
     if isinstance(value, Mapping):
-        tags = {"float", "integer", "boolean", "color", "gradient", "enum", "text", "rect"}
-        if len(value) == 1 and set(value) <= tags:
+        if "kind" in value:
             result = {str(key): item for key, item in value.items()}
         elif {"x", "y", "width", "height"} <= set(value):
-            result = {"rect": {str(key): item for key, item in value.items()}}
+            result = {"kind": "rect", "value": {str(key): item for key, item in value.items()}}
         else:
-            message = "effect control mappings must be tagged values or rectangles"
-            raise ValueError(message)
+            result = {
+                "kind": "map",
+                "value": {str(key): _canonical_control_value(item) for key, item in value.items()},
+            }
+    elif value is None:
+        result = {"kind": "null"}
     elif isinstance(value, bool):
-        result = {"boolean": value}
+        result = {"kind": "bool", "value": value}
     elif isinstance(value, int):
-        result = {"integer": value}
+        result = {"kind": "int", "value": value}
     elif isinstance(value, float):
-        result = {"float": value}
+        result = {"kind": "float", "value": value}
     elif isinstance(value, str):
         color = _hex_color_value(value)
-        result = {"color": color} if color is not None else {"text": value}
-    elif isinstance(value, list) and len(value) == 4:
-        result = {"color": value}
+        result = (
+            {
+                "kind": "color_linear",
+                "value": dict(zip(("r", "g", "b", "a"), color, strict=True)),
+            }
+            if color is not None
+            else {"kind": "text", "value": value}
+        )
+    elif (
+        isinstance(value, list)
+        and len(value) == 4
+        and all(isinstance(channel, int | float) for channel in value)
+    ):
+        result = {
+            "kind": "color_linear",
+            "value": dict(zip(("r", "g", "b", "a"), value, strict=True)),
+        }
+    elif isinstance(value, list):
+        result = {"kind": "list", "value": [_canonical_control_value(item) for item in value]}
     else:
-        message = "unsupported effect control value"
+        message = "unsupported control value"
         raise ValueError(message)
     return result
 
@@ -1388,67 +1502,6 @@ def _request_path(path: str) -> str:
 
 def _quote_path(value: str) -> str:
     return quote(str(value), safe="")
-
-
-def _normalize_payload(value: Any) -> Any:
-    if isinstance(value, list):
-        return [_normalize_payload(item) for item in value]
-    if not isinstance(value, dict):
-        return value
-
-    normalized = {key: _normalize_payload(item) for key, item in value.items()}
-    if "field_id" in normalized and isinstance(normalized.get("value"), dict):
-        normalized["value"] = _control_value(normalized["value"])
-    if "field_id" in normalized and isinstance(normalized.get("attempted_value"), dict):
-        normalized["attempted_value"] = _control_value(normalized["attempted_value"])
-    if isinstance(normalized.get("result"), dict):
-        normalized["result"] = _control_value(normalized["result"])
-    if "control_type" in normalized and "name" in normalized and "default_value" in normalized:
-        normalized.setdefault("label", normalized["name"])
-        normalized.setdefault("type", _legacy_control_type(normalized["control_type"]))
-        normalized.setdefault("default", _control_value(normalized["default_value"]))
-        # Dropdown/enum choices ship under `labels`; expose them as the
-        # `options` field the ControlDefinition model (and downstream cards)
-        # read, so select controls carry their selectable values.
-        if isinstance(normalized.get("labels"), list):
-            normalized.setdefault("options", normalized["labels"])
-    for key in (
-        "controls",
-        "control_values",
-        "active_control_values",
-        "applied_controls",
-        "applied",
-        "values",
-    ):
-        if isinstance(normalized.get(key), dict):
-            normalized[key] = {
-                str(item_key): _control_value(item_value)
-                for item_key, item_value in normalized[key].items()
-            }
-    return normalized
-
-
-def _control_value(value: Any) -> Any:
-    if not isinstance(value, dict) or len(value) != 1:
-        if isinstance(value, dict) and isinstance(value.get("kind"), str):
-            return _normalize_payload(value.get("value"))
-        return _normalize_payload(value)
-    key, item = next(iter(value.items()))
-    if key not in {"float", "integer", "boolean", "color", "gradient", "enum", "text", "rect"}:
-        return _normalize_payload(value)
-    return _normalize_payload(item)
-
-
-def _legacy_control_type(control_type: Any) -> str:
-    return {
-        "color_picker": "color",
-        "dropdown": "select",
-        "gradient_editor": "gradient",
-        "rect": "rect",
-        "slider": "number",
-        "text_input": "text",
-        "toggle": "boolean",
-    }.get(str(control_type), str(control_type))
 
 
 def _transition_value(value: str | Mapping[str, Any] | None) -> dict[str, Any] | None:

@@ -1,5 +1,7 @@
 //! Native Corsair iCUE LINK hub protocol.
 
+use hypercolor_types::device::SegmentInfo;
+
 use std::sync::{PoisonError, RwLock};
 use std::time::Duration;
 
@@ -17,7 +19,7 @@ use crate::drivers::corsair::types::{
 };
 use crate::protocol::{
     CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolKeepalive, ProtocolResponse,
-    ProtocolZone, ResponseStatus, TransferType,
+    ResponseStatus, TransferType,
 };
 
 const DEFAULT_TARGET_FPS: u32 = 30;
@@ -357,13 +359,13 @@ impl Protocol for CorsairLinkProtocol {
         })
     }
 
-    fn zones(&self) -> Vec<ProtocolZone> {
+    fn zones(&self) -> Vec<SegmentInfo> {
         self.state
             .read()
             .unwrap_or_else(PoisonError::into_inner)
             .children
             .iter()
-            .map(|child| ProtocolZone {
+            .map(|child| SegmentInfo {
                 name: child.zone_name(),
                 led_count: child.led_count,
                 topology: child.topology(),

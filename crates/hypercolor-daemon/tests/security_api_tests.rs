@@ -7,7 +7,8 @@ use axum::body::Body;
 use axum::extract::ConnectInfo;
 use http::{Method, Request, StatusCode, header};
 use hypercolor_core::config::ConfigManager;
-use hypercolor_daemon::api::{self, AppState};
+use hypercolor_daemon::api;
+use hypercolor_daemon::app_state::AppState;
 use hypercolor_types::config::HypercolorConfig;
 use tower::ServiceExt;
 

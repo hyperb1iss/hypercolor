@@ -6,7 +6,8 @@ use axum::body::Body;
 use http::{Method, Request, StatusCode};
 use hypercolor_core::config::ConfigManager;
 use hypercolor_core::scene::make_scene;
-use hypercolor_daemon::api::{self, AppState};
+use hypercolor_daemon::api;
+use hypercolor_daemon::app_state::AppState;
 use hypercolor_daemon::display_frames::DisplayFrameSnapshot;
 use hypercolor_daemon::runtime_state;
 use hypercolor_daemon::scene_transactions::{
@@ -16,7 +17,7 @@ use hypercolor_daemon::simulators::{
     SimulatedDisplayConfig, SimulatedDisplayStore, activate_simulated_displays,
     default_layout_device_id, logical_device_ids_for_simulator,
 };
-use hypercolor_types::device::{DeviceId, DeviceState};
+use hypercolor_types::device::{DeviceId, DeviceState, OwnedDisplayFramePayload};
 use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
@@ -186,13 +187,19 @@ async fn activate_simulated_displays_registers_virtual_display_in_runtime_surfac
     let logical_ids = logical_device_ids_for_simulator(&state.logical_devices, config.id).await;
     assert_eq!(logical_ids, vec![default_layout_device_id(&config)]);
 
-    {
+    let lane = {
         let mut manager = state.backend_manager.lock().await;
         manager
-            .write_device_display_frame("simulator", config.id, &[1, 2, 3])
-            .await
-            .expect("simulated backend should accept display writes");
-    }
+            .display_output_lane("simulator", config.id)
+            .expect("simulated backend should expose a display lane")
+    };
+    lane.write(Arc::new(OwnedDisplayFramePayload::jpeg(
+        0,
+        0,
+        Arc::new(vec![1, 2, 3]),
+    )))
+    .await
+    .expect("simulated backend should accept display writes");
 
     let app = api::build_router(Arc::clone(&state), None);
 
@@ -249,13 +256,19 @@ async fn simulated_display_backend_reuses_owned_jpeg_payloads() {
     .expect("simulated displays should activate");
 
     let jpeg = Arc::new(vec![0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]);
-    {
+    let lane = {
         let mut manager = state.backend_manager.lock().await;
         manager
-            .write_device_display_frame_owned("simulator", config.id, Arc::clone(&jpeg))
-            .await
-            .expect("simulated backend should retain owned display frames");
-    }
+            .display_output_lane("simulator", config.id)
+            .expect("simulated backend should expose a display lane")
+    };
+    lane.write(Arc::new(OwnedDisplayFramePayload::jpeg(
+        0,
+        0,
+        Arc::clone(&jpeg),
+    )))
+    .await
+    .expect("simulated backend should retain owned display frames");
 
     let stored = state
         .simulated_display_runtime
@@ -461,7 +474,7 @@ async fn simulated_display_crud_routes_update_runtime_state() {
     assert!(tracked.state.is_renderable());
 
     let active_layout = {
-        let spatial = state.spatial_engine.read().await;
+        let spatial = state.spatial_engine.snapshot();
         spatial.layout().as_ref().clone()
     };
     let layout_device_id = default_layout_device_id(&preview_config);
@@ -504,13 +517,19 @@ async fn simulated_display_crud_routes_update_runtime_state() {
     .await
     .expect("valid simulator layout should apply");
 
-    {
+    let lane = {
         let mut manager = state.backend_manager.lock().await;
         manager
-            .write_device_display_frame("simulator", device_id, &[9, 8, 7])
-            .await
-            .expect("simulated backend should capture frame bytes");
-    }
+            .display_output_lane("simulator", device_id)
+            .expect("simulated backend should expose a display lane")
+    };
+    lane.write(Arc::new(OwnedDisplayFramePayload::jpeg(
+        0,
+        0,
+        Arc::new(vec![9, 8, 7]),
+    )))
+    .await
+    .expect("simulated backend should capture frame bytes");
     publish_display_frame(&state, &preview_config, vec![7, 8, 9]).await;
     let frame = body_bytes(
         app.clone()
@@ -597,8 +616,7 @@ async fn simulated_display_crud_routes_update_runtime_state() {
     assert!(
         state
             .spatial_engine
-            .read()
-            .await
+            .snapshot()
             .layout()
             .zones
             .iter()
@@ -640,35 +658,44 @@ async fn deleting_simulated_display_prunes_scene_display_groups_and_persists_cle
 
     let face = simulated_display_face_effect("Desk Clock");
     let named_scene_id = {
-        let mut manager = state.scene_manager.write().await;
-        manager
-            .upsert_display_group(
+        let mut mutation = state.scene_manager.begin_mutation().await;
+        mutation
+            .upsert_display_zone(
                 device_id,
                 "Desk Preview",
                 &face,
                 HashMap::new(),
                 simulated_display_face_layout("default"),
+                hypercolor_types::scene::DisplayFaceTarget::new(device_id),
             )
             .expect("default simulator face should be assigned");
 
         let named_scene = make_scene("Display Scene");
         let named_scene_id = named_scene.id;
-        manager
-            .create(named_scene)
+        mutation
+            .create_scene(named_scene)
             .expect("named scene should be created");
-        manager
-            .activate(&named_scene_id, None)
+        mutation
+            .activate(
+                named_scene_id,
+                None,
+                hypercolor_types::event::SceneChangeReason::UserActivate,
+            )
             .expect("named scene should activate");
-        manager
-            .upsert_display_group(
+        mutation
+            .upsert_display_zone(
                 device_id,
                 "Desk Preview",
                 &face,
                 HashMap::new(),
                 simulated_display_face_layout("named"),
+                hypercolor_types::scene::DisplayFaceTarget::new(device_id),
             )
             .expect("named simulator face should be assigned");
-        manager.deactivate_current();
+        mutation.deactivate_current(hypercolor_types::event::SceneChangeReason::UserDeactivate);
+        hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
+            .await
+            .expect("simulator face scenes should commit");
         named_scene_id
     };
 
@@ -687,15 +714,15 @@ async fn deleting_simulated_display_prunes_scene_display_groups_and_persists_cle
     assert_eq!(deleted["data"]["deleted"], true);
 
     {
-        let manager = state.scene_manager.read().await;
+        let manager = state.scene_manager.snapshot().await;
         let default_scene = manager
             .active_scene()
             .expect("default scene should remain active");
-        assert!(default_scene.display_group_for(device_id).is_none());
+        assert!(default_scene.display_zone_for(device_id).is_none());
         let named_scene = manager
             .get(&named_scene_id)
             .expect("named scene should remain present");
-        assert!(named_scene.display_group_for(device_id).is_none());
+        assert!(named_scene.display_zone_for(device_id).is_none());
     }
 
     let persisted =
@@ -717,7 +744,7 @@ async fn deleting_simulated_display_prunes_scene_display_groups_and_persists_cle
         .find(|scene| scene.id == named_scene_id)
         .expect("named scene should be persisted");
     assert!(
-        named_scene.groups.iter().all(|group| {
+        named_scene.zones.iter().all(|group| {
             group
                 .display_target
                 .as_ref()

@@ -1,12 +1,15 @@
 use hypercolor_core::input::InteractionDegradation;
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use super::device_payload::inventory_device_payload;
+use super::results::{
+    DeviceInventoryResult, DeviceInventorySummary, DeviceStatusSummary, EffectRef, FpsResult,
+    InputAvailability, InputStatusResult, InteractionAvailability, StatusResult,
+};
 use super::tools::{brightness_percent, render_capacity_fps};
-use crate::api::AppState;
 use crate::api::effects::active_effect_metadata;
 use crate::api::system::input_status_snapshot;
-use crate::session::current_global_brightness;
+use crate::app_state::AppState;
 
 #[derive(Debug, Default)]
 pub(crate) struct DeviceInventoryFilter<'a> {
@@ -25,7 +28,7 @@ impl<'a> DeviceInventoryFilter<'a> {
     }
 }
 
-pub(crate) async fn build_status_payload(state: &AppState) -> Value {
+pub(crate) async fn build_status_payload(state: &AppState) -> StatusResult {
     let render_stats = {
         let render_loop = state.render_loop.read().await;
         render_loop.stats()
@@ -41,10 +44,10 @@ pub(crate) async fn build_status_payload(state: &AppState) -> Value {
         0.0
     };
 
-    let brightness = brightness_percent(current_global_brightness(&state.power_state));
+    let brightness = brightness_percent(state.output_power.global_brightness());
     let active_effect = active_effect_metadata(state).await;
-    let effect_count = state.effect_registry.read().await.len();
-    let scene_count = state.scene_manager.read().await.scene_count();
+    let effect_count = state.domains.effects.len().await;
+    let scene_count = state.scene_manager.snapshot().await.scene_count();
     let devices = state.device_registry.list().await;
     let connected_devices = devices
         .iter()
@@ -58,67 +61,66 @@ pub(crate) async fn build_status_payload(state: &AppState) -> Value {
     let (audio_status, screen_status) = if let Some(config_manager) = state.config_manager.as_ref()
     {
         let config = config_manager.get();
+        let availability = |enabled| {
+            if enabled {
+                InputAvailability::Enabled
+            } else {
+                InputAvailability::Disabled
+            }
+        };
         (
-            if config.audio.enabled {
-                "enabled"
-            } else {
-                "disabled"
-            },
-            if config.capture.enabled {
-                "enabled"
-            } else {
-                "disabled"
-            },
+            availability(config.audio.enabled),
+            availability(config.capture.enabled),
         )
     } else {
-        ("unknown", "unknown")
+        (InputAvailability::Unknown, InputAvailability::Unknown)
     };
     let input = input_status_snapshot(state);
     let input_state = interaction_state(input.enabled, input.degraded.as_deref());
 
-    let power = *state.power_state.borrow();
+    let power = state.output_power.snapshot();
     let paused = power.reported_paused();
 
-    json!({
-        "running": !power.sleeping(),
-        "paused": paused,
-        "brightness": brightness,
-        "fps": {
-            "target": target_fps,
-            "capacity": capacity_fps,
-            "delivered": delivered_fps,
-            "actual": capacity_fps
+    StatusResult {
+        running: !power.sleeping(),
+        paused,
+        brightness,
+        fps: FpsResult {
+            target: target_fps,
+            capacity: capacity_fps,
+            delivered: delivered_fps,
+            actual: capacity_fps,
         },
-        "effect": active_effect.map(|metadata| json!({
-            "id": metadata.id.to_string(),
-            "name": metadata.name,
-        })),
-        "effect_count": effect_count,
-        "scene_count": scene_count,
-        "devices": {
-            "connected": connected_devices,
-            "total": devices.len(),
-            "total_leds": total_leds
+        effect: active_effect.map(|metadata| EffectRef {
+            id: metadata.id.to_string(),
+            name: metadata.name,
+        }),
+        effect_count,
+        scene_count,
+        devices: DeviceStatusSummary {
+            connected: connected_devices,
+            total: devices.len(),
+            total_leds,
         },
-        "inputs": {
-            "audio": audio_status,
-            "screen": screen_status,
-            "input": input_state,
-            "input_devices_opened": input.devices_opened,
-            "input_devices_denied": input.devices_denied,
-            "input_degraded": input.degraded,
-            "source_graph_generation": input.source_graph_generation,
-            "sources": input.sources
+        inputs: InputStatusResult {
+            audio: audio_status,
+            screen: screen_status,
+            input: input_state,
+            input_devices_opened: input.devices_opened,
+            input_devices_denied: input.devices_denied,
+            input_degraded: input.degraded,
+            source_graph_generation: input.source_graph_generation,
+            sources: input.sources,
         },
-        "uptime_seconds": state.start_time.elapsed().as_secs(),
-        "version": env!("CARGO_PKG_VERSION")
-    })
+        uptime_seconds: state.start_time.elapsed().as_secs(),
+        version: env!("CARGO_PKG_VERSION").to_owned(),
+    }
 }
 
 pub(crate) async fn build_device_inventory_payload(
     state: &AppState,
     filter: DeviceInventoryFilter<'_>,
-) -> Value {
+) -> DeviceInventoryResult {
     let devices = state.device_registry.list().await;
     let filtered = devices
         .into_iter()
@@ -156,36 +158,36 @@ pub(crate) async fn build_device_inventory_payload(
         .collect::<Vec<_>>();
     let total = devices.len();
 
-    json!({
-        "devices": devices,
-        "summary": {
-            "total": total,
-            "connected": connected,
-            "total_leds": total_leds
-        }
-    })
+    DeviceInventoryResult {
+        devices,
+        summary: DeviceInventorySummary {
+            total,
+            connected,
+            total_leds,
+        },
+    }
 }
 
-fn interaction_state(enabled: bool, degraded: Option<&str>) -> &'static str {
+fn interaction_state(enabled: bool, degraded: Option<&str>) -> InteractionAvailability {
     if enabled {
         match degraded {
             Some(code) if code == InteractionDegradation::AccessDenied.code() => {
-                "blocked_permissions"
+                InteractionAvailability::BlockedPermissions
             }
             Some(code) if code == InteractionDegradation::NoInteractiveSession.code() => {
-                "no_interactive_session"
+                InteractionAvailability::NoInteractiveSession
             }
             Some(code)
                 if code == InteractionDegradation::InputMonitoringPermissionDenied.code()
                     || code == InteractionDegradation::InputMonitoringPermissionRevoked.code() =>
             {
-                "blocked_permissions"
+                InteractionAvailability::BlockedPermissions
             }
-            Some(_) => "unavailable",
-            None => "enabled",
+            Some(_) => InteractionAvailability::Unavailable,
+            None => InteractionAvailability::Enabled,
         }
     } else {
-        "disabled"
+        InteractionAvailability::Disabled
     }
 }
 
@@ -194,6 +196,7 @@ mod tests {
     use hypercolor_core::input::InteractionDegradation;
 
     use super::interaction_state;
+    use crate::mcp::results::InteractionAvailability;
 
     #[test]
     fn macos_permission_failures_report_blocked_permissions() {
@@ -203,7 +206,7 @@ mod tests {
         ] {
             assert_eq!(
                 interaction_state(true, Some(degradation.code())),
-                "blocked_permissions"
+                InteractionAvailability::BlockedPermissions
             );
         }
     }

@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -11,12 +10,13 @@ use hypercolor_core::engine::{FpsTier, RenderLoop};
 use hypercolor_core::input::InputManager;
 use hypercolor_core::scene::{SceneManager, make_scene};
 use hypercolor_core::spatial::SpatialEngine;
-use hypercolor_daemon::device_settings::DeviceSettingsStore;
+use hypercolor_daemon::domain::scene::SceneService;
+use hypercolor_daemon::domain::spatial::SpatialService;
+use hypercolor_daemon::output_power::OutputPowerState;
 use hypercolor_daemon::performance::PerformanceTracker;
 use hypercolor_daemon::preview_runtime::PreviewRuntime;
 use hypercolor_daemon::render_thread::{CanvasDims, RenderThread, RenderThreadState};
 use hypercolor_daemon::scene_transactions::SceneTransactionQueue;
-use hypercolor_daemon::session::OutputPowerState;
 use hypercolor_types::canvas::Rgba;
 use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::device::DeviceId;
@@ -104,15 +104,11 @@ fn solid_layer(
     layer
 }
 
-fn render_group(name: &str, effect_id: EffectId, layers: Vec<SceneLayer>) -> Zone {
+fn render_group(name: &str, _effect_id: EffectId, layers: Vec<SceneLayer>) -> Zone {
     Zone {
         id: ZoneId::new(),
         name: name.into(),
         description: None,
-        effect_id: Some(effect_id),
-        controls: HashMap::new(),
-        control_bindings: HashMap::new(),
-        preset_id: None,
         layers,
         layout: test_layout(vec![full_zone("zone:all")]),
         brightness: 1.0,
@@ -142,6 +138,9 @@ fn display_group(
 fn render_state() -> RenderThreadState {
     let (_, power_state) = watch::channel(OutputPowerState::default());
     let event_bus = Arc::new(HypercolorBus::new());
+    let scene_manager =
+        SceneService::in_memory(SceneManager::with_default(), Arc::clone(&event_bus));
+    let scene_plan = scene_manager.plan_reader();
     let asset_tempdir = tempfile::tempdir().expect("test asset tempdir should be created");
     let asset_dir = asset_tempdir.path().join("assets");
     RenderThreadState {
@@ -149,7 +148,7 @@ fn render_state() -> RenderThreadState {
         asset_library: Arc::new(RwLock::new(
             AssetLibrary::open(asset_dir).expect("test asset library should open"),
         )),
-        spatial_engine: Arc::new(RwLock::new(SpatialEngine::new(test_layout(Vec::new())))),
+        spatial_engine: SpatialService::new(SpatialEngine::new(test_layout(Vec::new()))),
         backend_manager: Arc::new(Mutex::new(BackendManager::new())),
         device_registry: DeviceRegistry::new(),
         performance: Arc::new(RwLock::new(PerformanceTracker::default())),
@@ -160,14 +159,12 @@ fn render_state() -> RenderThreadState {
             hypercolor_daemon::zone_layout_preview::ZoneLayoutPreviewStore::default(),
         ),
         render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
-        scene_manager: Arc::new(RwLock::new(SceneManager::with_default())),
+        scene_manager,
+        scene_plan,
         input_manager: Arc::new(Mutex::new(InputManager::new())),
         interaction_routing:
             hypercolor_daemon::interaction_routing::InteractionRoutingControl::default(),
         power_state,
-        device_settings: Arc::new(RwLock::new(DeviceSettingsStore::new(PathBuf::from(
-            "device-settings.json",
-        )))),
         scene_transactions: SceneTransactionQueue::default(),
         screen_capture_configured: false,
         canvas_dims: CanvasDims::new(320, 200),
@@ -179,15 +176,18 @@ fn render_state() -> RenderThreadState {
     }
 }
 
-async fn install_scene(state: &RenderThreadState, groups: Vec<Zone>) {
+async fn install_scene(state: &mut RenderThreadState, groups: Vec<Zone>) {
     let mut scene = make_scene("Multi Layer Scene");
-    scene.groups = groups;
+    scene.zones = groups;
     scene.unassigned_behavior = UnassignedBehavior::Off;
-    let mut scene_manager = state.scene_manager.write().await;
+    let mut scene_manager = state.scene_manager.snapshot().await;
     scene_manager.create(scene.clone()).expect("create scene");
     scene_manager
         .activate(&scene.id, None)
         .expect("activate scene");
+    let scene_manager = SceneService::in_memory(scene_manager, Arc::clone(&state.event_bus));
+    state.scene_plan = scene_manager.plan_reader();
+    state.scene_manager = scene_manager;
 }
 
 async fn run_until_canvas_frame(state: &RenderThreadState) -> hypercolor_core::bus::CanvasFrame {
@@ -211,7 +211,7 @@ async fn run_until_canvas_frame(state: &RenderThreadState) -> hypercolor_core::b
 
 #[tokio::test]
 async fn duplicate_effect_layers_compose_bottom_to_top() {
-    let state = render_state();
+    let mut state = render_state();
     let solid_id = {
         let registry = state.effect_registry.read().await;
         builtin_effect_id(&registry, "solid_color")
@@ -224,7 +224,7 @@ async fn duplicate_effect_layers_compose_bottom_to_top() {
             solid_layer(solid_id, [0.0, 0.0, 1.0, 1.0], LayerBlendMode::Alpha, 0.5),
         ],
     );
-    install_scene(&state, vec![group]).await;
+    install_scene(&mut state, vec![group]).await;
 
     let frame = run_until_canvas_frame(&state).await;
     let pixel = frame.surface().get_pixel(160, 100);
@@ -237,7 +237,7 @@ async fn duplicate_effect_layers_compose_bottom_to_top() {
 
 #[tokio::test]
 async fn disabled_effect_layers_do_not_contribute_to_output() {
-    let state = render_state();
+    let mut state = render_state();
     let solid_id = {
         let registry = state.effect_registry.read().await;
         builtin_effect_id(&registry, "solid_color")
@@ -252,7 +252,7 @@ async fn disabled_effect_layers_do_not_contribute_to_output() {
             disabled,
         ],
     );
-    install_scene(&state, vec![group]).await;
+    install_scene(&mut state, vec![group]).await;
 
     let frame = run_until_canvas_frame(&state).await;
 
@@ -264,7 +264,7 @@ async fn disabled_effect_layers_do_not_contribute_to_output() {
 
 #[tokio::test]
 async fn display_layer_stack_publishes_separately_from_scene_canvas() {
-    let state = render_state();
+    let mut state = render_state();
     let solid_id = {
         let registry = state.effect_registry.read().await;
         builtin_effect_id(&registry, "solid_color")
@@ -294,7 +294,7 @@ async fn display_layer_stack_publishes_separately_from_scene_canvas() {
             1.0,
         )],
     );
-    install_scene(&state, vec![scene_group, face_group]).await;
+    install_scene(&mut state, vec![scene_group, face_group]).await;
 
     let scene_frame = run_until_canvas_frame(&state).await;
     tokio::time::timeout(Duration::from_secs(2), group_canvas_rx.changed())

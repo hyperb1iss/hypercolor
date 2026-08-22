@@ -29,7 +29,7 @@ builtin-drivers = ["dep:hypercolor-driver-builtin", "hypercolor-driver-builtin/d
 media-lottie = ["hypercolor-core/media-lottie"]
 media-video = ["hypercolor-core/media-video"]
 macos-tcc-canary = ["screen-capture"]
-persistence-test-hooks = []
+persistence-test-hooks = ["hypercolor-core/persistence-test-hooks"]
 wgpu = [
     "dep:wgpu",
     "dep:pollster",
@@ -56,9 +56,9 @@ servo = ["hypercolor-core/servo"]
 hypercolor-color = { workspace = true }
 hypercolor-types = { workspace = true }
 hypercolor-core = { path = "../hypercolor-core", default-features = false }
-hypercolor-platform-fs = { workspace = true }
 hypercolor-macos-owner = { workspace = true }
 hypercolor-driver-api = { workspace = true }
+hypercolor-driver-support = { workspace = true }
 hypercolor-driver-builtin = { workspace = true, default-features = false, optional = true }
 hypercolor-network = { workspace = true }
 hypercolor-leptos-ext = { path = "../hypercolor-leptos-ext", default-features = false, features = ["ws-core", "axum"] }
@@ -85,7 +85,6 @@ tower = { workspace = true }
 tower-http = { workspace = true }
 rmcp = { workspace = true }
 uuid = { workspace = true }
-ulid = { workspace = true }
 clap = { workspace = true }
 toml = { workspace = true }
 cpal = { workspace = true }
@@ -98,6 +97,7 @@ mdns-sd = { workspace = true }
 notify = { workspace = true }
 owo-colors = { workspace = true }
 utoipa = { workspace = true }
+utoipa-axum = { workspace = true }
 utoipa-swagger-ui = { workspace = true }
 httpdate = "1.0"
 wgpu = { workspace = true, optional = true }

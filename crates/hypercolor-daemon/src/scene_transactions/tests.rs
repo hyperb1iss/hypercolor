@@ -7,11 +7,15 @@ use super::{
     SceneTransaction, SceneTransactionQueue, apply_layout_update,
     apply_prepared_layout_update_under_guard_with_persistence, publish_prepared_layout_activation,
 };
+use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::{SpatialEngine, SpatialPlanError};
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 use tempfile::TempDir;
-use tokio::sync::{Notify, RwLock};
+use tokio::sync::Notify;
+
+use crate::domain::scene::SceneService;
+use crate::domain::spatial::SpatialService;
 
 fn layout(id: &str, width: u32, height: u32) -> SpatialLayout {
     SpatialLayout {
@@ -28,20 +32,27 @@ fn layout(id: &str, width: u32, height: u32) -> SpatialLayout {
     }
 }
 
-fn state(
-    initial: SpatialLayout,
-) -> (
-    Arc<RwLock<SpatialEngine>>,
-    Arc<RwLock<SceneManager>>,
-    SceneTransactionQueue,
-) {
+fn state(initial: SpatialLayout) -> (SpatialService, SceneService, SceneTransactionQueue) {
     let spatial_engine =
         SpatialEngine::try_new(initial.clone()).expect("test spatial layout should be addressable");
     (
-        Arc::new(RwLock::new(spatial_engine)),
-        Arc::new(RwLock::new(SceneManager::with_default_layout(initial))),
+        SpatialService::new(spatial_engine),
+        SceneService::in_memory(
+            SceneManager::with_default_layout(initial),
+            Arc::new(HypercolorBus::new()),
+        ),
         SceneTransactionQueue::default(),
     )
+}
+
+async fn commit_scene_mutation(
+    scene_manager: &SceneService,
+    mutation: crate::domain::scene::SceneMutation,
+) {
+    scene_manager
+        .commit_mutation(mutation)
+        .await
+        .expect("scene transaction mutation should commit");
 }
 
 #[tokio::test]
@@ -105,8 +116,8 @@ fn accept_publication(transaction: super::PrepareLayoutTransaction) -> AcceptedP
 
 async fn publish_commit(
     accepted: AcceptedPublication,
-    spatial_engine: &Arc<RwLock<SpatialEngine>>,
-    scene_manager: &Arc<RwLock<SceneManager>>,
+    spatial_engine: &SpatialService,
+    scene_manager: &SceneService,
 ) -> Result<(), LayoutTransactionRejection> {
     wait_for_decision(&accepted.activation, LayoutActivationDecision::Commit).await;
     let result = publish_prepared_layout_activation(
@@ -195,8 +206,8 @@ async fn queue_drains_ordered_atomic_layout_transactions_without_coalescing() {
 async fn renderer_and_authoritative_state_reuse_the_exact_prepared_sampling_plan() {
     let (spatial_engine, scene_manager, queue) = state(layout("initial", 320, 200));
     let _consumer = queue.consumer();
-    let update_spatial_engine = Arc::clone(&spatial_engine);
-    let update_scene_manager = Arc::clone(&scene_manager);
+    let update_spatial_engine = spatial_engine.clone();
+    let update_scene_manager = scene_manager.clone();
     let update_queue = queue.clone();
     let update = tokio::spawn(async move {
         apply_layout_update(
@@ -227,15 +238,15 @@ async fn renderer_and_authoritative_state_reuse_the_exact_prepared_sampling_plan
         .expect("layout coordinator should not panic")
         .expect("layout should commit after renderer acceptance");
 
-    let authoritative = spatial_engine.read().await;
+    let authoritative = spatial_engine.snapshot();
     assert!(Arc::ptr_eq(&renderer_plan, &authoritative.sampling_plan()));
     assert_eq!(authoritative.layout().id, "prepared");
     drop(authoritative);
-    let manager = scene_manager.read().await;
+    let manager = scene_manager.snapshot().await;
     assert_eq!(
         manager
             .active_scene()
-            .and_then(|scene| scene.primary_group())
+            .and_then(|scene| scene.primary_zone())
             .expect("default scene should retain a primary group")
             .layout
             .id,
@@ -248,8 +259,8 @@ async fn render_snapshot_reads_old_generation_while_activation_waits() {
     let initial = layout("initial", 320, 200);
     let (spatial_engine, scene_manager, queue) = state(initial.clone());
     let _consumer = queue.consumer();
-    let update_spatial_engine = Arc::clone(&spatial_engine);
-    let update_scene_manager = Arc::clone(&scene_manager);
+    let update_spatial_engine = spatial_engine.clone();
+    let update_scene_manager = scene_manager.clone();
     let update_queue = queue.clone();
     let update = tokio::spawn(async move {
         apply_layout_update(
@@ -273,8 +284,8 @@ async fn render_snapshot_reads_old_generation_while_activation_waits() {
     wait_for_decision(&accepted.activation, LayoutActivationDecision::Commit).await;
 
     tokio::time::timeout(Duration::from_secs(1), async {
-        let manager = scene_manager.read().await;
-        let authoritative = spatial_engine.read().await;
+        let manager = scene_manager.snapshot().await;
+        let authoritative = spatial_engine.snapshot();
         assert_eq!(manager.active_render_groups()[0].layout.id, initial.id);
         assert_eq!(authoritative.layout().id, initial.id);
     })
@@ -295,8 +306,8 @@ async fn newer_scene_state_supersedes_prepared_layout_before_publication() {
     let initial = layout("initial", 320, 200);
     let (spatial_engine, scene_manager, queue) = state(initial.clone());
     let _consumer = queue.consumer();
-    let update_spatial_engine = Arc::clone(&spatial_engine);
-    let update_scene_manager = Arc::clone(&scene_manager);
+    let update_spatial_engine = spatial_engine.clone();
+    let update_scene_manager = scene_manager.clone();
     let update_queue = queue.clone();
     let update = tokio::spawn(async move {
         apply_layout_update(
@@ -318,10 +329,9 @@ async fn newer_scene_state_supersedes_prepared_layout_before_publication() {
     };
     let accepted = accept_publication(transaction);
     wait_for_decision(&accepted.activation, LayoutActivationDecision::Commit).await;
-    scene_manager
-        .write()
-        .await
-        .invalidate_active_render_groups();
+    let mut mutation = scene_manager.begin_mutation().await;
+    mutation.invalidate_active_zones();
+    commit_scene_mutation(&scene_manager, mutation).await;
 
     assert_eq!(
         publish_commit(accepted, &spatial_engine, &scene_manager).await,
@@ -333,9 +343,9 @@ async fn newer_scene_state_supersedes_prepared_layout_before_publication() {
             LayoutTransactionRejection::Superseded
         ))
     ));
-    assert_eq!(spatial_engine.read().await.layout().as_ref(), &initial);
+    assert_eq!(spatial_engine.snapshot().layout().as_ref(), &initial);
     assert_eq!(
-        scene_manager.read().await.active_render_groups()[0]
+        scene_manager.snapshot().await.active_render_groups()[0]
             .layout
             .id,
         initial.id
@@ -348,8 +358,8 @@ async fn renderer_rejection_preserves_state_and_a_retry_can_commit() {
     let (spatial_engine, scene_manager, queue) = state(initial.clone());
     let _consumer = queue.consumer();
 
-    let rejected_spatial_engine = Arc::clone(&spatial_engine);
-    let rejected_scene_manager = Arc::clone(&scene_manager);
+    let rejected_spatial_engine = spatial_engine.clone();
+    let rejected_scene_manager = scene_manager.clone();
     let rejected_queue = queue.clone();
     let rejected = tokio::spawn(async move {
         apply_layout_update(
@@ -378,10 +388,10 @@ async fn renderer_rejection_preserves_state_and_a_retry_can_commit() {
             LayoutTransactionRejection::PreparationFailed { .. }
         ))
     ));
-    assert_eq!(spatial_engine.read().await.layout().as_ref(), &initial);
+    assert_eq!(spatial_engine.snapshot().layout().as_ref(), &initial);
 
-    let retry_spatial_engine = Arc::clone(&spatial_engine);
-    let retry_scene_manager = Arc::clone(&scene_manager);
+    let retry_spatial_engine = spatial_engine.clone();
+    let retry_scene_manager = scene_manager.clone();
     let retry_queue = queue.clone();
     let retry = tokio::spawn(async move {
         apply_layout_update(
@@ -409,7 +419,7 @@ async fn renderer_rejection_preserves_state_and_a_retry_can_commit() {
         .await
         .expect("layout coordinator should not panic")
         .expect("retry should commit");
-    assert_eq!(spatial_engine.read().await.layout().id, "retry");
+    assert_eq!(spatial_engine.snapshot().layout().id, "retry");
 }
 
 #[tokio::test]
@@ -463,7 +473,7 @@ async fn invalid_preparation_never_reaches_the_renderer_or_mutates_state() {
         ))
     ));
     assert_eq!(queue.pending_len(), 0);
-    assert_eq!(spatial_engine.read().await.layout().as_ref(), &initial);
+    assert_eq!(spatial_engine.snapshot().layout().as_ref(), &initial);
 }
 
 #[tokio::test]
@@ -474,8 +484,8 @@ async fn admitted_persistence_failure_aborts_and_persists_fresh_rollback() {
     let guard = queue.acquire_layout_update_guard().await;
     let prepared = PreparedLayoutUpdate::try_new(layout("candidate", 640, 480))
         .expect("candidate layout should prepare");
-    let update_spatial_engine = Arc::clone(&spatial_engine);
-    let update_scene_manager = Arc::clone(&scene_manager);
+    let update_spatial_engine = spatial_engine.clone();
+    let update_scene_manager = scene_manager.clone();
     let update_queue = queue.clone();
     let phases = Arc::new(std::sync::Mutex::new(Vec::new()));
     let update_phases = Arc::clone(&phases);
@@ -537,8 +547,8 @@ async fn admitted_persistence_failure_aborts_and_persists_fresh_rollback() {
         *phases.lock().expect("phase log should lock"),
         ["precommit", "rollback"]
     );
-    assert_eq!(spatial_engine.read().await.layout().as_ref(), &initial);
-    let manager_layout = scene_manager.read().await.active_render_groups()[0]
+    assert_eq!(spatial_engine.snapshot().layout().as_ref(), &initial);
+    let manager_layout = scene_manager.snapshot().await.active_render_groups()[0]
         .layout
         .clone();
     assert_eq!(manager_layout.id, initial.id);
@@ -554,8 +564,8 @@ async fn superseded_precommit_aborts_renderer_admission() {
     let guard = queue.acquire_layout_update_guard().await;
     let prepared = PreparedLayoutUpdate::try_new(layout("candidate", 640, 480))
         .expect("candidate layout should prepare");
-    let update_spatial_engine = Arc::clone(&spatial_engine);
-    let update_scene_manager = Arc::clone(&scene_manager);
+    let update_spatial_engine = spatial_engine.clone();
+    let update_scene_manager = scene_manager.clone();
     let update_queue = queue.clone();
     let update = tokio::spawn(async move {
         apply_prepared_layout_update_under_guard_with_persistence(
@@ -595,9 +605,9 @@ async fn superseded_precommit_aborts_renderer_admission() {
         update.await.expect("layout coordinator should not panic"),
         Err(LayoutUpdateError::PersistenceSuperseded)
     ));
-    assert_eq!(spatial_engine.read().await.layout().as_ref(), &initial);
+    assert_eq!(spatial_engine.snapshot().layout().as_ref(), &initial);
     assert_eq!(
-        scene_manager.read().await.active_render_groups()[0]
+        scene_manager.snapshot().await.active_render_groups()[0]
             .layout
             .id,
         initial.id
@@ -615,8 +625,8 @@ async fn persistence_finishes_before_armed_renderer_publication() {
     std::fs::write(&persisted_path, &initial.id).expect("seed persisted generation");
     let guard = queue.acquire_layout_update_guard().await;
     let prepared = PreparedLayoutUpdate::try_new(candidate.clone()).expect("candidate prepares");
-    let update_spatial_engine = Arc::clone(&spatial_engine);
-    let update_scene_manager = Arc::clone(&scene_manager);
+    let update_spatial_engine = spatial_engine.clone();
+    let update_scene_manager = scene_manager.clone();
     let update_queue = queue.clone();
     let update_path = persisted_path.clone();
     let update = tokio::spawn(async move {
@@ -655,16 +665,18 @@ async fn persistence_finishes_before_armed_renderer_publication() {
         std::fs::read_to_string(&persisted_path).expect("candidate persisted"),
         candidate.id
     );
+    assert_eq!(scene_manager.revision(), 0);
     publish_commit(accepted, &spatial_engine, &scene_manager)
         .await
         .expect("persisted layout should publish");
+    assert_eq!(scene_manager.revision(), 1);
     update
         .await
         .expect("layout coordinator should not panic")
         .expect("armed candidate should commit");
-    assert_eq!(spatial_engine.read().await.layout().id, candidate.id);
+    assert_eq!(spatial_engine.snapshot().layout().id, candidate.id);
     assert_eq!(
-        scene_manager.read().await.active_render_groups()[0]
+        scene_manager.snapshot().await.active_render_groups()[0]
             .layout
             .id,
         candidate.id
@@ -683,11 +695,11 @@ async fn renderer_shutdown_after_persistence_rolls_disk_back_to_live_generation(
     std::fs::write(&persisted_path, &initial.id).expect("seed persisted generation");
     let guard = queue.acquire_layout_update_guard().await;
     let prepared = PreparedLayoutUpdate::try_new(candidate).expect("candidate prepares");
-    let update_spatial_engine = Arc::clone(&spatial_engine);
-    let update_scene_manager = Arc::clone(&scene_manager);
+    let update_spatial_engine = spatial_engine.clone();
+    let update_scene_manager = scene_manager.clone();
     let update_queue = queue.clone();
     let update_path = persisted_path.clone();
-    let rollback_spatial_engine = Arc::clone(&spatial_engine);
+    let rollback_spatial_engine = spatial_engine.clone();
     let update = tokio::spawn(async move {
         apply_prepared_layout_update_under_guard_with_persistence(
             update_spatial_engine,
@@ -697,12 +709,12 @@ async fn renderer_shutdown_after_persistence_rolls_disk_back_to_live_generation(
             prepared,
             move |phase| {
                 let path = update_path.clone();
-                let spatial_engine = Arc::clone(&rollback_spatial_engine);
+                let spatial_engine = rollback_spatial_engine.clone();
                 async move {
                     let layout_id = match phase {
                         LayoutPersistencePhase::Precommit(state) => state.layout.id,
                         LayoutPersistencePhase::Rollback => {
-                            spatial_engine.read().await.layout().id.clone()
+                            spatial_engine.snapshot().layout().id.clone()
                         }
                         LayoutPersistencePhase::Converge => {
                             panic!("rejected renderer publication must not converge")
@@ -726,13 +738,19 @@ async fn renderer_shutdown_after_persistence_rolls_disk_back_to_live_generation(
     };
     let activation = accept_preparation(transaction);
     wait_for_decision(&activation, LayoutActivationDecision::Commit).await;
-    {
-        let mut manager = scene_manager.write().await;
-        let mut authoritative = spatial_engine.write().await;
-        manager.sync_primary_group_layout(&newer);
-        *authoritative =
-            SpatialEngine::try_new(newer.clone()).expect("newer live layout should prepare");
-    }
+    let source_layout = spatial_engine.snapshot().layout().as_ref().clone();
+    let scenes = scene_manager.snapshot().await;
+    scene_manager
+        .publish_layout_activation(
+            &spatial_engine,
+            SpatialEngine::try_new(newer.clone()).expect("newer live layout should prepare"),
+            &source_layout,
+            scenes.active_scene_id().copied(),
+            scenes.active_render_groups_revision(),
+            |_| {},
+        )
+        .await
+        .expect("newer live layout should publish");
     activation.complete(Err(LayoutTransactionRejection::RendererStopped));
 
     assert!(matches!(
@@ -745,9 +763,9 @@ async fn renderer_shutdown_after_persistence_rolls_disk_back_to_live_generation(
         std::fs::read_to_string(&persisted_path).expect("rollback persisted"),
         newer.id
     );
-    assert_eq!(spatial_engine.read().await.layout().id, newer.id);
+    assert_eq!(spatial_engine.snapshot().layout().id, newer.id);
     assert_eq!(
-        scene_manager.read().await.active_render_groups()[0]
+        scene_manager.snapshot().await.active_render_groups()[0]
             .layout
             .id,
         newer.id

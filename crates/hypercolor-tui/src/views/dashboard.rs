@@ -15,8 +15,8 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::action::Action;
 use crate::component::Component;
 use crate::state::{
-    ActiveScene, CanvasPreviewState, ConnectionStatus, DaemonState, DeviceSummary, EffectSummary,
-    ZoneSummary,
+    CanvasPreviewState, ConnectionStatus, DaemonState, DeviceSummary, EffectSummary, SceneDocument,
+    ZoneResource, primary_zone, scene_is_multi_zone, scene_zone, zone_effect_id,
 };
 use crate::widgets::{ParamSlider, Split, SplitDirection};
 
@@ -50,7 +50,7 @@ pub struct DashboardView {
     devices: Vec<DeviceSummary>,
     effects: Vec<EffectSummary>,
     favorites: Vec<String>,
-    active_scene: Option<Arc<ActiveScene>>,
+    active_scene: Option<Arc<SceneDocument>>,
     focused_zone: Option<String>,
     canvas_frame: Option<CanvasPreviewState>,
     selected_device: usize,
@@ -104,26 +104,26 @@ impl DashboardView {
     }
 
     /// The zone that apply/control actions currently target.
-    fn target_zone(&self) -> Option<&ZoneSummary> {
+    fn target_zone(&self) -> Option<&ZoneResource> {
         let scene = self.active_scene.as_deref()?;
         self.focused_zone
             .as_deref()
-            .and_then(|id| scene.zone(id))
-            .or_else(|| scene.primary())
+            .and_then(|id| scene_zone(scene, id))
+            .or_else(|| primary_zone(scene))
     }
 
     /// Whether the active scene runs more than one zone.
     fn multi_zone(&self) -> bool {
         self.active_scene
             .as_deref()
-            .is_some_and(ActiveScene::multi_zone)
+            .is_some_and(scene_is_multi_zone)
     }
 
     /// The effect the focused zone runs, falling back to the primary
     /// zone — which is exactly what the deleted singleton described.
     fn active_effect(&self) -> Option<&EffectSummary> {
-        let id = self.target_zone()?.effect_id.as_deref()?;
-        self.effects.iter().find(|e| e.id == id)
+        let id = zone_effect_id(self.target_zone()?)?;
+        self.effects.iter().find(|effect| effect.id == id)
     }
 
     /// Resolve an effect id to its display name.
@@ -274,18 +274,13 @@ impl DashboardView {
         if !effect.author.is_empty() {
             meta.push(Span::styled(&effect.author, Style::default().fg(CORAL)));
         }
-        if !effect.category.is_empty() {
-            if !meta.is_empty() {
-                meta.push(Span::styled(" \u{00B7} ", Style::default().fg(DIM_GRAY)));
-            }
-            meta.push(Span::styled(
-                &effect.category,
-                Style::default().fg(DIM_GRAY),
-            ));
+        if !meta.is_empty() {
+            meta.push(Span::styled(" \u{00B7} ", Style::default().fg(DIM_GRAY)));
         }
-        if meta.is_empty() {
-            return y;
-        }
+        meta.push(Span::styled(
+            effect.category.as_str(),
+            Style::default().fg(DIM_GRAY),
+        ));
         frame.render_widget(Paragraph::new(Line::from(meta)), Rect::new(x, y, w, 1));
         y + 1
     }
@@ -397,12 +392,14 @@ impl DashboardView {
         }
         y = Self::render_separator(frame, x, y, max_y, w);
 
-        let target_id = self.target_zone().map(|zone| zone.id.clone());
+        let target_id = self.target_zone().map(|zone| zone.id.to_string());
         for zone in &scene.zones {
             if y >= max_y {
                 return;
             }
-            let focused = target_id.as_deref() == Some(zone.id.as_str());
+            let focused = target_id
+                .as_deref()
+                .is_some_and(|id| zone.id.to_string() == id);
             let pointer = if focused { "\u{25B8} " } else { "  " };
             let (dot, dot_color) = if zone.enabled {
                 ("\u{25C9} ", SUCCESS_GREEN)
@@ -414,8 +411,8 @@ impl DashboardView {
             } else {
                 Style::default().fg(BASE_WHITE)
             };
-            let effect_label = zone
-                .effect_id
+            let effect_id = zone_effect_id(zone);
+            let effect_label = effect_id
                 .as_deref()
                 .map_or("empty", |id| self.effect_name(id));
 
@@ -778,7 +775,7 @@ impl Component for DashboardView {
                     && let Some(zone) = self.target_zone()
                 {
                     return Ok(Some(Action::SetZoneEnabled {
-                        zone_id: zone.id.clone(),
+                        zone_id: zone.id.to_string(),
                         enabled: !zone.enabled,
                     }));
                 }
@@ -861,7 +858,7 @@ impl Component for DashboardView {
                 self.favorites.clone_from(favs);
             }
             Action::ActiveSceneUpdated(scene) => {
-                self.active_scene.clone_from(scene);
+                self.active_scene = Some(scene.clone());
             }
             Action::ZoneFocusChanged(zone) => {
                 self.focused_zone.clone_from(zone);

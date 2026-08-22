@@ -6,17 +6,19 @@ import httpx
 from ... import errors
 from ...client import AuthenticatedClient, Client
 from ...models.api_error_body import ApiErrorBody
-from ...models.api_response_effect_list_response import ApiResponseEffectListResponse
+from ...models.effect_category import EffectCategory
+from ...models.effect_source_kind import EffectSourceKind
+from ...models.list_effects_response_200 import ListEffectsResponse200
 from ...types import UNSET, Response, Unset
 
 
 def _get_kwargs(
     *,
-    category: None | str | Unset = UNSET,
+    category: EffectCategory | None | Unset = UNSET,
     audio_reactive: bool | None | Unset = UNSET,
     screen_reactive: bool | None | Unset = UNSET,
     input_reactive: bool | None | Unset = UNSET,
-    source: None | str | Unset = UNSET,
+    source: EffectSourceKind | None | Unset = UNSET,
     q: None | str | Unset = UNSET,
     include: None | str | Unset = UNSET,
 ) -> dict[str, Any]:
@@ -26,6 +28,8 @@ def _get_kwargs(
     json_category: None | str | Unset
     if isinstance(category, Unset):
         json_category = UNSET
+    elif isinstance(category, EffectCategory):
+        json_category = category.value
     else:
         json_category = category
     params["category"] = json_category
@@ -54,6 +58,8 @@ def _get_kwargs(
     json_source: None | str | Unset
     if isinstance(source, Unset):
         json_source = UNSET
+    elif isinstance(source, EffectSourceKind):
+        json_source = source.value
     else:
         json_source = source
     params["source"] = json_source
@@ -85,16 +91,56 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> ApiErrorBody | ApiResponseEffectListResponse | None:
+) -> ApiErrorBody | ListEffectsResponse200 | None:
     if response.status_code == 200:
-        response_200 = ApiResponseEffectListResponse.from_dict(response.json())
+        response_200 = ListEffectsResponse200.from_dict(response.json())
 
         return response_200
+
+    if response.status_code == 400:
+        response_400 = ApiErrorBody.from_dict(response.json())
+
+        return response_400
+
+    if response.status_code == 401:
+        response_401 = ApiErrorBody.from_dict(response.json())
+
+        return response_401
+
+    if response.status_code == 403:
+        response_403 = ApiErrorBody.from_dict(response.json())
+
+        return response_403
+
+    if response.status_code == 404:
+        response_404 = ApiErrorBody.from_dict(response.json())
+
+        return response_404
+
+    if response.status_code == 409:
+        response_409 = ApiErrorBody.from_dict(response.json())
+
+        return response_409
+
+    if response.status_code == 412:
+        response_412 = ApiErrorBody.from_dict(response.json())
+
+        return response_412
 
     if response.status_code == 422:
         response_422 = ApiErrorBody.from_dict(response.json())
 
         return response_422
+
+    if response.status_code == 429:
+        response_429 = ApiErrorBody.from_dict(response.json())
+
+        return response_429
+
+    if response.status_code == 500:
+        response_500 = ApiErrorBody.from_dict(response.json())
+
+        return response_500
 
     if client.raise_on_unexpected_status:
         raise errors.UnexpectedStatus(response.status_code, response.content)
@@ -104,7 +150,7 @@ def _parse_response(
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[ApiErrorBody | ApiResponseEffectListResponse]:
+) -> Response[ApiErrorBody | ListEffectsResponse200]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -116,22 +162,22 @@ def _build_response(
 def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
-    category: None | str | Unset = UNSET,
+    category: EffectCategory | None | Unset = UNSET,
     audio_reactive: bool | None | Unset = UNSET,
     screen_reactive: bool | None | Unset = UNSET,
     input_reactive: bool | None | Unset = UNSET,
-    source: None | str | Unset = UNSET,
+    source: EffectSourceKind | None | Unset = UNSET,
     q: None | str | Unset = UNSET,
     include: None | str | Unset = UNSET,
-) -> Response[ApiErrorBody | ApiResponseEffectListResponse]:
-    """`GET /api/v1/effects` — the effect catalog, narrowed server-side.
+) -> Response[ApiErrorBody | ListEffectsResponse200]:
+    """List effects
 
     Args:
-        category (None | str | Unset):
+        category (EffectCategory | None | Unset):
         audio_reactive (bool | None | Unset):
         screen_reactive (bool | None | Unset):
         input_reactive (bool | None | Unset):
-        source (None | str | Unset):
+        source (EffectSourceKind | None | Unset):
         q (None | str | Unset):
         include (None | str | Unset):
 
@@ -140,7 +186,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[ApiErrorBody | ApiResponseEffectListResponse]
+        Response[ApiErrorBody | ListEffectsResponse200]
     """
 
     kwargs = _get_kwargs(
@@ -163,22 +209,22 @@ def sync_detailed(
 def sync(
     *,
     client: AuthenticatedClient | Client,
-    category: None | str | Unset = UNSET,
+    category: EffectCategory | None | Unset = UNSET,
     audio_reactive: bool | None | Unset = UNSET,
     screen_reactive: bool | None | Unset = UNSET,
     input_reactive: bool | None | Unset = UNSET,
-    source: None | str | Unset = UNSET,
+    source: EffectSourceKind | None | Unset = UNSET,
     q: None | str | Unset = UNSET,
     include: None | str | Unset = UNSET,
-) -> ApiErrorBody | ApiResponseEffectListResponse | None:
-    """`GET /api/v1/effects` — the effect catalog, narrowed server-side.
+) -> ApiErrorBody | ListEffectsResponse200 | None:
+    """List effects
 
     Args:
-        category (None | str | Unset):
+        category (EffectCategory | None | Unset):
         audio_reactive (bool | None | Unset):
         screen_reactive (bool | None | Unset):
         input_reactive (bool | None | Unset):
-        source (None | str | Unset):
+        source (EffectSourceKind | None | Unset):
         q (None | str | Unset):
         include (None | str | Unset):
 
@@ -187,7 +233,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        ApiErrorBody | ApiResponseEffectListResponse
+        ApiErrorBody | ListEffectsResponse200
     """
 
     return sync_detailed(
@@ -205,22 +251,22 @@ def sync(
 async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
-    category: None | str | Unset = UNSET,
+    category: EffectCategory | None | Unset = UNSET,
     audio_reactive: bool | None | Unset = UNSET,
     screen_reactive: bool | None | Unset = UNSET,
     input_reactive: bool | None | Unset = UNSET,
-    source: None | str | Unset = UNSET,
+    source: EffectSourceKind | None | Unset = UNSET,
     q: None | str | Unset = UNSET,
     include: None | str | Unset = UNSET,
-) -> Response[ApiErrorBody | ApiResponseEffectListResponse]:
-    """`GET /api/v1/effects` — the effect catalog, narrowed server-side.
+) -> Response[ApiErrorBody | ListEffectsResponse200]:
+    """List effects
 
     Args:
-        category (None | str | Unset):
+        category (EffectCategory | None | Unset):
         audio_reactive (bool | None | Unset):
         screen_reactive (bool | None | Unset):
         input_reactive (bool | None | Unset):
-        source (None | str | Unset):
+        source (EffectSourceKind | None | Unset):
         q (None | str | Unset):
         include (None | str | Unset):
 
@@ -229,7 +275,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[ApiErrorBody | ApiResponseEffectListResponse]
+        Response[ApiErrorBody | ListEffectsResponse200]
     """
 
     kwargs = _get_kwargs(
@@ -250,22 +296,22 @@ async def asyncio_detailed(
 async def asyncio(
     *,
     client: AuthenticatedClient | Client,
-    category: None | str | Unset = UNSET,
+    category: EffectCategory | None | Unset = UNSET,
     audio_reactive: bool | None | Unset = UNSET,
     screen_reactive: bool | None | Unset = UNSET,
     input_reactive: bool | None | Unset = UNSET,
-    source: None | str | Unset = UNSET,
+    source: EffectSourceKind | None | Unset = UNSET,
     q: None | str | Unset = UNSET,
     include: None | str | Unset = UNSET,
-) -> ApiErrorBody | ApiResponseEffectListResponse | None:
-    """`GET /api/v1/effects` — the effect catalog, narrowed server-side.
+) -> ApiErrorBody | ListEffectsResponse200 | None:
+    """List effects
 
     Args:
-        category (None | str | Unset):
+        category (EffectCategory | None | Unset):
         audio_reactive (bool | None | Unset):
         screen_reactive (bool | None | Unset):
         input_reactive (bool | None | Unset):
-        source (None | str | Unset):
+        source (EffectSourceKind | None | Unset):
         q (None | str | Unset):
         include (None | str | Unset):
 
@@ -274,7 +320,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        ApiErrorBody | ApiResponseEffectListResponse
+        ApiErrorBody | ListEffectsResponse200
     """
 
     return (

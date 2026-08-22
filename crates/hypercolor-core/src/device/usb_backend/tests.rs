@@ -5,15 +5,16 @@ use anyhow::anyhow;
 use async_trait::async_trait;
 use hypercolor_driver_api::DeviceDeliveryStatus;
 use hypercolor_hal::protocol::{
-    ProtocolCommand, ProtocolError, ProtocolResponse, ProtocolZone, ResponseStatus, TransferType,
+    ProtocolCommand, ProtocolError, ProtocolResponse, ResponseStatus, TransferType,
 };
 use hypercolor_types::device::{
-    ConnectionType, DeviceCapabilities, DeviceFamily, DeviceOrigin, DeviceTopologyHint,
+    ConnectionType, DeviceCapabilities, DeviceFamily, DeviceOrigin, DeviceTopologyHint, SegmentInfo,
 };
-use tokio::sync::Mutex as AsyncMutex;
+use tokio::sync::{Mutex as AsyncMutex, Notify};
 use tokio::time::timeout;
 
 use super::*;
+use crate::device::BackendManager;
 
 static USB_ACTOR_METRICS_TEST_LOCK: LazyLock<AsyncMutex<()>> =
     LazyLock::new(|| AsyncMutex::new(()));
@@ -75,6 +76,77 @@ fn usb_midi_lifecycle_policy_runs_connect_in_background_without_timeout_retry() 
     assert!(!policy.retry_on_connect_timeout());
 }
 
+#[tokio::test]
+async fn usb_midi_policy_rejects_timeout_retry_from_production_transport_path() {
+    let device_id = DeviceId::new();
+    let transport = RecordingTransport::default()
+        .with_failed_primary_send_attempt(1, InjectedPrimaryFailure::Timeout);
+    let error = UsbBackend::run_commands(&FairnessProtocol, &transport, &[test_command(0x42)])
+        .await
+        .expect_err("injected transport timeout should fail the command");
+    let error = map_hal_transport_error(
+        device_id,
+        USB_OUTPUT_BACKEND_ID,
+        DeviceTransportOperation::Connect,
+        &error,
+    );
+    let policy = lifecycle_policy_for_transport(TransportType::UsbMidi {
+        midi_interface: 2,
+        display_interface: 0,
+        display_endpoint: 0x01,
+    });
+
+    assert!(matches!(
+        &error,
+        DeviceError::Timeout { after } if *after == Duration::from_millis(25)
+    ));
+    assert!(!policy.should_retry_connect_failure(&error));
+}
+
+#[test]
+fn transport_not_found_recoverability_depends_on_operation() {
+    use hypercolor_types::device::ErrorRecoverability;
+
+    let device_id = DeviceId::new();
+    let error = anyhow!(TransportError::NotFound {
+        detail: "device removed".to_owned(),
+    });
+
+    let connect_error = map_hal_transport_error(
+        device_id,
+        USB_OUTPUT_BACKEND_ID,
+        DeviceTransportOperation::Connect,
+        &error,
+    );
+    assert!(matches!(connect_error, DeviceError::NotFound { .. }));
+    assert_eq!(
+        connect_error.recoverability(),
+        ErrorRecoverability::Permanent
+    );
+
+    let write_error = map_hal_transport_error(
+        device_id,
+        USB_OUTPUT_BACKEND_ID,
+        DeviceTransportOperation::Write,
+        &error,
+    );
+    assert_eq!(
+        write_error,
+        DeviceError::Disconnected {
+            device: device_id.to_string(),
+        }
+    );
+    assert_eq!(write_error.recoverability(), ErrorRecoverability::Reconnect);
+
+    let disconnect_error = map_hal_transport_error(
+        device_id,
+        USB_OUTPUT_BACKEND_ID,
+        DeviceTransportOperation::Disconnect,
+        &error,
+    );
+    assert_eq!(disconnect_error, write_error);
+}
+
 #[test]
 fn usb_non_midi_lifecycle_policy_uses_default_connect_behavior() {
     let policy = lifecycle_policy_for_transport(TransportType::UsbHid { interface: 0 });
@@ -93,9 +165,9 @@ async fn display_branch_services_pending_led_frame_before_display_frame() {
     frame_tx.send_replace(Some(Arc::new(UsbFramePayload::untracked(Arc::new(vec![
         [0x11, 0x22, 0x33],
     ])))));
-    display_tx.send_replace(Some(Arc::new(UsbDisplayPayload {
-        payload: Arc::new(OwnedDisplayFramePayload::jpeg(0, 0, Arc::new(vec![0xD1]))),
-    })));
+    display_tx.send_replace(Some(Arc::new(UsbDisplayPayload::untracked(Arc::new(
+        OwnedDisplayFramePayload::jpeg(0, 0, Arc::new(vec![0xD1])),
+    )))));
 
     let transport =
         Arc::new(RecordingTransport::default().with_send_delay(Duration::from_millis(5)));
@@ -149,9 +221,9 @@ async fn display_load_services_new_led_before_next_display_frame() {
     let (display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
     let (command_tx, command_rx) = mpsc::unbounded_channel();
 
-    display_tx.send_replace(Some(Arc::new(UsbDisplayPayload {
-        payload: Arc::new(OwnedDisplayFramePayload::jpeg(0, 0, Arc::new(vec![0xD1]))),
-    })));
+    display_tx.send_replace(Some(Arc::new(UsbDisplayPayload::untracked(Arc::new(
+        OwnedDisplayFramePayload::jpeg(0, 0, Arc::new(vec![0xD1])),
+    )))));
 
     let transport =
         Arc::new(RecordingTransport::default().with_send_delay(Duration::from_millis(5)));
@@ -174,9 +246,9 @@ async fn display_load_services_new_led_before_next_display_frame() {
     frame_tx.send_replace(Some(Arc::new(UsbFramePayload::untracked(Arc::new(vec![
         [0x22, 0x33, 0x44],
     ])))));
-    display_tx.send_replace(Some(Arc::new(UsbDisplayPayload {
-        payload: Arc::new(OwnedDisplayFramePayload::jpeg(0, 0, Arc::new(vec![0xD2]))),
-    })));
+    display_tx.send_replace(Some(Arc::new(UsbDisplayPayload::untracked(Arc::new(
+        OwnedDisplayFramePayload::jpeg(0, 0, Arc::new(vec![0xD2])),
+    )))));
 
     let writes = wait_for_writes(&transport, 3).await;
     let (response_tx, response_rx) = oneshot::channel();
@@ -216,9 +288,9 @@ async fn parallel_transfer_lanes_do_not_wait_for_pending_led_frame_before_displa
     frame_tx.send_replace(Some(Arc::new(UsbFramePayload::untracked(Arc::new(vec![
         [0x11, 0x22, 0x33],
     ])))));
-    display_tx.send_replace(Some(Arc::new(UsbDisplayPayload {
-        payload: Arc::new(OwnedDisplayFramePayload::jpeg(0, 0, Arc::new(vec![0xD1]))),
-    })));
+    display_tx.send_replace(Some(Arc::new(UsbDisplayPayload::untracked(Arc::new(
+        OwnedDisplayFramePayload::jpeg(0, 0, Arc::new(vec![0xD1])),
+    )))));
 
     let transport = Arc::new(
         RecordingTransport::default()
@@ -275,9 +347,9 @@ async fn display_write_failure_does_not_stop_single_lane_led_actor() {
     let (display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
     let (command_tx, command_rx) = mpsc::unbounded_channel();
 
-    display_tx.send_replace(Some(Arc::new(UsbDisplayPayload {
-        payload: Arc::new(OwnedDisplayFramePayload::jpeg(0, 0, Arc::new(vec![0xD1]))),
-    })));
+    display_tx.send_replace(Some(Arc::new(UsbDisplayPayload::untracked(Arc::new(
+        OwnedDisplayFramePayload::jpeg(0, 0, Arc::new(vec![0xD1])),
+    )))));
 
     let transport =
         Arc::new(RecordingTransport::default().with_failed_transfer_type(TransferType::Bulk));
@@ -324,9 +396,9 @@ async fn parallel_display_write_failure_does_not_stop_control_lane() {
     let (display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
     let (command_tx, command_rx) = mpsc::unbounded_channel();
 
-    display_tx.send_replace(Some(Arc::new(UsbDisplayPayload {
-        payload: Arc::new(OwnedDisplayFramePayload::jpeg(0, 0, Arc::new(vec![0xD1]))),
-    })));
+    display_tx.send_replace(Some(Arc::new(UsbDisplayPayload::untracked(Arc::new(
+        OwnedDisplayFramePayload::jpeg(0, 0, Arc::new(vec![0xD1])),
+    )))));
 
     let transport = Arc::new(
         RecordingTransport::default()
@@ -398,7 +470,7 @@ fn transient_and_fatal_frame_write_errors_classify_transport_liveness() {
             transport: "test".to_owned(),
             transfer_type: TransferType::Primary,
         },
-        TransportError::IoError {
+        TransportError::Disconnected {
             detail: "hidraw device disconnected".to_owned(),
         },
     ];
@@ -409,6 +481,15 @@ fn transient_and_fatal_frame_write_errors_classify_transport_liveness() {
             actor::FrameWriteDisposition::Fatal
         );
     }
+
+    let prose_only_disconnect = anyhow!(TransportError::IoError {
+        detail: "hidraw device disconnected".to_owned(),
+    })
+    .context("USB frame write failed");
+    assert_eq!(
+        UsbBackend::classify_frame_write_error(&prose_only_disconnect),
+        actor::FrameWriteDisposition::Transient
+    );
 
     assert_eq!(
         UsbBackend::classify_frame_write_error(&anyhow!("protocol encoding failed")),
@@ -429,7 +510,7 @@ async fn parallel_actor_survives_transient_timeout_frame_failure() {
 #[tokio::test]
 async fn actor_shutdown_rejects_pending_tracked_frame() {
     let (frame_tx, frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
-    let (_display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
+    let (display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
     let (command_tx, command_rx) = mpsc::unbounded_channel();
     let delivery_id = DeviceDeliveryId {
         queue_generation: 17,
@@ -456,6 +537,7 @@ async fn actor_shutdown_rejects_pending_tracked_frame() {
         Arc::new(Mutex::new(())),
         frame_tx,
         frame_rx,
+        display_tx,
         display_rx,
         command_rx,
         Arc::new(Mutex::new(None)),
@@ -478,7 +560,7 @@ async fn actor_shutdown_rejects_pending_tracked_frame() {
 #[tokio::test]
 async fn fatal_control_exit_rejects_pending_tracked_frame() {
     let (frame_tx, frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
-    let (_display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
+    let (display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
     let (command_tx, command_rx) = mpsc::unbounded_channel();
     let delivery_id = DeviceDeliveryId {
         queue_generation: 23,
@@ -505,6 +587,7 @@ async fn fatal_control_exit_rejects_pending_tracked_frame() {
         Arc::new(Mutex::new(())),
         frame_tx,
         frame_rx,
+        display_tx,
         display_rx,
         command_rx,
         Arc::clone(&last_async_error),
@@ -514,7 +597,11 @@ async fn fatal_control_exit_rejects_pending_tracked_frame() {
         .await
         .expect("control response should arrive")
         .expect_err("unsupported brightness should fail the actor");
-    assert!(control_error.contains("does not support brightness"));
+    assert!(matches!(
+        &control_error,
+        DeviceError::WriteError { detail, .. }
+            if detail.contains("does not support brightness")
+    ));
     let ack = timeout(Duration::from_secs(1), delivery_rx)
         .await
         .expect("pending delivery should be rejected without hanging")
@@ -527,9 +614,854 @@ async fn fatal_control_exit_rejects_pending_tracked_frame() {
         last_async_error
             .lock()
             .expect("async error lock should remain available")
-            .as_deref()
-            .is_some_and(|error| error.contains("does not support brightness"))
+            .as_ref()
+            .is_some_and(|error| error.to_string().contains("does not support brightness"))
     );
+}
+
+#[tokio::test]
+async fn brightness_actor_response_preserves_timeout_duration() {
+    let device_id = DeviceId::new();
+    let protocol: Arc<dyn Protocol> = Arc::new(ParallelFairnessProtocol);
+    let transport: Arc<dyn Transport> = Arc::new(
+        RecordingTransport::default()
+            .with_failed_primary_send_attempt(1, InjectedPrimaryFailure::Timeout),
+    );
+    let (frame_tx, frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
+    let (display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
+    let (command_tx, command_rx) = mpsc::unbounded_channel();
+    let active = Arc::new(AtomicBool::new(true));
+    let lifecycle_gate = Arc::new(Mutex::new(()));
+    let last_async_error = Arc::new(Mutex::new(None));
+    let actor_task = UsbBackend::spawn_device_actor(
+        device_id,
+        "brightness-timeout-test-device",
+        Arc::clone(&protocol),
+        transport,
+        Arc::clone(&active),
+        Arc::clone(&lifecycle_gate),
+        frame_tx.clone(),
+        frame_rx,
+        display_tx.clone(),
+        display_rx,
+        command_rx,
+        Arc::clone(&last_async_error),
+    );
+    let mut device = UsbDevice {
+        protocol,
+        transport_name: "recording-test",
+        target_fps: None,
+        resolved_led_count: 1,
+        frame_tx,
+        display_tx,
+        command_tx,
+        actor_task: Some(actor_task),
+        active,
+        lifecycle_gate,
+        last_async_error,
+        info_template: temporary_control_test_device(true, 1),
+        frame_diagnostics_emitted: false,
+        non_black_frame_diagnostics_emitted: false,
+    };
+
+    let error = device
+        .set_brightness(device_id, 128)
+        .await
+        .expect_err("injected brightness timeout should cross the actor response");
+    assert_eq!(
+        error,
+        DeviceError::Timeout {
+            after: Duration::from_millis(25),
+        }
+    );
+    if let Some(actor_task) = device.actor_task.take() {
+        actor_task.await.expect("actor wrapper should join");
+    }
+}
+
+#[tokio::test]
+async fn stored_actor_disconnect_survives_duplicate_connect_and_output_paths() {
+    let device_id = DeviceId::new();
+    let backend = backend_with_stored_actor_error(
+        device_id,
+        DeviceError::Disconnected {
+            device: device_id.to_string(),
+        },
+    );
+    let expected = DeviceError::Disconnected {
+        device: device_id.to_string(),
+    };
+
+    assert_eq!(
+        backend
+            .connect(&device_id)
+            .await
+            .expect_err("duplicate connect should report the actor failure"),
+        expected
+    );
+    assert_eq!(
+        backend
+            .write_colors(&device_id, &[[1, 2, 3]])
+            .await
+            .expect_err("write should report the actor failure"),
+        expected
+    );
+    assert_eq!(
+        backend
+            .write_display_payload_owned(
+                &device_id,
+                Arc::new(OwnedDisplayFramePayload::jpeg(1, 1, Arc::new(vec![0xFF]),)),
+            )
+            .await
+            .expect_err("display write should report the actor failure"),
+        expected
+    );
+    assert_eq!(
+        backend
+            .set_brightness(&device_id, 128)
+            .await
+            .expect_err("brightness should report the actor failure"),
+        expected
+    );
+}
+
+fn backend_with_stored_actor_error(device_id: DeviceId, error: DeviceError) -> UsbBackend {
+    let backend = UsbBackend::new();
+    let mut info = temporary_control_test_device(true, 1);
+    info.id = device_id;
+    info.capabilities.has_display = true;
+    info.capabilities.supports_brightness = true;
+    let protocol: Arc<dyn Protocol> = Arc::new(ParallelFairnessProtocol);
+    let (frame_tx, _frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
+    let (display_tx, _display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
+    let (command_tx, _command_rx) = mpsc::unbounded_channel();
+    let active = Arc::new(AtomicBool::new(false));
+    let lifecycle_gate = Arc::new(Mutex::new(()));
+    let last_async_error = Arc::new(Mutex::new(Some(error)));
+    let device = UsbDevice {
+        protocol: Arc::clone(&protocol),
+        transport_name: "recording-test",
+        target_fps: None,
+        resolved_led_count: 1,
+        frame_tx,
+        display_tx,
+        command_tx,
+        actor_task: None,
+        active,
+        lifecycle_gate,
+        last_async_error,
+        info_template: info.clone(),
+        frame_diagnostics_emitted: false,
+        non_black_frame_diagnostics_emitted: false,
+    };
+    let frame_sink = device.frame_sink(device_id);
+    let display_sink = Some(device.display_sink(device_id));
+    backend
+        .connected
+        .write()
+        .expect("connected device map should remain available")
+        .insert(
+            device_id,
+            Arc::new(ConnectedUsbDevice {
+                device: tokio::sync::Mutex::new(device),
+                info_template: info,
+                protocol,
+                target_fps: None,
+                frame_sink,
+                display_sink,
+            }),
+        );
+    backend
+}
+
+fn backend_with_display_actor(
+    device_id: DeviceId,
+    transport: Arc<RecordingTransport>,
+) -> Arc<UsbBackend> {
+    let backend = Arc::new(UsbBackend::new());
+    let mut info = temporary_control_test_device(true, 1);
+    info.id = device_id;
+    info.capabilities.has_display = true;
+    let protocol: Arc<dyn Protocol> = Arc::new(ParallelFairnessProtocol);
+    let actor_transport: Arc<dyn Transport> = transport;
+    let (frame_tx, frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
+    let (display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
+    let (command_tx, command_rx) = mpsc::unbounded_channel();
+    let active = Arc::new(AtomicBool::new(true));
+    let lifecycle_gate = Arc::new(Mutex::new(()));
+    let last_async_error = Arc::new(Mutex::new(None));
+    let actor_task = UsbBackend::spawn_device_actor(
+        device_id,
+        "coordinator-display-test-device",
+        Arc::clone(&protocol),
+        actor_transport,
+        Arc::clone(&active),
+        Arc::clone(&lifecycle_gate),
+        frame_tx.clone(),
+        frame_rx,
+        display_tx.clone(),
+        display_rx,
+        command_rx,
+        Arc::clone(&last_async_error),
+    );
+    let device = UsbDevice {
+        protocol: Arc::clone(&protocol),
+        transport_name: "recording-test",
+        target_fps: None,
+        resolved_led_count: 1,
+        frame_tx,
+        display_tx,
+        command_tx,
+        actor_task: Some(actor_task),
+        active,
+        lifecycle_gate,
+        last_async_error,
+        info_template: info.clone(),
+        frame_diagnostics_emitted: false,
+        non_black_frame_diagnostics_emitted: false,
+    };
+    let frame_sink = device.frame_sink(device_id);
+    let display_sink = Some(device.display_sink(device_id));
+    backend
+        .connected
+        .write()
+        .expect("connected device map should remain available")
+        .insert(
+            device_id,
+            Arc::new(ConnectedUsbDevice {
+                device: tokio::sync::Mutex::new(device),
+                info_template: info,
+                protocol,
+                target_fps: None,
+                frame_sink,
+                display_sink,
+            }),
+        );
+    backend
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn coordinator_generation_gate_survives_cancelled_usb_display_waiter() {
+    let device_id = DeviceId::new();
+    let old_transport =
+        Arc::new(RecordingTransport::default().with_bulk_send_delay(Duration::from_millis(200)));
+    let new_transport = Arc::new(RecordingTransport::default());
+    let old_backend = backend_with_display_actor(device_id, Arc::clone(&old_transport));
+    let new_backend = backend_with_display_actor(device_id, Arc::clone(&new_transport));
+    let mut manager = BackendManager::new();
+    manager.register_backend(old_backend);
+    let old_lane = manager
+        .display_output_lane(USB_OUTPUT_BACKEND_ID, device_id)
+        .expect("old USB display lane should exist");
+
+    let old_write = tokio::spawn({
+        let old_lane = old_lane.clone();
+        async move {
+            old_lane
+                .write(Arc::new(OwnedDisplayFramePayload::jpeg(
+                    1,
+                    1,
+                    Arc::new(vec![0xD1]),
+                )))
+                .await
+        }
+    });
+    wait_for_bulk_send_attempts(&old_transport, 1).await;
+
+    manager.register_backend(new_backend.clone());
+    let new_lane = manager
+        .display_output_lane(USB_OUTPUT_BACKEND_ID, device_id)
+        .expect("replacement USB display lane should exist");
+    assert_ne!(old_lane.queue_generation(), new_lane.queue_generation());
+    let new_write = tokio::spawn(async move {
+        new_lane
+            .write(Arc::new(OwnedDisplayFramePayload::jpeg(
+                1,
+                1,
+                Arc::new(vec![0xD2]),
+            )))
+            .await
+    });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(
+        new_transport.bulk_send_attempts(),
+        0,
+        "replacement transport must wait for the retired generation's terminal ack"
+    );
+    old_write.abort();
+    assert!(
+        old_write
+            .await
+            .expect_err("old delivery waiter should be cancelled")
+            .is_cancelled()
+    );
+    assert_eq!(
+        wait_for_writes(&old_transport, 1).await,
+        vec![vec![0xD1]],
+        "old physical transport should finish after its waiter is cancelled"
+    );
+    timeout(Duration::from_secs(2), new_write)
+        .await
+        .expect("replacement USB delivery should finish")
+        .expect("replacement USB delivery task should join")
+        .expect("replacement USB transport should complete");
+    assert_eq!(new_transport.writes(), vec![vec![0xD2]]);
+
+    new_backend
+        .disconnect(&device_id)
+        .await
+        .expect("replacement USB actor should shut down");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn replacement_retains_old_usb_actor_through_terminal_delivery() {
+    let device_id = DeviceId::new();
+    let old_transport =
+        Arc::new(RecordingTransport::default().with_bulk_send_delay(Duration::from_millis(200)));
+    let new_transport = Arc::new(RecordingTransport::default());
+    let old_backend = backend_with_display_actor(device_id, Arc::clone(&old_transport));
+    let new_backend = backend_with_display_actor(device_id, Arc::clone(&new_transport));
+    let mut manager = BackendManager::new();
+    manager.register_backend(old_backend);
+    let old_lane = manager
+        .display_output_lane(USB_OUTPUT_BACKEND_ID, device_id)
+        .expect("old USB display lane should exist");
+    let old_write = tokio::spawn(async move {
+        old_lane
+            .write(Arc::new(OwnedDisplayFramePayload::jpeg(
+                1,
+                1,
+                Arc::new(vec![0xD1]),
+            )))
+            .await
+    });
+    wait_for_bulk_send_attempts(&old_transport, 1).await;
+
+    manager.register_backend(new_backend.clone());
+    let new_lane = manager
+        .display_output_lane(USB_OUTPUT_BACKEND_ID, device_id)
+        .expect("replacement USB display lane should exist");
+    let new_write = tokio::spawn(async move {
+        new_lane
+            .write(Arc::new(OwnedDisplayFramePayload::jpeg(
+                1,
+                1,
+                Arc::new(vec![0xD2]),
+            )))
+            .await
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(new_transport.bulk_send_attempts(), 0);
+
+    timeout(Duration::from_secs(1), old_write)
+        .await
+        .expect("old physical delivery should terminate")
+        .expect("old delivery task should join")
+        .expect("old delivery should retain its actual terminal success");
+    timeout(Duration::from_secs(1), new_write)
+        .await
+        .expect("replacement delivery should follow old terminal completion")
+        .expect("replacement delivery task should join")
+        .expect("replacement delivery should complete");
+    assert_eq!(old_transport.writes(), vec![vec![0xD1]]);
+    assert_eq!(new_transport.writes(), vec![vec![0xD2]]);
+    assert_eq!(
+        manager.display_delivery_supervisor_statistics().in_flight,
+        0
+    );
+
+    new_backend
+        .disconnect(&device_id)
+        .await
+        .expect("replacement USB actor should shut down");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cancelled_replaced_usb_failure_reaches_original_lifecycle_fence() {
+    let device_id = DeviceId::new();
+    let old_transport = Arc::new(
+        RecordingTransport::default()
+            .with_failed_transfer_type(TransferType::Bulk)
+            .with_failed_transfer_delay(Duration::from_millis(200)),
+    );
+    let new_transport = Arc::new(RecordingTransport::default());
+    let old_backend = backend_with_display_actor(device_id, Arc::clone(&old_transport));
+    let new_backend = backend_with_display_actor(device_id, Arc::clone(&new_transport));
+    let mut manager = BackendManager::new();
+    manager.register_backend(old_backend);
+    let old_lane = manager
+        .display_output_lane(USB_OUTPUT_BACKEND_ID, device_id)
+        .expect("old USB display lane should exist");
+    let old_generation = old_lane.queue_generation();
+
+    let old_write = tokio::spawn({
+        let old_lane = old_lane.clone();
+        async move {
+            old_lane
+                .write(Arc::new(OwnedDisplayFramePayload::jpeg(
+                    1,
+                    1,
+                    Arc::new(vec![0xD1]),
+                )))
+                .await
+        }
+    });
+    wait_for_bulk_send_attempts(&old_transport, 1).await;
+
+    manager.register_backend(new_backend.clone());
+    let new_lane = manager
+        .display_output_lane(USB_OUTPUT_BACKEND_ID, device_id)
+        .expect("replacement USB display lane should exist");
+    let new_write = tokio::spawn(async move {
+        new_lane
+            .write(Arc::new(OwnedDisplayFramePayload::jpeg(
+                1,
+                1,
+                Arc::new(vec![0xD2]),
+            )))
+            .await
+    });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(
+        new_transport.bulk_send_attempts(),
+        0,
+        "replacement transport must wait for the old physical failure"
+    );
+    old_write.abort();
+    assert!(
+        old_write
+            .await
+            .expect_err("old delivery waiter should be cancelled")
+            .is_cancelled()
+    );
+
+    let failure = timeout(Duration::from_secs(1), async {
+        loop {
+            if let Some(failure) = manager.async_write_failures().into_iter().next() {
+                return failure;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("late old-generation failure should reach the manager authority");
+    assert_eq!(failure.delivery_id.queue_generation, old_generation);
+    assert_eq!(failure.delivery_id.sequence, 1);
+    assert!(matches!(failure.error, DeviceError::WriteError { .. }));
+    assert!(
+        failure.try_acknowledge(),
+        "daemon lifecycle fencing must be able to claim the late failure"
+    );
+
+    timeout(Duration::from_secs(2), new_write)
+        .await
+        .expect("replacement USB delivery should finish")
+        .expect("replacement USB delivery task should join")
+        .expect("replacement USB transport should complete");
+    assert_eq!(new_transport.writes(), vec![vec![0xD2]]);
+    assert!(manager.async_write_failures().is_empty());
+
+    new_backend
+        .disconnect(&device_id)
+        .await
+        .expect("replacement USB actor should shut down");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn repeated_replacement_does_not_accumulate_cancelled_display_transactions() {
+    let device_id = DeviceId::new();
+    let release_old_transport = Arc::new(Notify::new());
+    let old_transport = Arc::new(
+        RecordingTransport::default().with_bulk_send_release(Arc::clone(&release_old_transport)),
+    );
+    let old_backend = backend_with_display_actor(device_id, Arc::clone(&old_transport));
+    let mut manager = BackendManager::new();
+    manager.register_backend(old_backend);
+    let old_lane = manager
+        .display_output_lane(USB_OUTPUT_BACKEND_ID, device_id)
+        .expect("old USB display lane should exist");
+    let old_write = tokio::spawn(async move {
+        old_lane
+            .write(Arc::new(OwnedDisplayFramePayload::jpeg(
+                1,
+                1,
+                Arc::new(vec![0xD1]),
+            )))
+            .await
+    });
+    wait_for_bulk_send_attempts(&old_transport, 1).await;
+    old_write.abort();
+    assert!(
+        old_write
+            .await
+            .expect_err("old delivery waiter should be cancelled")
+            .is_cancelled()
+    );
+
+    for payload_byte in 0xD2..=0xDD {
+        let transport = Arc::new(RecordingTransport::default());
+        let backend = backend_with_display_actor(device_id, transport);
+        manager.register_backend(backend);
+        let lane = manager
+            .display_output_lane(USB_OUTPUT_BACKEND_ID, device_id)
+            .expect("replacement USB display lane should exist");
+        let waiter = tokio::spawn(async move {
+            lane.write(Arc::new(OwnedDisplayFramePayload::jpeg(
+                1,
+                1,
+                Arc::new(vec![payload_byte]),
+            )))
+            .await
+        });
+        tokio::task::yield_now().await;
+        waiter.abort();
+        let _ = waiter.await;
+
+        let supervision = manager.display_delivery_supervisor_statistics();
+        assert_eq!(supervision.in_flight, 1);
+        assert_eq!(
+            supervision.retained_generations, 2,
+            "only the physical delivery and current generation should remain owned"
+        );
+    }
+
+    release_old_transport.notify_waiters();
+    assert_eq!(wait_for_writes(&old_transport, 1).await, vec![vec![0xD1]]);
+    timeout(Duration::from_secs(1), async {
+        loop {
+            let supervision = manager.display_delivery_supervisor_statistics();
+            if supervision.in_flight == 0 && supervision.retained_generations == 1 {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("terminal completion should drain the retired generation");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn actor_panic_terminates_cancelled_retired_display_delivery() {
+    let device_id = DeviceId::new();
+    let release_old_transport = Arc::new(Notify::new());
+    let old_transport = Arc::new(
+        RecordingTransport::default()
+            .with_bulk_send_release(Arc::clone(&release_old_transport))
+            .with_parallel_transfer_lanes()
+            .with_panicked_transfer_type(TransferType::Bulk),
+    );
+    let new_transport = Arc::new(RecordingTransport::default());
+    let old_backend = backend_with_display_actor(device_id, Arc::clone(&old_transport));
+    let new_backend = backend_with_display_actor(device_id, Arc::clone(&new_transport));
+    let mut manager = BackendManager::new();
+    manager.register_backend(old_backend);
+    let old_lane = manager
+        .display_output_lane(USB_OUTPUT_BACKEND_ID, device_id)
+        .expect("old USB display lane should exist");
+    let old_write = tokio::spawn(async move {
+        old_lane
+            .write(Arc::new(OwnedDisplayFramePayload::jpeg(
+                1,
+                1,
+                Arc::new(vec![0xD1]),
+            )))
+            .await
+    });
+    wait_for_bulk_send_attempts(&old_transport, 1).await;
+
+    manager.register_backend(new_backend.clone());
+    let new_lane = manager
+        .display_output_lane(USB_OUTPUT_BACKEND_ID, device_id)
+        .expect("replacement USB display lane should exist");
+    let new_write = tokio::spawn(async move {
+        new_lane
+            .write(Arc::new(OwnedDisplayFramePayload::jpeg(
+                1,
+                1,
+                Arc::new(vec![0xD2]),
+            )))
+            .await
+    });
+    old_write.abort();
+    assert!(
+        old_write
+            .await
+            .expect_err("old delivery waiter should be cancelled")
+            .is_cancelled()
+    );
+    release_old_transport.notify_waiters();
+
+    let failure = timeout(Duration::from_secs(1), async {
+        loop {
+            if let Some(failure) = manager.async_write_failures().into_iter().next() {
+                return failure;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("actor panic should terminate the retired delivery through supervision");
+    assert!(failure.is_from_retired_generation());
+    assert!(failure.try_acknowledge());
+    timeout(Duration::from_secs(1), new_write)
+        .await
+        .expect("replacement delivery should be released after actor cleanup")
+        .expect("replacement delivery task should join")
+        .expect("replacement delivery should complete");
+    assert_eq!(new_transport.writes(), vec![vec![0xD2]]);
+    assert!(manager.async_write_failures().is_empty());
+    assert_eq!(
+        manager.display_delivery_supervisor_statistics().in_flight,
+        0
+    );
+
+    new_backend
+        .disconnect(&device_id)
+        .await
+        .expect("replacement USB actor should shut down");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn hung_display_transport_has_bounded_actor_shutdown() {
+    let device_id = DeviceId::new();
+    let transport_release = Arc::new(Notify::new());
+    let transport = Arc::new(
+        RecordingTransport::default().with_bulk_send_release(Arc::clone(&transport_release)),
+    );
+    let backend = backend_with_display_actor(device_id, Arc::clone(&transport));
+    let mut manager = BackendManager::new();
+    manager.register_backend(backend.clone());
+    let lane = manager
+        .display_output_lane(USB_OUTPUT_BACKEND_ID, device_id)
+        .expect("USB display lane should exist");
+    let write = tokio::spawn(async move {
+        lane.write(Arc::new(OwnedDisplayFramePayload::jpeg(
+            1,
+            1,
+            Arc::new(vec![0xD1]),
+        )))
+        .await
+    });
+    wait_for_bulk_send_attempts(&transport, 1).await;
+
+    let shutdown_error = timeout(
+        USB_ACTOR_SHUTDOWN_TIMEOUT + Duration::from_secs(1),
+        backend.disconnect(&device_id),
+    )
+    .await
+    .expect("hung USB actor shutdown should remain bounded")
+    .expect_err("hung USB actor shutdown should report its timeout");
+    assert!(matches!(
+        shutdown_error,
+        DeviceError::Timeout { after } if after == USB_ACTOR_SHUTDOWN_TIMEOUT
+    ));
+    let write_error = timeout(Duration::from_secs(1), write)
+        .await
+        .expect("hung display delivery should terminate during bounded shutdown")
+        .expect("display delivery task should join")
+        .expect_err("display delivery should report shutdown timeout");
+    assert!(matches!(
+        write_error,
+        DeviceError::Timeout { after } if after == USB_ACTOR_SHUTDOWN_TIMEOUT
+    ));
+    let failure = manager
+        .async_write_failures()
+        .into_iter()
+        .next()
+        .expect("bounded shutdown failure should reach lifecycle fencing");
+    assert!(failure.try_acknowledge());
+    assert_eq!(
+        manager.display_delivery_supervisor_statistics().in_flight,
+        0
+    );
+}
+
+#[tokio::test]
+async fn cancelled_shutdown_aborts_the_taken_actor_task() {
+    let device_id = DeviceId::new();
+    let command_received = Arc::new(Notify::new());
+    let actor_dropped = Arc::new(AtomicBool::new(false));
+    let (command_tx, mut command_rx) = mpsc::unbounded_channel();
+    let actor_task = tokio::spawn({
+        let command_received = Arc::clone(&command_received);
+        let actor_dropped = Arc::clone(&actor_dropped);
+        async move {
+            let _drop_signal = ActorDropSignal(actor_dropped);
+            let Some(UsbDeviceCommand::Shutdown { response_tx, .. }) = command_rx.recv().await
+            else {
+                panic!("shutdown command should reach the actor");
+            };
+            let _response_tx = response_tx;
+            command_received.notify_one();
+            std::future::pending::<()>().await;
+        }
+    });
+    let mut device = usb_device_with_actor_task(device_id, command_tx, actor_task);
+    let shutdown_task = tokio::spawn(async move { device.shutdown(device_id).await });
+
+    timeout(Duration::from_secs(1), command_received.notified())
+        .await
+        .expect("shutdown should take the actor handle and send its command");
+    shutdown_task.abort();
+    assert!(
+        shutdown_task
+            .await
+            .expect_err("shutdown caller should be cancelled")
+            .is_cancelled()
+    );
+    wait_for_actor_drop(&actor_dropped).await;
+}
+
+#[tokio::test]
+async fn shutdown_response_loss_still_joins_a_failing_actor() {
+    let device_id = DeviceId::new();
+    let response_dropped = Arc::new(Notify::new());
+    let actor_release = Arc::new(Notify::new());
+    let actor_dropped = Arc::new(AtomicBool::new(false));
+    let (command_tx, mut command_rx) = mpsc::unbounded_channel();
+    let actor_task = tokio::spawn({
+        let response_dropped = Arc::clone(&response_dropped);
+        let actor_release = Arc::clone(&actor_release);
+        let actor_dropped = Arc::clone(&actor_dropped);
+        async move {
+            let _drop_signal = ActorDropSignal(actor_dropped);
+            let Some(UsbDeviceCommand::Shutdown { response_tx, .. }) = command_rx.recv().await
+            else {
+                panic!("shutdown command should reach the actor");
+            };
+            drop(response_tx);
+            response_dropped.notify_one();
+            actor_release.notified().await;
+            panic!("injected actor failure after shutdown response loss");
+        }
+    });
+    let mut device = usb_device_with_actor_task(device_id, command_tx, actor_task);
+    let mut shutdown_task = tokio::spawn(async move { (device.shutdown(device_id).await, device) });
+
+    timeout(Duration::from_secs(1), response_dropped.notified())
+        .await
+        .expect("actor should drop the shutdown response channel");
+    assert!(
+        timeout(Duration::from_millis(50), &mut shutdown_task)
+            .await
+            .is_err(),
+        "response loss must not return before actor cleanup"
+    );
+
+    actor_release.notify_one();
+    let (shutdown_result, device) = timeout(Duration::from_secs(1), shutdown_task)
+        .await
+        .expect("shutdown should finish after the failing actor terminates")
+        .expect("shutdown task should join");
+    assert_eq!(
+        shutdown_result,
+        Err(DeviceError::Disconnected {
+            device: device_id.to_string(),
+        })
+    );
+    assert!(device.actor_task.is_none());
+    assert!(actor_dropped.load(Ordering::Acquire));
+}
+
+#[tokio::test]
+async fn usb_display_transport_failure_keeps_its_queue_generation() {
+    let device_id = DeviceId::new();
+    let transport =
+        Arc::new(RecordingTransport::default().with_failed_transfer_type(TransferType::Bulk));
+    let backend = backend_with_display_actor(device_id, transport);
+    let mut manager = BackendManager::new();
+    manager.register_backend(backend.clone());
+    let lane = manager
+        .display_output_lane(USB_OUTPUT_BACKEND_ID, device_id)
+        .expect("USB display lane should exist");
+    let queue_generation = lane.queue_generation();
+
+    let error = lane
+        .write(Arc::new(OwnedDisplayFramePayload::jpeg(
+            1,
+            1,
+            Arc::new(vec![0xD1]),
+        )))
+        .await
+        .expect_err("injected USB transport failure should reach the coordinator");
+    assert!(matches!(error, DeviceError::WriteError { .. }));
+    let statistics = lane.statistics();
+    assert_eq!(statistics.transport_started, 1);
+    assert_eq!(statistics.transport_completed, 0);
+    assert_eq!(statistics.transport_failed, 1);
+    let failures = manager.async_write_failures();
+    assert_eq!(failures.len(), 1);
+    assert_eq!(failures[0].delivery_id.queue_generation, queue_generation);
+    assert_eq!(failures[0].delivery_id.sequence, 1);
+    assert!(failures[0].is_current());
+
+    backend
+        .disconnect(&device_id)
+        .await
+        .expect("USB actor should shut down");
+}
+
+#[tokio::test]
+async fn cancelled_usb_display_waiter_keeps_terminal_failure_generation() {
+    let device_id = DeviceId::new();
+    let transport = Arc::new(
+        RecordingTransport::default()
+            .with_failed_transfer_type(TransferType::Bulk)
+            .with_failed_transfer_delay(Duration::from_millis(200)),
+    );
+    let backend = backend_with_display_actor(device_id, Arc::clone(&transport));
+    let mut manager = BackendManager::new();
+    manager.register_backend(backend.clone());
+    let lane = manager
+        .display_output_lane(USB_OUTPUT_BACKEND_ID, device_id)
+        .expect("USB display lane should exist");
+    let queue_generation = lane.queue_generation();
+
+    let delivery = tokio::spawn({
+        let lane = lane.clone();
+        async move {
+            lane.write(Arc::new(OwnedDisplayFramePayload::jpeg(
+                1,
+                1,
+                Arc::new(vec![0xD1]),
+            )))
+            .await
+        }
+    });
+    wait_for_bulk_send_attempts(&transport, 1).await;
+    delivery.abort();
+    assert!(
+        delivery
+            .await
+            .expect_err("display delivery waiter should be cancelled")
+            .is_cancelled()
+    );
+
+    let failure = timeout(Duration::from_secs(1), async {
+        loop {
+            if let Some(failure) = manager.async_write_failures().into_iter().next() {
+                return failure;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("terminal USB failure should reach the coordinator");
+    assert_eq!(failure.delivery_id.queue_generation, queue_generation);
+    assert_eq!(failure.delivery_id.sequence, 1);
+    assert!(failure.is_current());
+    assert!(matches!(failure.error, DeviceError::WriteError { .. }));
+    let statistics = lane.statistics();
+    assert_eq!(statistics.transport_started, 1);
+    assert_eq!(statistics.transport_completed, 0);
+    assert_eq!(statistics.transport_failed, 1);
+
+    backend
+        .disconnect(&device_id)
+        .await
+        .expect("USB actor should shut down");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -537,8 +1469,9 @@ async fn shutdown_gate_prevents_post_cleanup_tracked_publication() {
     let (frame_tx, _frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
     let active = Arc::new(AtomicBool::new(true));
     let lifecycle_gate = Arc::new(Mutex::new(()));
+    let device_id = DeviceId::new();
     let sink = UsbFrameSink {
-        device_id: DeviceId::new(),
+        device_id,
         frame_tx: frame_tx.clone(),
         active: Arc::clone(&active),
         lifecycle_gate: Arc::clone(&lifecycle_gate),
@@ -556,7 +1489,9 @@ async fn shutdown_gate_prevents_post_cleanup_tracked_publication() {
     });
     active.store(false, Ordering::Release);
     if let Some(pending) = frame_tx.send_replace(None) {
-        pending.reject_pending("test shutdown cleanup");
+        pending.reject_pending(DeviceError::Disconnected {
+            device: device_id.to_string(),
+        });
     }
     drop(gate);
 
@@ -568,6 +1503,52 @@ async fn shutdown_gate_prevents_post_cleanup_tracked_publication() {
     assert_eq!(ack.status, DeviceDeliveryStatus::Failed);
     assert!(!ack.transport_started);
     assert!(frame_tx.borrow().is_none());
+}
+
+struct ActorDropSignal(Arc<AtomicBool>);
+
+impl Drop for ActorDropSignal {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
+
+fn usb_device_with_actor_task(
+    device_id: DeviceId,
+    command_tx: mpsc::UnboundedSender<UsbDeviceCommand>,
+    actor_task: JoinHandle<()>,
+) -> UsbDevice {
+    let (frame_tx, _frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
+    let (display_tx, _display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
+    let mut info = temporary_control_test_device(true, 1);
+    info.id = device_id;
+
+    UsbDevice {
+        protocol: Arc::new(FairnessProtocol),
+        transport_name: "shutdown-test",
+        target_fps: None,
+        resolved_led_count: 1,
+        frame_tx,
+        display_tx,
+        command_tx,
+        actor_task: Some(actor_task),
+        active: Arc::new(AtomicBool::new(true)),
+        lifecycle_gate: Arc::new(Mutex::new(())),
+        last_async_error: Arc::new(Mutex::new(None)),
+        info_template: info,
+        frame_diagnostics_emitted: false,
+        non_black_frame_diagnostics_emitted: false,
+    }
+}
+
+async fn wait_for_actor_drop(actor_dropped: &AtomicBool) {
+    timeout(Duration::from_secs(1), async {
+        while !actor_dropped.load(Ordering::Acquire) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("cancelled shutdown should abort and drop the actor task");
 }
 
 async fn assert_transient_frame_failure_survival(
@@ -625,6 +1606,16 @@ async fn assert_transient_frame_failure_survival(
     assert_eq!(first_ack.status, DeviceDeliveryStatus::Failed);
     assert!(first_ack.transport_started);
     assert_eq!(first_ack.completed_payload_bytes, 0);
+    match failure {
+        InjectedPrimaryFailure::Timeout => assert!(matches!(
+            first_ack.error,
+            Some(DeviceError::Timeout { after }) if after == Duration::from_millis(25)
+        )),
+        InjectedPrimaryFailure::Io => assert!(matches!(
+            first_ack.error,
+            Some(DeviceError::WriteError { .. })
+        )),
+    }
 
     let second_id = DeviceDeliveryId {
         queue_generation: 7,
@@ -690,6 +1681,20 @@ async fn wait_for_primary_send_attempts(transport: &RecordingTransport, count: u
     .expect("transport send attempt should arrive before timeout");
 }
 
+async fn wait_for_bulk_send_attempts(transport: &RecordingTransport, count: usize) {
+    timeout(Duration::from_secs(1), async {
+        loop {
+            if transport.bulk_send_attempts() >= count {
+                return;
+            }
+
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("bulk transport send attempt should arrive before timeout");
+}
+
 struct FairnessProtocol;
 
 impl Protocol for FairnessProtocol {
@@ -722,7 +1727,7 @@ impl Protocol for FairnessProtocol {
         })
     }
 
-    fn zones(&self) -> Vec<ProtocolZone> {
+    fn zones(&self) -> Vec<SegmentInfo> {
         Vec::new()
     }
 
@@ -761,6 +1766,10 @@ impl Protocol for ParallelFairnessProtocol {
         )]
     }
 
+    fn encode_brightness(&self, brightness: u8) -> Option<Vec<ProtocolCommand>> {
+        Some(vec![test_command(brightness)])
+    }
+
     fn encode_display_frame(&self, jpeg_data: &[u8]) -> Option<Vec<ProtocolCommand>> {
         Some(vec![test_command_with_transfer(
             jpeg_data.first().copied().unwrap_or(0xD1),
@@ -775,7 +1784,7 @@ impl Protocol for ParallelFairnessProtocol {
         })
     }
 
-    fn zones(&self) -> Vec<ProtocolZone> {
+    fn zones(&self) -> Vec<SegmentInfo> {
         Vec::new()
     }
 
@@ -806,7 +1815,11 @@ struct RecordingTransport {
     bulk_send_delay: Option<Duration>,
     parallel_transfer_lanes: bool,
     failed_transfer_type: Option<TransferType>,
+    panicked_transfer_type: Option<TransferType>,
+    failed_transfer_delay: Duration,
+    bulk_send_release: Option<Arc<Notify>>,
     primary_send_attempts: AtomicUsize,
+    bulk_send_attempts: AtomicUsize,
     failed_primary_send_attempt: Option<usize>,
     failed_primary_send_error: Option<InjectedPrimaryFailure>,
 }
@@ -822,6 +1835,16 @@ impl RecordingTransport {
         self
     }
 
+    fn with_bulk_send_delay(mut self, send_delay: Duration) -> Self {
+        self.bulk_send_delay = Some(send_delay);
+        self
+    }
+
+    fn with_bulk_send_release(mut self, release: Arc<Notify>) -> Self {
+        self.bulk_send_release = Some(release);
+        self
+    }
+
     fn with_parallel_transfer_lanes(mut self) -> Self {
         self.parallel_transfer_lanes = true;
         self
@@ -834,6 +1857,16 @@ impl RecordingTransport {
 
     const fn with_failed_transfer_type(mut self, transfer_type: TransferType) -> Self {
         self.failed_transfer_type = Some(transfer_type);
+        self
+    }
+
+    const fn with_panicked_transfer_type(mut self, transfer_type: TransferType) -> Self {
+        self.panicked_transfer_type = Some(transfer_type);
+        self
+    }
+
+    const fn with_failed_transfer_delay(mut self, delay: Duration) -> Self {
+        self.failed_transfer_delay = delay;
         self
     }
 
@@ -856,6 +1889,10 @@ impl RecordingTransport {
 
     fn primary_send_attempts(&self) -> usize {
         self.primary_send_attempts.load(Ordering::Relaxed)
+    }
+
+    fn bulk_send_attempts(&self) -> usize {
+        self.bulk_send_attempts.load(Ordering::Relaxed)
     }
 
     async fn record_send(&self, data: &[u8], send_delay: Duration) {
@@ -897,7 +1934,21 @@ impl Transport for RecordingTransport {
         data: &[u8],
         transfer_type: TransferType,
     ) -> std::result::Result<(), TransportError> {
+        if transfer_type == TransferType::Bulk {
+            self.bulk_send_attempts.fetch_add(1, Ordering::Relaxed);
+            if let Some(release) = &self.bulk_send_release {
+                release.notified().await;
+            }
+        }
+        assert_ne!(
+            self.panicked_transfer_type,
+            Some(transfer_type),
+            "injected {transfer_type:?} transport panic"
+        );
         if self.failed_transfer_type == Some(transfer_type) {
+            if !self.failed_transfer_delay.is_zero() {
+                tokio::time::sleep(self.failed_transfer_delay).await;
+            }
             return Err(TransportError::IoError {
                 detail: format!("injected {transfer_type:?} failure"),
             });

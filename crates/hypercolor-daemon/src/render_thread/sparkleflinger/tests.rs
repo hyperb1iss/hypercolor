@@ -2,7 +2,7 @@ use hypercolor_core::blend_math::{
     RgbaBlendMode, blend_rgba_pixels_in_place, decode_srgb_channel, encode_srgb_channel,
     screen_blend,
 };
-use hypercolor_core::types::canvas::{BlendMode, Canvas, LinearRgba, PublishedSurface, Rgba};
+use hypercolor_types::canvas::{BlendMode, Canvas, LinearRgba, PublishedSurface, Rgba};
 use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::scene::DisplayFaceBlendMode;
 use hypercolor_types::spatial::NormalizedPosition;

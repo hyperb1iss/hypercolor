@@ -12,23 +12,33 @@ description: >-
 
 # Native Effect Authoring
 
-Native effects are Rust implementations of `EffectRenderer` in `crates/hypercolor-core/src/effect/builtin/`. They render directly to Canvas without Servo — fastest path, ~1ms per frame.
+Native effects are Rust implementations of `EffectRenderer` in
+`crates/hypercolor-core/src/effect/builtin/`. They render directly to Canvas
+without Servo, the fastest path at about 1ms per frame.
 
 ## EffectRenderer Trait Contract
 
 ```rust
 pub trait EffectRenderer: Send {
     fn init(&mut self, metadata: &EffectMetadata) -> anyhow::Result<()>;
-    fn tick(&mut self, input: &FrameInput<'_>) -> anyhow::Result<Canvas>;
-    fn set_control(&mut self, name: &str, value: &ControlValue);
+    fn render_into(&mut self, input: &FrameInput<'_>, target: &mut Canvas)
+        -> anyhow::Result<()>;
+    fn initialize_controls(
+        &mut self,
+        revision: SetRevision,
+        controls: &ControlSet,
+    ) -> Result<(), ControlError>;
+    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>)
+        -> Result<(), ControlError>;
     fn destroy(&mut self);
 }
 ```
 
-- `init` — called once after construction, receives full metadata
-- `tick` — called every frame, must return a `Canvas` (default 640x480 Rgba pixels, sRGB; dimensions come from `FrameInput.canvas_width/height` and are configurable)
-- `set_control` — called when user adjusts a control, can arrive between any two ticks
-- `destroy` — cleanup (rarely needed for native effects)
+- `init`: called once after construction, receives full metadata
+- `render_into`: called every frame with a reusable target canvas
+- `initialize_controls`: receives the authoritative snapshot before the first frame
+- `apply_controls`: receives one ordered atomic batch between frames
+- `destroy`: cleanup (rarely needed for native effects)
 
 ## FrameInput: What's Available Per Frame
 
@@ -44,7 +54,8 @@ pub struct FrameInput<'a> {
 }
 ```
 
-**Always use `delta_secs` for animation** — frame rate is adaptive (10-60 FPS), so fixed increments produce stuttery motion at lower tiers.
+**Always use `delta_secs` for animation.** Frame rate is adaptive (10-60 FPS),
+so fixed increments produce stuttery motion at lower tiers.
 
 ## AudioData Fields Catalog
 
@@ -54,49 +65,64 @@ Available every frame when audio input is active:
 | ------------------- | ---------- | ---------- | ------------------------------------------------- |
 | `rms_level`         | f32        | 0.0-1.0    | Overall loudness                                  |
 | `peak_level`        | f32        | 0.0-1.0    | Transient detection                               |
-| `beat_detected`     | bool       | —          | Impulse on beat onset                             |
+| `beat_detected`     | bool       | n/a        | Impulse on beat onset                             |
 | `beat_confidence`   | f32        | 0.0-1.0    | Beat reliability                                  |
 | `beat_phase`        | f32        | 0.0-1.0    | Position in beat cycle                            |
 | `beat_pulse`        | f32        | 0.0-1.0    | Decaying impulse (1.0 on beat, exponential decay) |
-| `bpm`               | f32        | —          | Estimated BPM                                     |
+| `bpm`               | f32        | n/a        | Estimated BPM                                     |
 | `spectrum`          | Vec\<f32\> | 200 bins   | Logarithmic 20Hz-20kHz                            |
 | `mel_bands`         | Vec\<f32\> | 24 bands   | Perceptual frequency bands                        |
 | `chromagram`        | Vec\<f32\> | 12 classes | Pitch class energy (C, C#, D, ...)                |
-| `spectral_centroid` | f32        | —          | Brightness (high = treble-heavy)                  |
-| `spectral_flux`     | f32        | —          | Rate of spectral change                           |
-| `onset_detected`    | bool       | —          | Onset (broader than beat)                         |
+| `spectral_centroid` | f32        | n/a        | Brightness (high = treble-heavy)                  |
+| `spectral_flux`     | f32        | n/a        | Rate of spectral change                           |
+| `onset_detected`    | bool       | n/a        | Onset (broader than beat)                         |
 | `onset_pulse`       | f32        | 0.0-1.0    | Decaying onset impulse                            |
 
 ## Control Dispatch Pattern
 
-Simple match on control ID, direct field update:
+Apply the complete batch before returning. Native renderers normally cannot
+fail once values have passed control admission, so updating derived fields in
+one method call is atomic from the render loop's perspective.
 
 ```rust
-fn set_control(&mut self, name: &str, value: &ControlValue) {
-    match name {
-        "base_color" => if let ControlValue::Color(c) = value { self.base_color = *c; },
-        "sensitivity" => if let Some(v) = value.as_f32() { self.sensitivity = v; },
-        "palette" => if let ControlValue::Enum(s) = value { self.palette = s.clone(); },
-        _ => {} // unknown controls silently ignored
+fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> Result<(), ControlError> {
+    for (control_id, value) in batch.changes {
+        match control_id.as_str() {
+            "base_color" => if let ControlValue::ColorLinear(c) = value {
+                self.base_color = [c.r, c.g, c.b, c.a];
+            },
+            "sensitivity" => if let Some(v) = value.as_effect_f32() {
+                self.sensitivity = v;
+            },
+            "palette" => if let ControlValue::Enum(s) = value {
+                self.palette.clone_from(s);
+            },
+            _ => {}
+        }
     }
+    Ok(())
 }
 ```
 
-Color controls arrive as `[f32; 4]` in **linear RGBA** (0.0-1.0). Convert to sRGB u8 for Canvas output.
+`ControlValue::ColorLinear` carries linear RGBA. Convert to encoded sRGB only
+when writing the canvas.
 
 ## Canvas Output
 
-`Canvas` is `Rgba` pixels in **sRGB gamma space** (u8 per channel). Default dimensions are 640x480 (`DEFAULT_CANVAS_WIDTH/HEIGHT` constants), but always use `input.canvas_width/height` from `FrameInput` -- they are configurable. Available operations:
+`Canvas` is `Rgba` pixels in **sRGB gamma space** (u8 per channel). Default
+dimensions are 640x480 (`DEFAULT_CANVAS_WIDTH/HEIGHT` constants), but always
+use `input.canvas_width/height` from `FrameInput` because they are configurable.
+Available operations:
 
-- `Canvas::new(width, height)` — opaque black canvas
-- `canvas.fill(rgba)` — solid fill
-- `canvas.set_pixel(x, y, rgba)` — individual pixel write
-- `canvas.get_pixel(x, y)` — read a pixel (returns `Rgba::BLACK` for out-of-bounds)
-- `canvas.pixels()` — iterator of `[u8; 4]` chunks (read-only)
-- `canvas.as_rgba_bytes()` — raw `&[u8]` slice (read-only)
-- `canvas.as_rgba_bytes_mut()` — raw `&mut [u8]` slice (mutable, for bulk pixel manipulation)
-- `canvas.clear()` — fill with opaque black
-- `canvas.width()` / `canvas.height()` — dimensions
+- `Canvas::new(width, height)`: opaque black canvas
+- `canvas.fill(rgba)`: solid fill
+- `canvas.set_pixel(x, y, rgba)`: individual pixel write
+- `canvas.get_pixel(x, y)`: read a pixel (returns `Rgba::BLACK` for out-of-bounds)
+- `canvas.pixels()`: iterator of `[u8; 4]` chunks (read-only)
+- `canvas.as_rgba_bytes()`: raw `&[u8]` slice (read-only)
+- `canvas.as_rgba_bytes_mut()`: raw `&mut [u8]` slice (mutable, for bulk pixel manipulation)
+- `canvas.clear()`: fill with opaque black
+- `canvas.width()` / `canvas.height()`: dimensions
 
 ## Available Color Types
 
@@ -111,7 +137,9 @@ The engine provides correct sRGB transfer functions and Oklab/Oklch conversions 
 
 ## Beat Flash Anti-Pattern
 
-**Do not** map `beat_detected` directly to brightness spikes — produces harsh strobing that's unpleasant on LEDs. Instead, redirect beat energy to **movement**:
+**Do not** map `beat_detected` directly to brightness spikes. The result is
+harsh strobing that's unpleasant on LEDs. Instead, redirect beat energy to
+**movement**:
 
 - Zoom/scale pulses on beat
 - Rotation speed boosts
@@ -126,13 +154,18 @@ Use `beat_pulse` (decaying exponential) for smooth energy, not the binary `beat_
 Loading → Initializing → Running → Paused → Destroying
 ```
 
-`Paused` exists for crossfade transitions — the effect is alive but not actively rendering.
+`Paused` exists for crossfade transitions. The effect is alive but not actively rendering.
 
 ## Registration
 
-New builtin renderers register in `src/effect/builtin/mod.rs` via `create_builtin_renderer()`. Add a match arm mapping your effect's name string to its renderer constructor. The factory in `src/effect/factory.rs` dispatches `EffectSource::Native` effects to `create_builtin_renderer` automatically -- you only need to touch `builtin/mod.rs`.
+New builtin renderers register in `src/effect/builtin/mod.rs` via
+`create_builtin_renderer()`. Add a match arm mapping your effect's name string
+to its renderer constructor. The factory in `src/effect/factory.rs` dispatches
+`EffectSource::Native` effects to `create_builtin_renderer` automatically. You
+only need to touch `builtin/mod.rs`.
 
-Metadata for native effects uses `EffectSource::Native { path }`. Control definitions go in the `EffectMetadata.controls` vec.
+Metadata for native effects uses `EffectSource::Native { path }`. Control
+definitions go in the `EffectMetadata.controls` vec.
 
 ## Existing Builtins as Templates
 
@@ -148,8 +181,10 @@ Metadata for native effects uses `EffectSource::Native { path }`. Control defini
 
 ## Testing
 
-Test in `crates/hypercolor-core/tests/`. Create a renderer, feed it mock `FrameInput` with synthetic `AudioData`, verify Canvas output pixels.
+Test in `crates/hypercolor-core/tests/`. Create a renderer, feed it mock
+`FrameInput` with synthetic `AudioData`, and verify Canvas output pixels.
 
 ## Detailed References
 
-- **`references/effect-renderer-contract.md`** — Annotated examples from AudioPulse and ColorWave, edge cases in control value handling, Canvas pixel math patterns
+- **`references/effect-renderer-contract.md`**: Annotated examples from
+  AudioPulse and ColorWave, control value edge cases, and Canvas pixel math

@@ -14,8 +14,7 @@ use hypercolor_types::layer::{SceneLayer, SceneLayerId};
 use hypercolor_types::library::PresetId;
 use hypercolor_types::scene::{
     ColorInterpolation, DisplayFaceTarget, EasingFunction, Scene, SceneId, SceneKind,
-    SceneMutationMode, ScenePriority, SceneScope, TransitionSpec, UnassignedBehavior, Zone, ZoneId,
-    ZoneRole,
+    SceneMutationMode, ScenePriority, TransitionSpec, UnassignedBehavior, Zone, ZoneId, ZoneRole,
 };
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 use serde::Deserialize;
@@ -197,10 +196,8 @@ fn convert_profile(
         id: scene_id,
         name,
         description: profile.description,
-        scope: SceneScope::Full,
-        zone_assignments: Vec::new(),
-        groups,
-        groups_revision: 0,
+        zones: groups,
+        zones_revision: 0,
         transition: TransitionSpec {
             duration_ms: 0,
             easing: EasingFunction::Linear,
@@ -240,10 +237,6 @@ fn primary_zone(scene_id: SceneId, primary: LegacyProfilePrimary, layout: Spatia
         id: zone_id,
         name: "Default".to_owned(),
         description: Some("Default zone.".to_owned()),
-        effect_id: Some(primary.effect_id),
-        controls,
-        control_bindings: HashMap::new(),
-        preset_id: primary.active_preset_id,
         layers: vec![layer],
         layout,
         brightness: 1.0,
@@ -272,10 +265,6 @@ fn display_zone(scene_id: SceneId, display: LegacyProfileDisplay) -> Zone {
         id: derived_zone_id(scene_id, &zone_key),
         name: format!("{device_id} Face"),
         description: Some(format!("Display face for {device_id}")),
-        effect_id: Some(display.effect_id),
-        controls,
-        control_bindings: HashMap::new(),
-        preset_id: None,
         layers: vec![layer],
         layout: deferred_display_layout(device_id),
         brightness: 1.0,

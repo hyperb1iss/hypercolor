@@ -1054,7 +1054,7 @@ fn map_transfer_error(error: TransferError, timeout: Duration) -> TransportError
         TransferError::Cancelled => TransportError::Timeout {
             timeout_ms: u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
         },
-        TransferError::Disconnected => TransportError::NotFound {
+        TransferError::Disconnected => TransportError::Disconnected {
             detail: error.to_string(),
         },
         TransferError::Fault

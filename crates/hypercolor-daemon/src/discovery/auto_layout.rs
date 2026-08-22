@@ -77,7 +77,7 @@ async fn sync_active_layout_for_renderable_devices_workflow(
         .acquire_layout_update_guard()
         .await;
     let original_layout = {
-        let spatial = runtime.spatial_engine.read().await;
+        let spatial = runtime.spatial_engine.snapshot();
         spatial.layout().as_ref().clone()
     };
     let mut layout = original_layout.clone();
@@ -244,9 +244,9 @@ async fn active_auto_exclusion_keys(
     layout: &SpatialLayout,
 ) -> Vec<LayoutAutoExclusionKey> {
     let mut keys = vec![LayoutAutoExclusionKey::layout(layout.id.as_str())];
-    let manager = runtime.scene_manager.read().await;
+    let manager = runtime.scene_manager.snapshot().await;
     if let Some(scene) = manager.active_scene()
-        && let Some(group) = scene.primary_group()
+        && let Some(group) = scene.primary_zone()
     {
         keys.push(LayoutAutoExclusionKey::zone(scene.id, group.id));
     }

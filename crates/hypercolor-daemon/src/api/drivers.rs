@@ -4,61 +4,15 @@ use std::sync::Arc;
 
 use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Response};
-use serde::Serialize;
-use utoipa::ToSchema;
-
-use hypercolor_types::config::DriverConfigEntry;
+use hypercolor_types::api::drivers::{DriverConfigResponse, DriverListResponse, DriverSummary};
 use hypercolor_types::config::HypercolorConfig;
-use hypercolor_types::device::{
-    DriverModuleDescriptor, DriverPresentation, DriverProtocolDescriptor,
-};
 
-use crate::api::AppState;
-use crate::api::envelope::ApiResponse;
+use crate::api::envelope;
+use crate::app_state::AppState;
 use crate::domain::{DomainError, ResourceKind};
 use crate::network;
 
-#[derive(Debug, Serialize, ToSchema)]
-pub struct DriverListResponse {
-    pub items: Vec<DriverSummary>,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-pub struct DriverSummary {
-    pub descriptor: DriverModuleDescriptor,
-    pub presentation: DriverPresentation,
-    pub enabled: bool,
-    pub config_key: String,
-    pub protocols: Vec<DriverProtocolDescriptor>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub control_surface_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub control_surface_path: Option<String>,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-pub struct DriverConfigResponse {
-    pub driver_id: String,
-    pub config_key: String,
-    pub configurable: bool,
-    pub current: DriverConfigEntry,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub default: Option<DriverConfigEntry>,
-}
-
 /// `GET /api/v1/drivers` — List registered driver modules.
-#[utoipa::path(
-    get,
-    path = "/api/v1/drivers",
-    responses(
-        (
-            status = 200,
-            description = "Registered driver modules",
-            body = crate::api::envelope::ApiResponse<DriverListResponse>
-        )
-    ),
-    tag = "drivers"
-)]
 pub async fn list_drivers(State(state): State<Arc<AppState>>) -> Response {
     let config = state.config_manager.as_ref().map_or_else(
         || Arc::new(HypercolorConfig::default()),
@@ -102,30 +56,10 @@ pub async fn list_drivers(State(state): State<Arc<AppState>>) -> Response {
         })
         .collect();
 
-    ApiResponse::ok(DriverListResponse { items })
+    envelope::ok(DriverListResponse { items })
 }
 
 /// `GET /api/v1/drivers/{id}/config` — Get one driver module's config entry.
-#[utoipa::path(
-    get,
-    path = "/api/v1/drivers/{id}/config",
-    params(
-        ("id" = String, Path, description = "Driver module identifier")
-    ),
-    responses(
-        (
-            status = 200,
-            description = "Driver module config",
-            body = crate::api::envelope::ApiResponse<DriverConfigResponse>
-        ),
-        (
-            status = 404,
-            description = "Driver module not found",
-            body = hypercolor_types::api::envelope::ApiErrorBody
-        )
-    ),
-    tag = "drivers"
-)]
 pub async fn get_driver_config(
     State(state): State<Arc<AppState>>,
     Path(driver_id): Path<String>,
@@ -143,7 +77,7 @@ pub async fn get_driver_config(
         .config()
         .map(hypercolor_driver_api::DriverConfigProvider::default_config);
 
-    ApiResponse::ok(DriverConfigResponse {
+    envelope::ok(DriverConfigResponse {
         config_key: format!("drivers.{driver_id}"),
         configurable: default.is_some(),
         driver_id,

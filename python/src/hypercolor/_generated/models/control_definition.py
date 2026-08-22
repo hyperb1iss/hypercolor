@@ -22,14 +22,14 @@ from ..types import UNSET, Unset
 if TYPE_CHECKING:
     from ..models.control_binding import ControlBinding
     from ..models.control_kind_type_9 import ControlKindType9
-    from ..models.control_value_type_0 import ControlValueType0
-    from ..models.control_value_type_1 import ControlValueType1
-    from ..models.control_value_type_2 import ControlValueType2
-    from ..models.control_value_type_3 import ControlValueType3
-    from ..models.control_value_type_4 import ControlValueType4
-    from ..models.control_value_type_5 import ControlValueType5
-    from ..models.control_value_type_6 import ControlValueType6
-    from ..models.control_value_type_7 import ControlValueType7
+    from ..models.effect_control_value_type_0 import EffectControlValueType0
+    from ..models.effect_control_value_type_1 import EffectControlValueType1
+    from ..models.effect_control_value_type_2 import EffectControlValueType2
+    from ..models.effect_control_value_type_3 import EffectControlValueType3
+    from ..models.effect_control_value_type_4 import EffectControlValueType4
+    from ..models.effect_control_value_type_5 import EffectControlValueType5
+    from ..models.effect_control_value_type_6 import EffectControlValueType6
+    from ..models.effect_control_value_type_7 import EffectControlValueType7
 
 
 T = TypeVar("T", bound="ControlDefinition")
@@ -46,8 +46,9 @@ class ControlDefinition:
             control_type (ControlType): Widget kind for a user-facing effect control.
 
                 Each variant maps to a specific UI component in the control panel.
-            default_value (ControlValueType0 | ControlValueType1 | ControlValueType2 | ControlValueType3 | ControlValueType4
-                | ControlValueType5 | ControlValueType6 | ControlValueType7): Runtime value of a control parameter.
+            default_value (EffectControlValueType0 | EffectControlValueType1 | EffectControlValueType2 |
+                EffectControlValueType3 | EffectControlValueType4 | EffectControlValueType5 | EffectControlValueType6 |
+                EffectControlValueType7): Runtime value of a control parameter.
 
                 The variant must be compatible with the corresponding [`ControlType`]:
 
@@ -82,14 +83,14 @@ class ControlDefinition:
 
     control_type: ControlType
     default_value: (
-        ControlValueType0
-        | ControlValueType1
-        | ControlValueType2
-        | ControlValueType3
-        | ControlValueType4
-        | ControlValueType5
-        | ControlValueType6
-        | ControlValueType7
+        EffectControlValueType0
+        | EffectControlValueType1
+        | EffectControlValueType2
+        | EffectControlValueType3
+        | EffectControlValueType4
+        | EffectControlValueType5
+        | EffectControlValueType6
+        | EffectControlValueType7
     )
     name: str
     aspect_lock: float | None | Unset = UNSET
@@ -119,30 +120,30 @@ class ControlDefinition:
 
     def to_dict(self) -> dict[str, Any]:
         from ..models.control_binding import ControlBinding
-        from ..models.control_value_type_0 import ControlValueType0
-        from ..models.control_value_type_1 import ControlValueType1
-        from ..models.control_value_type_2 import ControlValueType2
-        from ..models.control_value_type_3 import ControlValueType3
-        from ..models.control_value_type_4 import ControlValueType4
-        from ..models.control_value_type_5 import ControlValueType5
-        from ..models.control_value_type_6 import ControlValueType6
+        from ..models.effect_control_value_type_0 import EffectControlValueType0
+        from ..models.effect_control_value_type_1 import EffectControlValueType1
+        from ..models.effect_control_value_type_2 import EffectControlValueType2
+        from ..models.effect_control_value_type_3 import EffectControlValueType3
+        from ..models.effect_control_value_type_4 import EffectControlValueType4
+        from ..models.effect_control_value_type_5 import EffectControlValueType5
+        from ..models.effect_control_value_type_6 import EffectControlValueType6
 
         control_type = self.control_type.value
 
         default_value: dict[str, Any]
-        if isinstance(self.default_value, ControlValueType0):
+        if isinstance(self.default_value, EffectControlValueType0):
             default_value = self.default_value.to_dict()
-        elif isinstance(self.default_value, ControlValueType1):
+        elif isinstance(self.default_value, EffectControlValueType1):
             default_value = self.default_value.to_dict()
-        elif isinstance(self.default_value, ControlValueType2):
+        elif isinstance(self.default_value, EffectControlValueType2):
             default_value = self.default_value.to_dict()
-        elif isinstance(self.default_value, ControlValueType3):
+        elif isinstance(self.default_value, EffectControlValueType3):
             default_value = self.default_value.to_dict()
-        elif isinstance(self.default_value, ControlValueType4):
+        elif isinstance(self.default_value, EffectControlValueType4):
             default_value = self.default_value.to_dict()
-        elif isinstance(self.default_value, ControlValueType5):
+        elif isinstance(self.default_value, EffectControlValueType5):
             default_value = self.default_value.to_dict()
-        elif isinstance(self.default_value, ControlValueType6):
+        elif isinstance(self.default_value, EffectControlValueType6):
             default_value = self.default_value.to_dict()
         else:
             default_value = self.default_value.to_dict()
@@ -269,14 +270,14 @@ class ControlDefinition:
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.control_binding import ControlBinding
         from ..models.control_kind_type_9 import ControlKindType9
-        from ..models.control_value_type_0 import ControlValueType0
-        from ..models.control_value_type_1 import ControlValueType1
-        from ..models.control_value_type_2 import ControlValueType2
-        from ..models.control_value_type_3 import ControlValueType3
-        from ..models.control_value_type_4 import ControlValueType4
-        from ..models.control_value_type_5 import ControlValueType5
-        from ..models.control_value_type_6 import ControlValueType6
-        from ..models.control_value_type_7 import ControlValueType7
+        from ..models.effect_control_value_type_0 import EffectControlValueType0
+        from ..models.effect_control_value_type_1 import EffectControlValueType1
+        from ..models.effect_control_value_type_2 import EffectControlValueType2
+        from ..models.effect_control_value_type_3 import EffectControlValueType3
+        from ..models.effect_control_value_type_4 import EffectControlValueType4
+        from ..models.effect_control_value_type_5 import EffectControlValueType5
+        from ..models.effect_control_value_type_6 import EffectControlValueType6
+        from ..models.effect_control_value_type_7 import EffectControlValueType7
 
         d = dict(src_dict)
         control_type = ControlType(d.pop("control_type"))
@@ -284,90 +285,92 @@ class ControlDefinition:
         def _parse_default_value(
             data: object,
         ) -> (
-            ControlValueType0
-            | ControlValueType1
-            | ControlValueType2
-            | ControlValueType3
-            | ControlValueType4
-            | ControlValueType5
-            | ControlValueType6
-            | ControlValueType7
+            EffectControlValueType0
+            | EffectControlValueType1
+            | EffectControlValueType2
+            | EffectControlValueType3
+            | EffectControlValueType4
+            | EffectControlValueType5
+            | EffectControlValueType6
+            | EffectControlValueType7
         ):
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                componentsschemas_control_value_type_0 = ControlValueType0.from_dict(
-                    data
+                componentsschemas_effect_control_value_type_0 = (
+                    EffectControlValueType0.from_dict(data)
                 )
 
-                return componentsschemas_control_value_type_0
+                return componentsschemas_effect_control_value_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                componentsschemas_control_value_type_1 = ControlValueType1.from_dict(
-                    data
+                componentsschemas_effect_control_value_type_1 = (
+                    EffectControlValueType1.from_dict(data)
                 )
 
-                return componentsschemas_control_value_type_1
+                return componentsschemas_effect_control_value_type_1
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                componentsschemas_control_value_type_2 = ControlValueType2.from_dict(
-                    data
+                componentsschemas_effect_control_value_type_2 = (
+                    EffectControlValueType2.from_dict(data)
                 )
 
-                return componentsschemas_control_value_type_2
+                return componentsschemas_effect_control_value_type_2
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                componentsschemas_control_value_type_3 = ControlValueType3.from_dict(
-                    data
+                componentsschemas_effect_control_value_type_3 = (
+                    EffectControlValueType3.from_dict(data)
                 )
 
-                return componentsschemas_control_value_type_3
+                return componentsschemas_effect_control_value_type_3
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                componentsschemas_control_value_type_4 = ControlValueType4.from_dict(
-                    data
+                componentsschemas_effect_control_value_type_4 = (
+                    EffectControlValueType4.from_dict(data)
                 )
 
-                return componentsschemas_control_value_type_4
+                return componentsschemas_effect_control_value_type_4
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                componentsschemas_control_value_type_5 = ControlValueType5.from_dict(
-                    data
+                componentsschemas_effect_control_value_type_5 = (
+                    EffectControlValueType5.from_dict(data)
                 )
 
-                return componentsschemas_control_value_type_5
+                return componentsschemas_effect_control_value_type_5
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                componentsschemas_control_value_type_6 = ControlValueType6.from_dict(
-                    data
+                componentsschemas_effect_control_value_type_6 = (
+                    EffectControlValueType6.from_dict(data)
                 )
 
-                return componentsschemas_control_value_type_6
+                return componentsschemas_effect_control_value_type_6
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             if not isinstance(data, dict):
                 raise TypeError()
-            componentsschemas_control_value_type_7 = ControlValueType7.from_dict(data)
+            componentsschemas_effect_control_value_type_7 = (
+                EffectControlValueType7.from_dict(data)
+            )
 
-            return componentsschemas_control_value_type_7
+            return componentsschemas_effect_control_value_type_7
 
         default_value = _parse_default_value(d.pop("default_value"))
 

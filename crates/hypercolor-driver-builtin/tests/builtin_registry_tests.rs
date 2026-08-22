@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
-use hypercolor_driver_api::CredentialStore;
+#[cfg(feature = "hal")]
+use hypercolor_core::device::UsbProtocolConfigStore;
 use hypercolor_driver_builtin::build_driver_module_registry;
+use hypercolor_driver_support::CredentialStore;
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::HypercolorConfig;
 #[cfg(any(feature = "hal", feature = "openrgb"))]
@@ -17,8 +19,13 @@ fn build_driver_module_registry_registers_compiled_in_drivers() {
     );
     let config = HypercolorConfig::default();
 
-    let registry =
-        build_driver_module_registry(&config, credentials).expect("registry should build");
+    let registry = build_driver_module_registry(
+        &config,
+        credentials,
+        #[cfg(feature = "hal")]
+        UsbProtocolConfigStore::new(),
+    )
+    .expect("registry should build");
     let ids = registry.ids();
     #[cfg(not(any(feature = "network", feature = "hal")))]
     let _ = &ids;
@@ -107,8 +114,14 @@ fn register_driver_modules_appends_to_existing_registry() {
     let config = HypercolorConfig::default();
     let mut registry = DriverModuleRegistry::new();
 
-    hypercolor_driver_builtin::register_driver_modules(&mut registry, &config, credentials)
-        .expect("drivers should register");
+    hypercolor_driver_builtin::register_driver_modules(
+        &mut registry,
+        &config,
+        credentials,
+        #[cfg(feature = "hal")]
+        UsbProtocolConfigStore::new(),
+    )
+    .expect("drivers should register");
 
     #[cfg(feature = "network")]
     assert!(registry.get("wled").is_some());

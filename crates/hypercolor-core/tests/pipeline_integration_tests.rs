@@ -11,38 +11,37 @@ use std::time::{Duration, SystemTime};
 use anyhow::Result;
 use uuid::Uuid;
 
-#[path = "support/effect_engine.rs"]
-mod effect_engine;
+#[path = "support/frame_state.rs"]
+mod frame_state;
 
 use hypercolor_core::bus::{EventFilter, HypercolorBus};
-use hypercolor_core::device::{
-    DeviceRegistry, DiscoveredDevice, DiscoveryConnectBehavior, DiscoveryOrchestrator,
-    TransportScanner,
+use hypercolor_core::device::{DeviceRegistry, DiscoveryOrchestrator};
+use hypercolor_core::effect::{
+    ControlError, EffectEntry, EffectRegistry, EffectRenderer, FrameInput,
 };
-use hypercolor_core::effect::{EffectEntry, EffectRegistry, EffectRenderer, FrameInput};
 use hypercolor_core::engine::{
     FpsController, FpsTier, RenderLoop, RenderLoopState, TierTransitionConfig,
 };
-use hypercolor_core::scene::{SceneManager, TransitionState, make_scene};
+use hypercolor_core::scene::{SceneManager, make_scene};
 use hypercolor_core::spatial::{sample_led, sample_zone};
+use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior};
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{Canvas, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, Rgba};
+use hypercolor_types::control::ControlDeltaBatch;
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
     DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, SegmentInfo,
 };
 use hypercolor_types::effect::{
-    ControlValue, EffectCategory, EffectId, EffectMetadata, EffectSource, EffectState,
+    EffectCategory, EffectId, EffectMetadata, EffectSource, EffectState,
 };
 use hypercolor_types::event::{EventCategory, HypercolorEvent};
-use hypercolor_types::scene::{
-    ColorInterpolation, EasingFunction, ScenePriority, TransitionSpec, ZoneAssignment,
-};
+use hypercolor_types::scene::{ColorInterpolation, EasingFunction, ScenePriority, TransitionSpec};
 use hypercolor_types::spatial::{
     EdgeBehavior, NormalizedPosition, Output, SamplingMode, SpatialLayout,
 };
 
-use effect_engine::EffectEngine;
+use frame_state::TestFrameState;
 
 // ─── Test Renderers ──────────────────────────────────────────────────────────
 // Real inline implementations — NOT mocks.
@@ -85,7 +84,12 @@ impl EffectRenderer for TestGradientRenderer {
         Ok(())
     }
 
-    fn set_control(&mut self, _name: &str, _value: &ControlValue) {}
+    fn apply_controls(
+        &mut self,
+        _batch: &ControlDeltaBatch<'_>,
+    ) -> std::result::Result<(), ControlError> {
+        Ok(())
+    }
 
     fn destroy(&mut self) {
         self.initialized = false;
@@ -123,7 +127,12 @@ impl EffectRenderer for TestSolidRenderer {
         Ok(())
     }
 
-    fn set_control(&mut self, _name: &str, _value: &ControlValue) {}
+    fn apply_controls(
+        &mut self,
+        _batch: &ControlDeltaBatch<'_>,
+    ) -> std::result::Result<(), ControlError> {
+        Ok(())
+    }
 
     fn destroy(&mut self) {}
 }
@@ -145,15 +154,19 @@ impl TestScanner {
     }
 }
 
-#[async_trait::async_trait]
-impl TransportScanner for TestScanner {
+impl TestScanner {
     fn name(&self) -> &str {
         &self.name
     }
 
-    async fn scan(&mut self) -> Result<Vec<DiscoveredDevice>> {
-        Ok(self.devices.clone())
+    fn scan(&self) -> Vec<DiscoveredDevice> {
+        self.devices.clone()
     }
+}
+
+fn add_test_source(orchestrator: &mut DiscoveryOrchestrator, source: TestScanner) {
+    let name = source.name().to_owned();
+    orchestrator.add_source(name, async move { Ok::<_, anyhow::Error>(source.scan()) });
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -211,7 +224,7 @@ fn make_device_info(name: &str, led_count: u32) -> DeviceInfo {
 
 fn make_discovered_device(name: &str, led_count: u32) -> DiscoveredDevice {
     let info = make_device_info(name, led_count);
-    let fp = DeviceFingerprint(format!("test:{name}"));
+    let fp = DeviceFingerprint::from_persisted(format!("test:{name}"));
     DiscoveredDevice {
         fingerprint: fp,
         connect_behavior: DiscoveryConnectBehavior::AutoConnect,
@@ -327,34 +340,31 @@ fn render_loop_lifecycle_create_start_tick_stop() {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// TEST 2: Effect Engine + Render Loop
+// TEST 2: Effect Renderer + Render Loop
 // ═════════════════════════════════════════════════════════════════════════════
 
 #[test]
-fn effect_engine_with_render_loop_produces_canvas() {
+fn effect_renderer_with_render_loop_produces_canvas() {
     // Create and start render loop
     let mut render_loop = RenderLoop::new(60);
     render_loop.start();
 
-    // Create effect engine with gradient renderer
-    let mut effect_engine = EffectEngine::new();
-    let renderer = Box::new(TestGradientRenderer::new());
+    let mut renderer = TestGradientRenderer::new();
     let meta = test_metadata("gradient");
-    effect_engine
-        .activate(renderer, meta)
-        .expect("activation should succeed");
-
-    assert!(effect_engine.is_running());
+    let mut frame_state = TestFrameState::new(DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT);
+    frame_state
+        .initialize(&mut renderer, &meta)
+        .expect("renderer should initialize");
 
     let audio = AudioData::silence();
 
-    // Tick render loop + effect engine together for 5 frames
+    // Tick render loop and renderer together for 5 frames
     for frame in 0..5 {
         assert!(render_loop.tick(), "render loop tick {frame}");
 
-        let canvas = effect_engine
-            .tick(0.016, &audio)
-            .expect("effect engine tick should succeed");
+        let canvas = frame_state
+            .render(&mut renderer, 0.016, &audio)
+            .expect("renderer should produce a frame");
 
         assert_eq!(canvas.width(), DEFAULT_CANVAS_WIDTH);
         assert_eq!(canvas.height(), DEFAULT_CANVAS_HEIGHT);
@@ -523,8 +533,8 @@ async fn device_registry_with_discovery_full_scan() {
         make_discovered_device("wled-matrix", 256),
     ];
 
-    orchestrator.add_scanner(Box::new(TestScanner::new("test-wled", devices)));
-    assert_eq!(orchestrator.scanner_count(), 1);
+    add_test_source(&mut orchestrator, TestScanner::new("test-wled", devices));
+    assert_eq!(orchestrator.source_count(), 1);
 
     // Full scan
     let report = orchestrator.full_scan().await;
@@ -556,8 +566,14 @@ async fn discovery_deduplicates_across_scanners() {
     let mut device2 = make_discovered_device("shared-device", 30);
     device2.info.name = "shared-device-v2".to_string();
 
-    orchestrator.add_scanner(Box::new(TestScanner::new("scanner-a", vec![device1])));
-    orchestrator.add_scanner(Box::new(TestScanner::new("scanner-b", vec![device2])));
+    add_test_source(
+        &mut orchestrator,
+        TestScanner::new("scanner-a", vec![device1]),
+    );
+    add_test_source(
+        &mut orchestrator,
+        TestScanner::new("scanner-b", vec![device2]),
+    );
 
     let report = orchestrator.full_scan().await;
 
@@ -571,7 +587,7 @@ async fn discovery_rescan_reports_reappeared() {
     let mut orchestrator = DiscoveryOrchestrator::new(registry.clone());
 
     let devices = vec![make_discovered_device("persistent-device", 10)];
-    orchestrator.add_scanner(Box::new(TestScanner::new("test", devices.clone())));
+    add_test_source(&mut orchestrator, TestScanner::new("test", devices.clone()));
 
     // First scan: new device
     let report1 = orchestrator.full_scan().await;
@@ -579,6 +595,8 @@ async fn discovery_rescan_reports_reappeared() {
     assert!(report1.reappeared_devices.is_empty());
 
     // Second scan: same device reappears
+    let mut orchestrator = DiscoveryOrchestrator::new(registry);
+    add_test_source(&mut orchestrator, TestScanner::new("test", devices));
     let report2 = orchestrator.full_scan().await;
     assert!(report2.new_devices.is_empty(), "no new devices on rescan");
     assert_eq!(
@@ -733,7 +751,7 @@ async fn event_bus_frame_data_watch_channel() {
         100,
     );
 
-    bus.frame_sender()
+    bus.frame_lane()
         .send(frame)
         .expect("frame send should succeed");
 
@@ -753,21 +771,8 @@ fn scene_manager_create_activate_transition() {
     let mut manager = SceneManager::new();
 
     // Create two scenes
-    let mut scene_a = make_scene("Ambient Glow");
-    scene_a.zone_assignments = vec![ZoneAssignment {
-        zone_name: "strip-1".to_string(),
-        effect_name: "aurora".to_string(),
-        parameters: HashMap::new(),
-        brightness: Some(0.8),
-    }];
-
-    let mut scene_b = make_scene("Party Mode");
-    scene_b.zone_assignments = vec![ZoneAssignment {
-        zone_name: "strip-1".to_string(),
-        effect_name: "strobe".to_string(),
-        parameters: HashMap::new(),
-        brightness: Some(1.0),
-    }];
+    let scene_a = make_scene("Ambient Glow");
+    let scene_b = make_scene("Party Mode");
 
     let id_a = scene_a.id;
     let id_b = scene_b.id;
@@ -782,10 +787,7 @@ fn scene_manager_create_activate_transition() {
         manager.active_scene_id().expect("should have active scene"),
         &id_a
     );
-    assert!(
-        !manager.is_transitioning(),
-        "first activation has no transition"
-    );
+    assert!(manager.transition_plan().is_none());
 
     // Activate scene B with a 1000ms transition
     let transition = TransitionSpec {
@@ -797,25 +799,12 @@ fn scene_manager_create_activate_transition() {
         .activate(&id_b, Some(transition))
         .expect("activate B with transition");
 
-    assert!(manager.is_transitioning(), "should have active transition");
-    let t = manager.active_transition().expect("transition exists");
-    assert!(
-        (t.progress - 0.0).abs() < f32::EPSILON,
-        "progress should start at 0"
-    );
-
-    // Tick the transition halfway (500ms = 0.5 progress)
-    manager.tick_transition(0.5);
-    let t = manager.active_transition().expect("still transitioning");
-    assert!(
-        (t.progress - 0.5).abs() < 0.01,
-        "progress should be ~0.5, got {}",
-        t.progress
-    );
-
-    // Tick to completion
-    manager.tick_transition(0.6);
-    assert!(!manager.is_transitioning(), "transition should be complete");
+    let plan = manager
+        .transition_plan()
+        .expect("activation should publish a transition plan");
+    assert_eq!(plan.from_scene, id_a);
+    assert_eq!(plan.to_scene, id_b);
+    assert_eq!(plan.spec.duration_ms, 1_000);
 }
 
 #[test]
@@ -865,62 +854,6 @@ fn scene_manager_priority_stack_ordering() {
     );
 }
 
-#[test]
-fn transition_state_progress_and_blending() {
-    let from_id = hypercolor_types::scene::SceneId::new();
-    let to_id = hypercolor_types::scene::SceneId::new();
-
-    let from_assignments = vec![ZoneAssignment {
-        zone_name: "z1".to_string(),
-        effect_name: "aurora".to_string(),
-        parameters: HashMap::new(),
-        brightness: Some(1.0),
-    }];
-
-    let to_assignments = vec![ZoneAssignment {
-        zone_name: "z1".to_string(),
-        effect_name: "strobe".to_string(),
-        parameters: HashMap::new(),
-        brightness: Some(0.5),
-    }];
-
-    let spec = TransitionSpec {
-        duration_ms: 1000,
-        easing: EasingFunction::Linear,
-        color_interpolation: ColorInterpolation::Srgb,
-    };
-
-    let mut ts = TransitionState::new(from_id, to_id, spec, from_assignments, to_assignments);
-    assert!(!ts.is_complete());
-    assert!((ts.progress - 0.0).abs() < f32::EPSILON);
-
-    // Tick 25% (250ms of 1000ms)
-    ts.tick(0.25);
-    assert!((ts.progress - 0.25).abs() < 0.01);
-
-    // Blend should produce interpolated brightness
-    let blended = ts.blend();
-    assert_eq!(blended.len(), 1);
-    let b = blended[0].brightness.expect("brightness set");
-    // At t=0.25: lerp(1.0, 0.5, 0.25) = 0.875
-    assert!(
-        (b - 0.875).abs() < 0.05,
-        "brightness should be ~0.875, got {b}"
-    );
-    // Before midpoint: effect name should still be "from" side
-    assert_eq!(blended[0].effect_name, "aurora");
-
-    // Tick past midpoint
-    ts.tick(0.30);
-    let blended = ts.blend();
-    // Past 0.5: effect name should be "to" side
-    assert_eq!(blended[0].effect_name, "strobe");
-
-    // Tick to completion
-    ts.tick(1.0);
-    assert!(ts.is_complete());
-}
-
 // ═════════════════════════════════════════════════════════════════════════════
 // TEST 7: Full Pipeline (No Real Devices)
 // ═════════════════════════════════════════════════════════════════════════════
@@ -931,12 +864,12 @@ fn full_pipeline_render_sample_extract_colors() {
     let mut render_loop = RenderLoop::new(60);
     render_loop.start();
 
-    // Stage 2: Create effect engine with gradient renderer
-    let mut effect_engine = EffectEngine::new().with_canvas_size(100, 10);
-    let renderer = Box::new(TestGradientRenderer::new());
-    effect_engine
-        .activate(renderer, test_metadata("pipeline-gradient"))
-        .expect("activation should succeed");
+    // Stage 2: Initialize the gradient renderer
+    let mut renderer = TestGradientRenderer::new();
+    let mut frame_state = TestFrameState::new(100, 10);
+    frame_state
+        .initialize(&mut renderer, &test_metadata("pipeline-gradient"))
+        .expect("renderer should initialize");
 
     // Stage 3: Create spatial layout with a 10-LED strip
     let zone = make_strip_zone("pipeline-strip", 10);
@@ -955,11 +888,11 @@ fn full_pipeline_render_sample_extract_colors() {
 
     let audio = AudioData::silence();
 
-    // Stage 4: Frame 1 — tick render loop, tick effect engine, sample
+    // Stage 4: Frame 1 — tick render loop, render, sample
     assert!(render_loop.tick(), "render loop tick 1");
-    let canvas = effect_engine
-        .tick(0.016, &audio)
-        .expect("effect engine tick 1");
+    let canvas = frame_state
+        .render(&mut renderer, 0.016, &audio)
+        .expect("renderer frame 1");
 
     let colors = sample_zone(&canvas, &zone, &layout);
 
@@ -995,9 +928,9 @@ fn full_pipeline_render_sample_extract_colors() {
 
     // Stage 5: Frame 2 — verify frame advances
     assert!(render_loop.tick(), "render loop tick 2");
-    let canvas2 = effect_engine
-        .tick(0.016, &audio)
-        .expect("effect engine tick 2");
+    let canvas2 = frame_state
+        .render(&mut renderer, 0.016, &audio)
+        .expect("renderer frame 2");
     let colors2 = sample_zone(&canvas2, &zone, &layout);
 
     // Gradient is time-independent so colors should be the same
@@ -1014,13 +947,11 @@ fn full_pipeline_with_advancing_solid_renderer() {
     let mut render_loop = RenderLoop::new(60);
     render_loop.start();
 
-    let mut effect_engine = EffectEngine::new().with_canvas_size(10, 10);
-    effect_engine
-        .activate(
-            Box::new(TestSolidRenderer::new()),
-            test_metadata("solid-advance"),
-        )
-        .expect("activate");
+    let mut renderer = TestSolidRenderer::new();
+    let mut frame_state = TestFrameState::new(10, 10);
+    frame_state
+        .initialize(&mut renderer, &test_metadata("solid-advance"))
+        .expect("renderer should initialize");
 
     let zone = make_strip_zone("solid-strip", 3);
     let layout = SpatialLayout {
@@ -1041,9 +972,9 @@ fn full_pipeline_with_advancing_solid_renderer() {
     let mut prev_brightness = 0u8;
     for frame in 0..5 {
         assert!(render_loop.tick());
-        let canvas = effect_engine
-            .tick(0.016, &audio)
-            .expect("tick should succeed");
+        let canvas = frame_state
+            .render(&mut renderer, 0.016, &audio)
+            .expect("renderer should produce a frame");
         let colors = sample_zone(&canvas, &zone, &layout);
 
         assert_eq!(colors.len(), 3);
@@ -1161,45 +1092,6 @@ fn fps_controller_full_downshift_cascade() {
 // ═════════════════════════════════════════════════════════════════════════════
 // Additional Integration Tests
 // ═════════════════════════════════════════════════════════════════════════════
-
-#[test]
-fn effect_engine_activate_deactivate_cycle() {
-    let mut engine = EffectEngine::new();
-    let audio = AudioData::silence();
-
-    // Cycle 1: gradient renderer
-    engine
-        .activate(
-            Box::new(TestGradientRenderer::new()),
-            test_metadata("cycle-1"),
-        )
-        .expect("activate cycle 1");
-    assert!(engine.is_running());
-
-    let c1 = engine.tick(0.016, &audio).expect("tick cycle 1");
-    assert_eq!(c1.get_pixel(0, 0).r, 255); // red on left
-
-    // Cycle 2: solid renderer replaces gradient
-    engine
-        .activate(Box::new(TestSolidRenderer::new()), test_metadata("cycle-2"))
-        .expect("activate cycle 2");
-    assert!(engine.is_running());
-
-    let c2 = engine.tick(0.016, &audio).expect("tick cycle 2");
-    // Solid renderer frame 1: brightness = (1 * 25) % 256 = 25
-    let pixel = c2.get_pixel(0, 0);
-    assert_eq!(pixel.r, 25);
-    assert_eq!(pixel.g, 25);
-    assert_eq!(pixel.b, 25);
-
-    // Deactivate
-    engine.deactivate();
-    assert!(!engine.is_running());
-
-    // Tick after deactivation returns black canvas
-    let c3 = engine.tick(0.016, &audio).expect("tick after deactivate");
-    assert_eq!(c3.get_pixel(0, 0).r, 0);
-}
 
 #[test]
 fn effect_registry_search_and_categorize() {
@@ -1372,40 +1264,6 @@ fn spatial_layout_with_multiple_zones() {
     assert_eq!(colors_br[0][2], 255);
 }
 
-#[test]
-fn effect_engine_pause_resume_canvas_behavior() {
-    let mut engine = EffectEngine::new();
-    let audio = AudioData::silence();
-
-    engine
-        .activate(
-            Box::new(TestGradientRenderer::new()),
-            test_metadata("pause-test"),
-        )
-        .expect("activate");
-
-    // Normal tick
-    let canvas = engine.tick(0.016, &audio).expect("tick");
-    assert_eq!(canvas.get_pixel(0, 0).r, 255); // gradient starts red
-
-    // Pause
-    engine.pause();
-    assert_eq!(engine.state(), EffectState::Paused);
-
-    // Tick while paused returns black
-    let paused_canvas = engine.tick(0.016, &audio).expect("tick while paused");
-    assert_eq!(paused_canvas.get_pixel(0, 0).r, 0);
-    assert_eq!(paused_canvas.get_pixel(0, 0).a, 255); // opaque black
-
-    // Resume
-    engine.resume();
-    assert_eq!(engine.state(), EffectState::Running);
-
-    // Tick after resume should produce gradient again
-    let resumed = engine.tick(0.016, &audio).expect("tick after resume");
-    assert_eq!(resumed.get_pixel(0, 0).r, 255);
-}
-
 #[tokio::test]
 async fn multiple_scanners_aggregate_results() {
     let registry = DeviceRegistry::new();
@@ -1416,7 +1274,7 @@ async fn multiple_scanners_aggregate_results() {
         make_discovered_device("wled-1", 30),
         make_discovered_device("wled-2", 60),
     ];
-    orchestrator.add_scanner(Box::new(TestScanner::new("wled", wled_devices)));
+    add_test_source(&mut orchestrator, TestScanner::new("wled", wled_devices));
 
     // Scanner B: 1 USB device
     let usb_device = {
@@ -1448,16 +1306,16 @@ async fn multiple_scanners_aggregate_results() {
             },
         };
         DiscoveredDevice {
-            fingerprint: DeviceFingerprint("usb:prism-1".to_string()),
+            fingerprint: DeviceFingerprint::from_persisted("usb:prism-1".to_string()),
             connect_behavior: DiscoveryConnectBehavior::AutoConnect,
             info,
             metadata: HashMap::new(),
             claim: None,
         }
     };
-    orchestrator.add_scanner(Box::new(TestScanner::new("usb", vec![usb_device])));
+    add_test_source(&mut orchestrator, TestScanner::new("usb", vec![usb_device]));
 
-    assert_eq!(orchestrator.scanner_count(), 2);
+    assert_eq!(orchestrator.source_count(), 2);
 
     let report = orchestrator.full_scan().await;
     assert_eq!(

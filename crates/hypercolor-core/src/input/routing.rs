@@ -9,7 +9,7 @@ use super::{
     InputData, InputEventRead, InputSourceSlot, InteractionData, InteractionSourceOrigin,
     InteractionTransientTotals, SourceStatusHandle,
 };
-use crate::types::event::{InputButtonState, InputEvent, TimedInputEvent};
+use hypercolor_types::event::{InputButtonState, InputEvent, TimedInputEvent};
 
 /// Stable identity for one interaction consumer lifetime.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]

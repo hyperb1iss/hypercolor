@@ -3,8 +3,8 @@ use std::sync::Arc;
 use axum::body::{Body, to_bytes};
 use axum::extract::ws::Message;
 use axum::http::{Request, StatusCode};
-use hypercolor_daemon::api::AppState;
 use hypercolor_daemon::api::local::TrustedLocalApi;
+use hypercolor_daemon::app_state::AppState;
 
 #[tokio::test]
 async fn public_trusted_local_http_surface_executes_the_daemon_router() {

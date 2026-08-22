@@ -1,10 +1,11 @@
 use std::collections::BTreeMap;
 
 use hypercolor_leptos_ext::events::Change;
+use hypercolor_types::control::ControlValue as CanonicalControlValue;
 use hypercolor_types::controls::{
     ActionConfirmationLevel, ControlAccess, ControlActionDescriptor, ControlAvailabilityState,
-    ControlChange, ControlFieldDescriptor, ControlGroupDescriptor, ControlSurfaceDocument,
-    ControlSurfaceScope, ControlValue as DynamicControlValue, ControlValueMap, ControlValueType,
+    ControlFieldDescriptor, ControlGroupDescriptor, ControlSurfaceDocument, ControlSurfaceScope,
+    ControlValue as DynamicControlValue, ControlValueMap, ControlValueType,
 };
 use leptos::prelude::*;
 use leptos_icons::Icon;
@@ -315,7 +316,6 @@ fn render_field(
     let description = field.description.clone();
     let value_view = render_field_editor(
         surface.surface_id.clone(),
-        surface.revision,
         field.clone(),
         current_value,
         editable,
@@ -340,7 +340,6 @@ fn render_field(
 
 fn render_field_editor(
     surface_id: String,
-    revision: u64,
     field: ControlFieldDescriptor,
     current_value: Option<DynamicControlValue>,
     editable: bool,
@@ -353,7 +352,6 @@ fn render_field_editor(
     match &field.value_type {
         ControlValueType::Bool => render_bool_editor(
             surface_id,
-            revision,
             field.id.clone(),
             matches!(current_value, Some(DynamicControlValue::Bool(true))),
             surfaces_resource,
@@ -362,7 +360,6 @@ fn render_field_editor(
         ControlValueType::Integer { min, max, step } => render_number_editor(NumberEditorProps {
             kind: NumberEditorKind::Integer,
             surface_id,
-            revision,
             field_id: field.id.clone(),
             value: number_text(current_value.as_ref()),
             min: min.map(|value| value.to_string()),
@@ -374,7 +371,6 @@ fn render_field_editor(
         ControlValueType::Float { min, max, step } => render_number_editor(NumberEditorProps {
             kind: NumberEditorKind::Float,
             surface_id,
-            revision,
             field_id: field.id.clone(),
             value: number_text(current_value.as_ref()),
             min: min.map(|value| value.to_string()),
@@ -387,7 +383,6 @@ fn render_field_editor(
             render_number_editor(NumberEditorProps {
                 kind: NumberEditorKind::DurationMs,
                 surface_id,
-                revision,
                 field_id: field.id.clone(),
                 value: number_text(current_value.as_ref()),
                 min: min.map(|value| value.to_string()),
@@ -399,7 +394,6 @@ fn render_field_editor(
         }
         ControlValueType::Enum { options } => render_enum_editor(
             surface_id,
-            revision,
             field.id.clone(),
             enum_text(current_value.as_ref()),
             options
@@ -417,7 +411,6 @@ fn render_field_editor(
         | ControlValueType::ColorRgba => render_text_editor(
             text_editor_kind(&field.value_type),
             surface_id,
-            revision,
             field.id.clone(),
             value_text(current_value.as_ref()),
             surfaces_resource,
@@ -443,7 +436,6 @@ fn render_read_only_value(current_value: Option<&DynamicControlValue>) -> impl I
 
 fn render_bool_editor(
     surface_id: String,
-    revision: u64,
     field_id: String,
     checked: bool,
     surfaces_resource: LocalResource<Result<Vec<ControlSurfaceDocument>, String>>,
@@ -457,7 +449,6 @@ fn render_bool_editor(
                 if let Some(next) = Change::from_event(ev).checked() {
                     apply_change(
                         surface_id.clone(),
-                        revision,
                         field_id.clone(),
                         DynamicControlValue::Bool(next),
                         surfaces_resource,
@@ -471,7 +462,6 @@ fn render_bool_editor(
 struct NumberEditorProps {
     kind: NumberEditorKind,
     surface_id: String,
-    revision: u64,
     field_id: String,
     value: String,
     min: Option<String>,
@@ -491,7 +481,6 @@ fn render_number_editor(props: NumberEditorProps) -> impl IntoView {
     let NumberEditorProps {
         kind,
         surface_id,
-        revision,
         field_id,
         value,
         min,
@@ -522,7 +511,6 @@ fn render_number_editor(props: NumberEditorProps) -> impl IntoView {
                 };
                 apply_change(
                     surface_id.clone(),
-                    revision,
                     field_id.clone(),
                     parsed,
                     surfaces_resource,
@@ -534,7 +522,6 @@ fn render_number_editor(props: NumberEditorProps) -> impl IntoView {
 
 fn render_enum_editor(
     surface_id: String,
-    revision: u64,
     field_id: String,
     value: String,
     options: Vec<(String, String)>,
@@ -551,7 +538,6 @@ fn render_enum_editor(
                 };
                 apply_change(
                     surface_id.clone(),
-                    revision,
                     field_id.clone(),
                     DynamicControlValue::Enum(raw),
                     surfaces_resource,
@@ -568,7 +554,6 @@ fn render_enum_editor(
 fn render_text_editor(
     kind: TextEditorKind,
     surface_id: String,
-    revision: u64,
     field_id: String,
     value: String,
     surfaces_resource: LocalResource<Result<Vec<ControlSurfaceDocument>, String>>,
@@ -587,7 +572,6 @@ fn render_text_editor(
                 };
                 apply_change(
                     surface_id.clone(),
-                    revision,
                     field_id.clone(),
                     text_value(kind, raw),
                     surfaces_resource,
@@ -689,14 +673,21 @@ fn action_button_class(
 
 fn apply_change(
     surface_id: String,
-    revision: u64,
     field_id: String,
     value: DynamicControlValue,
     surfaces_resource: LocalResource<Result<Vec<ControlSurfaceDocument>, String>>,
 ) {
     leptos::task::spawn_local(async move {
-        let change = ControlChange { field_id, value };
-        match api::patch_control_values(surface_id, Some(revision), vec![change], false).await {
+        let value = match CanonicalControlValue::try_from(value) {
+            Ok(value) => value,
+            Err(error) => {
+                toasts::toast_error(&format!("Driver control failed: {error}"));
+                surfaces_resource.refetch();
+                return;
+            }
+        };
+        let values = BTreeMap::from([(field_id, value)]);
+        match api::patch_control_values(&surface_id, values).await {
             Ok(_) => {
                 toasts::toast_success("Driver control updated");
                 surfaces_resource.refetch();

@@ -6,12 +6,12 @@
 
 use std::collections::HashMap;
 
+use hypercolor_types::effect::EffectCategory;
 use hypercolor_types::layer::WebViewportRender;
 use hypercolor_types::layer::{
     LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
 };
 use hypercolor_types::scene::{ZoneId, ZoneRole};
-use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 use hypercolor_types::viewport::{FitMode, ViewportRect};
 
 use hypercolor_ui::components::layer_panel::source::{
@@ -106,42 +106,54 @@ fn effect_picker_mode_tracks_surface_and_scope() {
         EffectPickerMode::Faces.empty_detail(),
         "No matching faces or effects"
     );
-    assert!(EffectPickerMode::Faces.includes_category("display"));
-    assert!(EffectPickerMode::Faces.includes_category("source"));
-    assert!(EffectPickerMode::Faces.includes_category("utility"));
-    assert!(EffectPickerMode::Faces.includes_category("ambient"));
-    assert!(EffectPickerMode::Effects.includes_category("source"));
-    assert!(!EffectPickerMode::Effects.includes_category("display"));
-    assert!(EffectPickerMode::Mixed.includes_category("display"));
-    assert!(EffectPickerMode::Mixed.includes_category("ambient"));
-    assert_eq!(EffectPickerMode::Faces.sort_bucket("display"), 0);
-    assert_eq!(EffectPickerMode::Faces.sort_bucket("source"), 1);
-    assert_eq!(EffectPickerMode::Effects.sort_bucket("display"), 1);
+    assert!(EffectPickerMode::Faces.includes_category(EffectCategory::Display));
+    assert!(EffectPickerMode::Faces.includes_category(EffectCategory::Source));
+    assert!(EffectPickerMode::Faces.includes_category(EffectCategory::Utility));
+    assert!(EffectPickerMode::Faces.includes_category(EffectCategory::Ambient));
+    assert!(EffectPickerMode::Effects.includes_category(EffectCategory::Source));
+    assert!(!EffectPickerMode::Effects.includes_category(EffectCategory::Display));
+    assert!(EffectPickerMode::Mixed.includes_category(EffectCategory::Display));
+    assert!(EffectPickerMode::Mixed.includes_category(EffectCategory::Ambient));
+    assert_eq!(
+        EffectPickerMode::Faces.sort_bucket(EffectCategory::Display),
+        0
+    );
+    assert_eq!(
+        EffectPickerMode::Faces.sort_bucket(EffectCategory::Source),
+        1
+    );
+    assert_eq!(
+        EffectPickerMode::Effects.sort_bucket(EffectCategory::Display),
+        1
+    );
 }
 
 #[test]
 fn effect_category_label_renames_display_to_face() {
-    assert_eq!(effect_category_label("display"), "face");
-    assert_eq!(effect_category_label("DiSpLaY"), "face");
-    assert_eq!(effect_category_label("source"), "source");
+    assert_eq!(effect_category_label(EffectCategory::Display), "face");
+    assert_eq!(effect_category_label(EffectCategory::Source), "source");
 }
 
 #[test]
 fn effect_picker_query_matches_display_by_face_label() {
-    assert!(effect_picker_matches_query("LCD Gauge", "display", "face"));
+    assert!(effect_picker_matches_query(
+        "LCD Gauge",
+        EffectCategory::Display,
+        "face"
+    ));
     assert!(effect_picker_matches_query(
         "Screen Cast",
-        "utility",
+        EffectCategory::Utility,
         "cast"
     ));
     assert!(effect_picker_matches_query(
         "Screen Cast",
-        "utility",
+        EffectCategory::Utility,
         "utility"
     ));
     assert!(!effect_picker_matches_query(
         "Screen Cast",
-        "utility",
+        EffectCategory::Utility,
         "face"
     ));
 }
@@ -322,37 +334,19 @@ fn layer_source_label_resolves_names_and_never_leaks_raw_types() {
 
 // ── Add-layer target scope (§6.6) ───────────────────────────────────────
 
-fn sample_layout() -> SpatialLayout {
-    SpatialLayout {
-        id: "layout".to_owned(),
-        name: "Layout".to_owned(),
-        description: None,
-        canvas_width: 320,
-        canvas_height: 200,
-        zones: Vec::new(),
-        default_sampling_mode: SamplingMode::Bilinear,
-        default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
-        version: 1,
-    }
-}
-
-fn group(name: &str, role: ZoneRole) -> hypercolor_ui::api::LiveZoneView {
-    hypercolor_ui::api::LiveZoneView {
+fn group(name: &str, role: ZoneRole) -> hypercolor_ui::api::ZoneResource {
+    hypercolor_ui::api::ZoneResource {
         id: ZoneId::new(),
         name: name.to_owned(),
         description: None,
-        effect_id: None,
-        controls: HashMap::new(),
-        control_bindings: HashMap::new(),
-        preset_id: None,
-        layers: Vec::new(),
-        layout: sample_layout(),
         brightness: 1.0,
         enabled: true,
         color: None,
         display_target: None,
         role,
+        members: Vec::new(),
+        layout: None,
+        layers: Vec::new(),
     }
 }
 

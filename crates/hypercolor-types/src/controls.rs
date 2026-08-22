@@ -273,6 +273,7 @@ impl ControlValueType {
 /// Typed value payload matching a [`ControlValueType`].
 #[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
 #[schema(no_recursion)]
+#[schema(as = DriverControlValue)]
 #[serde(rename_all = "snake_case", tag = "kind", content = "value")]
 pub enum ControlValue {
     /// Empty value.
@@ -786,24 +787,6 @@ pub enum ActionConfirmationLevel {
     Destructive,
     /// Operation writes persistent state to hardware.
     HardwarePersistent,
-}
-
-/// Request to apply one or more control changes.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
-pub struct ApplyControlChangesRequest {
-    /// Target surface.
-    pub surface_id: ControlSurfaceId,
-
-    /// Optional expected revision.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub expected_revision: Option<ControlSurfaceRevision>,
-
-    /// Changes to apply atomically.
-    pub changes: Vec<ControlChange>,
-
-    /// Validate without mutating state.
-    #[serde(default)]
-    pub dry_run: bool,
 }
 
 /// One requested field change.

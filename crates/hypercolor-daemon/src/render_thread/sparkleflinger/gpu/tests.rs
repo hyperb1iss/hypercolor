@@ -28,15 +28,15 @@ use hypercolor_core::input::screen::{
     ScreenUpscalePolicy, ScreenWorkerExactLedgerBuilder, SourceScale,
 };
 use hypercolor_core::spatial::SpatialEngine;
-use hypercolor_core::types::canvas::{
-    Canvas, PublishedSurface, RenderSurfacePool, Rgba, SurfaceDescriptor,
-};
 #[cfg(all(feature = "screen-capture", target_os = "macos"))]
 use hypercolor_macos_capture::{
     MacosCaptureColorimetry, MacosCaptureFrame, MacosCaptureGeometry, MacosCapturePixelFormat,
     MacosCaptureSurface, MacosChromaLocation, MacosColorPrimaries, MacosColorRange,
     MacosPixelExtent, MacosPixelRect, MacosPointRect, MacosScale, MacosTransferFunction,
     MacosYuvMatrix,
+};
+use hypercolor_types::canvas::{
+    Canvas, PublishedSurface, RenderSurfacePool, Rgba, SurfaceDescriptor,
 };
 use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::device::{DeviceId, DisplayFrameFormat};

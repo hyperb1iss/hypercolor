@@ -25,15 +25,15 @@ use hypercolor_core::input::{
     SourceFreshness, SourceKind, SourceState, SourceStatusAvailability, SourceStatusHandle,
 };
 use hypercolor_core::spatial::SpatialEngine;
-use hypercolor_core::types::canvas::{
+use hypercolor_types::audio::{AudioData, CHROMA_BINS, MEL_BANDS, SPECTRUM_BINS};
+use hypercolor_types::canvas::{
     Canvas, PublishedSurface, RenderSurfacePool, Rgba, SurfaceDescriptor, SurfaceResourceError,
 };
-use hypercolor_core::types::event::{FrameData, HypercolorEvent};
-use hypercolor_types::audio::{AudioData, CHROMA_BINS, MEL_BANDS, SPECTRUM_BINS};
 use hypercolor_types::config::RenderAccelerationMode;
 #[cfg(feature = "wgpu")]
 use hypercolor_types::device::DisplayFrameFormat;
 use hypercolor_types::event::ZoneColors;
+use hypercolor_types::event::{FrameData, HypercolorEvent};
 use hypercolor_types::scene::SceneId;
 #[cfg(feature = "wgpu")]
 use hypercolor_types::scene::{DisplayFaceTarget, ZoneId};
@@ -1824,10 +1824,6 @@ impl SceneSnapshotState {
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct RenderSurfaceSnapshot {
-    pub(crate) slot_count: u32,
-    pub(crate) free_slots: u32,
-    pub(crate) published_slots: u32,
-    pub(crate) dequeued_slots: u32,
     pub(crate) canvas_receivers: u32,
     /// Monotonic counter from the render-group runtime's scene surface pool:
     /// how many times a dequeue had to reuse a still-shared Published
@@ -1866,6 +1862,7 @@ pub(crate) struct RenderSurfaceSnapshot {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SceneTransitionKey {
+    pub(crate) epoch: u64,
     pub(crate) from_scene: SceneId,
     pub(crate) to_scene: SceneId,
 }
@@ -2100,10 +2097,6 @@ impl RenderCaches {
                 .saturating_add(sparkleflinger_counts.compositor.dequeued),
         );
         let mut snapshot = RenderSurfaceSnapshot {
-            slot_count: scene_slot_count,
-            free_slots: count(scene_counts.free),
-            published_slots: count(scene_counts.published),
-            dequeued_slots: count(scene_counts.dequeued),
             canvas_receivers: u32::try_from(canvas_receiver_count).unwrap_or(u32::MAX),
             scene_pool_free_slots: count(scene_counts.free),
             scene_pool_published_slots: count(scene_counts.published),
@@ -2160,14 +2153,14 @@ pub(crate) struct PipelineRuntime {
 }
 
 impl PipelineRuntime {
+    #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
     pub(crate) async fn from_state(
         state: &RenderThreadState,
         input_reader: InputPublicationReader,
         input_demands: InputPublicationDemandHandle,
-        #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
         macos_screen_parity_mailbox: MacosScreenParityDiagnosticMailbox,
     ) -> Result<Self> {
-        let initial_spatial_engine = state.spatial_engine.read().await.clone();
+        let initial_spatial_engine = state.spatial_engine.snapshot().as_ref().clone();
         let pipeline = Self::new_with_gpu_device(
             state.canvas_dims.width(),
             state.canvas_dims.height(),
@@ -2176,7 +2169,6 @@ impl PipelineRuntime {
             state.render_acceleration_mode,
             #[cfg(feature = "wgpu")]
             state.render_gpu_device.clone(),
-            #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
             macos_screen_parity_mailbox,
             Some(Arc::clone(&state.asset_library)),
             state.configured_max_fps_tier.get(),
@@ -2184,7 +2176,6 @@ impl PipelineRuntime {
             input_demands,
             state.interaction_routing.clone(),
         )?;
-        #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
         state
             .input_manager
             .lock()
@@ -2193,6 +2184,29 @@ impl PipelineRuntime {
                 pipeline.render.sparkleflinger.macos_metal4_capability(),
             )?;
         Ok(pipeline)
+    }
+
+    #[cfg(not(all(target_os = "macos", feature = "wgpu", feature = "screen-capture")))]
+    pub(crate) fn from_state(
+        state: &RenderThreadState,
+        input_reader: InputPublicationReader,
+        input_demands: InputPublicationDemandHandle,
+    ) -> Result<Self> {
+        let initial_spatial_engine = state.spatial_engine.snapshot().as_ref().clone();
+        Self::new_with_gpu_device(
+            state.canvas_dims.width(),
+            state.canvas_dims.height(),
+            initial_spatial_engine,
+            state.screen_capture_configured,
+            state.render_acceleration_mode,
+            #[cfg(feature = "wgpu")]
+            state.render_gpu_device.clone(),
+            Some(Arc::clone(&state.asset_library)),
+            state.configured_max_fps_tier.get(),
+            input_reader,
+            input_demands,
+            state.interaction_routing.clone(),
+        )
     }
 
     #[cfg(test)]
@@ -3195,13 +3209,6 @@ mod tests {
         let snapshot = runtime.render.render_surface_snapshot(3);
 
         assert_eq!(snapshot.canvas_receivers, 3);
-        assert_eq!(snapshot.slot_count, snapshot.scene_pool_slot_count);
-        assert_eq!(snapshot.free_slots, snapshot.scene_pool_free_slots);
-        assert_eq!(
-            snapshot.published_slots,
-            snapshot.scene_pool_published_slots
-        );
-        assert_eq!(snapshot.dequeued_slots, snapshot.scene_pool_dequeued_slots);
         assert_eq!(snapshot.scene_pool_slot_count, 8);
         assert_eq!(snapshot.scene_pool_free_slots, 8);
         assert_eq!(snapshot.direct_pool_slot_count, 0);

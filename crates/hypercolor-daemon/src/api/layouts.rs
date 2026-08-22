@@ -6,68 +6,34 @@
 
 #[cfg(feature = "persistence-test-hooks")]
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 #[cfg(feature = "persistence-test-hooks")]
 use std::sync::Mutex as StdMutex;
-use std::time::Duration;
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::response::{IntoResponse, Response};
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::canvas::SurfaceDescriptor;
-use hypercolor_types::scene::SceneId;
 use hypercolor_types::spatial::{Output, SamplingMode, SpatialLayout};
 #[cfg(feature = "persistence-test-hooks")]
 use tokio::sync::{Notify, Semaphore};
-use tracing::warn;
 
-use crate::api::AppState;
-use crate::api::RuntimeSessionSnapshotReader;
-use crate::api::envelope::ApiResponse;
+use crate::api::envelope;
 use crate::api::{persist_layout_auto_exclusions, persist_layouts};
+use crate::app_state::AppState;
 use crate::discovery;
+use crate::domain::layout::LayoutPersistenceStatus;
 use crate::domain::{DomainError, ResourceKind};
 use crate::layout_auto_exclusions;
-use crate::persistence::{AtomicFileWriter, AtomicWriteOutcome};
-use crate::runtime_state::RuntimeSessionError;
 use crate::scene_transactions::{
-    LayoutPersistenceOutcome, LayoutPersistencePhase, LayoutTransactionRejection,
-    LayoutUpdateError, LayoutUpdateGuard, PreparedLayoutUpdate,
-    apply_prepared_layout_update_under_guard_with_persistence,
+    LayoutTransactionRejection, LayoutUpdateError, PreparedLayoutUpdate,
 };
 
 pub use hypercolor_types::api::layouts::{
-    CreateLayoutRequest, LayoutListQuery, LayoutListResponse, LayoutSummary, UpdateLayoutRequest,
+    ApplyLayoutResponse, CreateLayoutRequest, DeleteLayoutResponse, LayoutListQuery,
+    LayoutListResponse, LayoutSummary, PreviewLayoutResponse, UpdateLayoutRequest,
 };
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LayoutPersistenceStatus {
-    Synchronized,
-    Pending,
-}
-
-const LAYOUT_DURABILITY_TIMEOUT: Duration = Duration::from_secs(5);
-
-#[derive(Clone)]
-struct LayoutPersistenceContext {
-    runtime_state_path: PathBuf,
-    runtime_snapshot_reader: RuntimeSessionSnapshotReader,
-}
-
-impl LayoutPersistenceContext {
-    fn from_state(state: &AppState) -> Self {
-        Self {
-            runtime_state_path: state.runtime_state_path.clone(),
-            runtime_snapshot_reader: state.runtime_session_snapshot_reader(),
-        }
-    }
-
-    async fn snapshot(&self) -> crate::runtime_state::RuntimeSessionSnapshot {
-        self.runtime_snapshot_reader.snapshot().await
-    }
-}
 
 #[cfg(feature = "persistence-test-hooks")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -193,7 +159,7 @@ pub async fn list_layouts(
     let offset = query.offset.unwrap_or(0);
 
     let active_layout_id = {
-        let spatial = state.spatial_engine.read().await;
+        let spatial = state.spatial_engine.snapshot();
         spatial.layout().id.clone()
     };
     let layouts = state.layouts.read().await;
@@ -217,14 +183,14 @@ pub async fn list_layouts(
     let total = items.len();
     let paged_items: Vec<LayoutSummary> = items.into_iter().skip(offset).take(limit).collect();
     let has_more = offset.saturating_add(limit) < total;
-    ApiResponse::ok(LayoutListResponse {
+    envelope::ok(LayoutListResponse {
         items: paged_items,
-        pagination: super::devices::Pagination {
-            offset,
-            limit,
-            total,
+        total: u64::try_from(total).expect("layout count fits in u64"),
+        page: Some(hypercolor_types::api::PageInfo {
+            offset: u64::try_from(offset).expect("layout offset fits in u64"),
+            limit: u64::try_from(limit).expect("layout limit fits in u64"),
             has_more,
-        },
+        }),
     })
 }
 
@@ -241,16 +207,16 @@ pub async fn get_layout(State(state): State<Arc<AppState>>, Path(id): Path<Strin
     };
 
     let layout = layouts.get(&key).expect("resolved layout key must exist");
-    ApiResponse::ok(layout)
+    envelope::ok(layout)
 }
 
 /// `GET /api/v1/layouts/active` — Get currently active layout.
 pub async fn get_active_layout(State(state): State<Arc<AppState>>) -> Response {
     let active = {
-        let spatial = state.spatial_engine.read().await;
+        let spatial = state.spatial_engine.snapshot();
         spatial.layout().as_ref().clone()
     };
-    ApiResponse::ok(active)
+    envelope::ok(active)
 }
 
 /// `POST /api/v1/layouts` — Create a new layout.
@@ -277,7 +243,7 @@ async fn create_layout_workflow(state: Arc<AppState>, body: CreateLayoutRequest)
         .await;
     let guard = state.scene_transactions.acquire_layout_update_guard().await;
     let (default_canvas_width, default_canvas_height) = {
-        let spatial = state.spatial_engine.read().await;
+        let spatial = state.spatial_engine.snapshot();
         let layout = spatial.layout();
         (layout.canvas_width, layout.canvas_height)
     };
@@ -342,7 +308,7 @@ async fn create_layout_workflow(state: Arc<AppState>, body: CreateLayoutRequest)
         return layout_store_persistence_error_response("create", error, rollback_errors);
     }
     drop(guard);
-    ApiResponse::created(summary)
+    envelope::created(summary)
 }
 
 /// `PUT /api/v1/layouts/{id}` — Update an existing layout.
@@ -378,7 +344,7 @@ async fn update_layout_workflow(
         .await;
     let guard = state.scene_transactions.acquire_layout_update_guard().await;
     let active_layout_id = {
-        let spatial = state.spatial_engine.read().await;
+        let spatial = state.spatial_engine.snapshot();
         spatial.layout().id.clone()
     };
     let mut layouts = state.layouts.write().await;
@@ -474,7 +440,7 @@ async fn update_layout_workflow(
         update_layout_auto_exclusions(&state, &layout_id, &previous_zones, &updated_zones).await;
     }
     drop(guard);
-    ApiResponse::ok(summary)
+    envelope::ok(summary)
 }
 
 /// `POST /api/v1/layouts/{id}/apply` — Apply a saved layout to the spatial engine.
@@ -509,18 +475,22 @@ async fn apply_layout_workflow(state: Arc<AppState>, id: String) -> Response {
             .clone()
     };
 
-    let admission = admit_persisted_layout_update_under_guard(&state, &guard, layout.clone()).await;
+    let admission = state
+        .domains
+        .layout
+        .admit_persisted_update_under_guard(&guard, layout.clone())
+        .await;
     drop(guard);
     if let Err(error) = admission {
         return layout_update_error_response(error);
     }
-    let persistence = converge_persisted_layout_update(&state).await;
+    let persistence = state.domains.layout.converge_persisted_update().await;
     layout_persistence_response(
-        serde_json::json!({
-            "layout": layout,
-            "applied": true,
-            "persistence_pending": persistence == LayoutPersistenceStatus::Pending,
-        }),
+        ApplyLayoutResponse {
+            layout,
+            applied: true,
+            persistence_pending: persistence == LayoutPersistenceStatus::Pending,
+        },
         persistence,
     )
 }
@@ -560,8 +530,8 @@ async fn preview_layout_workflow(state: Arc<AppState>, layout: SpatialLayout) ->
         Err(error) => return layout_update_error_response(error.into()),
     };
     if let Err(error) = crate::scene_transactions::apply_prepared_layout_update_under_guard(
-        Arc::clone(&state.spatial_engine),
-        Arc::clone(&state.scene_manager),
+        state.spatial_engine.clone(),
+        state.scene_manager.clone(),
         state.scene_transactions.clone(),
         &guard,
         prepared,
@@ -592,7 +562,7 @@ async fn preview_layout_workflow(state: Arc<AppState>, layout: SpatialLayout) ->
         )
         .await;
 
-    ApiResponse::ok(serde_json::json!({ "previewing": true }))
+    envelope::ok(PreviewLayoutResponse { previewing: true })
 }
 
 /// `DELETE /api/v1/layouts/{id}` — Delete a layout.
@@ -612,7 +582,7 @@ async fn delete_layout_workflow(state: Arc<AppState>, id: String) -> Response {
         .await;
     let guard = state.scene_transactions.acquire_layout_update_guard().await;
     let active_layout = {
-        let spatial = state.spatial_engine.read().await;
+        let spatial = state.spatial_engine.snapshot();
         spatial.layout().as_ref().clone()
     };
     let mut layouts = state.layouts.write().await;
@@ -653,7 +623,11 @@ async fn delete_layout_workflow(state: Arc<AppState>, id: String) -> Response {
 
     let active_layout_changed = next_active_layout.is_some();
     if let Some(layout) = next_active_layout
-        && let Err(error) = admit_persisted_layout_update_under_guard(&state, &guard, layout).await
+        && let Err(error) = state
+            .domains
+            .layout
+            .admit_persisted_update_under_guard(&guard, layout)
+            .await
     {
         state
             .layouts
@@ -674,14 +648,18 @@ async fn delete_layout_workflow(state: Arc<AppState>, id: String) -> Response {
             rollback_errors.push(format!("layout store rollback failed: {rollback_error}"));
         }
         if active_layout_changed
-            && let Err(rollback_error) =
-                admit_persisted_layout_update_under_guard(&state, &guard, active_layout).await
+            && let Err(rollback_error) = state
+                .domains
+                .layout
+                .admit_persisted_update_under_guard(&guard, active_layout)
+                .await
         {
             rollback_errors.push(format!("active layout rollback failed: {rollback_error}"));
         }
         drop(guard);
         if active_layout_changed
-            && converge_persisted_layout_update(&state).await == LayoutPersistenceStatus::Pending
+            && state.domains.layout.converge_persisted_update().await
+                == LayoutPersistenceStatus::Pending
         {
             rollback_errors.push("active layout rollback persistence remains pending".to_owned());
         }
@@ -702,17 +680,17 @@ async fn delete_layout_workflow(state: Arc<AppState>, id: String) -> Response {
     drop(guard);
 
     let persistence = if active_layout_changed {
-        converge_persisted_layout_update(&state).await
+        state.domains.layout.converge_persisted_update().await
     } else {
         LayoutPersistenceStatus::Synchronized
     };
 
     layout_persistence_response(
-        serde_json::json!({
-            "id": key,
-            "deleted": true,
-            "persistence_pending": persistence == LayoutPersistenceStatus::Pending,
-        }),
+        DeleteLayoutResponse {
+            id: key,
+            deleted: true,
+            persistence_pending: persistence == LayoutPersistenceStatus::Pending,
+        },
         persistence,
     )
 }
@@ -739,111 +717,6 @@ fn layout_store_persistence_error_response(
     DomainError::Internal(anyhow::anyhow!(message)).into_response()
 }
 
-async fn admit_persisted_layout_update_under_guard(
-    state: &AppState,
-    guard: &LayoutUpdateGuard,
-    layout: SpatialLayout,
-) -> Result<(), LayoutUpdateError> {
-    let prepared = PreparedLayoutUpdate::try_new(layout)?;
-    let persistence_context = LayoutPersistenceContext::from_state(state);
-    apply_prepared_layout_update_under_guard_with_persistence(
-        Arc::clone(&state.spatial_engine),
-        Arc::clone(&state.scene_manager),
-        state.scene_transactions.clone(),
-        guard,
-        prepared,
-        move |phase| {
-            let context = persistence_context.clone();
-            async move { persist_layout_runtime_phase(&context, phase).await }
-        },
-    )
-    .await
-}
-
-pub(crate) async fn apply_persisted_layout_update(
-    state: &AppState,
-    guard: LayoutUpdateGuard,
-    layout: SpatialLayout,
-) -> Result<(), LayoutUpdateError> {
-    admit_persisted_layout_update_under_guard(state, &guard, layout).await?;
-    drop(guard);
-    let _ = converge_persisted_layout_update(state).await;
-    Ok(())
-}
-
-async fn converge_persisted_layout_update(state: &AppState) -> LayoutPersistenceStatus {
-    let runtime = super::discovery_runtime(state);
-    discovery::sync_active_layout_connectivity(&runtime, None).await;
-    let context = LayoutPersistenceContext::from_state(state);
-    match persist_layout_runtime_phase(&context, LayoutPersistencePhase::Converge).await {
-        LayoutPersistenceOutcome::Written => LayoutPersistenceStatus::Synchronized,
-        LayoutPersistenceOutcome::Superseded => {
-            warn!("layout committed but convergence persistence was superseded");
-            LayoutPersistenceStatus::Pending
-        }
-        LayoutPersistenceOutcome::BeforeAdmission(error) => {
-            warn!(%error, "layout committed before convergence persistence was admitted");
-            LayoutPersistenceStatus::Pending
-        }
-        LayoutPersistenceOutcome::RetryArmed(error) => {
-            warn!(%error, "layout committed with convergence persistence retry armed");
-            LayoutPersistenceStatus::Pending
-        }
-    }
-}
-
-async fn persist_layout_runtime_phase(
-    context: &LayoutPersistenceContext,
-    phase: LayoutPersistencePhase,
-) -> LayoutPersistenceOutcome {
-    let writer = match AtomicFileWriter::new(&context.runtime_state_path) {
-        Ok(writer) => writer,
-        Err(error) => return LayoutPersistenceOutcome::BeforeAdmission(error.to_string()),
-    };
-    let pending = match crate::runtime_state::reserve_save(&context.runtime_state_path) {
-        Ok(pending) => pending,
-        Err(error) => return LayoutPersistenceOutcome::BeforeAdmission(error.to_string()),
-    };
-    let requires_durable_completion = matches!(
-        &phase,
-        LayoutPersistencePhase::Rollback | LayoutPersistencePhase::Converge
-    );
-    let mut snapshot = context.snapshot().await;
-    if let LayoutPersistencePhase::Precommit(candidate) = phase {
-        snapshot.active_layout_id = Some(candidate.layout.id);
-        if candidate.active_scene_id == Some(SceneId::DEFAULT) {
-            snapshot.default_scene_groups = candidate.active_render_groups.to_vec();
-        }
-    }
-    let outcome = match crate::runtime_state::save_reserved(pending, &snapshot) {
-        Ok(AtomicWriteOutcome::Written) => LayoutPersistenceOutcome::Written,
-        Ok(AtomicWriteOutcome::Superseded) => LayoutPersistenceOutcome::Superseded,
-        Err(error @ RuntimeSessionError::Persist { .. }) => {
-            LayoutPersistenceOutcome::RetryArmed(error.to_string())
-        }
-        Err(error) => LayoutPersistenceOutcome::BeforeAdmission(error.to_string()),
-    };
-    if requires_durable_completion
-        && matches!(
-            &outcome,
-            LayoutPersistenceOutcome::Superseded | LayoutPersistenceOutcome::RetryArmed(_)
-        )
-    {
-        return flush_layout_runtime_persistence(writer).await;
-    }
-    outcome
-}
-
-async fn flush_layout_runtime_persistence(writer: AtomicFileWriter) -> LayoutPersistenceOutcome {
-    match tokio::task::spawn_blocking(move || writer.flush(LAYOUT_DURABILITY_TIMEOUT)).await {
-        Ok(Ok(_)) => LayoutPersistenceOutcome::Written,
-        Ok(Err(error)) => LayoutPersistenceOutcome::RetryArmed(error.to_string()),
-        Err(error) => LayoutPersistenceOutcome::RetryArmed(format!(
-            "layout persistence flush task failed: {error}"
-        )),
-    }
-}
-
 fn layout_update_error_response(error: LayoutUpdateError) -> Response {
     match &error {
         LayoutUpdateError::SpatialPlan(_)
@@ -863,13 +736,13 @@ fn layout_update_error_response(error: LayoutUpdateError) -> Response {
     }
 }
 
-fn layout_persistence_response(
-    data: serde_json::Value,
+fn layout_persistence_response<T: serde::Serialize>(
+    data: T,
     persistence: LayoutPersistenceStatus,
 ) -> Response {
     match persistence {
-        LayoutPersistenceStatus::Synchronized => ApiResponse::ok(data),
-        LayoutPersistenceStatus::Pending => ApiResponse::accepted(data),
+        LayoutPersistenceStatus::Synchronized => envelope::ok(data),
+        LayoutPersistenceStatus::Pending => envelope::accepted(data),
     }
 }
 

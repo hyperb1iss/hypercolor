@@ -2,7 +2,7 @@
 
 use hypercolor_color::Rgb;
 
-use crate::types::session::{
+use hypercolor_types::session::{
     OffOutputBehavior, SessionConfig, SessionEvent, SleepAction, SleepBehavior, WakeAction,
 };
 
@@ -150,7 +150,7 @@ mod tests {
     use std::time::Duration;
 
     use super::SleepPolicy;
-    use crate::types::session::{
+    use hypercolor_types::session::{
         OffOutputBehavior, SessionConfig, SessionEvent, SleepAction, SleepBehavior, WakeAction,
     };
 

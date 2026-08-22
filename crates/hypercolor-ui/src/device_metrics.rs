@@ -104,7 +104,6 @@ mod tests {
             delivered_fps: fps,
             fps_sent: fps,
             fps_queued: fps,
-            fps_actual: fps,
             fps_target: 60,
             target_interval_ms: Some(17),
             payload_bps_estimate: 0,
@@ -132,7 +131,7 @@ mod tests {
         }
         let state = map.get("device-a").expect("device-a present");
         assert_eq!(state.fps_samples.len(), FPS_HISTORY_LEN);
-        assert!((state.current.fps_actual - 60.0).abs() < f32::EPSILON);
+        assert!((state.current.fps_sent - 60.0).abs() < f32::EPSILON);
     }
 
     #[test]

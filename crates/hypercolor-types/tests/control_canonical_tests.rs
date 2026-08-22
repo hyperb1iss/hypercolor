@@ -10,8 +10,8 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use hypercolor_types::control::{
-    ControlValue, ControlValueInvalid, DriverProjectionError, EffectProjectionError, IpText,
-    MacText, SecretRef,
+    ControlDeltaBatch, ControlId, ControlSet, ControlValue, ControlValueInvalid,
+    DriverProjectionError, EffectProjectionError, IpText, MacText, SecretRef, SetRevision,
 };
 use hypercolor_types::controls as driver;
 use hypercolor_types::device::DeviceId;
@@ -74,6 +74,61 @@ fn effect_samples() -> Vec<effect::ControlValue> {
         effect::ControlValue::Text("hello".into()),
         effect::ControlValue::Rect(ViewportRect::new(0.1, 0.2, 0.5, 0.4)),
     ]
+}
+
+#[test]
+fn canonical_wire_roundtrips_every_projected_variant() {
+    let canonical = driver_samples()
+        .into_iter()
+        .map(|value| ControlValue::try_from(value).expect("driver value canonicalizes"))
+        .chain(
+            effect_samples()
+                .into_iter()
+                .map(|value| ControlValue::try_from(value).expect("effect value canonicalizes")),
+        )
+        .collect::<Vec<_>>();
+
+    for original in canonical {
+        let wire = serde_json::to_value(&original).expect("canonical value serializes");
+        assert_eq!(
+            wire["kind"],
+            original.kind_name(),
+            "canonical tag drifted for {original:?}"
+        );
+        let roundtrip: ControlValue =
+            serde_json::from_value(wire).expect("canonical value deserializes");
+        assert_eq!(roundtrip, original);
+    }
+
+    assert_eq!(
+        serde_json::to_value(ControlValue::Duration(Duration::from_millis(1500)))
+            .expect("duration serializes"),
+        serde_json::json!({"kind": "duration", "value": 1500})
+    );
+}
+
+#[test]
+fn canonical_wire_enforces_validation_on_both_directions() {
+    assert!(
+        serde_json::to_value(ControlValue::Float(f64::NAN)).is_err(),
+        "non-finite values must not serialize as null"
+    );
+    assert!(
+        serde_json::from_value::<ControlValue>(
+            serde_json::json!({"kind": "ip", "value": "not-an-ip"})
+        )
+        .is_err()
+    );
+    assert!(
+        serde_json::from_value::<ControlValue>(
+            serde_json::json!({"kind": "mac", "value": "not-a-mac"})
+        )
+        .is_err()
+    );
+    assert!(
+        serde_json::to_value(ControlValue::Duration(Duration::from_micros(1500))).is_err(),
+        "sub-millisecond precision must not truncate on the wire"
+    );
 }
 
 #[test]
@@ -279,6 +334,53 @@ fn width_narrowing_is_range_checked() {
         ControlValue::Int(42).to_effect_wire(),
         Ok(effect::ControlValue::Integer(42))
     );
+}
+
+#[test]
+fn control_set_validates_values_and_orders_identifiers() {
+    let set = ControlSet::try_from_entries(
+        SetRevision::new(7),
+        [
+            (ControlId::new("speed"), ControlValue::Float(0.5)),
+            (ControlId::new("color"), ControlValue::Text("violet".into())),
+        ],
+    )
+    .expect("finite values form a control set");
+
+    assert_eq!(set.set_revision().get(), 7);
+    assert_eq!(
+        set.iter()
+            .map(|(control_id, _)| control_id.as_str())
+            .collect::<Vec<_>>(),
+        ["color", "speed"]
+    );
+    assert_eq!(set.get("speed"), Some(&ControlValue::Float(0.5)));
+    assert_eq!(set.len(), 2);
+    assert!(!set.is_empty());
+}
+
+#[test]
+fn control_set_rejects_invalid_values_at_admission() {
+    let error = ControlSet::try_from_entries(
+        SetRevision::new(3),
+        [(ControlId::new("speed"), ControlValue::Float(f64::NAN))],
+    )
+    .expect_err("non-finite control must be refused");
+
+    assert_eq!(error.control_id.as_str(), "speed");
+    assert_eq!(error.source, ControlValueInvalid::NonFiniteFloat);
+}
+
+#[test]
+fn control_delta_batch_carries_revision_and_resolution_order() {
+    let changes = [(ControlId::new("speed"), ControlValue::Float(0.75))];
+    let batch = ControlDeltaBatch::new(SetRevision::new(9), 4, &changes);
+
+    assert_eq!(batch.set_revision.get(), 9);
+    assert_eq!(batch.resolution_seq, 4);
+    assert_eq!(batch.changes, changes);
+    assert!(!batch.is_empty());
+    assert!(ControlDeltaBatch::new(SetRevision::new(9), 5, &[]).is_empty());
 }
 
 // ── identity conventions ───────────────────────────────────────────────────

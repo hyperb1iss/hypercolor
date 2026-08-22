@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use tracing::debug;
 
 use hypercolor_core::bus::{DisplayGroupFrame, DisplayGroupOutputRoute, DisplayGroupTarget};
-use hypercolor_core::types::canvas::PublishedSurface;
+use hypercolor_types::canvas::PublishedSurface;
 #[cfg(feature = "wgpu")]
 use hypercolor_types::device::DisplayFrameFormat;
 use hypercolor_types::scene::{DisplayFaceTarget, ZoneId};
@@ -410,7 +410,7 @@ mod tests {
     #[cfg(feature = "wgpu")]
     use hypercolor_core::bus::{DisplayGroupFrame, DisplayGroupTarget, DisplayYuv420Frame};
     use hypercolor_core::bus::{DisplayGroupOutputRoute, DisplayGroupViewport};
-    use hypercolor_core::types::canvas::Canvas;
+    use hypercolor_types::canvas::Canvas;
     #[cfg(feature = "wgpu")]
     use hypercolor_types::canvas::Rgba;
     #[cfg(feature = "wgpu")]
@@ -676,7 +676,7 @@ mod tests {
     #[cfg(feature = "wgpu")]
     #[test]
     fn display_finalize_frame_format_dispatch_rejects_mismatched_frames() {
-        let surface = hypercolor_core::types::canvas::PublishedSurface::from_owned_canvas(
+        let surface = hypercolor_types::canvas::PublishedSurface::from_owned_canvas(
             color_canvas([255, 0, 0]),
             7,
             11,
@@ -697,12 +697,11 @@ mod tests {
         .expect("JPEG finalize should accept YUV420 display frames");
         assert!(matches!(jpeg_frame, DisplayGroupFrame::Yuv420(_)));
 
-        let mismatched_surface =
-            hypercolor_core::types::canvas::PublishedSurface::from_owned_canvas(
-                color_canvas([255, 0, 0]),
-                7,
-                11,
-            );
+        let mismatched_surface = hypercolor_types::canvas::PublishedSurface::from_owned_canvas(
+            color_canvas([255, 0, 0]),
+            7,
+            11,
+        );
         let mismatched_yuv = DisplayYuv420Frame::from_vec(vec![0; 6], 2, 2, 2, 1, 4, 1, 7, 11);
         assert!(
             display_finalize_frame_to_group(
@@ -763,7 +762,7 @@ mod tests {
     ) -> GroupCanvasFrame {
         GroupCanvasFrame {
             frame: DisplayGroupFrame::from_surface(
-                hypercolor_core::types::canvas::PublishedSurface::from_owned_canvas(
+                hypercolor_types::canvas::PublishedSurface::from_owned_canvas(
                     color_canvas(rgb),
                     0,
                     0,

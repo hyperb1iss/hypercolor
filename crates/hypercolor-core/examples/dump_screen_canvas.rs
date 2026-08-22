@@ -70,7 +70,7 @@ fn main() {
             };
 
             let descriptor = surface.descriptor();
-            let canvas = hypercolor_core::types::canvas::Canvas::from_published_surface(surface);
+            let canvas = hypercolor_types::canvas::Canvas::from_published_surface(surface);
             let bytes = canvas.as_rgba_bytes().to_vec();
             println!(
                 "canvas_downscale: {}x{} ({} bytes), source was {}x{}",

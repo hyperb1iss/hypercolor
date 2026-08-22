@@ -88,8 +88,6 @@ fn daemon_state_serde_roundtrip() {
         brightness: 75,
         fps_target: 30.0,
         fps_actual: 29.5,
-        scene_name: Some("Focus".to_string()),
-        scene_snapshot_locked: true,
         device_count: 3,
         total_leds: 150,
     };
@@ -98,14 +96,16 @@ fn daemon_state_serde_roundtrip() {
     assert!(parsed.running);
     assert_eq!(parsed.brightness, 75);
     assert_eq!(parsed.device_count, 3);
-    assert_eq!(parsed.scene_name.as_deref(), Some("Focus"));
-    assert!(parsed.scene_snapshot_locked);
 }
 
 #[test]
 fn effect_summary_deserialize_with_defaults() {
-    // Minimal JSON — all #[serde(default)] fields should use defaults
-    let json = r#"{"id": "test", "name": "Test Effect"}"#;
+    let json = r#"{
+        "id": "test",
+        "name": "Test Effect",
+        "category": "ambient",
+        "source": "native"
+    }"#;
     let effect: EffectSummary = serde_json::from_str(json).expect("deserialize");
     assert_eq!(effect.id, "test");
     assert_eq!(effect.name, "Test Effect");
@@ -274,73 +274,96 @@ fn canvas_preview_state_captures_frame_metadata_without_pixels() {
 
 // ── Scene & zone state tests ─────────────────────────────────────
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
-use hypercolor_tui::state::{ActiveScene, AppState, ZoneSummary};
-use hypercolor_types::scene::{SceneKind, SceneMutationMode};
+use hypercolor_tui::state::{
+    AppState, SceneDocument, ZoneResource, primary_zone, scene_is_multi_zone,
+};
 
-fn zone(id: &str, name: &str, is_primary: bool) -> ZoneSummary {
-    ZoneSummary {
-        id: id.to_string(),
-        name: name.to_string(),
-        layer_id: None,
-        effect_id: None,
-        brightness: 1.0,
-        enabled: true,
-        is_primary,
-        color: None,
-        controls: HashMap::new(),
-    }
+const SCENE_ID: &str = "0198c5b6-1111-7000-8000-000000000001";
+const ZONE_A: &str = "0198c5b6-1111-7000-8000-000000000002";
+const ZONE_B: &str = "0198c5b6-1111-7000-8000-000000000003";
+
+fn zone(id: &str, name: &str, is_primary: bool) -> ZoneResource {
+    serde_json::from_value(serde_json::json!({
+        "id": id,
+        "name": name,
+        "role": if is_primary { "primary" } else { "custom" },
+        "enabled": true,
+        "brightness": 1.0,
+        "members": [],
+        "layers": []
+    }))
+    .expect("zone fixture should decode")
 }
 
-fn scene_with(zones: Vec<ZoneSummary>) -> ActiveScene {
-    ActiveScene {
-        id: "scene-1".to_string(),
-        name: "Desk".to_string(),
-        kind: SceneKind::Named,
-        mutation_mode: SceneMutationMode::Live,
-        snapshot_locked: false,
-        revision: 1,
-        zones,
-    }
+fn scene_with(zones: Vec<ZoneResource>) -> SceneDocument {
+    serde_json::from_value(serde_json::json!({
+        "id": SCENE_ID,
+        "name": "Desk",
+        "kind": "named",
+        "is_default": false,
+        "revision": 1,
+        "zones": zones
+    }))
+    .expect("scene fixture should decode")
 }
 
 #[test]
 fn active_scene_multi_zone_requires_two_zones() {
-    assert!(!scene_with(vec![zone("a", "A", true)]).multi_zone());
-    assert!(scene_with(vec![zone("a", "A", true), zone("b", "B", false)]).multi_zone());
+    assert!(!scene_is_multi_zone(&scene_with(vec![zone(
+        ZONE_A, "A", true
+    )])));
+    assert!(scene_is_multi_zone(&scene_with(vec![
+        zone(ZONE_A, "A", true),
+        zone(ZONE_B, "B", false),
+    ])));
 }
 
 #[test]
 fn active_scene_primary_prefers_primary_role_then_first() {
-    let scene = scene_with(vec![zone("a", "A", false), zone("b", "B", true)]);
-    assert_eq!(scene.primary().map(|z| z.id.as_str()), Some("b"));
+    let scene = scene_with(vec![zone(ZONE_A, "A", false), zone(ZONE_B, "B", true)]);
+    assert_eq!(
+        primary_zone(&scene).map(|z| z.id.to_string()),
+        Some(ZONE_B.to_owned())
+    );
 
-    let no_primary = scene_with(vec![zone("a", "A", false), zone("b", "B", false)]);
-    assert_eq!(no_primary.primary().map(|z| z.id.as_str()), Some("a"));
+    let no_primary = scene_with(vec![zone(ZONE_A, "A", false), zone(ZONE_B, "B", false)]);
+    assert_eq!(
+        primary_zone(&no_primary).map(|z| z.id.to_string()),
+        Some(ZONE_A.to_owned())
+    );
 }
 
 #[test]
 fn target_zone_uses_focus_with_primary_fallback() {
     let mut state = AppState {
         active_scene: Some(Arc::new(scene_with(vec![
-            zone("a", "A", true),
-            zone("b", "B", false),
+            zone(ZONE_A, "A", true),
+            zone(ZONE_B, "B", false),
         ]))),
         ..AppState::default()
     };
 
     // No focus → primary
-    assert_eq!(state.target_zone().map(|z| z.id.as_str()), Some("a"));
+    assert_eq!(
+        state.target_zone().map(|z| z.id.to_string()),
+        Some(ZONE_A.to_owned())
+    );
 
     // Focused zone wins
-    state.focused_zone = Some("b".to_string());
-    assert_eq!(state.target_zone().map(|z| z.id.as_str()), Some("b"));
+    state.focused_zone = Some(ZONE_B.to_owned());
+    assert_eq!(
+        state.target_zone().map(|z| z.id.to_string()),
+        Some(ZONE_B.to_owned())
+    );
 
     // Stale focus falls back to primary
     state.focused_zone = Some("gone".to_string());
-    assert_eq!(state.target_zone().map(|z| z.id.as_str()), Some("a"));
+    assert_eq!(
+        state.target_zone().map(|z| z.id.to_string()),
+        Some(ZONE_A.to_owned())
+    );
 
     // No scene → no target
     state.active_scene = None;

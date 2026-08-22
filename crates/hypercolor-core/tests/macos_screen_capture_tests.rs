@@ -28,7 +28,7 @@ use hypercolor_macos_capture::{
     MacosTahoeRuntimeProbes, MacosTahoeSelectionCapabilities, MacosTransferFunction,
 };
 use hypercolor_types::audio::AudioData;
-use hypercolor_types::canvas::Rgba;
+use hypercolor_types::canvas::{Canvas, Rgba};
 use hypercolor_types::sensor::SystemSnapshot;
 
 const BGRA8: u32 = 0x4247_5241;
@@ -242,19 +242,21 @@ fn native_refresh_hdr_and_cursor_demand_reaches_capture_and_screen_cast() {
     let interaction = InteractionData::default();
     let sensors = SystemSnapshot::empty();
     let mut renderer = ScreenCastRenderer::new();
-    let canvas = renderer
-        .tick(&FrameInput {
-            time_secs: 0.0,
-            delta_secs: 1.0 / 60.0,
-            frame_number: 0,
-            audio: &audio,
-            interaction: &interaction,
-            screen: Some(&screen),
-            sensors: &sensors,
-            sources: FrameDataSources::default(),
-            canvas_width: 4,
-            canvas_height: 2,
-        })
+    let input = FrameInput {
+        time_secs: 0.0,
+        delta_secs: 1.0 / 60.0,
+        frame_number: 0,
+        audio: &audio,
+        interaction: &interaction,
+        screen: Some(&screen),
+        sensors: &sensors,
+        sources: FrameDataSources::default(),
+        canvas_width: 4,
+        canvas_height: 2,
+    };
+    let mut canvas = Canvas::new(4, 2);
+    renderer
+        .render_into(&input, &mut canvas)
         .expect("ScreenCast consumes the derived HDR compatibility surface");
     let pixel = canvas.get_pixel(0, 0);
     assert!(pixel.r > pixel.g && pixel.r > pixel.b);

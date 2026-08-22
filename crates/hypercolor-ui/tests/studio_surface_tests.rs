@@ -6,43 +6,24 @@ use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::EffectId;
 use hypercolor_types::layer::{SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{DisplayFaceTarget, ZoneId, ZoneRole};
-use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 use uuid::Uuid;
 
-use hypercolor_ui::api::LiveZoneView;
+use hypercolor_ui::api::ZoneResource;
 use hypercolor_ui::pages::studio::surface::{SurfaceKind, led_zone_count, surfaces_from_zones};
 
-fn sample_layout() -> SpatialLayout {
-    SpatialLayout {
-        id: "layout".to_owned(),
-        name: "Layout".to_owned(),
-        description: None,
-        canvas_width: 320,
-        canvas_height: 200,
-        zones: Vec::new(),
-        default_sampling_mode: SamplingMode::Bilinear,
-        default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
-        version: 1,
-    }
-}
-
-fn group(name: &str, role: ZoneRole, display_target: Option<DisplayFaceTarget>) -> LiveZoneView {
-    LiveZoneView {
+fn group(name: &str, role: ZoneRole, display_target: Option<DisplayFaceTarget>) -> ZoneResource {
+    ZoneResource {
         id: ZoneId::new(),
         name: name.to_owned(),
         description: None,
-        effect_id: None,
-        controls: HashMap::new(),
-        control_bindings: HashMap::new(),
-        preset_id: None,
-        layers: Vec::new(),
-        layout: sample_layout(),
         brightness: 1.0,
         enabled: true,
         color: None,
         display_target,
         role,
+        members: Vec::new(),
+        layout: None,
+        layers: Vec::new(),
     }
 }
 

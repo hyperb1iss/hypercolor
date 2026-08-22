@@ -51,13 +51,6 @@
   "preview_transport": {
     "dimension_type": "u32",
     "passive_zero_dimension": "auto",
-    "interactive_zero_dimension": "invalid",
-    "negotiation": {
-      "client_subscribe_field": "preview_transport",
-      "server_subscribed_field": "preview_transport",
-      "encoding": "preview_transport_v2 capability string with preview_transport_v1 fallback",
-      "rule": "fieldwise minimum before preview activation",
-      "legacy_client_policy": "server defaults"
-    }
+    "interactive_zero_dimension": "invalid"
   }
 }

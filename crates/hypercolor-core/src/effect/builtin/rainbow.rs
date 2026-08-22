@@ -7,12 +7,11 @@ use std::path::PathBuf;
 
 use hypercolor_color::Hsv;
 use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas};
-use hypercolor_types::effect::{
-    ControlDefinition, ControlValue, EffectCategory, EffectMetadata, EffectSource,
-};
+use hypercolor_types::control::{ControlDeltaBatch, ControlValue as CanonicalControlValue};
+use hypercolor_types::effect::{ControlDefinition, EffectCategory, EffectMetadata, EffectSource};
 
 use super::common::{builtin_effect_id, dropdown_control, slider_control};
-use crate::effect::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
+use crate::effect::traits::{ControlError, EffectRenderer, FrameInput, prepare_target_canvas};
 
 /// Axis along which the hue gradient sweeps.
 ///
@@ -144,37 +143,41 @@ impl EffectRenderer for RainbowRenderer {
         Ok(())
     }
 
-    fn set_control(&mut self, name: &str, value: &ControlValue) {
-        match name {
-            "speed" => {
-                if let Some(v) = value.as_f32() {
-                    self.speed = v;
+    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> Result<(), ControlError> {
+        for (control_id, value) in batch.changes {
+            match control_id.as_str() {
+                "speed" => {
+                    if let Some(value) = value.as_effect_f32() {
+                        self.speed = value;
+                    }
                 }
-            }
-            "scale" => {
-                if let Some(v) = value.as_f32() {
-                    self.scale = v.max(0.01);
+                "scale" => {
+                    if let Some(value) = value.as_effect_f32() {
+                        self.scale = value.max(0.01);
+                    }
                 }
-            }
-            "saturation" => {
-                if let Some(v) = value.as_f32() {
-                    self.saturation = v.clamp(0.0, 1.0);
+                "saturation" => {
+                    if let Some(value) = value.as_effect_f32() {
+                        self.saturation = value.clamp(0.0, 1.0);
+                    }
                 }
-            }
-            "brightness" => {
-                if let Some(v) = value.as_f32() {
-                    self.brightness = v.clamp(0.0, 1.0);
+                "brightness" => {
+                    if let Some(value) = value.as_effect_f32() {
+                        self.brightness = value.clamp(0.0, 1.0);
+                    }
                 }
-            }
-            "direction" => {
-                if let ControlValue::Enum(choice) | ControlValue::Text(choice) = value {
-                    self.direction = RainbowDirection::from_str(choice);
+                "direction" => {
+                    if let CanonicalControlValue::Enum(choice)
+                    | CanonicalControlValue::Text(choice) = value
+                    {
+                        self.direction = RainbowDirection::from_str(choice);
+                    }
                 }
+                _ => {}
             }
-            _ => {}
         }
+        Ok(())
     }
-
     fn destroy(&mut self) {}
 }
 

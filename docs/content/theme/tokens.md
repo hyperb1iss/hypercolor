@@ -57,7 +57,7 @@ Chroma falls as lightness rises: deep surfaces carry more violet, bright surface
 
 ### SilkCircuit accent palette
 
-These are raw named primitives. In the UI they are consumed through semantic tokens (`--accent`, `--status-*`), never directly. The legacy hex aliases (`--color-electric-purple` etc.) remain in `primitives.css` for migration safety; do not use them in new code.
+These are raw named primitives. Interactive and status components consume them through semantic tokens (`--accent`, `--status-*`). Data visualization and decorative spectra may use a primitive directly when the hue itself carries the distinction.
 
 | Token | OKLCH | Role |
 |-------|-------|------|

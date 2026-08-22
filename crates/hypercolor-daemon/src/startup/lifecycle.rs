@@ -6,7 +6,6 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use tracing::{debug, info, warn};
 
-use hypercolor_core::config::ConfigManager;
 use hypercolor_core::device::{UsbHotplugEvent, UsbHotplugMonitor};
 use hypercolor_core::effect::{EffectWatchEvent, EffectWatcher};
 use hypercolor_core::spatial::SpatialEngine;
@@ -14,7 +13,7 @@ use hypercolor_types::config::{EffectErrorFallbackPolicy, HypercolorConfig};
 use hypercolor_types::event::{HypercolorEvent, SceneChangeReason};
 use hypercolor_types::scene::SceneId;
 
-use crate::api::AppState;
+use crate::app_state::AppState;
 use crate::device_metrics::spawn_device_metrics_collector;
 use crate::discovery::{self, DiscoveryTarget};
 use crate::display_output::{
@@ -26,9 +25,7 @@ use crate::interactive_preview::{
 use crate::persistence::{self, AtomicWriteOutcome};
 use crate::render_thread::{CanvasDims, RenderThread, RenderThreadState};
 use crate::runtime_state::{self, RuntimeSessionSnapshot};
-use crate::session::{
-    SessionController, current_global_brightness, restore_manual_pause, set_global_brightness,
-};
+use crate::session::SessionController;
 use crate::simulators::activate_simulated_displays;
 
 use super::DaemonState;
@@ -84,11 +81,17 @@ impl DaemonState {
         // Seed portable identity pins before the first scan, so a claimed
         // device's first attach of the session resolves to the identity
         // its layouts reference.
-        crate::device_aliases::seed_registry(
-            &ConfigManager::data_dir().join(crate::device_aliases::DEVICE_ALIASES_FILE),
-            &self.device_registry,
-        )
-        .await;
+        if let Some(aliases) = self.startup_device_aliases.take() {
+            crate::device_aliases::seed_registry_document(
+                &self.device_aliases_path,
+                aliases,
+                &self.device_registry,
+            )
+            .await;
+        } else {
+            crate::device_aliases::seed_registry(&self.device_aliases_path, &self.device_registry)
+                .await;
+        }
 
         // Restore persisted scene state before the render loop begins producing frames.
         self.restore_runtime_session(&config).await;
@@ -96,8 +99,7 @@ impl DaemonState {
         self.session_controller = Some(SessionController::start(
             Arc::clone(&self.config_manager),
             Arc::clone(&self.event_bus),
-            self.power_state.clone(),
-            Arc::clone(&self.output_power_transition),
+            self.output_power.clone(),
             self.discovery_runtime(),
             Arc::clone(&self.driver_host),
             Arc::clone(&self.driver_registry),
@@ -111,21 +113,21 @@ impl DaemonState {
         {
             let mut loop_guard = self.render_loop.write().await;
             loop_guard.start();
-            if self.power_state.borrow().manually_paused() {
+            if self.output_power.snapshot().manually_paused() {
                 loop_guard.pause();
             }
         }
 
         // Spawn the render thread.
         let initial_canvas_dims = {
-            let spatial = self.spatial_engine.read().await;
+            let spatial = self.spatial_engine.snapshot();
             let layout = spatial.layout();
             CanvasDims::new(layout.canvas_width, layout.canvas_height)
         };
         let rt_state = RenderThreadState {
             effect_registry: Arc::clone(&self.effect_registry),
             asset_library: Arc::clone(&self.asset_library),
-            spatial_engine: Arc::clone(&self.spatial_engine),
+            spatial_engine: self.spatial_engine.clone(),
             backend_manager: Arc::clone(&self.backend_manager),
             device_registry: self.device_registry.clone(),
             performance: Arc::clone(&self.performance),
@@ -134,11 +136,11 @@ impl DaemonState {
             preview_runtime: Arc::clone(&self.preview_runtime),
             zone_layout_previews: Arc::clone(&self.zone_layout_previews),
             render_loop: Arc::clone(&self.render_loop),
-            scene_manager: Arc::clone(&self.scene_manager),
+            scene_manager: self.scene_manager.clone(),
+            scene_plan: self.scene_manager.plan_reader(),
             input_manager: Arc::clone(&self.input_manager),
             interaction_routing: self.interaction_routing.clone(),
-            power_state: self.power_state.subscribe(),
-            device_settings: Arc::clone(&self.device_settings),
+            power_state: self.output_power.subscribe(),
             scene_transactions: self.scene_transactions.clone(),
             screen_capture_configured: config.capture.enabled,
             canvas_dims: initial_canvas_dims,
@@ -165,7 +167,7 @@ impl DaemonState {
             .expect("render thread was installed after successful spawn")
             .input_publication_demands();
         let interactive_preview = InteractivePreviewExecutor::start(InteractivePreviewContext {
-            scene_manager: Arc::clone(&self.scene_manager),
+            scene_manager: self.scene_manager.clone(),
             effect_registry: Arc::clone(&self.effect_registry),
             asset_library: Some(Arc::clone(&self.asset_library)),
             event_bus: Arc::clone(&self.event_bus),
@@ -189,17 +191,21 @@ impl DaemonState {
         self.display_output_thread = Some(DisplayOutputThread::spawn(DisplayOutputState {
             backend_manager: Arc::clone(&self.backend_manager),
             device_registry: self.device_registry.clone(),
-            spatial_engine: Arc::clone(&self.spatial_engine),
+            spatial_engine: self.spatial_engine.clone(),
             logical_devices: Arc::clone(&self.logical_devices),
             event_bus: Arc::clone(&self.event_bus),
             preview_runtime: Arc::clone(&self.preview_runtime),
-            power_state: self.power_state.subscribe(),
+            power_state: self.output_power.subscribe(),
             static_hold_refresh_interval: DEFAULT_STATIC_HOLD_REFRESH_INTERVAL,
             display_frames: Arc::clone(&self.display_frames),
             face_fps_cap: config.display.effective_face_fps_cap(),
         }));
         let startup_output_state = AppState::from_daemon_state(self);
-        crate::api::effects::reconcile_static_output_hold(&startup_output_state).await;
+        startup_output_state
+            .domains
+            .output
+            .reconcile_static_hold()
+            .await;
         self.device_metrics_collector_task = Some(spawn_device_metrics_collector(
             Arc::clone(&self.device_metrics),
             Arc::clone(&self.backend_manager),
@@ -404,10 +410,12 @@ impl DaemonState {
         // publication pump that stopped with the render thread. It
         // routes through the commit path once §6.4 gives scene services
         // a context narrower than `AppState`.
-        {
-            let mut scene_guard = self.scene_manager.write().await;
-            scene_guard.deactivate_current();
-        }
+        let mut mutation = self.scene_manager.begin_mutation().await;
+        mutation.deactivate_current(SceneChangeReason::UserDeactivate);
+        self.scene_manager
+            .commit_mutation(mutation)
+            .await
+            .context("failed to deactivate scene during shutdown")?;
         info!("Scene manager cleaned up");
 
         // 7. Log final device count.
@@ -431,16 +439,15 @@ impl DaemonState {
     async fn persist_runtime_session_snapshot(&self) -> Result<AtomicWriteOutcome> {
         let pending_save = runtime_state::reserve_save(&self.runtime_state_path)?;
         let mut snapshot = {
-            let scene_manager = self.scene_manager.read().await;
+            let scene_manager = self.scene_manager.snapshot().await;
             runtime_state::snapshot_from_scene_manager(&scene_manager)
         };
 
         {
-            let spatial = self.spatial_engine.read().await;
+            let spatial = self.spatial_engine.snapshot();
             snapshot.active_layout_id = Some(spatial.layout().id.clone());
         }
-        snapshot.global_brightness = current_global_brightness(&self.power_state);
-        snapshot.manual_paused = self.power_state.borrow().manually_paused();
+        snapshot.manual_paused = self.output_power.snapshot().manually_paused();
         self.driver_host
             .driver_inventory()
             .refresh(self.driver_registry.as_ref(), self.driver_host.as_ref())
@@ -451,7 +458,7 @@ impl DaemonState {
 
     async fn persist_scene_store_snapshot(&self) -> Result<AtomicWriteOutcome> {
         let pending = {
-            let scene_manager = self.scene_manager.read().await;
+            let scene_manager = self.scene_manager.snapshot().await;
             let store = self.scene_store.read().await;
             store.reserve_save(scene_manager.list().into_iter().cloned())
         };
@@ -461,24 +468,26 @@ impl DaemonState {
         store.save_reserved(pending)
     }
 
-    async fn restore_runtime_session(&self, config: &HypercolorConfig) {
+    async fn restore_runtime_session(&mut self, config: &HypercolorConfig) {
         let scene_mode = config.daemon.start_scene.trim();
-        let snapshot = match runtime_state::load(&self.runtime_state_path) {
-            Ok(snapshot) => snapshot,
-            Err(error) => {
-                warn!(
-                    path = %self.runtime_state_path.display(),
-                    %error,
-                    "Failed to load runtime session snapshot"
-                );
-                None
+        let snapshot = self.startup_runtime_snapshot.take().or_else(|| {
+            match runtime_state::load(&self.runtime_state_path) {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    warn!(
+                        path = %self.runtime_state_path.display(),
+                        %error,
+                        "Failed to load runtime session snapshot"
+                    );
+                    None
+                }
             }
-        };
+        });
 
         if let Some(snapshot) = snapshot.as_ref()
             && snapshot.manual_paused
         {
-            restore_manual_pause(&self.power_state, [0, 0, 0]);
+            self.output_power.restore_manual_pause([0, 0, 0]).await;
         }
 
         if !scene_mode.eq_ignore_ascii_case("last") {
@@ -493,32 +502,21 @@ impl DaemonState {
             );
             return;
         };
-        set_global_brightness(&self.power_state, snapshot.global_brightness);
-        {
-            let mut settings = self.device_settings.write().await;
-            settings.set_global_brightness(snapshot.global_brightness);
-            if let Err(error) = settings.save() {
-                warn!(
-                    %error,
-                    "Failed to sync restored global brightness into device settings store"
-                );
-            }
-        }
-
         // Restore active layout if persisted.
         if let Some(layout_id) = &snapshot.active_layout_id {
             let layout = self.layouts.read().await.get(layout_id).cloned();
             if let Some(layout) = layout {
                 match SpatialEngine::try_new(layout.clone()) {
                     Ok(prepared) => {
-                        *self.spatial_engine.write().await = prepared;
+                        self.spatial_engine.replace(prepared);
                         // PRE-INIT WRITER (1 of 4) — see
                         // `apply_runtime_session_snapshot` for the reasoning
                         // all restore writers share.
-                        self.scene_manager
-                            .write()
-                            .await
-                            .sync_primary_group_layout(&layout);
+                        let mut mutation = self.scene_manager.begin_mutation().await;
+                        mutation.sync_primary_layout(&layout);
+                        if let Err(error) = self.scene_manager.commit_mutation(mutation).await {
+                            warn!(%error, "Failed to sync restored scene layout");
+                        }
                         info!(layout_id, layout_name = %layout.name, "Restored active layout");
                     }
                     Err(error) => {
@@ -544,7 +542,7 @@ impl DaemonState {
         }
 
         let target = {
-            let scenes = self.scene_manager.read().await;
+            let scenes = self.scene_manager.snapshot().await;
             let scene_id = if selector.eq_ignore_ascii_case("default") {
                 Some(SceneId::DEFAULT)
             } else if let Ok(uuid) = selector.parse::<uuid::Uuid>() {
@@ -587,25 +585,29 @@ impl DaemonState {
             return;
         }
 
-        let current_scene = {
-            let mut scenes = self.scene_manager.write().await;
-            if let Err(error) = scenes.activate(&scene_id, None) {
+        {
+            let mut mutation = self.scene_manager.begin_mutation().await;
+            if let Err(error) = mutation.activate(scene_id, None, SceneChangeReason::DaemonStart) {
                 warn!(selector, scene_id = %scene_id, %error, "Failed to activate configured startup scene");
                 return;
             }
-            scenes.active_scene().cloned()
-        };
+            if let Err(error) = self.scene_manager.commit_mutation(mutation).await {
+                warn!(selector, scene_id = %scene_id, %error, "Failed to commit configured startup scene");
+                return;
+            }
+        }
 
         if let Some(layout_id) = layout_id {
             let layout = self.layouts.read().await.get(layout_id.as_str()).cloned();
             match layout {
                 Some(layout) => match SpatialEngine::try_new(layout.clone()) {
                     Ok(prepared) => {
-                        *self.spatial_engine.write().await = prepared;
-                        self.scene_manager
-                            .write()
-                            .await
-                            .sync_primary_group_layout(&layout);
+                        self.spatial_engine.replace(prepared);
+                        let mut mutation = self.scene_manager.begin_mutation().await;
+                        mutation.sync_primary_layout(&layout);
+                        if let Err(error) = self.scene_manager.commit_mutation(mutation).await {
+                            warn!(%error, "Failed to sync configured startup scene layout");
+                        }
                     }
                     Err(error) => {
                         warn!(%layout_id, %error, "Rejected configured startup scene layout");
@@ -617,23 +619,15 @@ impl DaemonState {
             }
         }
 
-        if let Some(brightness) = activation_brightness {
-            set_global_brightness(&self.power_state, brightness);
-            let mut settings = self.device_settings.write().await;
-            settings.set_global_brightness(brightness);
-            if let Err(error) = settings.save() {
-                warn!(%error, "Failed to persist configured startup scene brightness");
-            }
+        if let Some(brightness) = activation_brightness
+            && let Err(error) = self
+                .output_power
+                .set_global_brightness(&self.event_bus, brightness)
+                .await
+        {
+            warn!(%error, "Failed to persist configured startup scene brightness");
         }
 
-        if let Some(current_scene) = current_scene {
-            self.event_bus
-                .publish(crate::domain::scene::active_scene_changed_event(
-                    previous_scene_id,
-                    &current_scene,
-                    SceneChangeReason::DaemonStart,
-                ));
-        }
         info!(scene_id = %scene_id, scene_name, "Activated configured startup scene");
     }
 
@@ -648,40 +642,24 @@ impl DaemonState {
             .transpose()
             .map(|scene_id| scene_id.map(SceneId))?;
 
-        // PRE-INIT WRITER (4 of 4, Spec 76 §2.3). All restore writers
-        // run inside `DaemonState::initialize`, before the render thread
-        // starts and before the API server binds, so nothing else can be
-        // committing and there is no competing writer for the commit
-        // sequencer to order against. The fifth scene writer in this
-        // file is the shutdown deactivate, which is post-teardown rather
-        // than pre-init.
-        //
-        // Neither can use the commit path regardless:
-        // `AppState::from_daemon_state` requires a live input
-        // publication pump, which does not exist yet. They route through
-        // the commit path once §6.4 gives scene services a context
-        // narrower than `AppState`.
         {
-            let mut scene_manager = self.scene_manager.write().await;
+            let mut mutation = self.scene_manager.begin_mutation().await;
             if !snapshot.default_scene_groups.is_empty() {
-                let Some(mut default_scene) = scene_manager.get(&SceneId::DEFAULT).cloned() else {
+                let Some(mut default_scene) = mutation.scenes().get(&SceneId::DEFAULT).cloned()
+                else {
                     anyhow::bail!("default scene is missing during runtime restore");
                 };
                 default_scene
-                    .groups
+                    .zones
                     .clone_from(&snapshot.default_scene_groups);
-                scene_manager
-                    .update(default_scene)
-                    .context("failed to restore default scene groups")?;
+                mutation.restore_scene(default_scene)?;
             }
 
             if let Some(scene_id) =
                 requested_active_scene_id.filter(|scene_id| !scene_id.is_default())
             {
-                if scene_manager.get(&scene_id).is_some() {
-                    scene_manager
-                        .activate(&scene_id, None)
-                        .with_context(|| format!("failed to activate restored scene {scene_id}"))?;
+                if mutation.scenes().get(&scene_id).is_some() {
+                    mutation.activate(scene_id, None, SceneChangeReason::DaemonStart)?;
                 } else {
                     warn!(
                         scene_id = %scene_id,
@@ -693,19 +671,10 @@ impl DaemonState {
             // Persisted groups carry a frozen layout snapshot that may pre-date
             // the active layout restored just above. Re-align the primary group
             // so the render pipeline sees the current layout's zones.
-            let active_layout = self.spatial_engine.read().await.layout().as_ref().clone();
-            scene_manager.sync_primary_group_layout(&active_layout);
+            let active_layout = self.spatial_engine.snapshot().layout().as_ref().clone();
+            mutation.sync_primary_layout(&active_layout);
+            self.scene_manager.commit_mutation(mutation).await?;
         }
-        if let Some(current_active_scene) = self.scene_manager.read().await.active_scene().cloned()
-        {
-            self.event_bus
-                .publish(crate::domain::scene::active_scene_changed_event(
-                    None,
-                    &current_active_scene,
-                    SceneChangeReason::DaemonStart,
-                ));
-        }
-
         if !snapshot.default_scene_groups.is_empty() || requested_active_scene_id.is_some() {
             info!(
                 groups = snapshot.default_scene_groups.len(),
@@ -811,12 +780,12 @@ impl DaemonState {
             loop {
                 match event_rx.recv().await {
                     Ok(event) if matches!(event.event, HypercolorEvent::DeviceConnected { .. }) => {
-                        crate::api::effects::reconcile_static_output_hold(&state).await;
+                        state.domains.output.reconcile_static_hold().await;
                     }
                     Ok(_) => {}
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
                         warn!(skipped, "Static output hold worker lagged");
-                        crate::api::effects::reconcile_static_output_hold(&state).await;
+                        state.domains.output.reconcile_static_hold().await;
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
@@ -916,28 +885,10 @@ impl DaemonState {
     )]
     fn spawn_discovery_worker(&mut self, config: Arc<HypercolorConfig>) {
         let worker = DiscoveryWorkerContext {
-            device_registry: self.device_registry.clone(),
-            backend_manager: Arc::clone(&self.backend_manager),
-            lifecycle_manager: Arc::clone(&self.lifecycle_manager),
-            reconnect_tasks: Arc::clone(&self.reconnect_tasks),
-            event_bus: Arc::clone(&self.event_bus),
+            discovery: self.driver_host.discovery_runtime(),
             config_manager: Arc::clone(&self.config_manager),
             driver_host: Arc::clone(&self.driver_host),
             driver_registry: Arc::clone(&self.driver_registry),
-            spatial_engine: Arc::clone(&self.spatial_engine),
-            scene_manager: Arc::clone(&self.scene_manager),
-            layouts: Arc::clone(&self.layouts),
-            layouts_path: self.layouts_path.clone(),
-            layout_auto_exclusions: Arc::clone(&self.layout_auto_exclusions),
-            logical_devices: Arc::clone(&self.logical_devices),
-            attachment_registry: Arc::clone(&self.attachment_registry),
-            attachment_profiles: Arc::clone(&self.attachment_profiles),
-            device_settings: Arc::clone(&self.device_settings),
-            runtime_state_path: self.runtime_state_path.clone(),
-            usb_protocol_configs: self.usb_protocol_configs.clone(),
-            credential_store: Arc::clone(&self.credential_store),
-            in_progress: Arc::clone(&self.discovery_in_progress),
-            scene_transactions: self.scene_transactions.clone(),
         };
 
         let initial_targets =

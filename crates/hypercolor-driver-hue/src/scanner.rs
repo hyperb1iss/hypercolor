@@ -11,8 +11,8 @@ use serde_json::Value;
 use tokio::task::JoinSet;
 use tracing::warn;
 
-use hypercolor_driver_api::{CredentialStore, MdnsBrowser};
-use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner};
+use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior};
+use hypercolor_driver_support::{CredentialStore, MdnsBrowser};
 
 use super::bridge::{DEFAULT_HUE_API_PORT, HueBridgeClient};
 use super::types::{
@@ -203,13 +203,9 @@ impl HueScanner {
     }
 }
 
-#[async_trait::async_trait]
-impl TransportScanner for HueScanner {
-    fn name(&self) -> &'static str {
-        "Hue"
-    }
-
-    async fn scan(&mut self) -> Result<Vec<DiscoveredDevice>> {
+impl HueScanner {
+    /// Discover configured and mDNS-visible Hue bridges.
+    pub async fn scan(&mut self) -> Result<Vec<DiscoveredDevice>> {
         Ok(self
             .scan_bridges()
             .await?

@@ -6,7 +6,7 @@
 
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
-use hypercolor_core::types::api::envelope::ApiErrorBody;
+use hypercolor_types::api::envelope::ApiErrorBody;
 use serde::Serialize;
 use std::time::Duration;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;

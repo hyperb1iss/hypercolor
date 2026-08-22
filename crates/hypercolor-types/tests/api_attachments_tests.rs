@@ -141,13 +141,12 @@ fn template_summary_round_trips_through_a_null_origin() {
 }
 
 #[test]
-fn template_listing_tolerates_a_missing_pagination_envelope() {
-    // The deleted UI mirror had no `pagination` field at all and simply
-    // ignored the envelope, so a body without one must still parse.
+fn complete_template_listing_omits_page_state() {
     let listing: TemplateListResponse =
-        serde_json::from_value(json!({ "items": [summary_json(None)] }))
-            .expect("a listing without pagination must decode");
+        serde_json::from_value(json!({ "items": [summary_json(None)], "total": 1 }))
+            .expect("a complete listing without page state must decode");
 
     assert_eq!(listing.items.len(), 1);
-    assert_eq!(listing.pagination.total, 0);
+    assert_eq!(listing.total, 1);
+    assert_eq!(listing.page, None);
 }

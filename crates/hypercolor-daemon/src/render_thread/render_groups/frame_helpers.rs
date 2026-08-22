@@ -83,10 +83,7 @@ pub(super) fn passthrough_effect_layer(group: &Zone) -> Option<SceneLayer> {
         return None;
     }
 
-    let mut layers = group
-        .effective_layers()
-        .into_iter()
-        .filter(|layer| layer.enabled);
+    let mut layers = group.layers.iter().filter(|layer| layer.enabled);
     let layer = layers.next()?;
     if layers.next().is_some() {
         return None;
@@ -110,7 +107,7 @@ pub(super) fn passthrough_effect_layer(group: &Zone) -> Option<SceneLayer> {
         return None;
     }
 
-    Some(layer)
+    Some(layer.clone())
 }
 
 pub(super) fn composition_layer_for_scene_layer(

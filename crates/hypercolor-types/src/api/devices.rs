@@ -3,13 +3,16 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::api::common::Pagination;
+use crate::api::envelope::ListResponse;
 use crate::attachment::{ComponentBinding, ComponentSlot, ComponentSuggestedZone};
 use crate::device::{DeviceOrigin, DriverPresentation};
+use crate::event::DeviceRef;
 use crate::pairing::{DeviceAuthSummary, PairDeviceStatus};
 
 /// Query parameters for `GET /api/v1/devices`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema, utoipa::IntoParams,
+)]
 pub struct ListDevicesQuery {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub offset: Option<usize>,
@@ -31,11 +34,7 @@ pub struct ListDevicesQuery {
 }
 
 /// Response for `GET /api/v1/devices`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
-pub struct DeviceListResponse {
-    pub items: Vec<DeviceSummary>,
-    pub pagination: Pagination,
-}
+pub type DeviceListResponse = ListResponse<DeviceSummary>;
 
 /// One device in the list/detail responses.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
@@ -122,7 +121,7 @@ pub struct UpdateDeviceRequest {
 ///
 /// `id` echoes the resolved device id, which may differ from the name or
 /// prefix the caller addressed the device by.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct DeleteDeviceResponse {
     pub id: String,
     pub removed: bool,
@@ -142,7 +141,7 @@ pub struct IdentifyRequest {
 /// The blink runs in the background, so the response only acknowledges
 /// that it started and echoes the parameters actually used. `color` is
 /// `null` when the caller sent no color and the daemon used its default.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct IdentifyDeviceResponse {
     pub device_id: String,
     pub identifying: bool,
@@ -151,7 +150,7 @@ pub struct IdentifyDeviceResponse {
 }
 
 /// Response for `POST /api/v1/devices/{id}/segments/{segment}/identify`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct IdentifySegmentResponse {
     pub device_id: String,
     pub segment: String,
@@ -166,7 +165,7 @@ pub struct IdentifySegmentResponse {
 ///
 /// Carries the base identify parameters plus the selectors that narrow
 /// the blink to one attached component instance.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct IdentifyAttachmentRequest {
     #[serde(flatten)]
     pub base: IdentifyRequest,
@@ -181,7 +180,7 @@ pub struct IdentifyAttachmentRequest {
 ///
 /// `instance` is `null` when the request blinked every instance of the
 /// binding rather than one of them.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct IdentifyAttachmentResponse {
     pub device_id: String,
     pub slot_id: String,
@@ -258,7 +257,7 @@ pub struct ComponentBindingSummary {
 ///
 /// `deleted` is false when the device had no stored profile to remove,
 /// which is a success rather than a 404.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct DeleteAttachmentsResponse {
     pub device_id: String,
     pub deleted: bool,
@@ -277,12 +276,61 @@ pub struct DiscoverRequest {
     pub wait: Option<bool>,
 }
 
+/// Per-scanner diagnostics from a completed discovery scan.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct DiscoveryScannerResult {
+    pub scanner: String,
+    pub duration_ms: u64,
+    pub discovered: usize,
+    pub status: String,
+    pub error: Option<String>,
+}
+
+/// Detailed result from a completed discovery scan.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct DiscoveryScanResult {
+    pub targets: Vec<String>,
+    pub timeout_ms: u64,
+    pub new_devices: Vec<DeviceRef>,
+    pub reappeared_devices: Vec<DeviceRef>,
+    pub vanished_devices: Vec<String>,
+    pub total_known: usize,
+    pub duration_ms: u64,
+    pub scanners: Vec<DiscoveryScannerResult>,
+}
+
+/// Immediate acknowledgement for an asynchronous discovery scan.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct DiscoveryStartedResponse {
+    pub scan_id: String,
+    pub status: String,
+    pub targets: Vec<String>,
+    pub timeout_ms: u64,
+}
+
+/// Completed response for a synchronous discovery scan.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct DiscoveryCompletedResponse {
+    pub scan_id: String,
+    pub status: String,
+    pub result: DiscoveryScanResult,
+}
+
+/// Response from `POST /api/v1/devices/discover`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(untagged)]
+pub enum DiscoverResponse {
+    Started(DiscoveryStartedResponse),
+    Completed(DiscoveryCompletedResponse),
+}
+
 /// Response for `POST /api/v1/devices/{id}/pair`.
 ///
 /// `device` carries the device's refreshed summary when pairing changed
 /// its state enough to be worth re-rendering, and is omitted otherwise.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct PairDeviceResponse {
+    #[schema(value_type = String)]
     pub status: PairDeviceStatus,
     pub message: String,
     /// Whether the device was connected and started rendering as part of
@@ -294,7 +342,7 @@ pub struct PairDeviceResponse {
 }
 
 /// Response for `DELETE /api/v1/devices/{id}/pair`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct DeletePairingResponse {
     #[serde(default)]
     pub status: String,

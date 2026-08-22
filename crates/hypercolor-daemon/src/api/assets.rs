@@ -13,12 +13,13 @@ use hypercolor_core::asset::{
 use hypercolor_types::asset::AssetId;
 use hypercolor_types::event::{AssetChangeKind, HypercolorEvent};
 
-use crate::api::AppState;
-use crate::api::envelope::ApiResponse;
+use crate::api::envelope;
+use crate::app_state::AppState;
 use crate::domain::{DomainError, ResourceKind};
 
 pub use hypercolor_types::api::assets::{
     AssetListResponse, AssetUpdateRequest, AssetUploadQuery, AssetUploadResponse,
+    DeleteAssetResponse,
 };
 
 /// Multipart framing the upload route accepts on top of the asset bytes
@@ -36,9 +37,10 @@ struct ParsedUpload {
 pub async fn list_assets(State(state): State<Arc<AppState>>) -> Response {
     let library = state.asset_library.read().await;
     let items = library.records().to_vec();
-    ApiResponse::ok(AssetListResponse {
-        total: items.len(),
+    envelope::ok(AssetListResponse {
+        total: u64::try_from(items.len()).expect("asset count fits in u64"),
         items,
+        page: None,
     })
 }
 
@@ -47,7 +49,7 @@ pub async fn get_asset(State(state): State<Arc<AppState>>, Path(id): Path<AssetI
     let Some(record) = library.get(id).cloned() else {
         return DomainError::not_found(ResourceKind::Asset, id).into_response();
     };
-    ApiResponse::ok(record)
+    envelope::ok(record)
 }
 
 pub async fn upload_asset(
@@ -78,9 +80,9 @@ pub async fn upload_asset(
         duplicate: upsert.duplicate,
     };
     if upsert.duplicate {
-        ApiResponse::ok(response)
+        envelope::ok(response)
     } else {
-        ApiResponse::created(response)
+        envelope::created(response)
     }
 }
 
@@ -101,7 +103,7 @@ pub async fn update_asset(
     if let Some(event) = &update.event {
         publish_asset_events(state.as_ref(), std::slice::from_ref(event));
     }
-    ApiResponse::ok(update.record)
+    envelope::ok(update.record)
 }
 
 pub async fn delete_asset(State(state): State<Arc<AppState>>, Path(id): Path<AssetId>) -> Response {
@@ -115,7 +117,7 @@ pub async fn delete_asset(State(state): State<Arc<AppState>>, Path(id): Path<Ass
     };
 
     publish_asset_events(state.as_ref(), std::slice::from_ref(&event));
-    ApiResponse::ok(serde_json::json!({ "removed": id }))
+    envelope::ok(DeleteAssetResponse { removed: id })
 }
 
 pub async fn get_asset_blob(

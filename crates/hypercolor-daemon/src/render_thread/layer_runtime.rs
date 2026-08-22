@@ -138,8 +138,8 @@ fn active_layer_keys(groups: &[Zone]) -> HashSet<LayerRuntimeKey> {
         .filter(|group| group.enabled)
         .flat_map(|group| {
             group
-                .effective_layers()
-                .into_iter()
+                .layers
+                .iter()
                 .filter(|layer| layer.enabled)
                 .map(|layer| LayerRuntimeKey::new(group.id, layer.id))
         })
@@ -163,10 +163,6 @@ mod tests {
             id: ZoneId::new(),
             name: "Layer Runtime".into(),
             description: None,
-            effect_id: Some(effect_id),
-            controls: HashMap::new(),
-            control_bindings: HashMap::new(),
-            preset_id: None,
             layers: vec![SceneLayer::from_effect(
                 SceneLayerId::new(),
                 effect_id,

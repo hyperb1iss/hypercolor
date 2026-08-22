@@ -6,7 +6,6 @@
 use std::future::Future;
 
 use leptos::prelude::{Get, LocalResource, expect_context};
-use serde::Deserialize;
 
 use crate::app::WsContext;
 
@@ -28,12 +27,6 @@ pub mod system;
 pub mod zones;
 
 // ── Shared Envelope ─────────────────────────────────────────────────────────
-
-/// Mirrors the daemon's envelope: `{ "data": T, "meta": { ... } }`.
-#[derive(Debug, Deserialize)]
-pub struct ApiEnvelope<T> {
-    pub data: T,
-}
 
 pub fn daemon_resource<T, Fut>(fetcher: impl Fn() -> Fut + 'static) -> LocalResource<T>
 where
@@ -65,6 +58,5 @@ pub use library::*;
 pub use output::*;
 pub use scenes::*;
 pub use system::*;
-// `zones` is referenced by its module path (`api::zones::…`) rather than
-// flat-globbed, to avoid colliding `ZoneResponse`/`ZoneListResponse` with
-// other domains.
+// Zone mutations stay under `api::zones` so their revision precondition is
+// visible at call sites.

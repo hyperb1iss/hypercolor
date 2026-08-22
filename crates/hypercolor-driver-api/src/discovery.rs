@@ -1,25 +1,9 @@
-//! Native discovery boundary shared by transport scanners and the orchestrator.
+//! Canonical device discovery payload shared by drivers and the host.
 
 use std::collections::HashMap;
 
-use anyhow::Result;
 use hypercolor_types::device::{DeviceFingerprint, DeviceInfo};
 use hypercolor_types::portable::PortableIdentityClaim;
-
-/// A single-transport device scanner.
-#[async_trait::async_trait]
-pub trait TransportScanner: Send + Sync {
-    /// Human-readable scanner name for logging and diagnostics.
-    fn name(&self) -> &str;
-
-    /// Run a one-shot scan and return all currently reachable devices.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the transport is inaccessible or the scan
-    /// encounters an unrecoverable failure.
-    async fn scan(&mut self) -> Result<Vec<DiscoveredDevice>>;
-}
 
 /// Whether a discovered device should trigger an immediate lifecycle connect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

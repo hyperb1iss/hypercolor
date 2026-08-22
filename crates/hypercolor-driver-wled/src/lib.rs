@@ -12,30 +12,29 @@ mod scanner;
 
 use std::collections::{BTreeMap, HashSet};
 use std::net::IpAddr;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
-use hypercolor_driver_api::control_apply;
-use hypercolor_driver_api::control_surface;
-use hypercolor_driver_api::validation::validate_ip;
+use hypercolor_driver_api::DeviceBackend;
 use hypercolor_driver_api::{
-    ControlApplyTarget, DiscoveryCapability, DiscoveryRequest, DiscoveryResult,
-    DriverConfigProvider, DriverConfigView, DriverControlProvider, DriverDescriptor,
-    DriverDiscoveredDevice, DriverHost, DriverModule, DriverPresentationProvider,
-    DriverRuntimeCacheProvider, DriverTrackedDevice, TrackedDeviceCtx, ValidatedControlChanges,
+    ControlApplyTarget, DeviceBackendFactory, DiscoveredDevice, DiscoveryCapability,
+    DiscoveryRequest, DriverConfigProvider, DriverConfigView, DriverControlProvider,
+    DriverDescriptor, DriverError, DriverHost, DriverModule, DriverPresentationProvider,
+    DriverRuntimeCacheProvider, DriverTrackedDevice, OutputBinding, TrackedDeviceCtx,
+    ValidatedControlChanges,
 };
-use hypercolor_driver_api::{DeviceBackend, TransportScanner};
+use hypercolor_driver_support::network::validate_ip;
+use hypercolor_driver_support::{control_apply, control_surface};
 use hypercolor_types::config::DriverConfigEntry;
 use hypercolor_types::controls::{
     ApplyControlChangesResponse, ApplyImpact, ControlChange, ControlEnumOption,
     ControlFieldDescriptor, ControlGroupKind, ControlSurfaceDocument, ControlValue,
     ControlValueMap, ControlValueType,
 };
-use hypercolor_types::device::{
-    DeviceClassHint, DeviceId, DriverPresentation, DriverTransportKind,
-};
+use hypercolor_types::device::{DeviceClassHint, DriverPresentation, DriverTransportKind};
+use hypercolor_types::identity::BackendId;
 use serde::{Deserialize, Serialize};
 
 pub use backend::{
@@ -151,15 +150,13 @@ const fn default_dedup_threshold() -> u8 {
     2
 }
 
-#[derive(Clone)]
-pub struct WledDriverModule {
-    mdns_enabled: bool,
-}
+#[derive(Clone, Default)]
+pub struct WledDriverModule;
 
 impl WledDriverModule {
     #[must_use]
-    pub const fn new(mdns_enabled: bool) -> Self {
-        Self { mdns_enabled }
+    pub const fn new() -> Self {
+        Self
     }
 }
 
@@ -168,20 +165,11 @@ impl DriverModule for WledDriverModule {
         &DESCRIPTOR
     }
 
-    fn build_output_backend(
-        &self,
-        host: &dyn DriverHost,
-        config: DriverConfigView<'_>,
-    ) -> Result<Option<Box<dyn DeviceBackend>>> {
-        Ok(Some(Box::new(build_wled_backend(
-            &config.parse_settings::<WledConfig>()?,
-            self.mdns_enabled,
-            host,
-        )?)))
-    }
-
-    fn has_output_backend(&self) -> bool {
-        true
+    fn output(&self) -> OutputBinding<'_> {
+        OutputBinding::Owned {
+            id: BackendId::new(DESCRIPTOR.id).expect("WLED backend ID must be valid"),
+            factory: self,
+        }
     }
 
     fn discovery(&self) -> Option<&dyn DiscoveryCapability> {
@@ -205,6 +193,17 @@ impl DriverModule for WledDriverModule {
     }
 }
 
+impl DeviceBackendFactory for WledDriverModule {
+    fn build(
+        &self,
+        _host: &dyn DriverHost,
+        config: DriverConfigView<'_>,
+    ) -> std::result::Result<Arc<dyn DeviceBackend>, DriverError> {
+        let config = config.parse_settings::<WledConfig>()?;
+        Ok(Arc::new(build_wled_backend(&config)))
+    }
+}
+
 impl DriverPresentationProvider for WledDriverModule {
     fn presentation(&self) -> DriverPresentation {
         DriverPresentation {
@@ -225,11 +224,11 @@ impl DiscoveryCapability for WledDriverModule {
         host: &dyn DriverHost,
         request: &DiscoveryRequest,
         config: DriverConfigView<'_>,
-    ) -> Result<DiscoveryResult> {
+    ) -> std::result::Result<Vec<DiscoveredDevice>, DriverError> {
         let config = config.parse_settings::<WledConfig>()?;
         let tracked_devices = host.discovery_state().tracked_devices(DESCRIPTOR.id).await;
-        let cached_probe_ips = load_cached_probe_ips(host)?;
-        let cached_targets = load_cached_probe_targets(host)?;
+        let cached_probe_ips = load_cached_probe_ips(host).map_err(DriverError::discovery)?;
+        let cached_targets = load_cached_probe_targets(host).map_err(DriverError::discovery)?;
         let known_targets = resolve_wled_probe_targets_from_sources(
             &config,
             &tracked_devices,
@@ -238,14 +237,7 @@ impl DiscoveryCapability for WledDriverModule {
         );
         let mut scanner =
             WledScanner::with_known_targets(known_targets, request.mdns_enabled, request.timeout);
-        let devices = scanner
-            .scan()
-            .await?
-            .into_iter()
-            .map(DriverDiscoveredDevice::from)
-            .collect();
-
-        Ok(DiscoveryResult { devices })
+        scanner.scan().await.map_err(DriverError::discovery)
     }
 }
 
@@ -265,14 +257,16 @@ impl DriverConfigProvider for WledDriverModule {
         ]))
     }
 
-    fn validate_config(&self, config: &DriverConfigEntry) -> Result<()> {
+    fn validate_config(&self, config: &DriverConfigEntry) -> std::result::Result<(), DriverError> {
         let config = DriverConfigView {
             driver_id: DESCRIPTOR.id,
             entry: config,
         }
         .parse_settings::<WledConfig>()?;
         for ip in config.known_ips {
-            validate_ip(ip).with_context(|| format!("invalid WLED known IP: {ip}"))?;
+            validate_ip(ip).map_err(|error| DriverError::Configuration {
+                message: format!("invalid WLED known IP {ip}: {error}"),
+            })?;
         }
         Ok(())
     }
@@ -781,29 +775,10 @@ impl DriverRuntimeCacheProvider for WledDriverModule {
     }
 }
 
-/// Build the runtime WLED backend using config and cached discovery hints.
-///
-/// # Errors
-///
-/// Returns an error if cached probe data cannot be parsed.
-pub fn build_wled_backend(
-    config: &WledConfig,
-    mdns_enabled: bool,
-    host: &dyn DriverHost,
-) -> Result<WledBackend> {
-    let mut known_ips: HashSet<_> = config.known_ips.iter().copied().collect();
-    known_ips.extend(load_cached_probe_ips(host)?);
-
-    let mut resolved_known_ips: Vec<_> = known_ips.into_iter().collect();
-    resolved_known_ips.sort_unstable();
-
-    let mut backend = WledBackend::with_mdns_fallback(resolved_known_ips, mdns_enabled);
-    for target in load_cached_probe_targets(host)? {
-        let Some((device_id, ip, info)) = cached_wled_backend_seed(&target) else {
-            continue;
-        };
-        backend.remember_device(device_id, ip, info);
-    }
+/// Build the runtime WLED backend using driver configuration.
+#[must_use]
+pub fn build_wled_backend(config: &WledConfig) -> WledBackend {
+    let mut backend = WledBackend::new();
     let protocol = match config.default_protocol {
         WledProtocolConfig::Ddp => WledProtocol::Ddp,
         WledProtocolConfig::E131 => WledProtocol::E131,
@@ -811,7 +786,7 @@ pub fn build_wled_backend(
     backend.set_protocol(protocol);
     backend.set_realtime_http_enabled(config.realtime_http_enabled);
     backend.set_dedup_threshold(config.dedup_threshold);
-    Ok(backend)
+    backend
 }
 
 /// Merge WLED probe IPs from config, tracked devices, and cached discovery.
@@ -960,46 +935,4 @@ fn load_cached_probe_targets(host: &dyn DriverHost) -> Result<Vec<WledKnownTarge
         .transpose()
         .context("failed to parse cached WLED probe targets")
         .map(Option::unwrap_or_default)
-}
-
-fn cached_wled_backend_seed(
-    target: &WledKnownTarget,
-) -> Option<(DeviceId, IpAddr, WledDeviceInfo)> {
-    let fingerprint = target.fingerprint.clone()?;
-    let name = target.name.clone()?;
-    let led_count = target.led_count?;
-    let fps = target
-        .max_fps
-        .map_or(60, |value| u8::try_from(value).unwrap_or(u8::MAX));
-
-    Some((
-        fingerprint.stable_device_id(),
-        target.ip,
-        WledDeviceInfo {
-            firmware_version: target
-                .firmware_version
-                .clone()
-                .unwrap_or_else(|| "unknown".to_owned()),
-            build_id: 0,
-            mac: fingerprint
-                .0
-                .strip_prefix("net:")
-                .filter(|value| !value.starts_with("wled:"))
-                .unwrap_or_default()
-                .to_owned(),
-            name,
-            led_count: u16::try_from(led_count).unwrap_or(u16::MAX),
-            rgbw: target.rgbw.unwrap_or(false),
-            max_segments: 1,
-            fps,
-            power_draw_ma: 0,
-            max_power_ma: 0,
-            free_heap: 0,
-            uptime_secs: 0,
-            arch: "unknown".to_owned(),
-            is_wifi: true,
-            effect_count: 0,
-            palette_count: 0,
-        },
-    ))
 }

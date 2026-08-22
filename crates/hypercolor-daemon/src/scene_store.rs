@@ -4,14 +4,34 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::Context;
+use anyhow::{Context, bail};
 use hypercolor_core::scene::SceneManager;
 use hypercolor_types::scene::{Scene, SceneId, SceneKind};
+use serde::{Deserialize, Serialize};
 
 use crate::persistence::{
     AdmittedAtomicWrite, AtomicFileWriter, AtomicWriteCommitResult, AtomicWriteOutcome,
     PersistenceError, serialize_json_pretty,
 };
+
+const SCENE_STORE_SCHEMA_VERSION: u32 = 2;
+const SCENE_STORE_V2_SHAPE: &str = r#"{"schema_version":2,"scenes":{...}}"#;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SceneStoreDocument {
+    schema_version: u32,
+    scenes: HashMap<SceneId, Scene>,
+}
+
+impl SceneStoreDocument {
+    fn current(scenes: HashMap<SceneId, Scene>) -> Self {
+        Self {
+            schema_version: SCENE_STORE_SCHEMA_VERSION,
+            scenes,
+        }
+    }
+}
 
 /// Named-scene snapshot reserved at its owning scene-manager boundary.
 #[derive(Debug)]
@@ -51,12 +71,36 @@ impl SceneStore {
             .with_context(|| format!("failed to read scenes at {}", path.display()))?;
         let original = serde_json::from_str::<serde_json::Value>(&raw)
             .with_context(|| format!("failed to parse scenes at {}", path.display()))?;
-        let scenes = serde_json::from_value::<HashMap<SceneId, Scene>>(original.clone())
+        let Some(schema_version) = original
+            .as_object()
+            .and_then(|document| document.get("schema_version"))
+            .and_then(serde_json::Value::as_u64)
+        else {
+            bail!(
+                "scene store uses the retired unversioned schema; this release accepts the v2 \
+                 envelope {SCENE_STORE_V2_SHAPE}. Restore the file with a pre-v2 Hypercolor \
+                 release, export or rewrite its scenes into the zones/layers schema, then \
+                 restart. The original file was not modified"
+            );
+        };
+        if schema_version != u64::from(SCENE_STORE_SCHEMA_VERSION) {
+            bail!(
+                "unsupported scene store schema version {schema_version}; this release accepts \
+                 the v2 envelope {SCENE_STORE_V2_SHAPE}. Export or rewrite the store into the \
+                 zones/layers schema before restarting. The original file was not modified"
+            );
+        }
+        let document = serde_json::from_value::<SceneStoreDocument>(original.clone())
             .with_context(|| format!("failed to parse scenes at {}", path.display()))?;
 
-        let mut store = Self { writer, scenes };
-        store.normalize();
-        let normalized = serde_json::to_value(&store.scenes)
+        let mut store = Self {
+            writer,
+            scenes: document.scenes,
+        };
+        store
+            .normalize()
+            .with_context(|| format!("failed to validate scenes at {}", path.display()))?;
+        let normalized = serde_json::to_value(SceneStoreDocument::current(store.scenes.clone()))
             .context("failed to serialize normalized scene store")?;
         if normalized != original {
             store
@@ -78,12 +122,12 @@ impl SceneStore {
         I: IntoIterator<Item = Scene>,
     {
         let scenes = named_scenes(scenes);
-        let payload = serialize_json_pretty(&scenes).map_err(|source| {
-            PersistenceError::SerializeSnapshot {
+        let payload = serialize_json_pretty(&SceneStoreDocument::current(scenes.clone())).map_err(
+            |source| PersistenceError::SerializeSnapshot {
                 subject: "named scenes",
                 source,
-            }
-        })?;
+            },
+        )?;
         Ok(SceneStoreSave {
             scenes,
             write: self.writer.reserve().admit(payload),
@@ -147,8 +191,8 @@ impl SceneStore {
         self.replace_named_scenes(manager.list().into_iter().cloned());
     }
 
-    fn normalize(&mut self) {
-        self.scenes.retain(|id, scene| {
+    fn normalize(&mut self) -> anyhow::Result<()> {
+        for (id, scene) in &mut self.scenes {
             scene.name = scene.name.trim().to_owned();
             scene.description = scene
                 .description
@@ -156,11 +200,23 @@ impl SceneStore {
                 .map(|description| description.trim().to_owned())
                 .filter(|description| !description.is_empty());
 
-            !id.is_default()
-                && scene.id == *id
-                && scene.kind == SceneKind::Named
-                && !scene.name.is_empty()
-        });
+            if id.is_default() {
+                bail!("persisted scene store contains the reserved default scene");
+            }
+            if scene.id != *id {
+                bail!(
+                    "persisted scene key {id} does not match scene id {}",
+                    scene.id
+                );
+            }
+            if scene.kind != SceneKind::Named {
+                bail!("persisted scene {id} is not a named scene");
+            }
+            if let Err(errors) = scene.validate() {
+                bail!("persisted scene {id} is invalid: {}", errors.join("; "));
+            }
+        }
+        Ok(())
     }
 }
 

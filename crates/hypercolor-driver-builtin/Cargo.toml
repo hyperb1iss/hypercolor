@@ -24,6 +24,7 @@ wled = ["dep:hypercolor-driver-wled"]
 [dependencies]
 hypercolor-core = { path = "../hypercolor-core", default-features = false }
 hypercolor-driver-api = { workspace = true }
+hypercolor-driver-support = { workspace = true }
 hypercolor-driver-govee = { workspace = true, optional = true }
 hypercolor-driver-hue = { workspace = true, optional = true }
 hypercolor-driver-nanoleaf = { workspace = true, optional = true }
@@ -33,6 +34,7 @@ hypercolor-hal = { workspace = true, optional = true }
 hypercolor-network = { workspace = true }
 hypercolor-types = { workspace = true }
 anyhow = { workspace = true }
+async-trait = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -23,7 +23,6 @@ class LatestFrameStatus:
         compositor_backend (str):
         coordination_overhead_ms (float):
         cpu_readback_skipped (bool):
-        cpu_sampling_late_readback (bool): Deprecated v1 compatibility field. Always `false`.
         device_output_ms (float):
         devices_written (int):
         effect_rendering_ms (float):
@@ -42,7 +41,6 @@ class LatestFrameStatus:
         gpu_zone_sampling (bool):
         input_sampling_ms (float):
         jitter_ms (float):
-        led_sampling_readback (bool): Deprecated v1 compatibility alias. Always `false`.
         logical_layer_count (int):
         output_brightness_bits (int):
         output_brightness_generation (int):
@@ -80,7 +78,6 @@ class LatestFrameStatus:
     compositor_backend: str
     coordination_overhead_ms: float
     cpu_readback_skipped: bool
-    cpu_sampling_late_readback: bool
     device_output_ms: float
     devices_written: int
     effect_rendering_ms: float
@@ -99,7 +96,6 @@ class LatestFrameStatus:
     gpu_zone_sampling: bool
     input_sampling_ms: float
     jitter_ms: float
-    led_sampling_readback: bool
     logical_layer_count: int
     output_brightness_bits: int
     output_brightness_generation: int
@@ -142,8 +138,6 @@ class LatestFrameStatus:
 
         cpu_readback_skipped = self.cpu_readback_skipped
 
-        cpu_sampling_late_readback = self.cpu_sampling_late_readback
-
         device_output_ms = self.device_output_ms
 
         devices_written = self.devices_written
@@ -179,8 +173,6 @@ class LatestFrameStatus:
         input_sampling_ms = self.input_sampling_ms
 
         jitter_ms = self.jitter_ms
-
-        led_sampling_readback = self.led_sampling_readback
 
         logical_layer_count = self.logical_layer_count
 
@@ -262,7 +254,6 @@ class LatestFrameStatus:
                 "compositor_backend": compositor_backend,
                 "coordination_overhead_ms": coordination_overhead_ms,
                 "cpu_readback_skipped": cpu_readback_skipped,
-                "cpu_sampling_late_readback": cpu_sampling_late_readback,
                 "device_output_ms": device_output_ms,
                 "devices_written": devices_written,
                 "effect_rendering_ms": effect_rendering_ms,
@@ -281,7 +272,6 @@ class LatestFrameStatus:
                 "gpu_zone_sampling": gpu_zone_sampling,
                 "input_sampling_ms": input_sampling_ms,
                 "jitter_ms": jitter_ms,
-                "led_sampling_readback": led_sampling_readback,
                 "logical_layer_count": logical_layer_count,
                 "output_brightness_bits": output_brightness_bits,
                 "output_brightness_generation": output_brightness_generation,
@@ -337,8 +327,6 @@ class LatestFrameStatus:
 
         cpu_readback_skipped = d.pop("cpu_readback_skipped")
 
-        cpu_sampling_late_readback = d.pop("cpu_sampling_late_readback")
-
         device_output_ms = d.pop("device_output_ms")
 
         devices_written = d.pop("devices_written")
@@ -374,8 +362,6 @@ class LatestFrameStatus:
         input_sampling_ms = d.pop("input_sampling_ms")
 
         jitter_ms = d.pop("jitter_ms")
-
-        led_sampling_readback = d.pop("led_sampling_readback")
 
         logical_layer_count = d.pop("logical_layer_count")
 
@@ -466,7 +452,6 @@ class LatestFrameStatus:
             compositor_backend=compositor_backend,
             coordination_overhead_ms=coordination_overhead_ms,
             cpu_readback_skipped=cpu_readback_skipped,
-            cpu_sampling_late_readback=cpu_sampling_late_readback,
             device_output_ms=device_output_ms,
             devices_written=devices_written,
             effect_rendering_ms=effect_rendering_ms,
@@ -485,7 +470,6 @@ class LatestFrameStatus:
             gpu_zone_sampling=gpu_zone_sampling,
             input_sampling_ms=input_sampling_ms,
             jitter_ms=jitter_ms,
-            led_sampling_readback=led_sampling_readback,
             logical_layer_count=logical_layer_count,
             output_brightness_bits=output_brightness_bits,
             output_brightness_generation=output_brightness_generation,

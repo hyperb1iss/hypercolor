@@ -3,8 +3,7 @@
 use std::time::Duration;
 
 use hypercolor_types::device::{
-    DeviceCapabilities, DeviceColorFormat, DeviceTopologyHint, DisplayFrameFormat,
-    DisplayFramePayload, ScrollMode, SegmentLayoutHint,
+    DeviceCapabilities, DisplayFrameFormat, DisplayFramePayload, ScrollMode, SegmentInfo,
 };
 
 /// Pure byte-level protocol encoder/decoder.
@@ -124,7 +123,7 @@ pub trait Protocol: Send + Sync {
     }
 
     /// Zone descriptors for this device.
-    fn zones(&self) -> Vec<ProtocolZone>;
+    fn zones(&self) -> Vec<SegmentInfo>;
 
     /// Aggregate capabilities for this device.
     fn capabilities(&self) -> DeviceCapabilities;
@@ -296,25 +295,6 @@ pub enum ResponseStatus {
 
     /// Device does not support this command.
     Unsupported,
-}
-
-/// Zone descriptor emitted by a protocol implementation.
-#[derive(Debug, Clone)]
-pub struct ProtocolZone {
-    /// Zone display name.
-    pub name: String,
-
-    /// Number of LEDs in this zone.
-    pub led_count: u32,
-
-    /// Physical arrangement hint.
-    pub topology: DeviceTopologyHint,
-
-    /// Wire-level color format.
-    pub color_format: DeviceColorFormat,
-
-    /// Optional driver-owned spatial presentation hint.
-    pub layout_hint: Option<SegmentLayoutHint>,
 }
 
 /// Protocol-level parse/encode errors.

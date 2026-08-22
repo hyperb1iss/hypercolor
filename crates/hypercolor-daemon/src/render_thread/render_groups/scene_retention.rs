@@ -7,6 +7,10 @@ use crate::render_thread::frame_sampling::LedSamplingStrategy;
 use crate::render_thread::scene_dependency::SceneDependencyKey;
 
 impl ZoneRuntime {
+    pub(crate) fn release_retained_scene_frame(&mut self) {
+        self.retained_frame = None;
+    }
+
     pub(crate) fn reuse_scene(&self, dependency_key: SceneDependencyKey) -> Option<ZoneResult> {
         let retained = self.retained_frame.as_ref()?;
         if retained.dependency_key != dependency_key {

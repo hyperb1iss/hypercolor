@@ -5,6 +5,7 @@ use std::time::Duration;
 use anyhow::{Result, bail};
 use async_trait::async_trait;
 use hypercolor_daemon::driver_inventory::DriverInventoryStore;
+use hypercolor_daemon::path_migration::MigrationOutcome;
 #[cfg(feature = "persistence-test-hooks")]
 use hypercolor_daemon::persistence::AtomicFileWriter;
 use hypercolor_driver_api::{
@@ -219,6 +220,106 @@ async fn driver_inventory_round_trips_opaque_driver_payloads() {
     let reopened = DriverInventoryStore::open(inventory_path).expect("reopen inventory");
     assert_eq!(
         reopened.load_cached_json("wled", "probe_ips"),
+        Some(json!(["10.4.22.69"]))
+    );
+}
+
+#[test]
+fn driver_inventory_moves_to_state_with_a_durable_backup() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let legacy = tempdir.path().join("data/driver-inventory.json");
+    let canonical = tempdir.path().join("state/driver-inventory.json");
+    std::fs::create_dir_all(legacy.parent().expect("legacy parent")).expect("legacy directory");
+    std::fs::write(
+        &legacy,
+        serde_json::to_vec_pretty(&json!({
+            "schema_version": 1,
+            "drivers": {
+                "wled": {"probe_ips": ["10.4.22.69"]}
+            }
+        }))
+        .expect("serialize inventory"),
+    )
+    .expect("write legacy inventory");
+
+    let (store, outcome) = DriverInventoryStore::open_migrated(legacy.clone(), canonical.clone())
+        .expect("migration succeeds");
+    let MigrationOutcome::Imported {
+        backup: Some(backup),
+    } = outcome
+    else {
+        panic!("expected an imported backup, got {outcome:?}");
+    };
+
+    assert_eq!(
+        store.load_cached_json("wled", "probe_ips"),
+        Some(json!(["10.4.22.69"]))
+    );
+    assert!(canonical.exists());
+    assert!(!legacy.exists());
+    assert!(backup.exists());
+
+    let (_, second) =
+        DriverInventoryStore::open_migrated(legacy, canonical).expect("restart is idempotent");
+    assert_eq!(second, MigrationOutcome::AlreadyMigrated);
+}
+
+#[test]
+fn corrupt_legacy_inventory_is_quarantined_without_creating_state() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let legacy = tempdir.path().join("data/driver-inventory.json");
+    let canonical = tempdir.path().join("state/driver-inventory.json");
+    std::fs::create_dir_all(legacy.parent().expect("legacy parent")).expect("legacy directory");
+    std::fs::write(&legacy, b"not json").expect("write corrupt inventory");
+
+    let (_, outcome) = DriverInventoryStore::open_migrated(legacy.clone(), canonical.clone())
+        .expect("corrupt inventory is quarantined");
+
+    assert_eq!(outcome, MigrationOutcome::FreshInstall);
+    assert!(!legacy.exists());
+    assert!(!canonical.exists());
+    let quarantine = std::fs::read_dir(legacy.parent().expect("legacy parent"))
+        .expect("list legacy directory")
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.file_name().is_some_and(|name| {
+                name.to_string_lossy()
+                    .starts_with("driver-inventory.json.corrupt-")
+            })
+        })
+        .expect("corrupt inventory is preserved");
+    assert_eq!(
+        std::fs::read(quarantine).expect("read quarantine"),
+        b"not json"
+    );
+}
+
+#[test]
+fn valid_legacy_inventory_replaces_a_quarantined_state_document() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let legacy = tempdir.path().join("data/driver-inventory.json");
+    let canonical = tempdir.path().join("state/driver-inventory.json");
+    std::fs::create_dir_all(legacy.parent().expect("legacy parent")).expect("legacy directory");
+    std::fs::create_dir_all(canonical.parent().expect("canonical parent"))
+        .expect("canonical directory");
+    std::fs::write(
+        &legacy,
+        serde_json::to_vec_pretty(&json!({
+            "schema_version": 1,
+            "drivers": {"wled": {"probe_ips": ["10.4.22.69"]}}
+        }))
+        .expect("serialize inventory"),
+    )
+    .expect("write legacy inventory");
+    std::fs::write(&canonical, b"not json").expect("write corrupt state inventory");
+
+    let (store, outcome) = DriverInventoryStore::open_migrated(legacy, canonical)
+        .expect("valid legacy inventory wins");
+
+    assert!(matches!(outcome, MigrationOutcome::Imported { .. }));
+    assert_eq!(
+        store.load_cached_json("wled", "probe_ips"),
         Some(json!(["10.4.22.69"]))
     );
 }

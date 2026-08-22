@@ -12,20 +12,19 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
-use hypercolor_driver_api::control_apply;
-use hypercolor_driver_api::control_surface;
-use hypercolor_driver_api::support::{activate_if_requested, disconnect_after_unpair};
-use hypercolor_driver_api::validation::validate_ip;
 use hypercolor_driver_api::{
-    ClearPairingOutcome, ControlApplyTarget, CredentialStore, DeviceAuthState, DeviceAuthSummary,
-    DeviceBackend, DiscoveryCapability, DiscoveryConnectBehavior, DiscoveryRequest,
-    DiscoveryResult, DriverConfigProvider, DriverConfigView, DriverControlProvider,
-    DriverDescriptor, DriverDiscoveredDevice, DriverHost, DriverModule, DriverPresentationProvider,
-    DriverRuntimeCacheProvider, DriverTrackedDevice, PairDeviceOutcome, PairDeviceRequest,
-    PairDeviceStatus, PairingCapability, PairingDescriptor, PairingFieldDescriptor,
-    PairingFlowKind, TrackedDeviceCtx, TransportScanner, ValidatedControlChanges,
+    ClearPairingOutcome, ControlApplyTarget, DeviceAuthState, DeviceAuthSummary, DeviceBackend,
+    DeviceBackendFactory, DiscoveredDevice, DiscoveryCapability, DiscoveryConnectBehavior,
+    DiscoveryRequest, DriverConfigProvider, DriverConfigView, DriverControlProvider,
+    DriverDescriptor, DriverError, DriverHost, DriverModule, DriverPresentationProvider,
+    DriverRuntimeCacheProvider, DriverTrackedDevice, OutputBinding, PairDeviceOutcome,
+    PairDeviceRequest, PairDeviceStatus, PairingCapability, PairingDescriptor,
+    PairingFieldDescriptor, PairingFlowKind, TrackedDeviceCtx, ValidatedControlChanges,
 };
-use hypercolor_types::config::{DriverConfigEntry, GoveeConfig};
+use hypercolor_driver_support::network::validate_ip;
+use hypercolor_driver_support::pairing::{activate_if_requested, disconnect_after_unpair};
+use hypercolor_driver_support::{CredentialStore, control_apply, control_surface};
+use hypercolor_types::config::DriverConfigEntry;
 use hypercolor_types::controls::{
     ApplyControlChangesResponse, ApplyImpact, ControlChange, ControlFieldDescriptor,
     ControlGroupKind, ControlSurfaceDocument, ControlValue, ControlValueMap, ControlValueType,
@@ -33,8 +32,9 @@ use hypercolor_types::controls::{
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceClassHint, DeviceColorFormat, DeviceFamily,
     DeviceFeatures, DeviceFingerprint, DeviceInfo, DeviceOrigin, DriverPresentation,
-    DriverTransportKind, SegmentInfo,
+    DriverTransportKind, FingerprintNamespace, SegmentInfo,
 };
+use hypercolor_types::identity::BackendId;
 use hypercolor_types::portable::{NetworkAttachment, PortableIdentityClaim};
 use serde_json::json;
 use tracing::warn;
@@ -42,6 +42,7 @@ use tracing::warn;
 pub mod backend;
 pub mod capabilities;
 pub mod cloud;
+mod config;
 pub mod lan;
 
 use backend::GoveeBackend;
@@ -52,6 +53,7 @@ pub use capabilities::{
     GoveeCapabilities, SkuFamily, SkuProfile, fallback_profile, known_cloud_sku_count,
     known_sku_count, profile_for_sku,
 };
+pub use config::GoveeConfig;
 pub use lan::discovery::{
     GoveeKnownDevice, GoveeLanDevice, build_device_info, parse_scan_response,
 };
@@ -99,12 +101,9 @@ impl GoveeDriverModule {
     }
 
     #[must_use]
-    pub fn with_credential_store(
-        config: GoveeConfig,
-        credential_store: Arc<CredentialStore>,
-    ) -> Self {
+    pub fn with_credential_store(credential_store: Arc<CredentialStore>) -> Self {
         Self {
-            config,
+            config: GoveeConfig::default(),
             credential_store: Some(credential_store),
             cloud_base_url: None,
         }
@@ -127,7 +126,10 @@ impl GoveeDriverModule {
         }
     }
 
-    fn resolved_config(&self, config: DriverConfigView<'_>) -> Result<GoveeConfig> {
+    fn resolved_config(
+        &self,
+        config: DriverConfigView<'_>,
+    ) -> std::result::Result<GoveeConfig, DriverError> {
         if config.entry.settings.is_empty() {
             return Ok(self.config.clone());
         }
@@ -140,37 +142,11 @@ impl DriverModule for GoveeDriverModule {
         &DESCRIPTOR
     }
 
-    fn build_output_backend(
-        &self,
-        host: &dyn DriverHost,
-        config: DriverConfigView<'_>,
-    ) -> Result<Option<Box<dyn DeviceBackend>>> {
-        let mut backend = GoveeBackend::new(self.resolved_config(config)?);
-        if let Some(credential_store) = &self.credential_store {
-            backend = backend.with_credential_store(Arc::clone(credential_store));
+    fn output(&self) -> OutputBinding<'_> {
+        OutputBinding::Owned {
+            id: BackendId::new(DESCRIPTOR.id).expect("Govee backend ID must be valid"),
+            factory: self,
         }
-        if let Some(base_url) = &self.cloud_base_url {
-            backend = backend.with_cloud_base_url(base_url.clone());
-        }
-        for device in load_cached_probe_devices(host)? {
-            let (Some(sku), Some(mac)) = (device.sku, device.mac) else {
-                continue;
-            };
-            let profile = profile_for_sku(&sku).unwrap_or_else(|| fallback_profile(&sku));
-            backend.remember_device(GoveeLanDevice {
-                ip: device.ip,
-                sku,
-                mac,
-                name: profile.name.to_owned(),
-                firmware_version: None,
-            });
-        }
-
-        Ok(Some(Box::new(backend)))
-    }
-
-    fn has_output_backend(&self) -> bool {
-        true
     }
 
     fn discovery(&self) -> Option<&dyn DiscoveryCapability> {
@@ -198,6 +174,24 @@ impl DriverModule for GoveeDriverModule {
     }
 }
 
+impl DeviceBackendFactory for GoveeDriverModule {
+    fn build(
+        &self,
+        _host: &dyn DriverHost,
+        config: DriverConfigView<'_>,
+    ) -> std::result::Result<Arc<dyn DeviceBackend>, DriverError> {
+        let resolved_config = self.resolved_config(config)?;
+        let mut backend = GoveeBackend::new(resolved_config);
+        if let Some(credential_store) = &self.credential_store {
+            backend = backend.with_credential_store(Arc::clone(credential_store));
+        }
+        if let Some(base_url) = &self.cloud_base_url {
+            backend = backend.with_cloud_base_url(base_url.clone());
+        }
+        Ok(Arc::new(backend))
+    }
+}
+
 impl DriverPresentationProvider for GoveeDriverModule {
     fn presentation(&self) -> DriverPresentation {
         DriverPresentation {
@@ -216,13 +210,15 @@ impl DriverConfigProvider for GoveeDriverModule {
         DriverConfigEntry::enabled(govee_config_settings(&self.config))
     }
 
-    fn validate_config(&self, config: &DriverConfigEntry) -> Result<()> {
+    fn validate_config(&self, config: &DriverConfigEntry) -> std::result::Result<(), DriverError> {
         let config = DriverConfigView {
             driver_id: DESCRIPTOR.id,
             entry: config,
         }
         .parse_settings::<GoveeConfig>()?;
-        validate_govee_config(&config)
+        validate_govee_config(&config).map_err(|error| DriverError::Configuration {
+            message: error.to_string(),
+        })
     }
 }
 
@@ -280,22 +276,21 @@ impl DiscoveryCapability for GoveeDriverModule {
         host: &dyn DriverHost,
         request: &DiscoveryRequest,
         config: DriverConfigView<'_>,
-    ) -> Result<DiscoveryResult> {
+    ) -> std::result::Result<Vec<DiscoveredDevice>, DriverError> {
         let config = self.resolved_config(config)?;
         let tracked_devices = host.discovery_state().tracked_devices(DESCRIPTOR.id).await;
-        let cached_devices = load_cached_probe_devices(host)?;
+        let cached_devices = load_cached_probe_devices(host).map_err(DriverError::discovery)?;
         let known_devices =
             resolve_govee_probe_devices(&config, &tracked_devices, cached_devices.as_slice());
         let mut scanner = GoveeLanScanner::new(known_devices, request.timeout);
-        let mut devices: Vec<_> = scanner
-            .scan()
-            .await?
-            .into_iter()
-            .map(DriverDiscoveredDevice::from)
-            .collect();
+        let mut devices = scanner.scan().await.map_err(DriverError::discovery)?;
 
-        if let Some(api_key) = account_api_key(host).await? {
-            match self.cloud_client(api_key)?.list_v1_devices().await {
+        if let Some(api_key) = account_api_key(host)
+            .await
+            .map_err(DriverError::discovery)?
+        {
+            let client = self.cloud_client(api_key).map_err(DriverError::discovery)?;
+            match client.list_v1_devices().await {
                 Ok(cloud_devices) => merge_cloud_inventory(&mut devices, cloud_devices),
                 Err(error) => {
                     warn!(error = %error, "failed to enrich Govee discovery from cloud inventory");
@@ -303,7 +298,7 @@ impl DiscoveryCapability for GoveeDriverModule {
             }
         }
 
-        Ok(DiscoveryResult { devices })
+        Ok(devices)
     }
 }
 
@@ -376,26 +371,22 @@ impl PairingCapability for GoveeDriverModule {
         &self,
         host: &dyn DriverHost,
         _device: &TrackedDeviceCtx<'_>,
-    ) -> Option<DeviceAuthSummary> {
-        match host
+    ) -> std::result::Result<Option<DeviceAuthSummary>, DriverError> {
+        let credentials = host
             .credentials()
             .get_json(DESCRIPTOR.id, GOVEE_ACCOUNT_CREDENTIAL_KEY)
             .await
-        {
-            Ok(Some(_)) => Some(DeviceAuthSummary {
+            .map_err(DriverError::pairing)?;
+
+        Ok(match credentials {
+            Some(_) => Some(DeviceAuthSummary {
                 state: DeviceAuthState::Configured,
                 can_pair: false,
                 descriptor: None,
                 last_error: None,
             }),
-            Ok(None) => Some(auth_summary_without_account_key(_device)),
-            Err(error) => Some(DeviceAuthSummary {
-                state: DeviceAuthState::Error,
-                can_pair: true,
-                descriptor: Some(govee_pairing_descriptor()),
-                last_error: Some(error.to_string()),
-            }),
-        }
+            None => Some(auth_summary_without_account_key(_device)),
+        })
     }
 
     async fn pair(
@@ -403,11 +394,12 @@ impl PairingCapability for GoveeDriverModule {
         host: &dyn DriverHost,
         device: &TrackedDeviceCtx<'_>,
         request: &PairDeviceRequest,
-    ) -> Result<PairDeviceOutcome> {
+    ) -> std::result::Result<PairDeviceOutcome, DriverError> {
         if host
             .credentials()
             .get_json(DESCRIPTOR.id, GOVEE_ACCOUNT_CREDENTIAL_KEY)
-            .await?
+            .await
+            .map_err(DriverError::pairing)?
             .is_some()
         {
             let activated =
@@ -435,16 +427,19 @@ impl PairingCapability for GoveeDriverModule {
             });
         };
 
-        self.cloud_client(api_key.clone())?
+        self.cloud_client(api_key.clone())
+            .map_err(DriverError::pairing)?
             .list_v1_devices()
-            .await?;
+            .await
+            .map_err(DriverError::pairing)?;
         host.credentials()
             .set_json(
                 DESCRIPTOR.id,
                 GOVEE_ACCOUNT_CREDENTIAL_KEY,
                 json!({ "api_key": api_key }),
             )
-            .await?;
+            .await
+            .map_err(DriverError::pairing)?;
 
         let activated =
             activate_if_requested(host, request.activate_after_pair, device.device_id, "govee")
@@ -467,10 +462,11 @@ impl PairingCapability for GoveeDriverModule {
         &self,
         host: &dyn DriverHost,
         device: &TrackedDeviceCtx<'_>,
-    ) -> Result<ClearPairingOutcome> {
+    ) -> std::result::Result<ClearPairingOutcome, DriverError> {
         host.credentials()
             .remove(DESCRIPTOR.id, GOVEE_ACCOUNT_CREDENTIAL_KEY)
-            .await?;
+            .await
+            .map_err(DriverError::pairing)?;
         let disconnected = disconnect_after_unpair(host, device.device_id, "govee").await;
 
         Ok(ClearPairingOutcome {
@@ -624,34 +620,34 @@ fn metadata_has(metadata: Option<&HashMap<String, String>>, key: &str) -> bool {
     metadata.is_some_and(|values| values.get(key).is_some_and(|value| !value.is_empty()))
 }
 
-pub fn merge_cloud_inventory(
-    devices: &mut Vec<DriverDiscoveredDevice>,
-    cloud_devices: Vec<V1Device>,
-) {
+pub fn merge_cloud_inventory(devices: &mut Vec<DiscoveredDevice>, cloud_devices: Vec<V1Device>) {
     let mut index_by_fingerprint: HashMap<String, usize> = devices
         .iter()
         .enumerate()
-        .map(|(index, device)| (device.fingerprint.0.clone(), index))
+        .map(|(index, device)| (device.fingerprint.as_str().to_owned(), index))
         .collect();
 
     for cloud_device in cloud_devices {
         let discovered = build_cloud_discovered_device(cloud_device);
-        if let Some(index) = index_by_fingerprint.get(&discovered.fingerprint.0).copied() {
+        if let Some(index) = index_by_fingerprint
+            .get(discovered.fingerprint.as_str())
+            .copied()
+        {
             merge_cloud_metadata(&mut devices[index], discovered.metadata);
         } else {
-            index_by_fingerprint.insert(discovered.fingerprint.0.clone(), devices.len());
+            index_by_fingerprint.insert(discovered.fingerprint.as_str().to_owned(), devices.len());
             devices.push(discovered);
         }
     }
 }
 
 #[must_use]
-pub fn build_cloud_discovered_device(device: V1Device) -> DriverDiscoveredDevice {
+pub fn build_cloud_discovered_device(device: V1Device) -> DiscoveredDevice {
     let profile = profile_for_sku(&device.model).unwrap_or_else(|| fallback_profile(&device.model));
     let mac = normalized_cloud_mac(&device.device);
     let fingerprint = mac.as_ref().map_or_else(
-        || DeviceFingerprint(format!("cloud:govee:{}", device.device)),
-        |mac| DeviceFingerprint(format!("net:govee:{mac}")),
+        || DeviceFingerprint::mint(FingerprintNamespace::Cloud, "govee", &device.device),
+        |mac| DeviceFingerprint::mint(FingerprintNamespace::Net, "govee", mac),
     );
     let led_count = profile_led_count(&profile);
     let name = if device.device_name.trim().is_empty() {
@@ -720,7 +716,7 @@ pub fn build_cloud_discovered_device(device: V1Device) -> DriverDiscoveredDevice
         metadata.insert("mac".to_owned(), mac);
     }
 
-    DriverDiscoveredDevice {
+    DiscoveredDevice {
         info,
         fingerprint,
         metadata,
@@ -744,10 +740,7 @@ async fn account_api_key(host: &dyn DriverHost) -> Result<Option<String>> {
         .filter(|value| !value.is_empty()))
 }
 
-fn merge_cloud_metadata(
-    device: &mut DriverDiscoveredDevice,
-    cloud_metadata: HashMap<String, String>,
-) {
+fn merge_cloud_metadata(device: &mut DiscoveredDevice, cloud_metadata: HashMap<String, String>) {
     for (key, value) in cloud_metadata {
         device.metadata.entry(key).or_insert(value);
     }

@@ -17,7 +17,8 @@ use http::{Request, StatusCode};
 use hypercolor_core::asset::{AssetTypeHint, AssetUploadOptions};
 use hypercolor_core::config::ConfigManager;
 use hypercolor_core::effect::EffectEntry;
-use hypercolor_daemon::api::{self, AppState};
+use hypercolor_daemon::api;
+use hypercolor_daemon::app_state::AppState;
 use hypercolor_types::api::output::OutputPowerMode;
 use hypercolor_types::effect::{
     ControlBinding, ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory,
@@ -201,18 +202,19 @@ fn sample_layout(outputs: Vec<Output>) -> SpatialLayout {
 async fn seed_tree(state: &Arc<AppState>) -> EffectId {
     let metadata = sample_effect("Aurora");
     let effect_id = metadata.id;
-    {
-        let mut registry = state.effect_registry.write().await;
-        registry.register(EffectEntry {
+    let _ = state
+        .domains
+        .effects
+        .register(EffectEntry {
             metadata: metadata.clone(),
             source_path: "/tmp/aurora.rs".into(),
             modified: SystemTime::now(),
             state: EffectState::Loading,
-        });
-    }
-    let mut manager = state.scene_manager.write().await;
-    manager
-        .upsert_primary_group(
+        })
+        .await;
+    let mut mutation = state.scene_manager.begin_mutation().await;
+    mutation
+        .upsert_primary_zone(
             &metadata,
             HashMap::<String, ControlValue>::new(),
             None,
@@ -220,8 +222,13 @@ async fn seed_tree(state: &Arc<AppState>) -> EffectId {
                 sample_output("out-a", Some("ch1")),
                 sample_output("out-b", Some("ch2")),
             ]),
+            hypercolor_types::event::ChangeTrigger::System,
+            None,
         )
         .expect("primary zone should seed");
+    hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
+        .await
+        .expect("primary zone should commit");
     effect_id
 }
 
@@ -311,12 +318,16 @@ async fn first_effect_apply_persists_a_fresh_real_layer_identity() {
     let (state, _tmp) = isolated_state();
     let metadata = sample_effect("First Light");
     let effect_id = metadata.id;
-    state.effect_registry.write().await.register(EffectEntry {
-        metadata,
-        source_path: "/tmp/first-light.rs".into(),
-        modified: SystemTime::now(),
-        state: EffectState::Loading,
-    });
+    let _ = state
+        .domains
+        .effects
+        .register(EffectEntry {
+            metadata,
+            source_path: "/tmp/first-light.rs".into(),
+            modified: SystemTime::now(),
+            state: EffectState::Loading,
+        })
+        .await;
     let app = api::build_router(Arc::clone(&state), None);
 
     let response = send(
@@ -340,10 +351,10 @@ async fn first_effect_apply_persists_a_fresh_real_layer_identity() {
         "a layer id is never derived from its zone"
     );
 
-    let manager = state.scene_manager.read().await;
+    let manager = state.scene_manager.snapshot().await;
     let zone = manager
         .active_scene()
-        .and_then(hypercolor_types::scene::Scene::primary_group)
+        .and_then(hypercolor_types::scene::Scene::primary_zone)
         .expect("the first apply should persist a primary zone");
     let [layer] = zone.layers.as_slice() else {
         panic!("the first apply should persist exactly one real layer");
@@ -366,7 +377,8 @@ async fn replacing_a_layer_mints_a_fresh_id_and_strands_the_old_one() {
         .as_str()
         .expect("layer id")
         .to_owned();
-    hypercolor_daemon::domain::output::set_power(&state, OutputPowerMode::Paused).await;
+    hypercolor_daemon::domain::output::set_power(&state.domains.output, OutputPowerMode::Paused)
+        .await;
 
     // Replace the layer with one running the very same effect. Spec 78
     // §1.4 mints a fresh id regardless: replacement is creation.
@@ -383,7 +395,7 @@ async fn replacing_a_layer_mints_a_fresh_id_and_strands_the_old_one() {
     .await;
     assert_eq!(response.status(), StatusCode::OK);
     assert!(
-        state.power_state.borrow().manually_paused(),
+        state.output_power.snapshot().manually_paused(),
         "whole-layer replacement must not wake paused output"
     );
     let replaced = body_json(response).await;
@@ -404,7 +416,7 @@ async fn replacing_a_layer_mints_a_fresh_id_and_strands_the_old_one() {
         json_request(
             "PATCH",
             format!("/api/v1/scene/zones/{zone_id}/layers/{original_layer}/controls"),
-            json!({ "values": { "speed": { "float": 0.5 } } }),
+            json!({ "values": { "speed": { "kind": "float", "value": 0.5 } } }),
         ),
     )
     .await;
@@ -506,7 +518,7 @@ async fn structural_writes_honor_if_match_and_control_writes_do_not() {
             json_request(
                 "PATCH",
                 format!("/api/v1/scene/zones/{zone_id}/layers/{layer_id}/controls"),
-                json!({ "values": { "speed": { "float": 0.5 } } }),
+                json!({ "values": { "speed": { "kind": "float", "value": 0.5 } } }),
             ),
             revision + 99,
         ),
@@ -548,7 +560,7 @@ async fn concurrent_control_writes_rebase_until_every_write_commits() {
                 json_request(
                     "PATCH",
                     route,
-                    json!({ "values": { "speed": { "float": value } } }),
+                    json!({ "values": { "speed": { "kind": "float", "value": value } } }),
                 ),
             )
             .await
@@ -581,7 +593,8 @@ async fn effect_apply_sugars_reject_stale_revisions_before_waking_output() {
     let before = read_document(&app).await;
     let revision = before["data"]["revision"].as_u64().expect("revision");
 
-    hypercolor_daemon::domain::output::set_power(&state, OutputPowerMode::Paused).await;
+    hypercolor_daemon::domain::output::set_power(&state.domains.output, OutputPowerMode::Paused)
+        .await;
 
     let routes = [
         format!("/api/v1/effects/{effect_id}/apply"),
@@ -602,7 +615,7 @@ async fn effect_apply_sugars_reject_stale_revisions_before_waking_output() {
             "precondition_failed"
         );
         assert!(
-            state.power_state.borrow().manually_paused(),
+            state.output_power.snapshot().manually_paused(),
             "a rejected sugar must not wake output"
         );
         assert_eq!(
@@ -624,10 +637,10 @@ async fn preset_apply_uses_the_canonical_apply_body_without_discarding_fields() 
         .expect("live scene revision");
     let zone_id = state
         .scene_manager
-        .read()
+        .snapshot()
         .await
         .active_scene()
-        .and_then(hypercolor_types::scene::Scene::primary_group)
+        .and_then(hypercolor_types::scene::Scene::primary_zone)
         .expect("seeded scene should have a primary zone")
         .id;
 
@@ -637,7 +650,7 @@ async fn preset_apply_uses_the_canonical_apply_body_without_discarding_fields() 
             "POST",
             format!("/api/v1/effects/{effect_id}/presets/{preset_id}/apply"),
             json!({
-                "controls": { "speed": { "float": 0.7 } },
+                "controls": { "speed": { "kind": "float", "value": 0.7 } },
                 "preset_id": PresetId::stable("body-value-must-not-win"),
                 "zone": zone_id,
                 "transition": { "type": "cut" }
@@ -680,16 +693,12 @@ async fn a_control_patch_event_names_its_zone_and_real_layer() {
     let app = api::build_router(Arc::clone(&state), None);
     let effect_id = seed_tree(&state).await;
     let (zone_id, layer_id) = {
-        let manager = state.scene_manager.read().await;
+        let manager = state.scene_manager.snapshot().await;
         let zone = manager
             .active_scene()
-            .and_then(hypercolor_types::scene::Scene::primary_group)
+            .and_then(hypercolor_types::scene::Scene::primary_zone)
             .expect("primary zone should exist");
-        let layer_id = zone
-            .effective_layers()
-            .first()
-            .expect("effect layer should exist")
-            .id;
+        let layer_id = zone.layers.first().expect("effect layer should exist").id;
         (zone.id, layer_id)
     };
     let mut events = state.event_bus.subscribe_all();
@@ -699,7 +708,7 @@ async fn a_control_patch_event_names_its_zone_and_real_layer() {
         json_request(
             "PATCH",
             format!("/api/v1/scene/zones/{zone_id}/layers/{layer_id}/controls"),
-            json!({ "values": { "speed": { "float": 0.75 } } }),
+            json!({ "values": { "speed": { "kind": "float", "value": 0.75 } } }),
         ),
     )
     .await;
@@ -749,10 +758,10 @@ async fn a_write_to_a_bound_control_is_refused_and_recoverable_in_one_request() 
         .to_owned();
 
     {
-        let mut manager = state.scene_manager.write().await;
+        let mut mutation = state.scene_manager.begin_mutation().await;
         let zone_uuid = zone_id.parse::<Uuid>().expect("zone uuid");
-        manager
-            .set_group_control_binding(
+        mutation
+            .set_zone_control_binding(
                 hypercolor_types::scene::ZoneId(zone_uuid),
                 "speed".to_owned(),
                 ControlBinding {
@@ -766,6 +775,9 @@ async fn a_write_to_a_bound_control_is_refused_and_recoverable_in_one_request() 
                 },
             )
             .expect("binding should attach");
+        hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
+            .await
+            .expect("binding should commit");
     }
 
     let refused = send(
@@ -773,7 +785,7 @@ async fn a_write_to_a_bound_control_is_refused_and_recoverable_in_one_request() 
         json_request(
             "PATCH",
             format!("/api/v1/scene/zones/{zone_id}/layers/{layer_id}/controls"),
-            json!({ "values": { "speed": { "float": 0.5 } } }),
+            json!({ "values": { "speed": { "kind": "float", "value": 0.5 } } }),
         ),
     )
     .await;
@@ -793,7 +805,10 @@ async fn a_write_to_a_bound_control_is_refused_and_recoverable_in_one_request() 
         json_request(
             "PATCH",
             format!("/api/v1/scene/zones/{zone_id}/layers/{layer_id}/controls"),
-            json!({ "values": { "speed": { "float": 0.5 } }, "clear_bindings": ["speed"] }),
+            json!({
+                "values": { "speed": { "kind": "float", "value": 0.5 } },
+                "clear_bindings": ["speed"]
+            }),
         ),
     )
     .await;
@@ -1286,24 +1301,29 @@ async fn clearing_the_tree_leaves_display_faces_alone() {
     let effect_id = seed_tree(&state).await;
 
     let display_zone_id = {
-        let metadata = {
-            let registry = state.effect_registry.read().await;
-            registry
-                .get(&effect_id)
-                .map(|entry| entry.metadata.clone())
-                .expect("seeded effect")
-        };
-        let mut manager = state.scene_manager.write().await;
-        manager
-            .upsert_display_group(
-                hypercolor_types::device::DeviceId::new(),
+        let metadata = state
+            .domains
+            .effects
+            .metadata(effect_id)
+            .await
+            .expect("seeded effect");
+        let device_id = hypercolor_types::device::DeviceId::new();
+        let mut mutation = state.scene_manager.begin_mutation().await;
+        let zone_id = mutation
+            .upsert_display_zone(
+                device_id,
                 "Panel",
                 &metadata,
                 HashMap::<String, ControlValue>::new(),
                 sample_layout(vec![sample_output("out-face", None)]),
+                hypercolor_types::scene::DisplayFaceTarget::new(device_id),
             )
             .expect("face assigns")
-            .id
+            .id;
+        hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
+            .await
+            .expect("face should commit");
+        zone_id
     };
 
     let cleared = send(&app, empty_request("POST", "/api/v1/scene/clear".into())).await;
@@ -1342,24 +1362,29 @@ async fn generic_live_tree_mutations_cannot_edit_display_owned_zones() {
     let app = api::build_router(Arc::clone(&state), None);
     let effect_id = seed_tree(&state).await;
     let display_zone_id = {
-        let metadata = {
-            let registry = state.effect_registry.read().await;
-            registry
-                .get(&effect_id)
-                .map(|entry| entry.metadata.clone())
-                .expect("seeded effect")
-        };
-        let mut manager = state.scene_manager.write().await;
-        manager
-            .upsert_display_group(
-                hypercolor_types::device::DeviceId::new(),
+        let metadata = state
+            .domains
+            .effects
+            .metadata(effect_id)
+            .await
+            .expect("seeded effect");
+        let device_id = hypercolor_types::device::DeviceId::new();
+        let mut mutation = state.scene_manager.begin_mutation().await;
+        let zone_id = mutation
+            .upsert_display_zone(
+                device_id,
                 "Panel",
                 &metadata,
                 HashMap::new(),
                 sample_layout(vec![sample_output("out-face", None)]),
+                hypercolor_types::scene::DisplayFaceTarget::new(device_id),
             )
             .expect("face assigns")
-            .id
+            .id;
+        hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
+            .await
+            .expect("face should commit");
+        zone_id
     };
     let before = read_document(&app).await;
     let face = before["data"]["zones"]
@@ -1425,7 +1450,7 @@ async fn generic_live_tree_mutations_cannot_edit_display_owned_zones() {
         json_request(
             "PATCH",
             format!("/api/v1/scene/zones/{zone}/layers/{layer_id}/controls"),
-            json!({ "values": { "speed": { "float": 0.75 } } }),
+            json!({ "values": { "speed": { "kind": "float", "value": 0.75 } } }),
         ),
     ];
 
@@ -1667,7 +1692,7 @@ async fn live_layer_replacement_and_controls_publish_stack_events() {
         json_request(
             "PATCH",
             format!("/api/v1/scene/zones/{zone_id}/layers/{replacement}/controls"),
-            json!({ "values": { "speed": { "float": 0.75 } } }),
+            json!({ "values": { "speed": { "kind": "float", "value": 0.75 } } }),
         ),
     )
     .await;

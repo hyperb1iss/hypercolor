@@ -7,6 +7,8 @@ use hypercolor_tui::state::{
     ControlDefinition, ControlValue, EffectSummary, PreviewSource, SimulatedDisplaySummary,
 };
 use hypercolor_tui::views::EffectBrowserView;
+use hypercolor_types::api::effects::EffectSourceKind;
+use hypercolor_types::effect::EffectCategory;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
@@ -30,8 +32,8 @@ fn sample_effect() -> EffectSummary {
         name: "Rainbow Wave".to_string(),
         description: String::new(),
         author: String::new(),
-        category: String::new(),
-        source: "native".to_string(),
+        category: EffectCategory::Ambient,
+        source: EffectSourceKind::Native,
         audio_reactive: false,
         tags: Vec::new(),
         controls: Vec::new(),

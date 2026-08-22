@@ -1,43 +1,9 @@
 //! Driver module inventory API functions.
 
-use serde::Deserialize;
-
 use crate::control_surface_api::path_segment;
-use hypercolor_types::config::DriverConfigEntry;
-use hypercolor_types::device::{
-    DriverModuleDescriptor, DriverPresentation, DriverProtocolDescriptor,
-};
+pub use hypercolor_types::api::drivers::{DriverConfigResponse, DriverListResponse, DriverSummary};
 
 use super::client;
-
-#[derive(Debug, Clone, Deserialize, PartialEq)]
-pub struct DriverListResponse {
-    pub items: Vec<DriverSummary>,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq)]
-pub struct DriverSummary {
-    pub descriptor: DriverModuleDescriptor,
-    pub presentation: DriverPresentation,
-    pub enabled: bool,
-    pub config_key: String,
-    #[serde(default)]
-    pub protocols: Vec<DriverProtocolDescriptor>,
-    #[serde(default)]
-    pub control_surface_id: Option<String>,
-    #[serde(default)]
-    pub control_surface_path: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq)]
-pub struct DriverConfigResponse {
-    pub driver_id: String,
-    pub config_key: String,
-    pub configurable: bool,
-    pub current: DriverConfigEntry,
-    #[serde(default)]
-    pub default: Option<DriverConfigEntry>,
-}
 
 pub fn driver_config_url(driver_id: &str) -> String {
     format!("/api/v1/drivers/{}/config", path_segment(driver_id))

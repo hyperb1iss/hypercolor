@@ -90,6 +90,48 @@ async fn client_negotiates_fetches_controller_and_streams_leds() {
     assert_eq!(&update.payload[10..14], &[40, 50, 60, 0]);
 }
 
+#[tokio::test]
+async fn client_read_timeout_preserves_configured_deadline() {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("fake OpenRGB server should bind");
+    let addr = listener
+        .local_addr()
+        .expect("fake OpenRGB server should expose local addr");
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener
+            .accept()
+            .await
+            .expect("fake OpenRGB server should accept client");
+        let mut bytes = [0_u8; 64];
+        let read = stream
+            .read(&mut bytes)
+            .await
+            .expect("fake server should read negotiation request");
+        assert_ne!(read, 0, "client should send a negotiation request");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    });
+    let read_timeout = Duration::from_millis(10);
+    let config = OpenRgbClientConfig {
+        connect_timeout: Duration::from_secs(1),
+        read_timeout,
+        write_timeout: Duration::from_secs(1),
+        ..OpenRgbClientConfig::default()
+    };
+
+    let Err(error) = OpenRgbClient::connect(addr, config).await else {
+        panic!("silent server should trigger the configured read timeout");
+    };
+    assert_eq!(
+        error,
+        OpenRgbError::Timeout {
+            operation: "read",
+            after: read_timeout,
+        }
+    );
+    server.abort();
+}
+
 async fn run_client_server(listener: TcpListener) -> Packet {
     let (mut stream, _) = listener
         .accept()

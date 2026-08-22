@@ -4,10 +4,10 @@ use std::time::Duration;
 use async_trait::async_trait;
 use hypercolor_driver_api::{
     ControlApplyTarget, DeviceAuthState, DiscoveryRequest, DriverControlProvider,
-    DriverCredentialStore, DriverDescriptor, DriverDiscoveredDevice, DriverDiscoveryState,
-    DriverHost, DriverModule, DriverPresentationProvider, DriverProtocolCatalog,
-    DriverRuntimeActions, OutputCadence, PairDeviceRequest, PairDeviceStatus, PairingDescriptor,
-    PairingFieldDescriptor, PairingFlowKind, ValidatedControlChanges, support,
+    DriverCredentialStore, DriverDescriptor, DriverDiscoveryState, DriverHost, DriverModule,
+    DriverPresentationProvider, DriverProtocolCatalog, DriverRuntimeActions, OutputCadence,
+    PairDeviceRequest, PairDeviceStatus, PairingDescriptor, PairingFieldDescriptor,
+    PairingFlowKind, ValidatedControlChanges,
 };
 use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior};
 use hypercolor_types::config::DriverConfigEntry;
@@ -19,7 +19,7 @@ use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceClassHint, DeviceColorFormat, DeviceFamily,
     DeviceFeatures, DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint,
     DriverModuleKind, DriverPresentation, DriverProtocolDescriptor, DriverTransportKind,
-    SegmentInfo,
+    FingerprintNamespace, SegmentInfo,
 };
 
 #[test]
@@ -547,9 +547,9 @@ fn discovered_device_payload_keeps_connect_behavior() {
             features: DeviceFeatures::default(),
         },
     };
-    let discovered = DriverDiscoveredDevice {
+    let discovered = DiscoveredDevice {
         info,
-        fingerprint: DeviceFingerprint("fixture:desk-strip".to_owned()),
+        fingerprint: DeviceFingerprint::mint(FingerprintNamespace::Net, "fixture", "desk-strip"),
         metadata: std::collections::HashMap::from([("ip".to_owned(), "10.0.0.50".to_owned())]),
         connect_behavior: DiscoveryConnectBehavior::Deferred,
         claim: None,
@@ -563,7 +563,7 @@ fn discovered_device_payload_keeps_connect_behavior() {
 }
 
 #[test]
-fn discovered_device_converts_from_core_payload() {
+fn discovered_device_is_the_canonical_driver_payload() {
     let info = DeviceInfo {
         id: DeviceId::new(),
         name: "Bridge".to_owned(),
@@ -589,16 +589,16 @@ fn discovered_device_converts_from_core_payload() {
             features: DeviceFeatures::default(),
         },
     };
-    let discovered = DriverDiscoveredDevice::from(DiscoveredDevice {
+    let discovered = DiscoveredDevice {
         info,
-        fingerprint: DeviceFingerprint("net:fixture:bridge".to_owned()),
+        fingerprint: DeviceFingerprint::mint(FingerprintNamespace::Net, "fixture", "bridge"),
         metadata: std::collections::HashMap::from([("ip".to_owned(), "10.0.0.8".to_owned())]),
         connect_behavior: DiscoveryConnectBehavior::Deferred,
         claim: None,
-    });
+    };
 
     assert_eq!(discovered.metadata.get("ip"), Some(&"10.0.0.8".to_owned()));
-    assert_eq!(discovered.fingerprint.0, "net:fixture:bridge");
+    assert_eq!(discovered.fingerprint.as_str(), "net:fixture:bridge");
 }
 
 #[test]
@@ -621,32 +621,4 @@ fn pair_device_status_serde_uses_snake_case() {
     let auth_state =
         serde_json::to_value(DeviceAuthState::Configured).expect("state should serialize");
     assert_eq!(auth_state, serde_json::json!("configured"));
-}
-
-#[test]
-fn support_helpers_parse_metadata_and_dedupe_keys() {
-    let metadata = std::collections::HashMap::from([
-        ("ip".to_owned(), "10.0.0.42".to_owned()),
-        ("name".to_owned(), " Desk Strip ".to_owned()),
-    ]);
-    let mut keys = vec!["fixture:ip:10.0.0.42".to_owned()];
-
-    assert_eq!(
-        support::network_ip_from_metadata(Some(&metadata))
-            .expect("ip should parse")
-            .to_string(),
-        "10.0.0.42"
-    );
-    assert_eq!(
-        support::metadata_value(Some(&metadata), "name"),
-        Some("Desk Strip")
-    );
-
-    support::push_lookup_key(&mut keys, "fixture:ip:10.0.0.42".to_owned());
-    support::push_lookup_key(&mut keys, "fixture:desk".to_owned());
-
-    assert_eq!(
-        keys,
-        vec!["fixture:ip:10.0.0.42".to_owned(), "fixture:desk".to_owned()]
-    );
 }

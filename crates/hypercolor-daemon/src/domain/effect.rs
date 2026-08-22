@@ -9,21 +9,122 @@
 
 use std::collections::HashMap;
 use std::str::FromStr;
+use std::sync::Arc;
 
+use hypercolor_core::effect::{EffectEntry, EffectRegistry, RescanReport};
 use strum::VariantNames;
 
 use hypercolor_types::api::scene::SideEffectOutcome;
 use hypercolor_types::effect::{
     ControlValue, EffectCategory, EffectId, EffectMetadata, EffectSource,
 };
-use hypercolor_types::event::{EffectRef, HypercolorEvent, ZoneChangeKind};
+use hypercolor_types::event::{EffectRef, ZoneChangeKind};
 use hypercolor_types::library::PresetId;
 use hypercolor_types::scene::{SceneId, Zone, ZoneId};
+use hypercolor_types::spatial::SpatialLayout;
+use tokio::sync::RwLock;
 
-use crate::api::AppState;
 use crate::domain::commit::SceneCommit;
-use crate::domain::scene::{commit_scene, zone_changed_event};
+use crate::domain::context::SceneContext;
+use crate::domain::output::OutputContext;
+use crate::domain::spatial::SpatialService;
 use crate::domain::{DomainError, MutationContext};
+
+/// Effect catalog and activation authority shared by every transport.
+#[derive(Clone)]
+pub struct EffectContext {
+    registry: Arc<RwLock<EffectRegistry>>,
+    scene: SceneContext,
+    spatial: SpatialService,
+    output: OutputContext,
+}
+
+impl EffectContext {
+    pub(crate) fn new(
+        registry: Arc<RwLock<EffectRegistry>>,
+        scene: SceneContext,
+        spatial: SpatialService,
+        output: OutputContext,
+    ) -> Self {
+        Self {
+            registry,
+            scene,
+            spatial,
+            output,
+        }
+    }
+
+    /// Current full-scope layout for a newly materialized primary zone.
+    #[must_use]
+    pub fn full_scope_layout(&self) -> SpatialLayout {
+        self.spatial.layout().as_ref().clone()
+    }
+
+    /// Resolve one effect schema for scene-tree control validation.
+    pub async fn metadata(&self, effect_id: EffectId) -> Option<EffectMetadata> {
+        let registry = self.registry.read().await;
+        registry.get(&effect_id).map(|entry| entry.metadata.clone())
+    }
+
+    /// Resolve an effect by canonical id or catalog lookup name.
+    pub async fn resolve_metadata(&self, id_or_name: &str) -> Option<EffectMetadata> {
+        let registry = self.registry.read().await;
+        if let Ok(uuid) = id_or_name.parse::<uuid::Uuid>() {
+            return registry
+                .get(&EffectId::new(uuid))
+                .map(|entry| entry.metadata.clone());
+        }
+        registry
+            .iter()
+            .find(|(_, entry)| entry.metadata.matches_lookup(id_or_name))
+            .map(|(_, entry)| entry.metadata.clone())
+    }
+
+    /// Capture every catalog entry as owned metadata.
+    pub async fn all_metadata(&self) -> Vec<EffectMetadata> {
+        self.registry
+            .read()
+            .await
+            .iter()
+            .map(|(_, entry)| entry.metadata.clone())
+            .collect()
+    }
+
+    /// Return the number of registered effects.
+    pub async fn len(&self) -> usize {
+        self.registry.read().await.len()
+    }
+
+    /// Whether the effect catalog is empty.
+    pub async fn is_empty(&self) -> bool {
+        self.registry.read().await.is_empty()
+    }
+
+    /// Whether any requested effect currently requires live audio input.
+    pub async fn any_audio_reactive(&self, effect_ids: impl IntoIterator<Item = EffectId>) -> bool {
+        let registry = self.registry.read().await;
+        effect_ids.into_iter().any(|effect_id| {
+            registry
+                .get(&effect_id)
+                .is_some_and(|entry| entry.metadata.audio_reactive)
+        })
+    }
+
+    /// Rescan the owned effect catalog.
+    pub async fn rescan(&self) -> RescanReport {
+        self.registry.write().await.rescan()
+    }
+
+    /// Register one validated effect and report whether it replaced an entry.
+    pub async fn register(&self, entry: EffectEntry) -> bool {
+        self.registry.write().await.register(entry).is_some()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn registry_handle(&self) -> Arc<RwLock<EffectRegistry>> {
+        Arc::clone(&self.registry)
+    }
+}
 
 /// A transition the caller asked for.
 ///
@@ -172,7 +273,7 @@ pub struct EffectApplied {
 /// and [`DomainError::Conflict`] when a concurrent scene
 /// mutation lands first.
 pub async fn apply_effect(
-    state: &AppState,
+    ctx: &EffectContext,
     command: ApplyEffect,
     meta: MutationContext,
 ) -> Result<EffectApplied, DomainError> {
@@ -184,10 +285,10 @@ pub async fn apply_effect(
     // Taking the index now keeps every await out of the window between
     // the snapshot and its compare-and-swap.
     let effect_refs = {
-        let registry = state.effect_registry.read().await;
+        let registry = ctx.registry.read().await;
         registry
             .iter()
-            .map(|(id, entry)| (*id, crate::api::effects::effect_ref(&entry.metadata)))
+            .map(|(id, entry)| (*id, effect_ref(&entry.metadata)))
             .collect::<HashMap<EffectId, EffectRef>>()
     };
 
@@ -198,9 +299,9 @@ pub async fn apply_effect(
         )));
     }
 
-    let layout = crate::api::effects::resolve_full_scope_layout(state).await;
+    let layout = ctx.full_scope_layout();
 
-    let mut mutation = state.begin_scene_mutation().await;
+    let mut mutation = ctx.scene.begin_mutation().await;
     crate::domain::scene_tree::check_scene_revision(&mutation, command.expected_revision)?;
     let scene_id = mutation.active_scene_for_runtime_mutation("applying an effect")?;
 
@@ -225,6 +326,8 @@ pub async fn apply_effect(
             &metadata,
             command.controls,
             command.preset_id,
+            meta.trigger,
+            previous_effect.clone(),
         )?;
         (zone, ZoneChangeKind::Updated)
     } else {
@@ -233,34 +336,30 @@ pub async fn apply_effect(
         } else {
             ZoneChangeKind::Created
         };
-        let zone =
-            mutation.upsert_primary_zone(&metadata, command.controls, command.preset_id, layout)?;
+        let zone = mutation.upsert_primary_zone(
+            &metadata,
+            command.controls,
+            command.preset_id,
+            layout,
+            meta.trigger,
+            previous_effect.clone(),
+        )?;
         (zone, zone_change)
     };
 
-    let effect = crate::api::effects::effect_ref(&metadata);
-    mutation.record(HypercolorEvent::EffectStarted {
-        effect: effect.clone(),
-        trigger: meta.trigger,
-        previous: previous_effect.clone(),
-        transition: None,
-        zone_id: Some(zone.id),
-        zone_name: Some(zone.name.clone()),
-    });
-    mutation.record(zone_changed_event(scene_id, &zone, zone_change));
+    let effect = effect_ref(&metadata);
 
-    let commit = commit_scene(state, mutation).await?;
+    let commit = ctx.scene.commit(mutation).await?;
 
     // Every refusal above returns before this point, so nothing the
     // caller can get rejected for has woken output (Spec 78 §2.3).
-    let output =
-        if command.wake_output && !crate::api::effects::wake_output_for_effect_start(state).await {
-            SideEffectOutcome::failed("output did not resume; patch /output to retry")
-        } else {
-            SideEffectOutcome::applied()
-        };
+    let output = if command.wake_output && !ctx.output.wake_for_effect_start().await {
+        SideEffectOutcome::failed("output did not resume; patch /output to retry")
+    } else {
+        SideEffectOutcome::applied()
+    };
 
-    crate::api::save_runtime_session_snapshot(state).await;
+    ctx.scene.save_runtime_session().await;
 
     Ok(EffectApplied {
         effect,
@@ -274,93 +373,6 @@ pub async fn apply_effect(
     })
 }
 
-// ── stop_effect ──────────────────────────────────────────────────────────
-
-/// The outcome of stopping the active effect.
-#[derive(Debug)]
-pub struct EffectStopped {
-    /// The effect that was running.
-    pub effect: EffectRef,
-    /// The scene that owns the zone.
-    pub scene_id: SceneId,
-    /// The zone as it stands with the effect unloaded.
-    pub zone: Zone,
-    /// How many network devices the quiesce released.
-    pub released_network_devices: usize,
-    /// The commit receipt.
-    pub commit: SceneCommit,
-}
-
-/// Unload the active scene's primary effect and quiesce output.
-///
-/// `Ok(None)` means there was nothing running: the primary zone is
-/// absent, idle, or loaded with an effect the registry no longer knows.
-/// Callers decide how that domain outcome appears on their surface.
-///
-/// # Errors
-///
-/// [`DomainError::Conflict`] when the active scene is snapshot-locked,
-/// and [`DomainError::Conflict`] when a concurrent scene
-/// mutation lands first.
-pub async fn stop_effect(
-    state: &AppState,
-    meta: MutationContext,
-) -> Result<Option<EffectStopped>, DomainError> {
-    let _ = meta;
-
-    // Resolving the outgoing effect's name needs the registry, so the
-    // index is taken before the candidate opens and no await sits
-    // between the snapshot and its compare-and-swap.
-    let effect_refs = effect_ref_index(state).await;
-
-    let mut mutation = state.begin_scene_mutation().await;
-    let Some(zone) = mutation
-        .scenes()
-        .active_scene()
-        .and_then(hypercolor_types::scene::Scene::primary_group)
-        .cloned()
-    else {
-        return Ok(None);
-    };
-    let Some(effect) = zone
-        .effect_id
-        .and_then(|effect_id| effect_refs.get(&effect_id).cloned())
-    else {
-        return Ok(None);
-    };
-
-    let scene_id = mutation.active_scene_for_runtime_mutation("stopping the active effect")?;
-    let Some(cleared) = mutation.clear_zone_effect(zone.id) else {
-        return Ok(None);
-    };
-
-    mutation.record(HypercolorEvent::EffectStopped {
-        effect: effect.clone(),
-        reason: hypercolor_types::event::EffectStopReason::Stopped,
-        zone_id: Some(cleared.id),
-        zone_name: Some(cleared.name.clone()),
-    });
-    mutation.record(zone_changed_event(
-        scene_id,
-        &cleared,
-        ZoneChangeKind::Updated,
-    ));
-
-    let commit = commit_scene(state, mutation).await?;
-
-    let released_network_devices =
-        crate::api::effects::quiesce_output_after_effect_stop(state).await;
-    crate::api::save_runtime_session_snapshot(state).await;
-
-    Ok(Some(EffectStopped {
-        effect,
-        scene_id,
-        zone: cleared,
-        released_network_devices,
-        commit,
-    }))
-}
-
 /// Recompute the active scene's resolved zones after the effect registry
 /// changed underneath them.
 ///
@@ -372,16 +384,18 @@ pub async fn stop_effect(
 ///
 /// [`DomainError::Conflict`] when a concurrent scene mutation
 /// lands first.
-pub async fn invalidate_active_zones(state: &AppState) -> Result<SceneCommit, DomainError> {
+pub async fn invalidate_active_zones(ctx: &EffectContext) -> Result<SceneCommit, DomainError> {
     // A dropped invalidation leaves the active scene's resolved zones
     // pointing at pre-reload effect metadata until something else
     // invalidates, so this reconciliation retries rather than losing.
-    let ((), commit) = crate::domain::scene::commit_retrying(state, |mutation| {
-        mutation.invalidate_active_zones();
-        Ok(Some(()))
-    })
-    .await?
-    .ok_or_else(|| DomainError::Internal(anyhow::anyhow!("invalidation produced no commit")))?;
+    let ((), commit) = ctx
+        .scene
+        .commit_retrying(|mutation| {
+            mutation.invalidate_active_zones();
+            Ok(Some(()))
+        })
+        .await?
+        .ok_or_else(|| DomainError::Internal(anyhow::anyhow!("invalidation produced no commit")))?;
     Ok(commit)
 }
 
@@ -521,9 +535,9 @@ impl EffectCatalogQuery {
 ///
 /// Ordering is case-insensitive with the raw name as the tiebreak, so
 /// two effects differing only in case keep a stable relative order.
-pub async fn list_catalog(state: &AppState, query: &EffectCatalogQuery) -> Vec<EffectMetadata> {
+pub async fn list_catalog(ctx: &EffectContext, query: &EffectCatalogQuery) -> Vec<EffectMetadata> {
     let mut matched: Vec<EffectMetadata> = {
-        let registry = state.effect_registry.read().await;
+        let registry = ctx.registry.read().await;
         registry
             .iter()
             .map(|(_, entry)| &entry.metadata)
@@ -563,12 +577,60 @@ fn effect_matches_search(metadata: &EffectMetadata, term: &str) -> bool {
             .any(|tag| tag.to_lowercase().contains(term))
 }
 
-// ── Shared steps ─────────────────────────────────────────────────────────
-
-pub(super) async fn effect_ref_index(state: &AppState) -> HashMap<EffectId, EffectRef> {
-    let registry = state.effect_registry.read().await;
+pub(super) async fn effect_ref_index(ctx: &EffectContext) -> HashMap<EffectId, EffectRef> {
+    let registry = ctx.registry.read().await;
     registry
         .iter()
-        .map(|(id, entry)| (*id, crate::api::effects::effect_ref(&entry.metadata)))
+        .map(|(id, entry)| (*id, effect_ref(&entry.metadata)))
+        .collect()
+}
+
+/// Canonical event identity for an effect.
+#[must_use]
+pub fn effect_ref(metadata: &EffectMetadata) -> EffectRef {
+    EffectRef {
+        id: metadata.id.to_string(),
+        name: metadata.name.clone(),
+        engine: "servo".to_owned(),
+    }
+}
+
+/// Validate and normalize typed control values against an effect schema.
+#[must_use]
+pub fn normalize_control_values(
+    metadata: &EffectMetadata,
+    control_values: &HashMap<String, ControlValue>,
+) -> (HashMap<String, ControlValue>, Vec<String>) {
+    let mut normalized = HashMap::new();
+    let mut rejected = Vec::new();
+
+    for (name, value) in control_values {
+        let result = metadata.control_by_id(name).map_or_else(
+            || Ok(value.clone()),
+            |control| control.validate_value(value),
+        );
+        match result {
+            Ok(control_value) => {
+                normalized.insert(name.clone(), control_value);
+            }
+            Err(error) => rejected.push(format!("{name} ({error})")),
+        }
+    }
+
+    (normalized, rejected)
+}
+
+/// Materialize an effect schema's default control set.
+#[must_use]
+pub fn default_control_values(metadata: &EffectMetadata) -> HashMap<String, ControlValue> {
+    metadata
+        .controls
+        .iter()
+        .map(|control| {
+            (
+                control.control_id().to_owned(),
+                control.default_value.clone(),
+            )
+        })
         .collect()
 }

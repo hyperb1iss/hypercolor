@@ -1,6 +1,6 @@
 # hypercolor-driver-govee
 
-*Govee network driver for Hypercolor — LAN UDP streaming and cloud fallback for Govee smart lighting.*
+*Govee network driver for Hypercolor, with LAN UDP streaming and cloud fallback for smart lighting.*
 
 This driver targets Govee LED strips, panels, and bulbs over two transport paths. The
 primary path is local-area UDP using Govee's proprietary LAN control protocol (port 4003);
@@ -14,23 +14,25 @@ A per-SKU capability database maps model numbers to LED counts, topology, and pr
 
 ## Position in the Workspace
 
-- Depends on: `hypercolor-driver-api`, `hypercolor-types`, `anyhow`, `async-trait`,
-  `base64`, `reqwest`, `serde`, `serde_json`, `tokio`, `tracing`
+- Depends on: `hypercolor-driver-api`, `hypercolor-driver-support`,
+  `hypercolor-types`, `anyhow`, `async-trait`, `base64`, `reqwest`, `serde`,
+  `serde_json`, `tokio`, `tracing`
 - Consumed by: `hypercolor-driver-builtin` (via the `govee` feature)
 - LAN discovery uses UDP broadcast; does not use mDNS
 
 ## Key Public Surface
 
-- `GoveeDriverModule` — `DriverModule` implementation; `new`, `with_credential_store`,
+- `GoveeDriverModule`: `DriverModule` implementation; `new`, `with_credential_store`,
   `with_cloud_base_url`
-- `DESCRIPTOR: DriverDescriptor` — static descriptor (`id = "govee"`)
+- `GoveeConfig`: driver-owned typed projection of the generic driver settings map
+- `DESCRIPTOR: DriverDescriptor`: static descriptor (`id = "govee"`)
 - `GoveeCapabilities`, `SkuFamily`, `SkuProfile`, `profile_for_sku`, `fallback_profile`,
-  `known_sku_count`, `known_cloud_sku_count` — SKU capability database
+  `known_sku_count`, `known_cloud_sku_count`: SKU capability database
 - `GoveeLanDevice`, `GoveeKnownDevice`, `GoveeLanScanner`, `build_device_info`,
-  `parse_scan_response` — LAN discovery primitives
-- `govee_driver_control_surface`, `govee_device_control_surface` — control surface builders
+  `parse_scan_response`: LAN discovery primitives
+- `govee_driver_control_surface`, `govee_device_control_surface`: control surface builders
 - `resolve_govee_probe_devices`, `resolve_govee_probe_devices_from_sources`,
-  `merge_cloud_inventory`, `build_cloud_discovered_device` — discovery helpers
+  `merge_cloud_inventory`, `build_cloud_discovered_device`: discovery helpers
 - Sub-modules: `backend` (output backend), `capabilities` (SKU/capability database),
   `cloud` (REST client with rate limiting), `lan` (LAN discovery and streaming)
 
@@ -48,5 +50,5 @@ None.
 
 ---
 
-Part of [Hypercolor](https://github.com/hyperb1iss/hypercolor) — open-source RGB
+Part of [Hypercolor](https://github.com/hyperb1iss/hypercolor), open-source RGB
 lighting orchestration for Linux. Licensed under Apache-2.0.

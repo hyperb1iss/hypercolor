@@ -23,7 +23,7 @@ pub use self::policy::{SleepPolicy, parse_static_color};
 #[cfg(target_os = "linux")]
 use self::screensaver::ScreensaverMonitor;
 
-use crate::types::session::{SessionConfig, SessionEvent};
+use hypercolor_types::session::{SessionConfig, SessionEvent};
 
 const SESSION_EVENT_CAPACITY: usize = 64;
 

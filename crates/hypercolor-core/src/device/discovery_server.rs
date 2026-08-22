@@ -7,10 +7,11 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
 use reqwest::Client;
-use serde::Deserialize;
 use tokio::time::Instant;
 use tracing::{debug, warn};
 
+use hypercolor_types::api::system::ServerInfo;
+use hypercolor_types::api::{ApiResponse, system::SystemResource};
 use hypercolor_types::server::{DiscoveredServer, ServerIdentity};
 
 const HYPERCOLOR_SERVICE_TYPE: &str = "_hypercolor._tcp.local.";
@@ -138,12 +139,12 @@ async fn probe_server(
     host: IpAddr,
     port: u16,
     api_base: &str,
-) -> Option<ServerProbeData> {
+) -> Option<ServerInfo> {
     let url = system_probe_url(host, port, api_base);
     match http.get(&url).send().await {
         Ok(response) if response.status().is_success() => {
-            match response.json::<ApiEnvelope<SystemProbeData>>().await {
-                Ok(envelope) => envelope.data.map(|resource| resource.identity),
+            match response.json::<ApiResponse<SystemResource>>().await {
+                Ok(envelope) => Some(envelope.data.identity),
                 Err(error) => {
                     debug!(%error, %url, "Failed to parse server discovery probe");
                     None
@@ -203,39 +204,23 @@ async fn drain_mdns_shutdown(daemon: ServiceDaemon) {
     }
 }
 
-#[derive(Debug, Deserialize)]
-struct ApiEnvelope<T> {
-    data: Option<T>,
-}
-
-#[derive(Debug, Deserialize)]
-struct SystemProbeData {
-    identity: ServerProbeData,
-}
-
-#[derive(Debug, Deserialize)]
-struct ServerProbeData {
-    instance_id: String,
-    instance_name: String,
-    version: String,
-    device_count: usize,
-    auth_required: bool,
-}
-
 #[cfg(test)]
 mod tests {
     use std::net::{IpAddr, Ipv4Addr};
 
     use serde_json::json;
 
-    use super::{ApiEnvelope, SystemProbeData, system_probe_url};
+    use hypercolor_types::api::ApiResponse;
+    use hypercolor_types::api::system::SystemResource;
+
+    use super::system_probe_url;
 
     #[test]
     fn system_probe_uses_the_unified_resource_and_identity_projection() {
         let url = system_probe_url(IpAddr::V4(Ipv4Addr::LOCALHOST), 9420, "/api/v1/");
         assert_eq!(url, "http://127.0.0.1:9420/api/v1/system");
 
-        let envelope: ApiEnvelope<SystemProbeData> = serde_json::from_value(json!({
+        let envelope: ApiResponse<SystemResource> = serde_json::from_value(json!({
             "data": {
                 "identity": {
                     "instance_id": "server-id",
@@ -244,17 +229,16 @@ mod tests {
                     "device_count": 4,
                     "auth_required": true
                 },
-                "status": {
-                    "running": true,
-                    "device_count": 99
-                }
+                "status": null
+            },
+            "meta": {
+                "api_version": "v1",
+                "request_id": "req_test",
+                "timestamp": "2026-08-20T00:00:00Z"
             }
         }))
         .expect("unified system response should deserialize");
-        let identity = envelope
-            .data
-            .expect("system data should be present")
-            .identity;
+        let identity = envelope.data.identity;
 
         assert_eq!(identity.instance_id, "server-id");
         assert_eq!(identity.instance_name, "Studio");

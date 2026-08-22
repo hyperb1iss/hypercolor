@@ -73,14 +73,14 @@
     {
       "name": "metrics",
       "kind": "json",
-      "default_interval_ms": 1000,
+      "default_fps": 1.0,
       "description": "Render pipeline performance metrics.",
       "backpressure": "drop_with_notice"
     },
     {
       "name": "device_metrics",
       "kind": "json",
-      "default_interval_ms": 1000,
+      "default_fps": 1.0,
       "description": "Per-device output telemetry.",
       "backpressure": "drop_with_notice"
     },
@@ -204,29 +204,17 @@
     "canvas_format_jpeg",
     "interactive_previews",
     "wide_preview_frames",
-    "preview_chunking",
-    "preview_transport_v2:decoded=536870912,encoded=536936448,connection=1073872896,reassembly=8388608,tombstones=4194304,sender=8388608,cursors=8388608,idle_ms=5000,message=1048576",
-    "preview_transport_v1:decoded=536870912,encoded=536936448,connection=1073872896,streams=256,tombstones=1024,idle_ms=5000,message=1048576,chunks=4096"
+    "preview_chunking"
   ],
   "preview_transport": {
     "dimension_type": "u32",
     "passive_zero_dimension": "auto",
     "interactive_zero_dimension": "invalid",
-    "negotiation": {
-      "client_subscribe_field": "preview_transport",
-      "server_subscribed_field": "preview_transport",
-      "encoding": "preview_transport_v2 capability string with preview_transport_v1 fallback",
-      "rule": "fieldwise minimum before preview activation",
-      "legacy_client_policy": "server defaults"
-    },
     "max_publication_decoded_bytes": 536870912,
     "max_publication_encoded_bytes": 536936448,
     "max_connection_bytes": 1073872896,
-    "max_reassembly_streams": 256,
-    "max_reassembly_tombstones": 1024,
     "partial_idle_ms": 5000,
     "max_message_bytes": 1048576,
-    "max_chunk_count": 4096,
     "max_reassembly_state_bytes": 8388608,
     "max_tombstone_bytes": 4194304,
     "max_sender_state_bytes": 8388608,
@@ -898,7 +886,7 @@
   "preview_chunk_frame": {
     "schema": 1,
     "fixed_header_len": 55,
-    "description": "Bounded chunk envelope around one fully encoded legacy or wide preview publication.",
+    "description": "Bounded chunk envelope around one fully encoded compact or wide preview publication.",
     "layout": [
       [
         "u8",
@@ -1223,17 +1211,17 @@
       }
     },
     "metrics": {
-      "interval_ms": {
-        "min": 100,
-        "max": 10000,
-        "default": 1000
+      "fps": {
+        "min": 0.1,
+        "max": 10.0,
+        "default": 1.0
       }
     },
     "device_metrics": {
-      "interval_ms": {
-        "min": 100,
-        "max": 10000,
-        "default": 1000
+      "fps": {
+        "min": 0.1,
+        "max": 10.0,
+        "default": 1.0
       }
     },
     "display_preview": {

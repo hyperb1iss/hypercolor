@@ -11,15 +11,15 @@ pub fn category_style(category: &str) -> (&'static str, &'static str) {
     // One arm per EffectCategory variant. The daemon serializes the enum
     // in snake_case, so these are the only strings that ever arrive.
     match category {
-        "ambient" => ("bg-neon-cyan/10 text-neon-cyan", "128, 255, 234"),
+        "ambient" => ("bg-cyan/10 text-cyan", "128, 255, 234"),
         "audio" => ("bg-coral/10 text-coral", "255, 106, 193"),
-        "generative" => ("bg-success-green/10 text-success-green", "80, 250, 123"),
-        "particle" => ("bg-electric-purple/10 text-electric-purple", "225, 53, 255"),
-        "scenic" => ("bg-pink-soft/10 text-pink-soft", "255, 153, 255"),
-        "interactive" => ("bg-info-blue/10 text-info-blue", "130, 170, 255"),
+        "generative" => ("bg-status-success/10 text-status-success", "80, 250, 123"),
+        "particle" => ("bg-accent/10 text-accent", "225, 53, 255"),
+        "scenic" => ("bg-accent-hover/10 text-accent-hover", "255, 153, 255"),
+        "interactive" => ("bg-status-info/10 text-status-info", "130, 170, 255"),
         "fun" => ("bg-purple-light/10 text-purple-light", "189, 0, 221"),
         "source" => (
-            "bg-electric-yellow/10 text-electric-yellow",
+            "bg-status-warning/10 text-status-warning",
             "241, 250, 140",
         ),
         "utility" => ("bg-fg-tertiary/10 text-fg-tertiary", "139, 133, 160"),

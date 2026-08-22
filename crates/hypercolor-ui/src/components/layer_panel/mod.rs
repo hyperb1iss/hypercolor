@@ -54,7 +54,7 @@ use source::{
 /// mount contract.
 #[component]
 pub fn LayerPanel(
-    #[prop(into)] active_scene: Signal<Option<api::LiveSceneView>>,
+    #[prop(into)] active_scene: Signal<Option<api::SceneDocument>>,
     selected_group_id: ReadSignal<Option<String>>,
     set_selected_group_id: WriteSignal<Option<String>>,
     /// Surface name supplied by a host that owns surface selection
@@ -273,7 +273,10 @@ pub fn LayerPanel(
                             else {
                                 return view! { <LayerLoadingSkeleton /> }.into_any();
                             };
-                            let scene_id = active_scene.get().map(|scene| scene.id).unwrap_or_default();
+                            let scene_id = active_scene
+                                .get()
+                                .map(|scene| scene.id.to_string())
+                                .unwrap_or_default();
                             let group_id = selected_group_id.get().unwrap_or_default();
                             let revision = stack.revision;
                             let total = stack.items.len();

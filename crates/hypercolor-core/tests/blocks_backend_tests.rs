@@ -2,7 +2,8 @@
 
 use std::path::Path;
 
-use hypercolor_core::device::{BlocksBackend, DeviceBackend};
+use hypercolor_core::device::{BlocksBackend, BlocksScanner};
+use hypercolor_driver_api::DeviceBackend;
 use tempfile::tempdir;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
@@ -35,25 +36,31 @@ fn serve_backend_handshake(
     let (frame_tx, frame_rx) = oneshot::channel();
 
     let task = tokio::spawn(async move {
-        let (stream, _) = listener.accept().await?;
-        let (reader_half, mut writer_half) = stream.into_split();
-        let mut reader = BufReader::new(reader_half);
+        let (scanner_stream, _) = listener.accept().await?;
+        let (scanner_reader, mut scanner_writer) = scanner_stream.into_split();
+        let mut scanner_reader = BufReader::new(scanner_reader);
         let mut line = String::new();
 
+        scanner_reader.read_line(&mut line).await?;
+        assert_eq!(line, "{\"type\":\"discover\",\"id\":\"hc\"}\n");
+        scanner_writer
+            .write_all(discover_response(TEST_UID).as_bytes())
+            .await?;
+        scanner_writer.write_all(b"\n").await?;
+        drop(scanner_reader);
+        drop(scanner_writer);
+
+        let (backend_stream, _) = listener.accept().await?;
+        let (reader_half, mut writer_half) = backend_stream.into_split();
+        let mut reader = BufReader::new(reader_half);
+
+        line.clear();
         reader.read_line(&mut line).await?;
         assert_eq!(line, "{\"type\":\"ping\",\"id\":\"hc\"}\n");
         writer_half
             .write_all(
                 br#"{"type":"pong","version":"0.1.0","uptime_seconds":1,"device_count":1,"id":"hc"}"#,
             )
-            .await?;
-        writer_half.write_all(b"\n").await?;
-
-        line.clear();
-        reader.read_line(&mut line).await?;
-        assert_eq!(line, "{\"type\":\"discover\",\"id\":\"hc\"}\n");
-        writer_half
-            .write_all(discover_response(TEST_UID).as_bytes())
             .await?;
         writer_half.write_all(b"\n").await?;
 
@@ -76,9 +83,11 @@ async fn blocks_backend_writes_u64_binary_frames() -> TestResult {
     let socket_path = tempdir.path().join("blocksd.sock");
     let (frame_rx, server_task) = serve_backend_handshake(&socket_path, 0x01)?;
 
-    let mut backend = BlocksBackend::new(socket_path);
-    let discovered = backend.discover().await?;
-    let device_id = discovered[0].id;
+    let mut scanner = BlocksScanner::new(socket_path.clone());
+    let discovered = scanner.scan().await?;
+    let backend = BlocksBackend::new(socket_path);
+    backend.adopt_device(&discovered[0])?;
+    let device_id = discovered[0].info.id;
     backend.connect(&device_id).await?;
     backend
         .write_colors(&device_id, &[[0x12, 0x34, 0x56], [0xAB, 0xCD, 0xEF]])
@@ -101,9 +110,11 @@ async fn blocks_backend_treats_binary_rejection_as_retryable() -> TestResult {
     let socket_path = tempdir.path().join("blocksd.sock");
     let (_frame_rx, server_task) = serve_backend_handshake(&socket_path, 0x00)?;
 
-    let mut backend = BlocksBackend::new(socket_path);
-    let discovered = backend.discover().await?;
-    let device_id = discovered[0].id;
+    let mut scanner = BlocksScanner::new(socket_path.clone());
+    let discovered = scanner.scan().await?;
+    let backend = BlocksBackend::new(socket_path);
+    backend.adopt_device(&discovered[0])?;
+    let device_id = discovered[0].info.id;
     backend.connect(&device_id).await?;
 
     backend

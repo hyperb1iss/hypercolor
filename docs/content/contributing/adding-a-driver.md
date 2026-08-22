@@ -134,11 +134,11 @@ use std::time::Duration;
 
 use hypercolor_types::device::{
     DeviceCapabilities, DeviceColorFormat, DeviceColorSpace,
-    DeviceFeatures, DeviceTopologyHint,
+    DeviceFeatures, DeviceTopologyHint, SegmentInfo,
 };
 use crate::protocol::{
     CommandBuffer, Protocol, ProtocolCommand, ProtocolError,
-    ProtocolResponse, ProtocolZone, ResponseStatus, TransferType,
+    ProtocolResponse, ResponseStatus, TransferType,
 };
 
 pub struct MyFamilyProtocol {
@@ -231,8 +231,8 @@ impl Protocol for MyFamilyProtocol {
         Ok(ProtocolResponse { status: ResponseStatus::Ok, data: Vec::new() })
     }
 
-    fn zones(&self) -> Vec<ProtocolZone> {
-        vec![ProtocolZone {
+    fn zones(&self) -> Vec<SegmentInfo> {
+        vec![SegmentInfo {
             name: "Main".to_owned(),
             led_count: self.led_count,
             topology: DeviceTopologyHint::Strip,

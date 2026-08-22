@@ -7,6 +7,7 @@
 use std::borrow::Cow;
 use std::fmt;
 use std::net::IpAddr;
+use std::time::Duration;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -775,7 +776,7 @@ fn sanitize_family_id(value: &str) -> String {
 ///
 /// Transitions are enforced by `DeviceStateMachine` in `hypercolor-core`.
 /// This enum is the serializable snapshot used by frontends and persistence.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub enum DeviceState {
     /// Discovered but not yet connected.
     Known,
@@ -974,10 +975,22 @@ pub enum DeviceColorSpace {
 
 // ── DeviceError ───────────────────────────────────────────────────────────
 
+/// Recovery action recommended by a typed driver-boundary error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorRecoverability {
+    /// Retry the same operation without rebuilding the connection.
+    Retry,
+    /// Reconnect or rebuild the device session before retrying.
+    Reconnect,
+    /// Do not retry without a configuration or capability change.
+    Permanent,
+}
+
 /// Errors from the device backend layer.
 ///
 /// All variants are `Send + Sync` for use across async boundaries.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum DeviceError {
     /// Connection attempt failed.
     #[error("connection to {device} failed: {reason}")]
@@ -998,12 +1011,17 @@ pub enum DeviceError {
     },
 
     /// Operation timed out.
-    #[error("timeout communicating with {device}: {operation}")]
+    #[error("device operation timed out after {after:?}")]
     Timeout {
-        /// Device display name or identifier.
-        device: String,
-        /// What was being attempted.
-        operation: String,
+        /// Elapsed deadline.
+        after: Duration,
+    },
+
+    /// The backend has not adopted this discovered device.
+    #[error("device has not been adopted by an output backend: {device_id}")]
+    NotAdopted {
+        /// Device missing from backend-owned inventory.
+        device_id: DeviceId,
     },
 
     /// Device not found during connection attempt.
@@ -1029,6 +1047,15 @@ pub enum DeviceError {
         device: String,
     },
 
+    /// The host denied access to the device transport.
+    #[error("permission denied for {device}: {detail}")]
+    PermissionDenied {
+        /// Device display name or identifier.
+        device: String,
+        /// Operating system policy or access failure detail.
+        detail: String,
+    },
+
     /// Connection handle is stale or unknown.
     #[error("invalid handle {handle_id} for backend {backend}")]
     InvalidHandle {
@@ -1048,21 +1075,58 @@ pub enum DeviceError {
         /// Requested next state name.
         to: String,
     },
+
+    /// The backend does not implement the requested operation.
+    #[error("backend {backend} does not support {operation}")]
+    Unsupported {
+        /// Stable backend identifier.
+        backend: String,
+        /// Human-readable operation name.
+        operation: &'static str,
+    },
 }
 
 impl DeviceError {
-    /// Whether this error indicates the device is gone and reconnection
-    /// should be attempted.
+    /// Build a typed connection failure from a concrete transport error.
+    pub fn connection(device: impl ToString, error: impl std::fmt::Display) -> Self {
+        Self::ConnectionFailed {
+            device: device.to_string(),
+            reason: error.to_string(),
+        }
+    }
+
+    /// Build a typed write failure from a concrete transport error.
+    pub fn write(device: impl ToString, error: impl std::fmt::Display) -> Self {
+        Self::WriteError {
+            device: device.to_string(),
+            detail: error.to_string(),
+        }
+    }
+
+    /// Build a typed protocol failure from a concrete protocol error.
+    pub fn protocol(device: impl ToString, error: impl std::fmt::Display) -> Self {
+        Self::ProtocolError {
+            device: device.to_string(),
+            detail: error.to_string(),
+        }
+    }
+
+    /// Classify the recovery action for this failure.
     #[must_use]
-    pub fn is_recoverable(&self) -> bool {
-        matches!(
-            self,
+    pub const fn recoverability(&self) -> ErrorRecoverability {
+        match self {
+            Self::Timeout { .. } => ErrorRecoverability::Retry,
             Self::ConnectionFailed { .. }
-                | Self::WriteError { .. }
-                | Self::Timeout { .. }
-                | Self::ProtocolError { .. }
-                | Self::Disconnected { .. }
-        )
+            | Self::WriteError { .. }
+            | Self::ProtocolError { .. }
+            | Self::Disconnected { .. } => ErrorRecoverability::Reconnect,
+            Self::NotAdopted { .. }
+            | Self::NotFound { .. }
+            | Self::PermissionDenied { .. }
+            | Self::InvalidHandle { .. }
+            | Self::InvalidTransition { .. }
+            | Self::Unsupported { .. } => ErrorRecoverability::Permanent,
+        }
     }
 }
 
@@ -1150,7 +1214,7 @@ impl DeviceIdentifier {
 
     /// Compute a stable fingerprint for deduplication.
     #[must_use]
-    pub fn fingerprint(&self) -> DeviceFingerprint {
+    pub fn fingerprint(&self, driver: &str) -> DeviceFingerprint {
         match self {
             Self::UsbHid {
                 vendor_id,
@@ -1162,19 +1226,31 @@ impl DeviceIdentifier {
                     .as_deref()
                     .or(usb_path.as_deref())
                     .unwrap_or("unknown");
-                DeviceFingerprint(format!("usb:{vendor_id:04x}:{product_id:04x}:{key}"))
+                DeviceFingerprint::mint(
+                    FingerprintNamespace::Usb,
+                    driver,
+                    &format!("{vendor_id:04x}:{product_id:04x}:{key}"),
+                )
             }
-            Self::SmBus { bus_path, address } => {
-                DeviceFingerprint(format!("smbus:{bus_path}:{address:02x}"))
-            }
-            Self::Network { mac_address, .. } => {
-                DeviceFingerprint(format!("net:{}", mac_address.to_lowercase()))
-            }
+            Self::SmBus { bus_path, address } => DeviceFingerprint::mint(
+                FingerprintNamespace::SmBus,
+                driver,
+                &format!("{bus_path}:{address:02x}"),
+            ),
+            Self::Network { mac_address, .. } => DeviceFingerprint::mint(
+                FingerprintNamespace::Net,
+                driver,
+                &mac_address.to_lowercase(),
+            ),
             Self::Bridge {
                 service,
                 device_serial,
                 ..
-            } => DeviceFingerprint(format!("bridge:{service}:{device_serial}")),
+            } => DeviceFingerprint::mint(
+                FingerprintNamespace::Bridge,
+                driver,
+                &format!("{service}:{device_serial}"),
+            ),
         }
     }
 }
@@ -1241,10 +1317,67 @@ impl fmt::Display for DeviceHandle {
 ///
 /// Two devices with the same fingerprint are considered the same physical
 /// hardware.
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+pub enum FingerprintNamespace {
+    /// USB and USB-HID attachment identity.
+    Usb,
+    /// SMBus or I2C bus attachment identity.
+    SmBus,
+    /// Local or routable network identity.
+    Net,
+    /// Vendor cloud inventory identity.
+    Cloud,
+    /// Out-of-process bridge identity.
+    Bridge,
+}
+
+impl FingerprintNamespace {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Usb => "usb",
+            Self::SmBus => "smbus",
+            Self::Net => "net",
+            Self::Cloud => "cloud",
+            Self::Bridge => "bridge",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DeviceFingerprint(pub String);
+#[serde(transparent)]
+pub struct DeviceFingerprint(String);
 
 impl DeviceFingerprint {
+    /// Mint a canonical driver-qualified device fingerprint.
+    #[must_use]
+    pub fn mint(namespace: FingerprintNamespace, driver: &str, key: &str) -> Self {
+        let driver = driver.trim().to_ascii_lowercase();
+        assert!(
+            !driver.is_empty() && !driver.contains(':'),
+            "fingerprint driver must be a non-empty colon-free identifier"
+        );
+        assert!(!key.is_empty(), "fingerprint key must not be empty");
+        Self(format!("{}:{driver}:{key}", namespace.as_str()))
+    }
+
+    /// Rehydrate an already-persisted fingerprint without changing its bytes.
+    #[must_use]
+    pub fn from_persisted(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    /// Borrow the encoded fingerprint.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Consume this fingerprint and return its encoded form.
+    #[must_use]
+    pub fn into_string(self) -> String {
+        self.0
+    }
+
     /// Derive a deterministic [`DeviceId`] from this fingerprint.
     ///
     /// This keeps scanner and backend-side discovery aligned on a stable ID

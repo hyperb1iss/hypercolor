@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use hypercolor_color::{Hsl, Rgb};
 use hypercolor_types::audio::{AudioData, CHROMA_BINS, MEL_BANDS, SPECTRUM_BINS};
-use hypercolor_types::effect::ControlValue;
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::lighting::LightingState;
 use hypercolor_types::media::MediaState;
 use hypercolor_types::net::NetStats;
@@ -49,6 +49,12 @@ const MEL_RUNNING_MAX_DECAY: f32 = 0.999;
 const MEL_RUNNING_MAX_FLOOR: f32 = 0.001;
 const SPECTRUM_BASS_END: usize = 40;
 const SPECTRUM_MID_END: usize = 130;
+
+#[cfg(feature = "servo")]
+pub(in crate::effect) fn control_js_literal(value: &ControlValue) -> String {
+    serde_json::to_string(&LightScriptControlValue::from_control_value(value))
+        .unwrap_or_else(|_| "null".to_owned())
+}
 
 #[derive(Debug, Clone, Default)]
 struct DerivedAudioState {
@@ -193,11 +199,7 @@ impl LightscriptRuntime {
             "  if (!(window.engine.audio.spectralFluxBands instanceof Float32Array) || window.engine.audio.spectralFluxBands.length !== 3) { window.engine.audio.spectralFluxBands = new Float32Array(3); }\n",
         );
         script.push_str(&format!(
-            "  window.engine.audio.level = {};\n",
-            LEVEL_FLOOR_DB
-        ));
-        script.push_str(&format!(
-            "  window.engine.audio.levelRaw = {};\n",
+            "  window.engine.audio.levelDb = {};\n",
             LEVEL_FLOOR_DB
         ));
         script.push_str("  window.engine.audio.levelLinear = 0;\n");

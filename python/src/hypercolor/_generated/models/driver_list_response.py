@@ -15,7 +15,8 @@ T = TypeVar("T", bound="DriverListResponse")
 
 @_attrs_define
 class DriverListResponse:
-    """
+    """Response for `GET /api/v1/drivers`.
+
     Attributes:
         items (list[DriverSummary]):
     """

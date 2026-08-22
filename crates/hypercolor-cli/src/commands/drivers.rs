@@ -3,7 +3,7 @@
 use anyhow::Result;
 use clap::{Args, Subcommand};
 use hypercolor_types::api::controls::InvokeControlActionRequest;
-use hypercolor_types::controls::ApplyControlChangesRequest;
+use hypercolor_types::api::scene::PatchControlsRequest;
 use serde_json::Value;
 
 use crate::client::DaemonClient;
@@ -48,14 +48,6 @@ pub struct DriverSetControlArgs {
 
     /// Typed value. Examples: `enum:ddp`, `bool:true`, `ip:10.0.0.2`.
     pub value: String,
-
-    /// Expected surface revision for optimistic concurrency.
-    #[arg(long)]
-    pub expected_revision: Option<u64>,
-
-    /// Validate the transaction without applying it.
-    #[arg(long)]
-    pub dry_run: bool,
 }
 
 /// Arguments for `drivers action`.
@@ -140,12 +132,9 @@ async fn execute_set_control(
 ) -> Result<()> {
     let surface_id = driver_control_surface_id(client, &args.driver).await?;
     let assignment = format!("{}={}", args.field, args.value);
-    let changes = controls::assignments_to_changes(&[assignment])?;
-    let body = ApplyControlChangesRequest {
-        expected_revision: args.expected_revision,
-        changes,
-        dry_run: args.dry_run,
-        surface_id: surface_id.clone(),
+    let body = PatchControlsRequest {
+        values: controls::assignments_to_values(&[assignment])?,
+        clear_bindings: Vec::new(),
     };
 
     let response = client

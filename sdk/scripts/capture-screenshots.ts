@@ -29,8 +29,8 @@ const DEFAULT_KEEP = 3
 const MAX_PRESETS_PER_EFFECT = 3
 const CAPTURE_WIDTH = 640
 const CAPTURE_HEIGHT = 360
-const PREVIEW_TRANSPORT_V1 =
-    'preview_transport_v1:decoded=536870912,encoded=536936448,connection=1073872896,streams=256,tombstones=1024,idle_ms=5000,message=1048576,chunks=4096'
+const PREVIEW_TRANSPORT =
+    'preview_transport_v2:decoded=536870912,encoded=536936448,connection=1073872896,reassembly=8388608,tombstones=4194304,sender=8388608,cursors=8388608,idle_ms=5000,message=1048576'
 
 /**
  * Effect slugs we skip entirely — utility/diagnostic tools, not visual effects.
@@ -61,7 +61,6 @@ interface EffectSummary {
     name: string
     description: string
     category: string
-    source: string
     runnable: boolean
     tags: string[]
     version: string
@@ -381,7 +380,7 @@ function collectFrames(daemon: string, frameCount: number, captureMs: number): P
         ws.addEventListener('open', () => {
             ws.send(
                 JSON.stringify({
-                    preview_transport: PREVIEW_TRANSPORT_V1,
+                    preview_transport: PREVIEW_TRANSPORT,
                     topics: [
                         {
                             config: {

@@ -184,6 +184,13 @@ pub enum TransportError {
         timeout_ms: u64,
     },
 
+    /// The remote device disconnected while the transport was active.
+    #[error("transport disconnected: {detail}")]
+    Disconnected {
+        /// Transport-specific disconnect detail.
+        detail: String,
+    },
+
     /// Transport already closed.
     #[error("transport closed")]
     Closed,

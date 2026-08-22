@@ -28,12 +28,12 @@ use crate::components::page_header::{HeaderToolbar, HeaderTrailing, PageAccent, 
 use crate::components::silk_select::SilkSelect;
 use crate::icons::*;
 use crate::layout_geometry;
-use crate::layout_history::{LayoutEditorSnapshot, LayoutHistoryState};
+use crate::layout_history::{LayoutEditorSnapshot, LayoutHistoryState, RemovedZoneCache};
 use crate::storage;
 use crate::toasts;
 use hypercolor_leptos_ext::events::{Input, target_is_text_entry};
 use hypercolor_types::scene::ZoneRole;
-use hypercolor_types::spatial::{Output, SpatialLayout};
+use hypercolor_types::spatial::{EdgeBehavior, Output, SamplingMode, SpatialLayout};
 
 // Panel size defaults and constraints
 const SIDEBAR_DEFAULT: f64 = 280.0;
@@ -87,8 +87,8 @@ pub struct LayoutWriteHandle {
     set_selected_zone_ids: WriteSignal<std::collections::HashSet<String>>,
     compound_depth: ReadSignal<crate::compound_selection::CompoundDepth>,
     set_compound_depth: WriteSignal<crate::compound_selection::CompoundDepth>,
-    removed_zone_cache: ReadSignal<crate::layout_utils::ZoneCache>,
-    set_removed_zone_cache: WriteSignal<crate::layout_utils::ZoneCache>,
+    removed_zone_cache: ReadSignal<RemovedZoneCache>,
+    set_removed_zone_cache: WriteSignal<RemovedZoneCache>,
     history: RwSignal<LayoutHistoryState>,
     set_dirty: WriteSignal<bool>,
 }
@@ -797,11 +797,26 @@ pub(crate) struct ZoneCanvasActions {
     pub has_layout: Signal<bool>,
 }
 
+fn editor_layout_for_zone(zone: &api::ZoneResource) -> SpatialLayout {
+    SpatialLayout {
+        id: zone.id.to_string(),
+        name: zone.name.clone(),
+        description: zone.description.clone(),
+        canvas_width: 1,
+        canvas_height: 1,
+        zones: api::zone_outputs(zone),
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        spaces: None,
+        version: 1,
+    }
+}
+
 /// Sets up the editor signals, history, and live-preview wiring for the
-/// Studio Stage, scoped to the **selected zone's** own `SpatialLayout`.
+/// Studio Stage, scoped to the selected zone's canonical placements.
 ///
 /// Where [`LayoutEditorProvider`] edits the standalone layouts library,
-/// this provider loads the selected zone's `Zone.layout` and
+/// this provider adapts the selected zone's normalized placements and
 /// persists it through the per-zone layout API (`PUT
 /// .../zones/{id}/layout` — a placement merge, plan 55 §5.1). Switching
 /// zones switches the canvas. Mount it once above the Stage; it provides
@@ -812,7 +827,7 @@ pub(crate) fn ZoneLayoutProvider(
     /// The active scene — the source of the zone set and the
     /// scene revision carried as each save's `If-Match` precondition.
     #[prop(into)]
-    active_scene: Signal<Option<api::LiveSceneView>>,
+    active_scene: Signal<Option<api::SceneDocument>>,
     /// The selected zone's id (a `Zone` id). `None`, an unknown
     /// id, or a Display zone leaves the canvas empty.
     #[prop(into)]
@@ -888,10 +903,9 @@ pub(crate) fn ZoneLayoutProvider(
                 return None;
             }
             let mut output_ids: Vec<String> = group
-                .layout
-                .zones
+                .members
                 .iter()
-                .map(|output| output.id.clone())
+                .map(|member| member.id.to_string())
                 .collect();
             output_ids.sort();
             Some((zone_id, output_ids))
@@ -915,7 +929,7 @@ pub(crate) fn ZoneLayoutProvider(
                     .zones
                     .iter()
                     .find(|group| group.id.to_string() == zone_id)
-                    .map(|group| group.layout.clone())
+                    .map(editor_layout_for_zone)
             })
         });
         match loaded {
@@ -944,7 +958,7 @@ pub(crate) fn ZoneLayoutProvider(
         let generation = save_generation.get_value().wrapping_add(1);
         save_generation.set_value(generation);
         leptos::task::spawn_local(async move {
-            match api::zones::update_zone_layout(&zone_id, &current, Some(revision)).await {
+            match api::zones::update_zone_layout(&zone_id, &current, revision).await {
                 Ok(api::zones::ZoneOutcome::Applied(_)) => {
                     let completion = zone_save_completion(
                         selected_zone_id.get_untracked().as_deref(),

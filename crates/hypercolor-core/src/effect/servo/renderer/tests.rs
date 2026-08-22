@@ -30,6 +30,27 @@ static EMPTY_SENSORS: LazyLock<SystemSnapshot> = LazyLock::new(SystemSnapshot::e
 static SOFT_STALL_TELEMETRY_TEST_LOCK: LazyLock<std::sync::Mutex<()>> =
     LazyLock::new(std::sync::Mutex::default);
 
+trait RenderFrameExt: EffectRenderer {
+    fn render_frame(&mut self, input: &FrameInput<'_>) -> anyhow::Result<Canvas> {
+        let mut canvas = Canvas::new(input.canvas_width, input.canvas_height);
+        self.render_into(input, &mut canvas)?;
+        Ok(canvas)
+    }
+}
+
+impl<T: EffectRenderer + ?Sized> RenderFrameExt for T {}
+
+fn apply_control(renderer: &mut ServoRenderer, name: &str, value: ControlValue) {
+    let changes = [(hypercolor_types::control::ControlId::from(name), value)];
+    renderer
+        .apply_controls(&ControlDeltaBatch::new(
+            hypercolor_types::control::SetRevision::default(),
+            0,
+            &changes,
+        ))
+        .expect("test control delivery");
+}
+
 fn frame_input(delta_secs: f32) -> FrameInput<'static> {
     FrameInput {
         time_secs: 0.0,
@@ -430,7 +451,7 @@ fn sensor_updates_are_limited_to_sensor_aware_metadata() {
         name: "Sensor".to_owned(),
         kind: ControlKind::Sensor,
         control_type: ControlType::Dropdown,
-        default_value: ControlValue::Enum("cpu_temp".to_owned()),
+        default_value: hypercolor_types::effect::ControlValue::Enum("cpu_temp".to_owned()),
         min: None,
         max: None,
         step: None,
@@ -820,7 +841,7 @@ fn host_driven_control_updates_still_use_full_payload() {
     let mut renderer = ServoRenderer::new();
     renderer.host_driven_animation = true;
     renderer.include_audio_updates = false;
-    renderer.set_control("speed", &ControlValue::Float(0.75));
+    apply_control(&mut renderer, "speed", ControlValue::Float(0.75));
 
     renderer.enqueue_frame_payloads(&frame_input(1.0 / 30.0));
 
@@ -1177,14 +1198,14 @@ fn queued_frames_submit_latest_state_after_in_flight_render_finishes() {
     renderer.initialized = true;
     renderer.include_interaction_updates = true;
     renderer.enqueue_bootstrap_scripts();
-    renderer.set_control("speed", &ControlValue::Float(0.25));
+    apply_control(&mut renderer, "speed", ControlValue::Float(0.25));
 
     let first_audio = custom_audio(0.1);
     let mut first_interaction = custom_interaction(&["a"], &["a"]);
     first_interaction.batch.events = vec![timed_key("host", "a", InputButtonState::Pressed, 1, 1)];
     let first_frame = frame_input_with(1.0 / 30.0, 1, &first_audio, &first_interaction, 320, 200);
 
-    let first_output = renderer.tick(&first_frame).expect("first tick");
+    let first_output = renderer.render_frame(&first_frame).expect("first frame");
     assert_eq!(first_output.width(), 320);
     assert_eq!(first_output.height(), 200);
 
@@ -1206,19 +1227,19 @@ fn queued_frames_submit_latest_state_after_in_flight_render_finishes() {
     let first_payload = frame_payload_value(&first_render.frame_payloads);
     assert_eq!(first_payload["controls"]["speed"], serde_json::json!(0.25));
 
-    renderer.set_control("speed", &ControlValue::Float(0.75));
+    apply_control(&mut renderer, "speed", ControlValue::Float(0.75));
     let second_audio = custom_audio(0.6);
     let mut second_interaction = custom_interaction(&["b"], &["b"]);
     second_interaction.batch.events = vec![timed_key("host", "b", InputButtonState::Pressed, 2, 1)];
     let second_frame =
         frame_input_with(1.0 / 15.0, 2, &second_audio, &second_interaction, 640, 360);
-    renderer.tick(&second_frame).expect("second tick");
+    renderer.render_frame(&second_frame).expect("second frame");
     assert!(render_rx.recv_timeout(Duration::from_millis(20)).is_err());
 
     let mut third_interaction = custom_interaction(&["c"], &["c"]);
     third_interaction.batch.events = vec![timed_key("host", "c", InputButtonState::Pressed, 3, 1)];
     let third_frame = frame_input_with(1.0 / 15.0, 3, &second_audio, &third_interaction, 640, 360);
-    renderer.tick(&third_frame).expect("third tick");
+    renderer.render_frame(&third_frame).expect("third frame");
     assert!(render_rx.recv_timeout(Duration::from_millis(20)).is_err());
 
     result_tx
@@ -1228,7 +1249,7 @@ fn queued_frames_submit_latest_state_after_in_flight_render_finishes() {
         .recv_timeout(Duration::from_millis(100))
         .expect("first result delivery ack");
 
-    let resumed_output = renderer.tick(&third_frame).expect("resume tick");
+    let resumed_output = renderer.render_frame(&third_frame).expect("resumed frame");
     assert_eq!(resumed_output.get_pixel(0, 0), Rgba::new(9, 8, 7, 255));
 
     let second_render = render_rx
@@ -1570,7 +1591,7 @@ fn queue_saturation_preserves_runtime_deltas_until_admission() {
     let old_frame = frame_input_with(1.0 / 60.0, 3, &audio, &old_source, 320, 200);
 
     let error = renderer
-        .tick(&old_frame)
+        .render_frame(&old_frame)
         .expect_err("saturated render admission should report degradation");
     assert!(error.to_string().contains("render queue is saturated"));
 
@@ -1595,7 +1616,7 @@ fn queue_saturation_preserves_runtime_deltas_until_admission() {
     ];
     let new_frame = frame_input_with(1.0 / 60.0, 4, &audio, &new_source, 320, 200);
     let error = renderer
-        .tick(&new_frame)
+        .render_frame(&new_frame)
         .expect_err("replacement frame should remain retained while saturated");
     assert!(error.to_string().contains("render queue is saturated"));
     assert_eq!(renderer.pending_scripts, ["persistent-control"]);
@@ -1627,7 +1648,7 @@ fn queue_saturation_preserves_runtime_deltas_until_admission() {
     ready_interaction.mouse.clone_from(&new_source.mouse);
     let ready_frame = frame_input_with(1.0 / 60.0, 5, &audio, &ready_interaction, 320, 200);
     renderer
-        .tick(&ready_frame)
+        .render_frame(&ready_frame)
         .expect("the retained frame should submit when capacity returns");
     let command = render_rx
         .recv_timeout(Duration::from_millis(100))
@@ -1664,7 +1685,7 @@ fn queue_saturation_preserves_runtime_deltas_until_admission() {
 }
 
 #[test]
-fn tick_reuses_last_completed_canvas_while_next_servo_frame_is_pending() {
+fn render_into_reuses_last_completed_canvas_while_next_servo_frame_is_pending() {
     let (worker, render_rx, result_tx, delivered_rx, _unload_rx, stopped) =
         spawn_render_test_worker();
 
@@ -1677,7 +1698,7 @@ fn tick_reuses_last_completed_canvas_while_next_servo_frame_is_pending() {
     let audio = custom_audio(0.0);
     let frame = frame_input_with(1.0 / 30.0, 1, &audio, &interaction, 320, 200);
 
-    renderer.tick(&frame).expect("initial tick");
+    renderer.render_frame(&frame).expect("initial frame");
     let _ = render_rx
         .recv_timeout(Duration::from_millis(100))
         .expect("first render command");
@@ -1689,13 +1710,13 @@ fn tick_reuses_last_completed_canvas_while_next_servo_frame_is_pending() {
         .recv_timeout(Duration::from_millis(100))
         .expect("first result delivery ack");
 
-    let first_completed = renderer.tick(&frame).expect("completed tick");
+    let first_completed = renderer.render_frame(&frame).expect("completed frame");
     assert_eq!(first_completed.get_pixel(0, 0), Rgba::new(20, 40, 60, 255));
     let _ = render_rx
         .recv_timeout(Duration::from_millis(100))
         .expect("second render command");
 
-    let reused = renderer.tick(&frame).expect("reused frame");
+    let reused = renderer.render_frame(&frame).expect("reused frame");
     assert_eq!(reused.get_pixel(0, 0), Rgba::new(20, 40, 60, 255));
     assert!(render_rx.recv_timeout(Duration::from_millis(20)).is_err());
 
@@ -1724,7 +1745,7 @@ fn destroy_detaches_in_flight_render_before_unloading_worker_page() {
     let audio = custom_audio(0.0);
     let frame = frame_input_with(1.0 / 30.0, 1, &audio, &interaction, 320, 200);
 
-    renderer.tick(&frame).expect("initial tick");
+    renderer.render_frame(&frame).expect("initial frame");
     let _ = render_rx
         .recv_timeout(Duration::from_millis(100))
         .expect("first render command");

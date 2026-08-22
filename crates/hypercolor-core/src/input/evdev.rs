@@ -28,7 +28,7 @@ use crate::input::{
     LegacyWheelProjector, SourceIssue, SourceKind, SourceResourceScanHealth, SourceStatusHandle,
     SourceStatusReporter, classify_source_resource_scan,
 };
-use crate::types::event::{
+use hypercolor_types::event::{
     InputButtonState, InputEvent, PointerScrollPhase, PointerScrollUnit, TimedInputEvent,
 };
 

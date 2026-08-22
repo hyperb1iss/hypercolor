@@ -123,7 +123,7 @@ pub struct PixelRect {
 }
 
 /// How a cropped viewport maps into a destination canvas.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum FitMode {
     #[default]

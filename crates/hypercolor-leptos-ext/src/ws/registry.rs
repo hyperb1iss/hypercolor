@@ -29,7 +29,9 @@
 //! client's preview id: subscribing opens a render lane and
 //! unsubscribing closes it, which is why it is a control-tier topic.
 
-use serde::{Deserialize, Serialize};
+use std::time::Duration;
+
+use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 use serde_json::{Value, json};
 
 use super::preview::{DISPLAY_PREVIEW_ID_MAX_BYTES, INTERACTIVE_PREVIEW_ID_MAX_BYTES};
@@ -76,9 +78,9 @@ fn canvas_config_schema() -> Value {
 
 fn metrics_config_schema() -> Value {
     json!({
-        "interval_ms": {
-            "min": METRICS_INTERVAL_MS_MIN,
-            "max": METRICS_INTERVAL_MS_MAX,
+        "fps": {
+            "min": METRICS_FPS_MIN,
+            "max": METRICS_FPS_MAX,
         },
     })
 }
@@ -425,45 +427,77 @@ impl TopicPatch<CanvasConfig> for CanvasConfigPatch {
     }
 }
 
-/// Per-subscription configuration for the periodic telemetry topics.
-pub const METRICS_INTERVAL_MS_MIN: u32 = 100;
-/// Largest supported telemetry snapshot period.
-pub const METRICS_INTERVAL_MS_MAX: u32 = 10_000;
+/// Slowest supported telemetry cadence.
+pub const METRICS_FPS_MIN: f64 = 0.1;
+/// Fastest supported telemetry cadence.
+pub const METRICS_FPS_MAX: f64 = 10.0;
 
-/// Per-subscription configuration for the periodic telemetry topics.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MetricsConfig {
-    /// Snapshot period in milliseconds.
-    pub interval_ms: u32,
+/// A telemetry delivery cadence expressed in frames per second.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct Cadence(f64);
+
+impl Cadence {
+    /// Construct a supported cadence.
+    #[must_use]
+    pub fn from_fps(fps: f64) -> Option<Self> {
+        (fps.is_finite() && (METRICS_FPS_MIN..=METRICS_FPS_MAX).contains(&fps)).then_some(Self(fps))
+    }
+
+    /// Frames per second carried on the wire.
+    #[must_use]
+    pub const fn fps(self) -> f64 {
+        self.0
+    }
+
+    /// Wall-clock period between publications.
+    #[must_use]
+    pub fn period(self) -> Duration {
+        Duration::from_secs_f64(self.0.recip())
+    }
 }
 
-impl Default for MetricsConfig {
+impl Default for Cadence {
     fn default() -> Self {
-        Self { interval_ms: 1000 }
+        Self(1.0)
     }
+}
+
+impl<'de> Deserialize<'de> for Cadence {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let fps = f64::deserialize(deserializer)?;
+        Self::from_fps(fps).ok_or_else(|| {
+            D::Error::custom(format!(
+                "fps must be between {METRICS_FPS_MIN} and {METRICS_FPS_MAX}"
+            ))
+        })
+    }
+}
+
+/// Per-subscription configuration for the periodic telemetry topics.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MetricsConfig {
+    /// Snapshot cadence.
+    pub fps: Cadence,
 }
 
 /// Patch for [`MetricsConfig`].
 #[derive(Debug, Clone, Copy, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MetricsConfigPatch {
-    /// Replacement snapshot period.
+    /// Replacement snapshot cadence.
     #[serde(default)]
-    pub interval_ms: Option<u32>,
+    pub fps: Option<Cadence>,
 }
 
 impl TopicPatch<MetricsConfig> for MetricsConfigPatch {
     fn apply(&self, config: &mut MetricsConfig) -> Result<(), PatchError> {
-        if let Some(interval_ms) = self.interval_ms {
-            validate_range(
-                interval_ms,
-                METRICS_INTERVAL_MS_MIN,
-                METRICS_INTERVAL_MS_MAX,
-                "interval_ms",
-                "expected 100..=10000",
-            )?;
-            config.interval_ms = interval_ms;
+        if let Some(fps) = self.fps {
+            config.fps = fps;
         }
         Ok(())
     }

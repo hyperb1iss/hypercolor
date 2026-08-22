@@ -19,9 +19,7 @@ use hypercolor_leptos_ext::prelude::{
 use hypercolor_leptos_ext::ws::transport::{
     WebSocketEventHandlers, arraybuffer_websocket, message_array_buffer, send_websocket_json,
 };
-use hypercolor_leptos_ext::ws::{
-    ExponentialBackoff, HYPERCOLOR_WS_PROTOCOL, PreviewTransportCapability,
-};
+use hypercolor_leptos_ext::ws::{ExponentialBackoff, HYPERCOLOR_WS_PROTOCOL};
 use leptos::prelude::*;
 use wasm_bindgen::{JsCast, JsValue};
 use web_sys::MessageEvent;
@@ -34,7 +32,7 @@ use super::interactive_preview::{
 use super::messages::{
     AudioLevel, BackpressureNotice, CanvasFrame, ConnectionState, ControlSurfaceEventHint,
     DeviceEventHint, EffectErrorHint, ExtensionEventHint, InitialSubscriptionAdmission,
-    InputSourceStatusEventHint, MacosDaemonOwnershipEventHint, OutputPowerReconciler,
+    InputSourceStatusEventHint, OutputPowerReconciler,
     PerformanceMetrics, PreviewBinaryDecoder, PreviewBinaryMessage, PreviewFrameChannel,
     SceneEventHint, ScreenZonesFrame, handle_json_message, initial_subscription_admission,
     interactive_preview_supported, is_resync_required, reset_layer_health_cache,
@@ -47,7 +45,7 @@ use super::preview::{
     send_screen_canvas_unsubscribe, send_screen_zones_subscribe, send_screen_zones_unsubscribe,
     send_web_viewport_canvas_unsubscribe, should_stream_preview,
 };
-use crate::api::DeviceMetricsSnapshot;
+use crate::api::{DeviceMetricsSnapshot, MacosDaemonOwnershipStatus};
 use crate::api::client;
 
 const BACKPRESSURE_RECOVERY_MS: f64 = 2_000.0;
@@ -102,6 +100,17 @@ fn quantize_preview_fps(value: f64) -> f32 {
     }
 }
 
+fn initial_subscription_message() -> serde_json::Value {
+    serde_json::json!({
+        "type": "subscribe",
+        "topics": [
+            { "topic": "events" },
+            { "topic": "metrics", "config": { "fps": 2.0 } },
+            { "topic": "sensors" }
+        ]
+    })
+}
+
 // ── WebSocket Manager ───────────────────────────────────────────────────────
 
 /// Reactive WebSocket connection to the daemon.
@@ -147,7 +156,7 @@ pub struct WsManager {
     pub last_input_source_status_event: ReadSignal<Option<InputSourceStatusEventHint>>,
     /// Latest authoritative macOS daemon-owner transition. REST remains
     /// canonical; consumers use this only to invalidate their snapshots.
-    pub last_macos_daemon_ownership_event: ReadSignal<Option<MacosDaemonOwnershipEventHint>>,
+    pub last_macos_daemon_ownership_event: ReadSignal<Option<MacosDaemonOwnershipStatus>>,
     /// Increments each time the daemon socket (re)opens. Bus events fired
     /// while the socket was down are not replayed, so resources mirroring
     /// daemon state over REST should fold this into their fetcher epochs
@@ -218,7 +227,7 @@ impl WsManager {
         let (last_input_source_status_event, set_last_input_source_status_event) =
             signal(None::<InputSourceStatusEventHint>);
         let (last_macos_daemon_ownership_event, set_last_macos_daemon_ownership_event) =
-            signal(None::<MacosDaemonOwnershipEventHint>);
+            signal(None::<MacosDaemonOwnershipStatus>);
         let (last_scene_event, set_last_scene_event) = signal(None::<SceneEventHint>);
         let (last_effect_error, set_last_effect_error) = signal(None::<EffectErrorHint>);
         let (last_control_surface_event, set_last_control_surface_event) =
@@ -240,7 +249,8 @@ impl WsManager {
         let (screen_zones_consumers, set_screen_zones_consumers) = signal(0_u32);
         let screen_zones_requested: StoredValue<bool> = StoredValue::new(false);
         let (web_viewport_preview_consumers, set_web_viewport_preview_consumers) = signal(0_u32);
-        let (preview_transport_cap, set_preview_transport_cap) = signal(DEFAULT_PREVIEW_FPS_CAP);
+        let (preview_backpressure_cap, set_preview_backpressure_cap) =
+            signal(DEFAULT_PREVIEW_FPS_CAP);
         let (page_visible, set_page_visible) = signal(document_is_visible());
         let (app_window_visible, set_app_window_visible) = signal(tauri_window_is_visible());
         let (last_backpressure_at_ms, set_last_backpressure_at_ms) = signal(None::<f64>);
@@ -291,7 +301,7 @@ impl WsManager {
             set_interactive_preview_frames.set(HashMap::new());
             interactive_preview_tracker.update_value(InteractivePreviewLifecycleTracker::clear);
             set_interactive_preview_lifecycles.set(HashMap::new());
-            set_preview_transport_cap.set(preview_page_cap.get_untracked());
+            set_preview_backpressure_cap.set(preview_page_cap.get_untracked());
             set_last_backpressure_at_ms.set(None);
             set_layer_health.update(reset_layer_health_cache);
             output_power_reconciler.update_value(|reconciler| {
@@ -339,15 +349,7 @@ impl WsManager {
                 });
                 initial_subscription_timeout.set_value(Some(timeout));
 
-                let subscribe_msg = serde_json::json!({
-                    "type": "subscribe",
-                    "preview_transport": PreviewTransportCapability::default().encode(),
-                    "topics": [
-                        { "topic": "events" },
-                        { "topic": "metrics", "config": { "interval_ms": 500 } },
-                        { "topic": "sensors" }
-                    ]
-                });
+                let subscribe_msg = initial_subscription_message();
                 let _ = send_websocket_json(&ws_clone, &subscribe_msg);
             };
 
@@ -524,9 +526,6 @@ impl WsManager {
                         return;
                     }
                     if msg.get("type").and_then(serde_json::Value::as_str) == Some("hello") {
-                        message_preview_decoder
-                            .borrow_mut()
-                            .apply_hello_capabilities(&msg);
                         schedule_preview_expiry(
                             &message_preview_decoder,
                             &message_preview_expiry_timeout,
@@ -577,7 +576,7 @@ impl WsManager {
                         &set_audio_level,
                         &set_engine_preview_target,
                         &set_preview_target_fps,
-                        &set_preview_transport_cap,
+                        &set_preview_backpressure_cap,
                         &set_last_backpressure_at_ms,
                         &set_backpressure_probe_epoch,
                     );
@@ -594,7 +593,7 @@ impl WsManager {
         Effect::new(move |_| {
             let engine_target = engine_preview_target.get();
             let consumer_count = preview_consumers.get();
-            let client_cap = preview_page_cap.get().min(preview_transport_cap.get());
+            let client_cap = preview_page_cap.get().min(preview_backpressure_cap.get());
             let width_cap = preview_width_cap.get();
             let is_visible = page_visible.get();
             let window_visible = app_window_visible.get();
@@ -702,7 +701,7 @@ impl WsManager {
         });
 
         Effect::new(move |_| {
-            set_preview_transport_cap.set(preview_page_cap.get());
+            set_preview_backpressure_cap.set(preview_page_cap.get());
         });
 
         // Per-device metrics subscription — opt-in via the consumer counter.
@@ -731,7 +730,7 @@ impl WsManager {
                     "type": "subscribe",
                     "topics": [{
                         "topic": "device_metrics",
-                        "config": { "interval_ms": 500 }
+                        "config": { "fps": 2.0 }
                     }]
                 });
                 let _ = send_websocket_json(&ws, &msg);
@@ -757,8 +756,8 @@ impl WsManager {
             }
 
             let page_cap = preview_page_cap.get_untracked();
-            if preview_transport_cap.get_untracked() != page_cap {
-                set_preview_transport_cap.set(page_cap);
+            if preview_backpressure_cap.get_untracked() != page_cap {
+                set_preview_backpressure_cap.set(page_cap);
             }
             if backpressure_notice.get_untracked().is_some() {
                 set_backpressure_notice.set(None);
@@ -1094,6 +1093,14 @@ fn tauri_window_is_visible() -> bool {
 
 #[cfg(test)]
 mod transport_tests {
+    #[test]
+    fn initial_subscription_uses_the_lockstep_preview_transport() {
+        let subscription = super::initial_subscription_message();
+
+        assert_eq!(subscription["type"], "subscribe");
+        assert!(subscription.get("preview_transport").is_none());
+    }
+
     #[test]
     fn native_daemon_routes_convert_http_schemes_for_websocket() {
         assert_eq!(

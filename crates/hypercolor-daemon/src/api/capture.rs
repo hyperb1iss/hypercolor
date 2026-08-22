@@ -17,9 +17,9 @@ use hypercolor_types::api::capture::{
     CaptureAuthorizationResponse, CaptureMonitor, CapturePickerResponse, ProtectedSourceGrantOwner,
 };
 
-use crate::api::AppState;
-use crate::api::envelope::ApiResponse;
+use crate::api::envelope;
 use crate::api::security::RequestAuthContext;
+use crate::app_state::AppState;
 use crate::domain::DomainError;
 
 fn domain_validation(message: impl Into<String>) -> Response {
@@ -164,23 +164,6 @@ fn install_macos_picker_persistence_task(
 }
 
 /// `POST /api/v1/input/authorize` — Request macOS Input Monitoring.
-#[utoipa::path(
-    post,
-    path = "/api/v1/input/authorize",
-    responses(
-        (
-            status = 200,
-            description = "Input Monitoring authorization result",
-            body = crate::api::envelope::ApiResponse<CaptureAuthorizationResponse>
-        ),
-        (
-            status = 403,
-            description = "Control credential required",
-            body = hypercolor_types::api::envelope::ApiErrorBody
-        )
-    ),
-    tag = "capture"
-)]
 pub(crate) async fn authorize_input_monitoring(
     State(state): State<Arc<AppState>>,
     Extension(auth_context): Extension<RequestAuthContext>,
@@ -217,7 +200,7 @@ pub(crate) async fn authorize_input_monitoring(
     match tokio::task::spawn_blocking(move || action.execute()).await {
         Ok(Ok(authorized)) => {
             info!(authorized, "Input Monitoring authorization requested");
-            ApiResponse::ok(CaptureAuthorizationResponse {
+            envelope::ok(CaptureAuthorizationResponse {
                 authorized,
                 grant_owner: protected_action_owner(grant_owner),
             })
@@ -233,23 +216,6 @@ pub(crate) async fn authorize_input_monitoring(
 }
 
 /// `POST /api/v1/capture/authorize` — Request macOS Screen Recording.
-#[utoipa::path(
-    post,
-    path = "/api/v1/capture/authorize",
-    responses(
-        (
-            status = 200,
-            description = "Screen Recording authorization result",
-            body = crate::api::envelope::ApiResponse<CaptureAuthorizationResponse>
-        ),
-        (
-            status = 403,
-            description = "Control credential required",
-            body = hypercolor_types::api::envelope::ApiErrorBody
-        )
-    ),
-    tag = "capture"
-)]
 pub(crate) async fn authorize_screen_recording(
     State(state): State<Arc<AppState>>,
     Extension(auth_context): Extension<RequestAuthContext>,
@@ -285,7 +251,7 @@ pub(crate) async fn authorize_screen_recording(
     match tokio::task::spawn_blocking(move || action.execute()).await {
         Ok(Ok(authorized)) => {
             info!(authorized, "Screen Recording authorization requested");
-            ApiResponse::ok(CaptureAuthorizationResponse {
+            envelope::ok(CaptureAuthorizationResponse {
                 authorized,
                 grant_owner: protected_action_owner(grant_owner),
             })
@@ -303,23 +269,6 @@ pub(crate) async fn authorize_screen_recording(
 /// `PUT /api/v1/capture/source` — Re-open the portal source picker.
 ///
 /// The accepted choice is persisted according to the platform source grammar.
-#[utoipa::path(
-    put,
-    path = "/api/v1/capture/source",
-    responses(
-        (
-            status = 200,
-            description = "Capture source picker dispatched",
-            body = crate::api::envelope::ApiResponse<CapturePickerResponse>
-        ),
-        (
-            status = 403,
-            description = "Control credential required",
-            body = hypercolor_types::api::envelope::ApiErrorBody
-        )
-    ),
-    tag = "capture"
-)]
 pub(crate) async fn set_capture_source(
     State(state): State<Arc<AppState>>,
     Extension(auth_context): Extension<RequestAuthContext>,
@@ -431,7 +380,7 @@ pub(crate) async fn set_capture_source(
     }
 
     info!("Screen capture source picker requested");
-    ApiResponse::ok(CapturePickerResponse {
+    envelope::ok(CapturePickerResponse {
         picking: true,
         grant_owner: protected_action_owner(grant_owner),
     })
@@ -442,23 +391,6 @@ pub(crate) async fn set_capture_source(
 /// Empty on platforms where the backend picks its own source (the XDG
 /// portal on Linux); the UI uses emptiness to decide between a monitor
 /// dropdown and the portal picker button.
-#[utoipa::path(
-    get,
-    path = "/api/v1/capture/monitors",
-    responses(
-        (
-            status = 200,
-            description = "Addressable capture displays",
-            body = crate::api::envelope::ApiResponse<Vec<CaptureMonitor>>
-        ),
-        (
-            status = 403,
-            description = "Control credential required",
-            body = hypercolor_types::api::envelope::ApiErrorBody
-        )
-    ),
-    tag = "capture"
-)]
 pub(crate) async fn list_capture_monitors(
     Extension(auth_context): Extension<RequestAuthContext>,
 ) -> Response {
@@ -478,7 +410,7 @@ pub(crate) async fn list_capture_monitors(
         })
         .collect();
 
-    ApiResponse::ok(monitors)
+    envelope::ok(monitors)
 }
 
 #[cfg(test)]

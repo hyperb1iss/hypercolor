@@ -1,5 +1,7 @@
 //! ASUS Aura ENE `SMBus` protocol helpers.
 
+use hypercolor_types::device::SegmentInfo;
+
 use std::sync::{PoisonError, RwLock};
 use std::time::Duration;
 
@@ -13,8 +15,8 @@ use hypercolor_types::device::{
 };
 
 use crate::protocol::{
-    CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ProtocolZone,
-    ResponseStatus, TransferType,
+    CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ResponseStatus,
+    TransferType,
 };
 
 /// ENE indirect address register.
@@ -88,10 +90,6 @@ pub struct EneFirmwareVariant {
     pub may_support_mode_14: bool,
 }
 
-/// Low-level `SMBus` operations emitted by ENE helper builders.
-/// ASUS ENE `SMBus` operation alias.
-pub type EneSmBusOperation = SmBusOperation;
-
 #[derive(Debug, Clone, Default)]
 struct AuraSmBusState {
     firmware_name: Option<String>,
@@ -118,7 +116,7 @@ pub const fn ene_permute_color(r: u8, g: u8, b: u8) -> [u8; 3] {
 ///
 /// Returns [`ProtocolError`] if an operation cannot be represented by the
 /// shared transport format.
-pub fn encode_ene_transaction(operations: &[EneSmBusOperation]) -> Result<Vec<u8>, ProtocolError> {
+pub fn encode_ene_transaction(operations: &[SmBusOperation]) -> Result<Vec<u8>, ProtocolError> {
     encode_operations(operations).map_err(|error| protocol_encoding_error(&error))
 }
 
@@ -127,7 +125,7 @@ pub fn encode_ene_transaction(operations: &[EneSmBusOperation]) -> Result<Vec<u8
 /// # Errors
 ///
 /// Returns [`ProtocolError`] when the frame is malformed.
-pub fn decode_ene_transaction(data: &[u8]) -> Result<Vec<EneSmBusOperation>, ProtocolError> {
+pub fn decode_ene_transaction(data: &[u8]) -> Result<Vec<SmBusOperation>, ProtocolError> {
     decode_operations(data).map_err(|error| protocol_malformed_response(&error))
 }
 
@@ -247,7 +245,7 @@ pub fn supports_mode_14(config_table: &[u8], variant: EneFirmwareVariant) -> boo
 /// overflow the 16-bit ENE address space. The overflow case is logged at
 /// warn level so a misconfigured caller is observable without panicking.
 #[must_use]
-pub fn ene_read_register_range(register: u16, len: usize) -> Vec<EneSmBusOperation> {
+pub fn ene_read_register_range(register: u16, len: usize) -> Vec<SmBusOperation> {
     if len == 0 {
         return Vec::new();
     }
@@ -278,14 +276,14 @@ pub fn ene_read_register_range(register: u16, len: usize) -> Vec<EneSmBusOperati
 
     for offset in 0..len_u16 {
         let current = register + offset;
-        operations.push(EneSmBusOperation::WriteWordData {
+        operations.push(SmBusOperation::WriteWordData {
             register: ENE_ADDRESS_REGISTER,
             value: ene_byte_swap(current),
         });
-        operations.push(EneSmBusOperation::Delay {
+        operations.push(SmBusOperation::Delay {
             duration: ENE_OPERATION_DELAY,
         });
-        operations.push(EneSmBusOperation::ReadByteData {
+        operations.push(SmBusOperation::ReadByteData {
             register: ENE_READ_REGISTER,
         });
     }
@@ -295,16 +293,16 @@ pub fn ene_read_register_range(register: u16, len: usize) -> Vec<EneSmBusOperati
 
 /// Build the indirect-write sequence for one ENE register byte.
 #[must_use]
-pub fn ene_write_register(register: u16, value: u8) -> Vec<EneSmBusOperation> {
+pub fn ene_write_register(register: u16, value: u8) -> Vec<SmBusOperation> {
     vec![
-        EneSmBusOperation::WriteWordData {
+        SmBusOperation::WriteWordData {
             register: ENE_ADDRESS_REGISTER,
             value: ene_byte_swap(register),
         },
-        EneSmBusOperation::Delay {
+        SmBusOperation::Delay {
             duration: ENE_OPERATION_DELAY,
         },
-        EneSmBusOperation::WriteByteData {
+        SmBusOperation::WriteByteData {
             register: ENE_WRITE_REGISTER,
             value,
         },
@@ -317,7 +315,7 @@ pub fn ene_write_register(register: u16, value: u8) -> Vec<EneSmBusOperation> {
 /// overflow the 16-bit ENE address space. The overflow case is logged at
 /// warn level so a misconfigured caller is observable without panicking.
 #[must_use]
-pub fn ene_write_register_block(register: u16, data: &[u8]) -> Vec<EneSmBusOperation> {
+pub fn ene_write_register_block(register: u16, data: &[u8]) -> Vec<SmBusOperation> {
     if data.is_empty() {
         return Vec::new();
     }
@@ -347,14 +345,14 @@ pub fn ene_write_register_block(register: u16, data: &[u8]) -> Vec<EneSmBusOpera
 
     for (chunk_index, chunk) in data.chunks(ENE_BLOCK_WRITE_LIMIT).enumerate() {
         let chunk_offset = u16::try_from(chunk_index * ENE_BLOCK_WRITE_LIMIT).unwrap_or(max_offset);
-        operations.push(EneSmBusOperation::WriteWordData {
+        operations.push(SmBusOperation::WriteWordData {
             register: ENE_ADDRESS_REGISTER,
             value: ene_byte_swap(register + chunk_offset),
         });
-        operations.push(EneSmBusOperation::Delay {
+        operations.push(SmBusOperation::Delay {
             duration: ENE_OPERATION_DELAY,
         });
-        operations.push(EneSmBusOperation::WriteBlockData {
+        operations.push(SmBusOperation::WriteBlockData {
             register: ENE_BLOCK_WRITE_REGISTER,
             data: chunk.to_vec(),
         });
@@ -368,7 +366,7 @@ pub fn ene_write_register_block(register: u16, data: &[u8]) -> Vec<EneSmBusOpera
 pub fn ene_direct_color_writes(
     variant: EneFirmwareVariant,
     colors: &[[u8; 3]],
-) -> Vec<EneSmBusOperation> {
+) -> Vec<SmBusOperation> {
     let payload = colors
         .iter()
         .flat_map(|color| ene_permute_color(color[0], color[1], color[2]))
@@ -379,7 +377,7 @@ pub fn ene_direct_color_writes(
 
 /// Build the DRAM remap write sequence for one slot/address pair.
 #[must_use]
-pub fn ene_dram_remap_sequence(slot_index: u8, target_address: u8) -> Vec<EneSmBusOperation> {
+pub fn ene_dram_remap_sequence(slot_index: u8, target_address: u8) -> Vec<SmBusOperation> {
     let mut operations = ene_write_register(ENE_DRAM_SLOT_INDEX_REGISTER, slot_index);
     operations.extend(ene_write_register(
         ENE_DRAM_I2C_ADDRESS_REGISTER,
@@ -408,7 +406,7 @@ impl AuraSmBusProtocol {
         }
     }
 
-    fn command(operations: &[EneSmBusOperation], expects_response: bool) -> ProtocolCommand {
+    fn command(operations: &[SmBusOperation], expects_response: bool) -> ProtocolCommand {
         ProtocolCommand {
             data: encode_ene_transaction(operations)
                 .expect("ENE transaction encoding should succeed for built-in operations"),
@@ -558,14 +556,14 @@ impl Protocol for AuraSmBusProtocol {
         }
     }
 
-    fn zones(&self) -> Vec<ProtocolZone> {
+    fn zones(&self) -> Vec<SegmentInfo> {
         let state = self.state.read().unwrap_or_else(PoisonError::into_inner);
 
         if state.led_count == 0 {
             return Vec::new();
         }
 
-        vec![ProtocolZone {
+        vec![SegmentInfo {
             name: "Lighting".to_owned(),
             led_count: state.led_count,
             topology: DeviceTopologyHint::Strip,

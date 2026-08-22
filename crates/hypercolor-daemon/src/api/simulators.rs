@@ -15,8 +15,8 @@ use hypercolor_types::canvas::SurfaceDescriptor;
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::event::DisconnectReason;
 
-use crate::api::AppState;
-use crate::api::envelope::ApiResponse;
+use crate::api::envelope;
+use crate::app_state::AppState;
 use crate::domain::{DomainError, ResourceKind};
 use crate::logical_devices;
 use crate::scene_transactions::{PreparedLayoutUpdate, apply_prepared_layout_update_under_guard};
@@ -25,7 +25,7 @@ use crate::simulators::{
 };
 
 pub use hypercolor_types::api::simulators::{
-    CreateSimulatedDisplayRequest, UpdateSimulatedDisplayRequest,
+    CreateSimulatedDisplayRequest, DeleteSimulatedDisplayResponse, UpdateSimulatedDisplayRequest,
 };
 
 struct OwnedDisplayJpeg(Arc<Vec<u8>>);
@@ -38,7 +38,7 @@ impl AsRef<[u8]> for OwnedDisplayJpeg {
 
 pub async fn list_simulated_displays(State(state): State<Arc<AppState>>) -> Response {
     let store = state.simulated_displays.read().await;
-    ApiResponse::ok(store.list())
+    envelope::ok(store.list())
 }
 
 pub async fn get_simulated_display(
@@ -52,7 +52,7 @@ pub async fn get_simulated_display(
 
     let store = state.simulated_displays.read().await;
     match store.get(device_id) {
-        Some(config) => ApiResponse::ok(config),
+        Some(config) => envelope::ok(config),
         None => DomainError::not_found(ResourceKind::SimulatedDisplay, device_id).into_response(),
     }
 }
@@ -93,7 +93,7 @@ pub async fn create_simulated_display(
         .into_response();
     }
 
-    ApiResponse::created(config)
+    envelope::created(config)
 }
 
 pub async fn patch_simulated_display(
@@ -144,7 +144,7 @@ pub async fn patch_simulated_display(
         .into_response();
     }
 
-    ApiResponse::ok(updated)
+    envelope::ok(updated)
 }
 
 pub async fn delete_simulated_display(
@@ -220,10 +220,10 @@ async fn delete_simulated_display_workflow(state: Arc<AppState>, device_id: Devi
             &device_id.to_string(),
         )
         .await;
-    ApiResponse::ok(serde_json::json!({
-        "id": device_id,
-        "deleted": true,
-    }))
+    envelope::ok(DeleteSimulatedDisplayResponse {
+        id: device_id,
+        deleted: true,
+    })
 }
 
 pub async fn get_simulated_display_frame(
@@ -308,7 +308,7 @@ async fn prune_simulator_layout_targets(state: &Arc<AppState>, device_id: Device
     target_ids.insert(format!("simulator:{physical_id}"));
 
     let active_layout_id = {
-        let spatial = state.spatial_engine.read().await;
+        let spatial = state.spatial_engine.snapshot();
         spatial.layout().id.clone()
     };
 
@@ -342,8 +342,8 @@ async fn prune_simulator_layout_targets(state: &Arc<AppState>, device_id: Device
         match PreparedLayoutUpdate::try_new(layout) {
             Ok(prepared) => {
                 if let Err(error) = apply_prepared_layout_update_under_guard(
-                    Arc::clone(&state.spatial_engine),
-                    Arc::clone(&state.scene_manager),
+                    state.spatial_engine.clone(),
+                    state.scene_manager.clone(),
                     state.scene_transactions.clone(),
                     &guard,
                     prepared,

@@ -40,8 +40,8 @@ pub(super) fn render_layer_effect_error(
         _ => "unknown".to_owned(),
     };
     let effect_name = group
-        .effective_layers()
-        .into_iter()
+        .layers
+        .iter()
         .find(|candidate| candidate.id == layer.id)
         .and_then(|layer| match layer.source {
             LayerSource::Effect { effect_id, .. } => Some(effect_id),

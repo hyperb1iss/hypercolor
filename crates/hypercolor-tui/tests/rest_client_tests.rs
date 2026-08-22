@@ -8,10 +8,13 @@ use axum::http::{HeaderMap, StatusCode, Uri, header};
 use axum::routing::{get, patch, post, put};
 use axum::{Json, Router};
 use hypercolor_tui::client::rest::DaemonClient;
-use hypercolor_types::controls::{
-    ApplyControlChangesRequest, ControlActionStatus, ControlChange,
-    ControlValue as SurfaceControlValue,
+use hypercolor_tui::state::{
+    primary_zone, scene_is_multi_zone, zone_effect_controls, zone_effect_id, zone_effect_layer,
 };
+use hypercolor_types::api::scene::PatchControlsRequest;
+use hypercolor_types::api::system::{RenderLoopStatus, ServerInfo, SystemResource, SystemStatus};
+use hypercolor_types::control::ControlValue as CanonicalControlValue;
+use hypercolor_types::controls::ControlActionStatus;
 use hypercolor_types::effect::{
     ControlBinding, ControlDefinition, ControlKind, ControlType, ControlValue, PresetTemplate,
 };
@@ -23,6 +26,15 @@ type CapturedControlPayloads = (Arc<Mutex<Option<Value>>>, Arc<Mutex<Option<Valu
 
 fn client_for(addr: SocketAddr) -> DaemonClient {
     DaemonClient::new("127.0.0.1", addr.port(), None)
+}
+
+fn canonical_json(mut envelope: Value) -> Json<Value> {
+    envelope["meta"] = json!({
+        "api_version": "v1",
+        "request_id": "req_test",
+        "timestamp": "2026-08-20T00:00:00Z"
+    });
+    Json(envelope)
 }
 
 async fn spawn_server(router: Router) -> SocketAddr {
@@ -48,6 +60,14 @@ fn encoded_preview_bytes() -> Vec<u8> {
         .write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Png)
         .expect("preview image should encode");
     bytes
+}
+
+fn system_resource(status: SystemStatus) -> Value {
+    serde_json::to_value(SystemResource {
+        identity: ServerInfo::default(),
+        status: Some(status),
+    })
+    .expect("system resource should serialize")
 }
 
 #[tokio::test]
@@ -97,7 +117,7 @@ async fn get_effects_hydrates_the_catalog_in_one_round_trip() {
                     let presets = presets.clone();
                     async move {
                         *seen_query.lock().await = uri.query().map(str::to_owned);
-                        Json(json!({
+                        canonical_json(json!({
                             "data": {
                                 "items": [{
                                     "id": "rainbow",
@@ -113,12 +133,7 @@ async fn get_effects_hydrates_the_catalog_in_one_round_trip() {
                                     "controls": controls,
                                     "presets": presets
                                 }],
-                                "pagination": {
-                                    "offset": 0,
-                                    "limit": 50,
-                                    "total": 1,
-                                    "has_more": false
-                                }
+                                "total": 1
                             }
                         }))
                     }
@@ -135,7 +150,7 @@ async fn get_effects_hydrates_the_catalog_in_one_round_trip() {
                     let detail_hits = Arc::clone(&detail_hits);
                     async move {
                         *detail_hits.lock().await += 1;
-                        Json(json!({ "data": {} }))
+                        canonical_json(json!({ "data": {} }))
                     }
                 }
             }),
@@ -175,26 +190,24 @@ async fn get_status_maps_the_system_response_without_an_active_effect_call() {
     let router = Router::new().route(
         "/api/v1/system",
         get(|| async {
-            Json(json!({
-                "data": { "status": {
-                    "running": true,
-                    "global_brightness": 42,
-                    "device_count": 3,
-                    "active_effect": "Rainbow Wave",
-                    "active_scene": "Focus",
-                    "active_scene_snapshot_locked": true,
-                    "render_loop": {
-                        "state": "running",
-                        "fps_tier": "sixty",
-                        "target_fps": 60,
-                        "ceiling_fps": 60,
-                        "capacity_fps": 59.8,
-                        "delivered_fps": 59.4,
-                        "actual_fps": 59.8,
-                        "consecutive_misses": 0,
-                        "total_frames": 12_000
-                    }
-                }}
+            canonical_json(json!({
+                "data": system_resource(SystemStatus {
+                    running: true,
+                    global_brightness: 42,
+                    device_count: 3,
+                    render_loop: RenderLoopStatus {
+                        state: "running".to_owned(),
+                        fps_tier: "sixty".to_owned(),
+                        target_fps: 60,
+                        ceiling_fps: 60,
+                        capacity_fps: 59.8,
+                        delivered_fps: 59.4,
+                        actual_fps: 59.8,
+                        consecutive_misses: 0,
+                        total_frames: 12_000,
+                    },
+                    ..SystemStatus::default()
+                })
             }))
         }),
     );
@@ -204,8 +217,6 @@ async fn get_status_maps_the_system_response_without_an_active_effect_call() {
 
     assert!(status.running);
     assert_eq!(status.brightness, 42);
-    assert_eq!(status.scene_name.as_deref(), Some("Focus"));
-    assert!(status.scene_snapshot_locked);
     assert_eq!(status.device_count, 3);
     // FPS lives under render_loop. A flat field here would read zero and
     // the status view would render a stalled render loop forever.
@@ -225,19 +236,18 @@ async fn get_status_reads_fps_from_the_render_loop_block() {
     let router = Router::new().route(
         "/api/v1/system",
         get(|| async {
-            Json(json!({
-                "data": { "status": {
-                    "running": true,
-                    "global_brightness": 80,
-                    "device_count": 0,
-                    "active_effect": null,
-                    "active_scene": null,
-                    "render_loop": {
-                        "state": "running",
-                        "target_fps": 45,
-                        "actual_fps": 44.2
-                    }
-                }}
+            canonical_json(json!({
+                "data": system_resource(SystemStatus {
+                    running: true,
+                    global_brightness: 80,
+                    render_loop: RenderLoopStatus {
+                        state: "running".to_owned(),
+                        target_fps: 45,
+                        actual_fps: 44.2,
+                        ..RenderLoopStatus::default()
+                    },
+                    ..SystemStatus::default()
+                })
             }))
         }),
     );
@@ -249,13 +259,12 @@ async fn get_status_reads_fps_from_the_render_loop_block() {
     assert_eq!(status.fps_actual, 44.2);
 }
 
-/// An absent render_loop block is tolerated rather than fatal.
 #[tokio::test]
-async fn get_status_survives_a_status_payload_without_a_render_loop() {
+async fn get_status_rejects_an_incomplete_system_snapshot() {
     let router = Router::new().route(
         "/api/v1/system",
         get(|| async {
-            Json(json!({
+            canonical_json(json!({
                 "data": { "status": {
                     "running": false,
                     "global_brightness": 10,
@@ -268,10 +277,12 @@ async fn get_status_survives_a_status_payload_without_a_render_loop() {
     );
 
     let client = client_for(spawn_server(router).await);
-    let status = client.get_status().await.expect("fetch status");
+    let error = client
+        .get_status()
+        .await
+        .expect_err("legacy system snapshots must not decode");
 
-    assert_eq!(status.fps_target, 0.0);
-    assert_eq!(status.fps_actual, 0.0);
+    assert!(format!("{error:#}").contains("missing field"));
 }
 
 #[tokio::test]
@@ -285,15 +296,12 @@ async fn rest_client_sends_bearer_token_when_configured() {
                     .and_then(|v| v.to_str().ok()),
                 Some("Bearer hc_tui_test")
             );
-            Json(json!({
-                "data": { "status": {
-                    "running": true,
-                    "global_brightness": 1,
-                    "device_count": 0,
-                    "active_effect": null,
-                    "active_scene": null,
-                    "active_scene_snapshot_locked": false
-                }}
+            canonical_json(json!({
+                "data": system_resource(SystemStatus {
+                    running: true,
+                    global_brightness: 1,
+                    ..SystemStatus::default()
+                })
             }))
         }),
     );
@@ -310,7 +318,7 @@ async fn get_devices_and_favorites_parse_enveloped_lists() {
         .route(
             "/api/v1/devices",
             get(|| async {
-                Json(json!({
+                canonical_json(json!({
                     "data": {
                         "items": [{
                             "id": "device-1",
@@ -343,12 +351,7 @@ async fn get_devices_and_favorites_parse_enveloped_lists() {
                             "total_leds": 120,
                             "zones": []
                         }],
-                        "pagination": {
-                            "offset": 0,
-                            "limit": 50,
-                            "total": 1,
-                            "has_more": false
-                        }
+                        "total": 1
                     }
                 }))
             }),
@@ -356,19 +359,14 @@ async fn get_devices_and_favorites_parse_enveloped_lists() {
         .route(
             "/api/v1/library/favorites",
             get(|| async {
-                Json(json!({
+                canonical_json(json!({
                     "data": {
                         "items": [{
                             "effect_id": "rainbow",
                             "effect_name": "Rainbow Wave",
                             "added_at_ms": 1234
                         }],
-                        "pagination": {
-                            "offset": 0,
-                            "limit": 50,
-                            "total": 1,
-                            "has_more": false
-                        }
+                        "total": 1
                     }
                 }))
             }),
@@ -394,7 +392,7 @@ async fn control_surface_list_encodes_device_query() {
             get(
                 |State(captured_uri): State<Arc<Mutex<Option<String>>>>, uri: Uri| async move {
                     *captured_uri.lock().await = Some(uri.to_string());
-                    Json(json!({
+                    canonical_json(json!({
                         "data": {
                             "surfaces": [{
                                 "surface_id": "device:Desk Strip",
@@ -462,7 +460,7 @@ async fn get_control_surface_encodes_full_surface_id() {
                  uri: Uri| async move {
                     assert_eq!(surface_id, "driver:wled:device:Desk Strip");
                     *captured_uri.lock().await = Some(uri.to_string());
-                    Json(json!({
+                    canonical_json(json!({
                         "data": {
                             "surface_id": "driver:wled:device:Desk Strip",
                             "scope": {
@@ -512,7 +510,7 @@ async fn control_surface_mutations_encode_path_ids_and_payloads() {
                  Json(payload): Json<Value>| async move {
                     assert_eq!(surface_id, "driver:wled:device:Desk Strip");
                     *captured_patch.lock().await = Some(payload);
-                    Json(json!({
+                    canonical_json(json!({
                         "data": {
                             "surface_id": "driver:wled:device:Desk Strip",
                             "previous_revision": 3,
@@ -535,7 +533,7 @@ async fn control_surface_mutations_encode_path_ids_and_payloads() {
                     assert_eq!(surface_id, "driver:wled:device:Desk Strip");
                     assert_eq!(action_id, "refresh topology");
                     *captured_action.lock().await = Some(payload);
-                    Json(json!({
+                    canonical_json(json!({
                         "data": {
                             "surface_id": "driver:wled:device:Desk Strip",
                             "action_id": "refresh topology",
@@ -550,17 +548,12 @@ async fn control_surface_mutations_encode_path_ids_and_payloads() {
         .with_state((Arc::clone(&captured_patch), Arc::clone(&captured_action)));
 
     let client = client_for(spawn_server(router).await);
-    let request = ApplyControlChangesRequest {
-        surface_id: "driver:wled:device:Desk Strip".to_string(),
-        expected_revision: Some(3),
-        changes: vec![ControlChange {
-            field_id: "enabled".to_string(),
-            value: SurfaceControlValue::Bool(true),
-        }],
-        dry_run: false,
+    let request = PatchControlsRequest {
+        values: BTreeMap::from([("enabled".to_string(), CanonicalControlValue::Bool(true))]),
+        clear_bindings: Vec::new(),
     };
     let response = client
-        .apply_control_changes(&request)
+        .apply_control_changes("driver:wled:device:Desk Strip", &request)
         .await
         .expect("apply controls");
     let result = client
@@ -577,13 +570,9 @@ async fn control_surface_mutations_encode_path_ids_and_payloads() {
     assert_eq!(
         captured_patch.lock().await.as_ref(),
         Some(&json!({
-            "surface_id": "driver:wled:device:Desk Strip",
-            "expected_revision": 3,
-            "changes": [{
-                "field_id": "enabled",
-                "value": { "kind": "bool", "value": true }
-            }],
-            "dry_run": false
+            "values": {
+                "enabled": { "kind": "bool", "value": true }
+            }
         }))
     );
     assert_eq!(
@@ -599,7 +588,7 @@ async fn get_simulated_displays_and_frame_decode_preview_image() {
         .route(
             "/api/v1/simulators/displays",
             get(|| async {
-                Json(json!({
+                canonical_json(json!({
                     "data": [{
                         "id": "sim-1",
                         "name": "Desk Preview",
@@ -672,6 +661,7 @@ fn scene_document() -> Value {
         "name": "Desk",
         "kind": "named",
         "is_default": false,
+        "mutation_mode": "snapshot",
         "unassigned_behavior": "off",
         "layout_id": null,
         "revision": 42,
@@ -713,27 +703,13 @@ fn scene_document() -> Value {
     })
 }
 
-fn scenes_response(mutation_mode: &str) -> Value {
-    json!({
-        "items": [{
-            "id": SCENE_ID,
-            "name": "Desk",
-            "description": null,
-            "enabled": true,
-            "priority": 0,
-            "mutation_mode": mutation_mode
-        }],
-        "pagination": {"offset": 0, "limit": 50, "total": 1, "has_more": false}
-    })
-}
-
 #[tokio::test]
 async fn update_control_targets_the_real_scene_layer() {
     let captured = Arc::new(Mutex::new(None::<Value>));
     let router = Router::new()
         .route(
             "/api/v1/scene",
-            get(|| async { Json(json!({"data": scene_document()})) }),
+            get(|| async { canonical_json(json!({"data": scene_document()})) }),
         )
         .route(
             "/api/v1/scene/zones/{zone}/layers/{layer}/controls",
@@ -744,7 +720,7 @@ async fn update_control_targets_the_real_scene_layer() {
                     assert_eq!(zone, ZONE_A);
                     assert_eq!(layer, LAYER_ID);
                     *captured.lock().await = Some(payload);
-                    Json(json!({"data": {}}))
+                    canonical_json(json!({"data": {}}))
                 },
             ),
         )
@@ -758,7 +734,7 @@ async fn update_control_targets_the_real_scene_layer() {
 
     assert_eq!(
         captured.lock().await.clone().expect("captured payload"),
-        json!({"values": {"speed": {"float": 0.5}}})
+        json!({"values": {"speed": {"kind": "float", "value": 0.5}}})
     );
 }
 
@@ -773,7 +749,7 @@ async fn toggle_favorite_uses_effect_field_and_checks_errors() {
                     |State(captured): State<Arc<Mutex<Option<Value>>>>,
                      Json(payload): Json<Value>| async move {
                         *captured.lock().await = Some(payload);
-                        Json(json!({"data": {"created": true}}))
+                        canonical_json(json!({"data": {"created": true}}))
                     },
                 ),
             )
@@ -798,7 +774,7 @@ async fn toggle_favorite_uses_effect_field_and_checks_errors() {
         post(|| async {
             (
                 StatusCode::BAD_REQUEST,
-                Json(json!({
+                canonical_json(json!({
                     "error": {
                         "code": "validation_error",
                         "message": "invalid favorite payload"
@@ -822,35 +798,31 @@ async fn toggle_favorite_uses_effect_field_and_checks_errors() {
 }
 
 #[tokio::test]
-async fn get_active_scene_maps_real_layers_and_saved_mutation_mode() {
-    let router = Router::new()
-        .route(
-            "/api/v1/scene",
-            get(|| async { Json(json!({"data": scene_document()})) }),
-        )
-        .route(
-            "/api/v1/scenes",
-            get(|| async { Json(json!({"data": scenes_response("snapshot")})) }),
-        );
+async fn get_active_scene_returns_the_canonical_document_without_a_scene_list_fetch() {
+    let router = Router::new().route(
+        "/api/v1/scene",
+        get(|| async { canonical_json(json!({"data": scene_document()})) }),
+    );
 
     let client = client_for(spawn_server(router).await);
-    let scene = client
-        .get_active_scene()
-        .await
-        .expect("fetch active scene")
-        .expect("scene should be present");
+    let scene = client.get_active_scene().await.expect("fetch active scene");
 
-    assert_eq!(scene.id, SCENE_ID);
-    assert!(scene.snapshot_locked);
-    assert_eq!(scene.revision, 42);
-    assert!(scene.multi_zone());
-
-    let primary = scene.primary().expect("primary zone");
-    assert_eq!(primary.layer_id.as_deref(), Some(LAYER_ID));
-    assert_eq!(primary.effect_id.as_deref(), Some(EFFECT_RAINBOW));
+    assert_eq!(scene.id.to_string(), SCENE_ID);
     assert_eq!(
-        primary
-            .controls
+        scene.mutation_mode,
+        hypercolor_types::scene::SceneMutationMode::Snapshot
+    );
+    assert_eq!(scene.revision, 42);
+    assert!(scene_is_multi_zone(&scene));
+
+    let primary = primary_zone(&scene).expect("primary zone");
+    assert_eq!(
+        zone_effect_layer(primary).map(|layer| layer.id.to_string()),
+        Some(LAYER_ID.to_owned())
+    );
+    assert_eq!(zone_effect_id(primary).as_deref(), Some(EFFECT_RAINBOW));
+    assert_eq!(
+        zone_effect_controls(primary)
             .get("speed")
             .and_then(hypercolor_tui::state::ControlValue::as_f32),
         Some(0.6)
@@ -869,7 +841,7 @@ async fn apply_effect_uses_canonical_zone_and_control_values() {
                  Json(body): Json<Value>| async move {
                     assert_eq!(id, "rainbow");
                     *captured.lock().await = Some(body);
-                    Json(json!({"data": {}}))
+                    canonical_json(json!({"data": {}}))
                 },
             ),
         )
@@ -885,7 +857,7 @@ async fn apply_effect_uses_canonical_zone_and_control_values() {
         captured.lock().await.clone().expect("captured apply body"),
         json!({
             "zone": ZONE_B,
-            "controls": {"speed": {"float": 0.5}}
+            "controls": {"speed": {"kind": "float", "value": 0.5}}
         })
     );
 }
@@ -905,7 +877,7 @@ async fn zone_mutations_use_live_scene_routes() {
                         Some("42")
                     );
                     assert_eq!(body, json!({"enabled": false}));
-                    Json(json!({"data": {}}))
+                    canonical_json(json!({"data": {}}))
                 },
             ),
         )
@@ -918,8 +890,11 @@ async fn zone_mutations_use_live_scene_routes() {
                     assert_eq!(zone, ZONE_B);
                     assert_eq!(layer, LAYER_ID);
                     assert!(headers.get(header::IF_MATCH).is_none());
-                    assert_eq!(body, json!({"values": {"speed": {"float": 0.9}}}));
-                    Json(json!({"data": {}}))
+                    assert_eq!(
+                        body,
+                        json!({"values": {"speed": {"kind": "float", "value": 0.9_f32}}})
+                    );
+                    canonical_json(json!({"data": {}}))
                 },
             ),
         );
@@ -942,12 +917,12 @@ async fn activate_and_deactivate_scene_hit_expected_routes() {
             "/api/v1/scenes/{id}/activate",
             post(|Path(id): Path<String>| async move {
                 assert_eq!(id, "scene-2");
-                Json(json!({"data": {}}))
+                canonical_json(json!({"data": {}}))
             }),
         )
         .route(
             "/api/v1/scene/deactivate",
-            post(|| async { Json(json!({"data": {}})) }),
+            post(|| async { canonical_json(json!({"data": {}})) }),
         );
 
     let client = client_for(spawn_server(router).await);
@@ -961,13 +936,13 @@ async fn reset_controls_replaces_the_layer_without_apply_side_effects() {
     let router = Router::new()
         .route(
             "/api/v1/scene",
-            get(|| async { Json(json!({"data": scene_document()})) }),
+            get(|| async { canonical_json(json!({"data": scene_document()})) }),
         )
         .route(
             "/api/v1/effects/{id}",
             get(|Path(id): Path<String>| async move {
                 assert_eq!(id, EFFECT_RAINBOW);
-                Json(json!({
+                canonical_json(json!({
                     "data": {
                         "id": EFFECT_RAINBOW,
                         "name": "Rainbow",
@@ -993,7 +968,7 @@ async fn reset_controls_replaces_the_layer_without_apply_side_effects() {
                     assert_eq!(zone, ZONE_A);
                     assert_eq!(layer, LAYER_ID);
                     *captured.lock().await = Some(body);
-                    Json(json!({"data": {}}))
+                    canonical_json(json!({"data": {}}))
                 },
             ),
         )

@@ -23,10 +23,10 @@ pub mod windows;
 mod worker_retention;
 
 pub use browser::{
-    BROWSER_RETIRED_LEGACY_CAPACITY, BrowserConnectionIncarnation, BrowserInputAttachment,
-    BrowserInputChildKey, BrowserInputChildSlot, BrowserInputEdge, BrowserInputHandle,
-    BrowserInputPublicationId, BrowserInputRegistryError, BrowserInputRegistryHandle,
-    BrowserInputRegistrySnapshot, BrowserInputSource, BrowserPreviewId,
+    BrowserConnectionIncarnation, BrowserInputAttachment, BrowserInputChildKey,
+    BrowserInputChildSlot, BrowserInputEdge, BrowserInputHandle, BrowserInputPublicationId,
+    BrowserInputRegistryError, BrowserInputRegistryHandle, BrowserInputRegistrySnapshot,
+    BrowserInputSource, BrowserPreviewId,
 };
 #[cfg(target_os = "linux")]
 pub use evdev::{DeviceOpenState, DeviceOpenStatus, EvdevHostInput};
@@ -70,8 +70,8 @@ pub use windows::WindowsHostInputFixture;
 use crate::input::audio::{
     AudioInput, AudioPreparationRequest, AudioRuntimeRetirement, PreparedAudioReconfiguration,
 };
-use crate::types::audio::AudioPipelineConfig;
-use crate::types::event::TimedInputEvent;
+use hypercolor_types::audio::AudioPipelineConfig;
+use hypercolor_types::event::TimedInputEvent;
 use hypercolor_types::sensor::SystemSnapshot;
 use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, LazyLock};
@@ -953,13 +953,13 @@ impl InputManager {
         }
         let mut effective_config = config.clone();
         if !enabled {
-            effective_config.source = crate::types::audio::AudioSourceType::None;
+            effective_config.source = hypercolor_types::audio::AudioSourceType::None;
         }
         let capture_active = enabled
             && capture_active
             && !matches!(
                 effective_config.source,
-                crate::types::audio::AudioSourceType::None
+                hypercolor_types::audio::AudioSourceType::None
             );
         Ok(AudioRuntimeConfigPlan {
             expected_graph_generation: self.source_graph_generation,
@@ -1078,7 +1078,7 @@ impl InputManager {
             config.clone()
         } else {
             let mut disabled = config.clone();
-            disabled.source = crate::types::audio::AudioSourceType::None;
+            disabled.source = hypercolor_types::audio::AudioSourceType::None;
             disabled
         };
 

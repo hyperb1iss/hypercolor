@@ -79,7 +79,7 @@ fn AssetCard(
                 let base = "group relative block aspect-[4/3] w-full overflow-hidden rounded-xl \
                             border text-left card-hover content-auto-card";
                 let state = if is_selected.get() {
-                    "border-electric-purple/50"
+                    "border-accent/50"
                 } else {
                     "border-edge-subtle hover:border-edge-default"
                 };

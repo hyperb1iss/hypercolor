@@ -8,10 +8,14 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use hypercolor_core::config::paths;
+use hypercolor_core::config::{paths, servers};
 use hypercolor_core::device::discover_servers;
+use hypercolor_types::api::ApiResponse;
+use hypercolor_types::api::effects::{EffectListResponse, EffectSummary};
 use hypercolor_types::api::output::{OutputPowerMode, OutputResource};
 use hypercolor_types::api::scene::SceneDocument;
+use hypercolor_types::api::scenes::{SceneListResponse, SceneSummary};
+use hypercolor_types::api::system::{SystemResource, SystemStatus};
 use hypercolor_types::scene::{ZoneId, ZoneRole};
 use hypercolor_types::server::ServerIdentity;
 use tokio_tungstenite::connect_async;
@@ -19,9 +23,8 @@ use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, error, info, warn};
 
 use crate::state::{
-    ApiEnvelope, AppState, DaemonMessage, EffectInfo, EffectListResponse, EffectSummary, SceneInfo,
-    SceneListResponse, SceneSummary, ServerEntry, StateUpdate, StatusResponse, SystemResponse,
-    TrayCommand, WsEventMessage, WsHello,
+    AppState, DaemonMessage, EffectInfo, SceneInfo, ServerEntry, StateUpdate, TrayCommand,
+    WsEventMessage, WsHello,
 };
 
 /// Interval between reconnection attempts when the daemon is unreachable.
@@ -160,7 +163,7 @@ impl DaemonClient {
         let power = self.fetch_output().await?;
 
         let effects_url = format!("{}/api/v1/effects", self.base_url);
-        let effects_resp: ApiEnvelope<EffectListResponse> = self
+        let effects_resp: ApiResponse<EffectListResponse> = self
             .auth_request(self.http.get(&effects_url))
             .send()
             .await?
@@ -168,28 +171,25 @@ impl DaemonClient {
             .await?;
         let effects: Vec<EffectInfo> = effects_resp
             .data
-            .map(|list| {
-                list.items
-                    .into_iter()
-                    .map(|item: EffectSummary| EffectInfo {
-                        id: item.id,
-                        name: item.name,
-                    })
-                    .collect()
+            .items
+            .into_iter()
+            .map(|item: EffectSummary| EffectInfo {
+                id: item.id,
+                name: item.name,
             })
-            .unwrap_or_default();
+            .collect();
 
         let scenes_url = format!("{}/api/v1/scenes", self.base_url);
         let scenes: Vec<SceneInfo> =
             match self.auth_request(self.http.get(&scenes_url)).send().await {
                 Ok(response) => {
-                    let scene_resp: Result<ApiEnvelope<SceneListResponse>, _> =
+                    let scene_resp: Result<ApiResponse<SceneListResponse>, _> =
                         response.json().await;
                     scene_resp
                         .ok()
-                        .and_then(|envelope| envelope.data)
                         .map(|list| {
-                            list.items
+                            list.data
+                                .items
                                 .into_iter()
                                 .map(|item: SceneSummary| SceneInfo {
                                     id: item.id,
@@ -241,50 +241,44 @@ impl DaemonClient {
         })
     }
 
-    async fn fetch_status(&self) -> anyhow::Result<StatusResponse> {
+    async fn fetch_status(&self) -> anyhow::Result<SystemStatus> {
         self.fetch_system()
             .await?
             .status
             .ok_or_else(|| anyhow::anyhow!("System status requires daemon read access"))
     }
 
-    async fn fetch_system(&self) -> anyhow::Result<SystemResponse> {
+    async fn fetch_system(&self) -> anyhow::Result<SystemResource> {
         let url = format!("{}/api/v1/system", self.base_url);
-        let response: ApiEnvelope<SystemResponse> = self
+        let response: ApiResponse<SystemResource> = self
             .auth_request(self.http.get(&url))
             .send()
             .await?
             .json()
             .await?;
-        response
-            .data
-            .ok_or_else(|| anyhow::anyhow!("Missing data in system response"))
+        Ok(response.data)
     }
 
     async fn fetch_output(&self) -> anyhow::Result<OutputResource> {
         let url = format!("{}/api/v1/output", self.base_url);
-        let response: ApiEnvelope<OutputResource> = self
+        let response: ApiResponse<OutputResource> = self
             .auth_request(self.http.get(&url))
             .send()
             .await?
             .json()
             .await?;
-        response
-            .data
-            .ok_or_else(|| anyhow::anyhow!("Missing data in output response"))
+        Ok(response.data)
     }
 
     async fn fetch_primary_zone_id(&self) -> anyhow::Result<Option<ZoneId>> {
         let url = format!("{}/api/v1/scene", self.base_url);
-        let response: ApiEnvelope<SceneDocument> = self
+        let response: ApiResponse<SceneDocument> = self
             .auth_request(self.http.get(&url))
             .send()
             .await?
             .json()
             .await?;
-        let scene = response
-            .data
-            .ok_or_else(|| anyhow::anyhow!("Missing data in scene response"))?;
+        let scene = response.data;
         Ok(scene
             .zones
             .into_iter()
@@ -620,6 +614,56 @@ where
     .map_err(|_| anyhow::anyhow!("event subscription acknowledgment timed out"))?
 }
 
+fn load_server_api_keys() -> HashMap<String, String> {
+    let path = paths::config_dir().join("servers.toml");
+    match servers::load_server_credentials(&path) {
+        Ok(credentials) => credentials
+            .into_iter()
+            .map(|credential| {
+                (
+                    credential.instance_id().to_owned(),
+                    credential.api_key().to_owned(),
+                )
+            })
+            .collect(),
+        Err(error) => {
+            debug!(path = %path.display(), %error, "Failed to load stored server credentials");
+            HashMap::new()
+        }
+    }
+}
+
+fn build_base_url(host: &str, port: u16) -> String {
+    format!("http://{host}:{port}")
+}
+
+fn build_ws_url(host: &str, port: u16, api_key: Option<&str>) -> String {
+    let base = format!("ws://{host}:{port}/api/v1/ws");
+    api_key.map_or(base.clone(), |key| {
+        format!("{base}?token={}", percent_encode(key))
+    })
+}
+
+fn percent_encode(input: &str) -> String {
+    let mut encoded = String::with_capacity(input.len());
+    for byte in input.bytes() {
+        let unreserved = byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~');
+        if unreserved {
+            encoded.push(char::from(byte));
+        } else {
+            let _ = std::fmt::Write::write_fmt(&mut encoded, format_args!("%{byte:02X}"));
+        }
+    }
+    encoded
+}
+
+/// Open the Hypercolor web UI in the default browser.
+fn open_web_ui(base_url: &str) {
+    if let Err(error) = open::that(base_url) {
+        error!("Failed to open web UI: {error}");
+    }
+}
+
 #[cfg(test)]
 mod subscription_tests {
     use std::time::Duration;
@@ -662,75 +706,5 @@ mod subscription_tests {
             .expect_err("missing acknowledgment must fail admission");
 
         assert!(error.to_string().contains("timed out"));
-    }
-}
-
-#[derive(Debug, Default, serde::Deserialize)]
-struct StoredServersFile {
-    #[serde(default)]
-    servers: Vec<StoredServerConfig>,
-}
-
-#[derive(Debug, serde::Deserialize)]
-struct StoredServerConfig {
-    instance_id: String,
-    api_key: String,
-}
-
-fn load_server_api_keys() -> HashMap<String, String> {
-    let path = paths::config_dir().join("servers.toml");
-    let Ok(contents) = std::fs::read_to_string(&path) else {
-        return HashMap::new();
-    };
-
-    match toml::from_str::<StoredServersFile>(&contents) {
-        Ok(file) => file
-            .servers
-            .into_iter()
-            .filter_map(|entry| {
-                let instance_id = entry.instance_id.trim();
-                let api_key = entry.api_key.trim();
-                if instance_id.is_empty() || api_key.is_empty() {
-                    None
-                } else {
-                    Some((instance_id.to_owned(), api_key.to_owned()))
-                }
-            })
-            .collect(),
-        Err(error) => {
-            debug!(path = %path.display(), %error, "Failed to parse tray server config");
-            HashMap::new()
-        }
-    }
-}
-
-fn build_base_url(host: &str, port: u16) -> String {
-    format!("http://{host}:{port}")
-}
-
-fn build_ws_url(host: &str, port: u16, api_key: Option<&str>) -> String {
-    let base = format!("ws://{host}:{port}/api/v1/ws");
-    api_key.map_or(base.clone(), |key| {
-        format!("{base}?token={}", percent_encode(key))
-    })
-}
-
-fn percent_encode(input: &str) -> String {
-    let mut encoded = String::with_capacity(input.len());
-    for byte in input.bytes() {
-        let unreserved = byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~');
-        if unreserved {
-            encoded.push(char::from(byte));
-        } else {
-            let _ = std::fmt::Write::write_fmt(&mut encoded, format_args!("%{byte:02X}"));
-        }
-    }
-    encoded
-}
-
-/// Open the Hypercolor web UI in the default browser.
-fn open_web_ui(base_url: &str) {
-    if let Err(error) = open::that(base_url) {
-        error!("Failed to open web UI: {error}");
     }
 }

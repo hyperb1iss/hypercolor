@@ -7,11 +7,11 @@ use hypercolor_core::input::screen::{
     ScreenBranchPublication,
 };
 use hypercolor_core::spatial::SpatialEngine;
-use hypercolor_core::types::canvas::Canvas;
 use hypercolor_macos_capture::{
     MacosCaptureError, MacosScreenshotPixelCopy, MacosScreenshotPreferredDynamicRange,
     MacosScreenshotReferenceCapture, MacosScreenshotReferenceSet,
 };
+use hypercolor_types::canvas::Canvas;
 use hypercolor_types::event::ZoneColors;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -261,7 +261,7 @@ pub(crate) async fn run_macos_screen_parity(
     }
     let stability = require_static_live_content(&first, &second)?;
 
-    let current_spatial = state.spatial_engine.read().await;
+    let current_spatial = state.spatial_engine.snapshot();
     let current_layout = current_spatial.layout();
     if current_spatial.plan_generation() != first_layout_generation
         || !Arc::ptr_eq(&current_layout, &first_layout)

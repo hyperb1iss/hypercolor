@@ -10,19 +10,17 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use anyhow::{Result, bail};
-use hypercolor_core::device::{
-    BackendInfo, BackendManager, DeviceBackend, DeviceLifecycleManager, DiscoveryConnectBehavior,
-    LifecycleAction,
-};
+use hypercolor_core::device::{BackendManager, DeviceLifecycleManager, LifecycleAction};
 use hypercolor_core::input::{
     InputData, InputManager, InputSource, SourceIssue, SourceKind, SourceState, SourceStatusHandle,
     SourceStatusReporter,
 };
+use hypercolor_driver_api::{BackendInfo, DeviceBackend, DiscoveryConnectBehavior};
 use hypercolor_types::canvas::{linear_to_output_u8, srgb_to_linear};
 use hypercolor_types::device::{
-    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
-    DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint,
-    SegmentInfo,
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceError, DeviceFamily,
+    DeviceFeatures, DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceState,
+    DeviceTopologyHint, SegmentInfo,
 };
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::spatial::{
@@ -427,7 +425,7 @@ fn apply_led_perceptual_compensation(mut color: [f32; 3]) -> [f32; 3] {
 
 struct RecordingBackend {
     expected_device_id: DeviceId,
-    connected: bool,
+    connected: AtomicBool,
     writes: Arc<Mutex<Vec<Vec<[u8; 3]>>>>,
     fail_connect_attempts: Arc<AtomicUsize>,
 }
@@ -440,7 +438,7 @@ impl RecordingBackend {
     ) -> Self {
         Self {
             expected_device_id,
-            connected: false,
+            connected: AtomicBool::new(false),
             writes,
             fail_connect_attempts,
         }
@@ -457,43 +455,53 @@ impl DeviceBackend for RecordingBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
-        Ok(vec![device_info(
-            self.expected_device_id,
-            "Lifecycle Device",
-        )])
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), hypercolor_types::device::DeviceError> {
+        Ok(())
     }
 
-    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn connect(&self, id: &DeviceId) -> Result<(), DeviceError> {
         if *id != self.expected_device_id {
-            bail!("unexpected device id {id}");
+            return Err(DeviceError::NotFound {
+                device: id.to_string(),
+            });
         }
         let remaining = self.fail_connect_attempts.load(Ordering::Relaxed);
         if remaining > 0 {
             self.fail_connect_attempts.fetch_sub(1, Ordering::Relaxed);
-            bail!("simulated connect failure");
+            return Err(DeviceError::connection(id, "simulated connect failure"));
         }
-        self.connected = true;
+        self.connected.store(true, Ordering::Release);
         Ok(())
     }
 
-    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, id: &DeviceId) -> Result<(), DeviceError> {
         if *id != self.expected_device_id {
-            bail!("unexpected device id {id}");
+            return Err(DeviceError::NotFound {
+                device: id.to_string(),
+            });
         }
-        if !self.connected {
-            bail!("disconnect called while not connected");
+        if !self.connected.load(Ordering::Acquire) {
+            return Err(DeviceError::Disconnected {
+                device: id.to_string(),
+            });
         }
-        self.connected = false;
+        self.connected.store(false, Ordering::Release);
         Ok(())
     }
 
-    async fn write_colors(&mut self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<(), DeviceError> {
         if *id != self.expected_device_id {
-            bail!("unexpected device id {id}");
+            return Err(DeviceError::NotFound {
+                device: id.to_string(),
+            });
         }
-        if !self.connected {
-            bail!("write while disconnected");
+        if !self.connected.load(Ordering::Acquire) {
+            return Err(DeviceError::Disconnected {
+                device: id.to_string(),
+            });
         }
         self.writes.lock().await.push(colors.to_vec());
         Ok(())
@@ -639,13 +647,15 @@ async fn lifecycle_discovery_connect_and_frame_write() {
 
     let backend = RecordingBackend::new(device_id, Arc::clone(&writes), fail_connect_attempts);
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
 
     let mut lifecycle = DeviceLifecycleManager::new();
     let actions = lifecycle.on_discovered(
         device_id,
         &info,
-        Some(&DeviceFingerprint("mock:desk-strip".to_owned())),
+        Some(&DeviceFingerprint::from_persisted(
+            "mock:desk-strip".to_owned(),
+        )),
     );
     apply_lifecycle_actions(&mut manager, &mut lifecycle, actions).await;
 
@@ -658,7 +668,7 @@ async fn lifecycle_discovery_connect_and_frame_write() {
         zone_id: "zone_main".into(),
         colors: vec![[255, 0, 128]; 4],
     }];
-    let stats = manager.write_frame(&frame, &layout).await;
+    let stats = manager.write_frame(&frame, &layout);
     assert_eq!(stats.devices_written, 1);
     assert_eq!(stats.total_leds, 4);
     assert!(stats.errors.is_empty());
@@ -675,7 +685,7 @@ fn deferred_discovery_waits_for_readiness_upgrade_before_connecting() {
     let mut lifecycle = DeviceLifecycleManager::new();
     let device_id = DeviceId::new();
     let info = device_info(device_id, "Studio Strip");
-    let fingerprint = DeviceFingerprint("net:wled:wled-studio.local".to_owned());
+    let fingerprint = DeviceFingerprint::from_persisted("net:wled:wled-studio.local".to_owned());
 
     let deferred_actions = lifecycle.on_discovered_with_behavior(
         device_id,
@@ -708,7 +718,7 @@ fn repeated_auto_discovery_suppresses_duplicate_connect_while_in_flight() {
     let mut lifecycle = DeviceLifecycleManager::new();
     let device_id = DeviceId::new();
     let info = device_info(device_id, "Push 2");
-    let fingerprint = DeviceFingerprint("usb:2982:1967:001-12".to_owned());
+    let fingerprint = DeviceFingerprint::from_persisted("usb:2982:1967:001-12".to_owned());
 
     let first_actions = lifecycle.on_discovered_with_behavior(
         device_id,
@@ -759,7 +769,7 @@ fn rediscovered_known_device_can_retry_stale_in_flight_connect() {
         DeviceLifecycleManager::new().with_connect_in_flight_stale_after(Duration::ZERO);
     let device_id = DeviceId::new();
     let info = device_info(device_id, "Push 2");
-    let fingerprint = DeviceFingerprint("usb:2982:1967:001-12".to_owned());
+    let fingerprint = DeviceFingerprint::from_persisted("usb:2982:1967:001-12".to_owned());
 
     let first_actions = lifecycle.on_discovered_with_behavior(
         device_id,
@@ -844,7 +854,7 @@ fn rediscovered_reconnecting_device_connects_without_waiting_for_retry_timer() {
     let mut lifecycle = DeviceLifecycleManager::new();
     let device_id = DeviceId::new();
     let info = device_info(device_id, "Push 2");
-    let fingerprint = DeviceFingerprint("usb:2982:1967:001-12".to_owned());
+    let fingerprint = DeviceFingerprint::from_persisted("usb:2982:1967:001-12".to_owned());
 
     lifecycle.on_discovered_with_behavior(
         device_id,
@@ -897,7 +907,7 @@ fn deferred_discovery_disconnects_connected_device() {
     let mut lifecycle = DeviceLifecycleManager::new();
     let device_id = DeviceId::new();
     let info = device_info(device_id, "Desk Strip");
-    let fingerprint = DeviceFingerprint("mock:desk-strip".to_owned());
+    let fingerprint = DeviceFingerprint::from_persisted("mock:desk-strip".to_owned());
 
     let initial_actions = lifecycle.on_discovered_with_behavior(
         device_id,
@@ -985,12 +995,16 @@ fn lifecycle_uses_usb_fingerprint_for_same_name_devices() {
     let _ = lifecycle.on_discovered(
         first_id,
         &first,
-        Some(&DeviceFingerprint("usb:16d0:1294:1-3.3".to_owned())),
+        Some(&DeviceFingerprint::from_persisted(
+            "usb:16d0:1294:1-3.3".to_owned(),
+        )),
     );
     let _ = lifecycle.on_discovered(
         second_id,
         &second,
-        Some(&DeviceFingerprint("usb:16d0:1294:1-3.4".to_owned())),
+        Some(&DeviceFingerprint::from_persisted(
+            "usb:16d0:1294:1-3.4".to_owned(),
+        )),
     );
 
     assert_eq!(
@@ -1012,7 +1026,9 @@ fn lifecycle_uses_smbus_fingerprint_for_same_name_devices() {
     let _ = lifecycle.on_discovered(
         device_id,
         &info,
-        Some(&DeviceFingerprint("smbus:/dev/i2c-9:40".to_owned())),
+        Some(&DeviceFingerprint::from_persisted(
+            "smbus:/dev/i2c-9:40".to_owned(),
+        )),
     );
 
     assert_eq!(
@@ -1030,7 +1046,9 @@ fn runtime_deactivate_disconnects_without_disabling_the_device() {
     let actions = lifecycle.on_discovered(
         device_id,
         &info,
-        Some(&DeviceFingerprint("mock:desk-strip".to_owned())),
+        Some(&DeviceFingerprint::from_persisted(
+            "mock:desk-strip".to_owned(),
+        )),
     );
     assert!(
         actions
@@ -1080,13 +1098,15 @@ async fn lifecycle_comm_error_reconnects_and_resumes_frames() {
         Arc::clone(&fail_connect_attempts),
     );
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
 
     let mut lifecycle = DeviceLifecycleManager::new();
     let actions = lifecycle.on_discovered(
         device_id,
         &info,
-        Some(&DeviceFingerprint("mock:case-fan".to_owned())),
+        Some(&DeviceFingerprint::from_persisted(
+            "mock:case-fan".to_owned(),
+        )),
     );
     apply_lifecycle_actions(&mut manager, &mut lifecycle, actions).await;
 
@@ -1100,7 +1120,7 @@ async fn lifecycle_comm_error_reconnects_and_resumes_frames() {
         zone_id: "zone_main".into(),
         colors: vec![[10, 20, 30]; 4],
     }];
-    manager.write_frame(&first_frame, &layout).await;
+    manager.write_frame(&first_frame, &layout);
     tokio::time::sleep(Duration::from_millis(40)).await;
 
     // Simulate one reconnect failure before eventual recovery.
@@ -1115,7 +1135,7 @@ async fn lifecycle_comm_error_reconnects_and_resumes_frames() {
         zone_id: "zone_main".into(),
         colors: vec![[220, 120, 20]; 4],
     }];
-    manager.write_frame(&second_frame, &layout).await;
+    manager.write_frame(&second_frame, &layout);
     tokio::time::sleep(Duration::from_millis(40)).await;
 
     let writes = writes.lock().await.clone();

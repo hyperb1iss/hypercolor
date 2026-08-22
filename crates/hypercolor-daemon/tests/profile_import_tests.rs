@@ -145,13 +145,11 @@ fn import_maps_every_profile_field_and_retires_only_after_durable_save() {
     assert_eq!(scene.mutation_mode, SceneMutationMode::Snapshot);
 
     let primary = scene
-        .groups
+        .zones
         .iter()
         .find(|zone| zone.role == ZoneRole::Primary)
         .expect("primary zone");
     assert_eq!(primary.layout, named_layout);
-    assert_eq!(primary.controls, primary_controls);
-    assert_eq!(primary.preset_id, Some(preset));
     assert_eq!(primary.layers.len(), 1);
     assert!(matches!(
         &primary.layers[0].source,
@@ -166,7 +164,7 @@ fn import_maps_every_profile_field_and_retires_only_after_durable_save() {
     ));
 
     let display = scene
-        .groups
+        .zones
         .iter()
         .find(|zone| zone.role == ZoneRole::Display)
         .expect("display zone");
@@ -180,7 +178,6 @@ fn import_maps_every_profile_field_and_retires_only_after_durable_save() {
     assert_eq!(display.layout.canvas_width, 1);
     assert_eq!(display.layout.canvas_height, 1);
     assert!(display.layout.zones.is_empty());
-    assert_eq!(display.controls, display_controls);
     assert!(matches!(
         &display.layers[0].source,
         LayerSource::Effect {
@@ -218,7 +215,7 @@ fn import_accepts_minimal_legacy_profile_and_retires_the_source() {
         .find(|scene| scene.name == "Desk")
         .expect("minimal profile should become a named scene");
     assert!(scene.description.is_none());
-    assert!(scene.groups.is_empty());
+    assert!(scene.zones.is_empty());
 }
 
 #[test]
@@ -250,7 +247,7 @@ fn import_is_deterministic_and_crash_replay_preserves_destination_name() {
     let mut imported = first_import
         .list()
         .filter(|scene| scene.name.starts_with("Focus (imported "))
-        .map(|scene| (scene.name.clone(), scene.id, scene.groups.clone()))
+        .map(|scene| (scene.name.clone(), scene.id, scene.zones.clone()))
         .collect::<Vec<_>>();
     imported.sort_by(|left, right| left.0.cmp(&right.0));
     assert_eq!(
@@ -316,7 +313,7 @@ fn import_is_deterministic_and_crash_replay_preserves_destination_name() {
         .find(|scene| scene.id == imported_id)
         .expect("same deterministic destination");
     assert_eq!(pinned.name, "Pinned imported name");
-    assert_eq!(pinned.groups, imported[0].2);
+    assert_eq!(pinned.zones, imported[0].2);
     assert_eq!(backup_paths(tempdir.path()).len(), 1);
 }
 
@@ -357,7 +354,7 @@ fn import_preserves_legacy_normalization_and_reserves_default_name() {
     );
     assert_eq!(
         scene
-            .groups
+            .zones
             .iter()
             .filter(|zone| zone.role == ZoneRole::Display)
             .count(),
@@ -365,7 +362,7 @@ fn import_preserves_legacy_normalization_and_reserves_default_name() {
     );
     assert_eq!(
         scene
-            .groups
+            .zones
             .iter()
             .find(|zone| zone.role == ZoneRole::Primary)
             .map(|zone| &zone.layout),

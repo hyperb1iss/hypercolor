@@ -3,28 +3,23 @@
 //! Zone identity and metadata mutations commit through the same scene
 //! transaction boundary as the canonical live tree API.
 //!
-//! Explicit stored-scene identity resolution stays with the adapter.
-//! Live-tree routes carry [`SceneTarget::Active`] so the service resolves
-//! the target from the same candidate it validates and commits.
+//! Every service targets the active scene resolved from the same candidate
+//! it validates and commits.
 
 use hypercolor_core::scene::{ZoneMetaPatch, ZoneMutationError};
-use hypercolor_types::event::ZoneChangeKind;
 use hypercolor_types::scene::{SceneId, Zone, ZoneId, ZoneRole};
 
-use crate::api::AppState;
 use crate::domain::commit::SceneCommit;
-use crate::domain::scene::{SceneMutation, SceneTarget, commit_scene, zone_changed_event};
+use crate::domain::context::SceneContext;
+use crate::domain::scene::SceneMutation;
 use crate::domain::scene_tree::check_scene_revision;
-use crate::domain::{DomainError, MutationContext, ResourceKind};
-use crate::layout_auto_exclusions;
+use crate::domain::{DomainError, ResourceKind};
 
 // ── Commands ─────────────────────────────────────────────────────────────
 
 /// Add a custom zone to a scene.
 #[derive(Debug, Clone)]
 pub struct CreateZone {
-    /// Which scene gains the zone.
-    pub target: SceneTarget,
     /// The zone's name. Must not be blank.
     pub name: String,
     /// Optional swatch for the Studio zone tree.
@@ -38,8 +33,6 @@ pub struct CreateZone {
 /// Patch a zone's presentation metadata.
 #[derive(Debug, Clone)]
 pub struct UpdateZone {
-    /// Which scene owns the zone.
-    pub target: SceneTarget,
     /// Which zone to patch.
     pub zone_id: ZoneId,
     /// The fields to change; `None` fields keep their current values.
@@ -51,8 +44,6 @@ pub struct UpdateZone {
 /// Remove a custom zone from a scene.
 #[derive(Debug, Clone)]
 pub struct DeleteZone {
-    /// Which scene owns the zone.
-    pub target: SceneTarget,
     /// Which zone to remove.
     pub zone_id: ZoneId,
     /// The scene `revision` the caller last saw, when it sent one.
@@ -91,12 +82,9 @@ pub struct ZoneRemoved {
 /// [`DomainError::PreconditionFailed`] for a stale scene revision or
 /// a concurrent scene mutation.
 pub async fn create_zone(
-    state: &AppState,
+    ctx: &SceneContext,
     command: CreateZone,
-    meta: MutationContext,
 ) -> Result<ZoneWritten, DomainError> {
-    let _ = meta;
-
     if command.name.trim().is_empty() {
         return Err(DomainError::validation_field(
             "name",
@@ -104,10 +92,8 @@ pub async fn create_zone(
         ));
     }
 
-    let mut mutation = state.begin_scene_mutation().await;
-    let scene_id = command
-        .target
-        .resolve(&mutation, "creating a zone in the live scene")?;
+    let mut mutation = ctx.begin_mutation().await;
+    let scene_id = mutation.active_scene_for_runtime_mutation("creating a zone")?;
     check_scene_revision(&mutation, command.expected_revision)?;
 
     let zone_id = mutation
@@ -119,10 +105,9 @@ pub async fn create_zone(
         )
         .map_err(|error| zone_error(error, scene_id, None, None))?;
     let zone = zone_in_scene(&mutation, scene_id, zone_id)?;
-    mutation.record(zone_changed_event(scene_id, &zone, ZoneChangeKind::Created));
 
-    let commit = commit_scene(state, mutation).await?;
-    settle_zone_mutation(state).await;
+    let commit = ctx.commit(mutation).await?;
+    settle_zone_mutation(ctx).await;
 
     Ok(ZoneWritten { zone, commit })
 }
@@ -134,26 +119,20 @@ pub async fn create_zone(
 /// As [`create_zone`], plus [`DomainError::NotFound`] for an unknown
 /// zone.
 pub async fn update_zone(
-    state: &AppState,
+    ctx: &SceneContext,
     command: UpdateZone,
-    meta: MutationContext,
 ) -> Result<ZoneWritten, DomainError> {
-    let _ = meta;
-
-    let mut mutation = state.begin_scene_mutation().await;
-    let scene_id = command
-        .target
-        .resolve(&mutation, "updating a zone in the live scene")?;
+    let mut mutation = ctx.begin_mutation().await;
+    let scene_id = mutation.active_scene_for_runtime_mutation("updating a zone")?;
     check_scene_revision(&mutation, command.expected_revision)?;
     crate::domain::scene_tree::ensure_live_zone_mutable(&mutation, command.zone_id)?;
 
     let zone = mutation
         .update_zone_meta(scene_id, command.zone_id, command.patch)
         .map_err(|error| zone_error(error, scene_id, Some(command.zone_id), None))?;
-    mutation.record(zone_changed_event(scene_id, &zone, ZoneChangeKind::Updated));
 
-    let commit = commit_scene(state, mutation).await?;
-    settle_zone_mutation(state).await;
+    let commit = ctx.commit(mutation).await?;
+    settle_zone_mutation(ctx).await;
 
     Ok(ZoneWritten { zone, commit })
 }
@@ -166,16 +145,11 @@ pub async fn update_zone(
 /// As [`update_zone`], plus [`DomainError::Conflict`] when the zone's
 /// role forbids deletion through this path.
 pub async fn delete_zone(
-    state: &AppState,
+    ctx: &SceneContext,
     command: DeleteZone,
-    meta: MutationContext,
 ) -> Result<ZoneRemoved, DomainError> {
-    let _ = meta;
-
-    let mut mutation = state.begin_scene_mutation().await;
-    let scene_id = command
-        .target
-        .resolve(&mutation, "deleting a zone from the live scene")?;
+    let mut mutation = ctx.begin_mutation().await;
+    let scene_id = mutation.active_scene_for_runtime_mutation("deleting a zone")?;
     check_scene_revision(&mutation, command.expected_revision)?;
     crate::domain::scene_tree::ensure_live_zone_mutable(&mutation, command.zone_id)?;
 
@@ -184,11 +158,12 @@ pub async fn delete_zone(
         .delete_zone(scene_id, command.zone_id)
         .map_err(|error| zone_error(error, scene_id, Some(command.zone_id), None))?;
     mutation.retire_zone_preview(scene_id, command.zone_id);
-    mutation.record(zone_changed_event(scene_id, &zone, ZoneChangeKind::Removed));
 
-    let commit = commit_scene(state, mutation).await?;
-    settle_zone_mutation(state).await;
-    remove_zone_auto_exclusions(state, scene_id, command.zone_id).await;
+    let commit = ctx.commit(mutation).await?;
+    settle_zone_mutation(ctx).await;
+    ctx.devices()
+        .remove_zone_auto_exclusions(scene_id, command.zone_id)
+        .await;
 
     Ok(ZoneRemoved { zone, commit })
 }
@@ -198,9 +173,9 @@ pub async fn delete_zone(
 /// Everything a structural zone change implies once it is committed:
 /// the session snapshot records the new partition, and a device that
 /// just entered or left the active scene reconnects or releases.
-async fn settle_zone_mutation(state: &AppState) {
-    crate::api::save_runtime_session_snapshot(state).await;
-    crate::api::sync_connectivity(state).await;
+async fn settle_zone_mutation(ctx: &SceneContext) {
+    ctx.save_runtime_session().await;
+    ctx.devices().sync_connectivity().await;
 }
 
 fn zone_in_scene(
@@ -212,7 +187,7 @@ fn zone_in_scene(
         .scenes()
         .get(&scene_id)
         .ok_or_else(|| DomainError::not_found(ResourceKind::Scene, scene_id))?
-        .groups
+        .zones
         .iter()
         .find(|zone| zone.id == zone_id)
         .cloned()
@@ -255,74 +230,5 @@ fn zone_error(
             "Zone layout must carry exactly the zone's current outputs; \
              add or remove outputs through the device endpoints",
         ),
-    }
-}
-
-// ── Layout auto-exclusion bookkeeping ────────────────────────────────────
-
-/// Reconcile the discovery auto-sync exclusions a repartition implies.
-///
-/// A zone whose output set the user edited by hand stops accepting
-/// automatic layout sync for the outputs they removed, so the exclusion
-/// set travels with the edit rather than with the endpoint that made it.
-pub async fn reconcile_zone_auto_exclusions(
-    state: &AppState,
-    scene_id: SceneId,
-    previous_zones: &[Zone],
-    updated_zones: &[Zone],
-) {
-    let changed = {
-        let mut exclusions = state.layout_auto_exclusions.write().await;
-        let mut changed = false;
-        for previous_zone in previous_zones {
-            let Some(updated_zone) = updated_zones
-                .iter()
-                .find(|zone| zone.id == previous_zone.id)
-            else {
-                continue;
-            };
-            if previous_zone.layout.zones == updated_zone.layout.zones {
-                continue;
-            }
-
-            let key =
-                layout_auto_exclusions::LayoutAutoExclusionKey::zone(scene_id, previous_zone.id);
-            let current = exclusions.get(&key).cloned().unwrap_or_default();
-            let next = layout_auto_exclusions::reconcile_layout_device_exclusions(
-                &previous_zone.layout.zones,
-                &updated_zone.layout.zones,
-                &current,
-            );
-            if next == current {
-                continue;
-            }
-            if next.is_empty() {
-                exclusions.remove(&key);
-            } else {
-                exclusions.insert(key, next);
-            }
-            changed = true;
-        }
-        changed
-    };
-
-    if changed {
-        crate::api::persist_layout_auto_exclusions(state).await;
-    }
-}
-
-/// Drop the exclusions a removed zone owned.
-async fn remove_zone_auto_exclusions(state: &AppState, scene_id: SceneId, zone_id: ZoneId) {
-    let removed = {
-        let mut exclusions = state.layout_auto_exclusions.write().await;
-        exclusions
-            .remove(&layout_auto_exclusions::LayoutAutoExclusionKey::zone(
-                scene_id, zone_id,
-            ))
-            .is_some()
-    };
-
-    if removed {
-        crate::api::persist_layout_auto_exclusions(state).await;
     }
 }

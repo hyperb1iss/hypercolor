@@ -6,12 +6,11 @@
 use std::path::PathBuf;
 
 use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, LinearRgba};
-use hypercolor_types::effect::{
-    ControlDefinition, ControlValue, EffectCategory, EffectMetadata, EffectSource,
-};
+use hypercolor_types::control::{ControlDeltaBatch, ControlValue as CanonicalControlValue};
+use hypercolor_types::effect::{ControlDefinition, EffectCategory, EffectMetadata, EffectSource};
 
 use super::common::{builtin_effect_id, color_control, dropdown_control, slider_control};
-use crate::effect::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
+use crate::effect::traits::{ControlError, EffectRenderer, FrameInput, prepare_target_canvas};
 
 /// Utility scene patterns layered on top of the solid fill renderer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -172,47 +171,51 @@ impl EffectRenderer for SolidColorRenderer {
         Ok(())
     }
 
-    fn set_control(&mut self, name: &str, value: &ControlValue) {
-        match name {
-            "color" => {
-                if let ControlValue::Color(c) = value {
-                    self.color = *c;
+    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> Result<(), ControlError> {
+        for (control_id, value) in batch.changes {
+            match control_id.as_str() {
+                "color" => {
+                    if let CanonicalControlValue::ColorLinear(color) = value {
+                        self.color = [color.r, color.g, color.b, color.a];
+                    }
                 }
-            }
-            "secondary_color" => {
-                if let ControlValue::Color(c) = value {
-                    self.secondary_color = *c;
+                "secondary_color" => {
+                    if let CanonicalControlValue::ColorLinear(color) = value {
+                        self.secondary_color = [color.r, color.g, color.b, color.a];
+                    }
                 }
-            }
-            "brightness" => {
-                if let Some(v) = value.as_f32() {
-                    self.brightness = v.clamp(0.0, 1.0);
+                "brightness" => {
+                    if let Some(value) = value.as_effect_f32() {
+                        self.brightness = value.clamp(0.0, 1.0);
+                    }
                 }
-            }
-            "pattern" => {
-                if let ControlValue::Enum(choice) | ControlValue::Text(choice) = value {
-                    self.pattern = SolidPattern::from_str(choice);
+                "pattern" => {
+                    if let CanonicalControlValue::Enum(choice)
+                    | CanonicalControlValue::Text(choice) = value
+                    {
+                        self.pattern = SolidPattern::from_str(choice);
+                    }
                 }
-            }
-            "position" => {
-                if let Some(v) = value.as_f32() {
-                    self.position = v.clamp(0.0, 1.0);
+                "position" => {
+                    if let Some(value) = value.as_effect_f32() {
+                        self.position = value.clamp(0.0, 1.0);
+                    }
                 }
-            }
-            "softness" => {
-                if let Some(v) = value.as_f32() {
-                    self.softness = v.clamp(0.0, 0.5);
+                "softness" => {
+                    if let Some(value) = value.as_effect_f32() {
+                        self.softness = value.clamp(0.0, 0.5);
+                    }
                 }
-            }
-            "scale" => {
-                if let Some(v) = value.as_f32() {
-                    self.scale = v.max(1.0);
+                "scale" => {
+                    if let Some(value) = value.as_effect_f32() {
+                        self.scale = value.max(1.0);
+                    }
                 }
+                _ => {}
             }
-            _ => {}
         }
+        Ok(())
     }
-
     fn destroy(&mut self) {}
 }
 

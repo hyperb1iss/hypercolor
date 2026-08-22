@@ -1,14 +1,16 @@
+use super::preview_policy::{
+    PreviewSurfaceDemandLane, PreviewSurfaceRequestContext, preview_surface_request,
+    requires_cpu_sampling_canvas, requires_published_surface,
+};
 use super::{
-    PreviewSurfaceDemandLane, PreviewSurfaceRequest, PreviewSurfaceRequestContext,
-    apply_native_copy_failure_policy, effective_render_group_layer_count,
-    native_copy_failure_retains_last_frame, preview_surface_request,
-    producer_frame_requires_composition_for_preview, render_group_requires_full_composition,
-    requires_cpu_sampling_canvas, requires_published_surface, synchronize_screen_plan_generation,
+    PreviewSurfaceRequest, apply_native_copy_failure_policy, effective_render_group_layer_count,
+    native_copy_failure_retains_last_frame, producer_frame_requires_composition_for_preview,
+    render_group_requires_full_composition, synchronize_screen_plan_generation,
 };
 use std::sync::Arc;
 
 use hypercolor_core::spatial::SpatialEngine;
-use hypercolor_core::types::canvas::{Canvas, PublishedSurface};
+use hypercolor_types::canvas::{Canvas, PublishedSurface};
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection,

@@ -24,7 +24,7 @@ use hypercolor_core::bus::{
     CanvasFrame, DisplayGroupFrame, DisplayGroupOutputRoute, DisplayGroupViewport, HypercolorBus,
 };
 use hypercolor_core::device::{BackendManager, DeviceRegistry};
-use hypercolor_core::spatial::{SpatialEngine, is_display_zone};
+use hypercolor_core::spatial::is_display_zone;
 use hypercolor_types::canvas::PublishedSurfaceStorageIdentity;
 use hypercolor_types::device::{DeviceId, DeviceTopologyHint, DisplayFrameFormat};
 use hypercolor_types::scene::{DisplayFaceBlendMode, DisplayFaceTarget, ZoneId};
@@ -32,9 +32,10 @@ use hypercolor_types::spatial::{EdgeBehavior, NormalizedPosition, SpatialLayout}
 
 use self::render::display_viewport_signature;
 use crate::display_frames::DisplayFrameRuntime;
+use crate::domain::spatial::SpatialService;
 use crate::logical_devices::LogicalDevice;
+use crate::output_power::OutputPowerState;
 use crate::preview_runtime::{PreviewFrameReceiver, PreviewRuntime};
-use crate::session::OutputPowerState;
 use worker::DisplayWorkerHandle;
 
 const DISPLAY_ERROR_WARN_INTERVAL: Duration = Duration::from_secs(5);
@@ -61,7 +62,7 @@ pub struct DisplayOutputState {
     /// Live registry used to discover currently renderable display devices.
     pub device_registry: DeviceRegistry,
     /// Active spatial layout used to decide which LCDs should render and how.
-    pub spatial_engine: Arc<RwLock<SpatialEngine>>,
+    pub spatial_engine: SpatialService,
     /// Logical-device mappings used to match physical devices to layout zones.
     pub logical_devices: Arc<RwLock<HashMap<String, LogicalDevice>>>,
     /// Event bus canvas stream produced by the render thread.
@@ -433,7 +434,8 @@ async fn run_display_output(state: DisplayOutputState, mut shutdown_rx: oneshot:
             state.face_fps_cap,
         )
         .await;
-        if last_reconciled_target_version != Some(targets.version) {
+        let backend_generation_changed = workers.values().any(|worker| !worker.lane_is_active());
+        if last_reconciled_target_version != Some(targets.version) || backend_generation_changed {
             reconcile_display_workers(&state, &mut workers, targets.targets.as_ref()).await;
             last_reconciled_target_version = Some(targets.version);
             last_dispatched_sources.clear();
@@ -618,9 +620,9 @@ async fn reconcile_display_workers(
 
     for target in targets {
         let key = target.worker_key.clone();
-        let needs_restart = workers
-            .get(&key)
-            .is_some_and(|worker| worker.config_signature != target.worker_config_signature());
+        let needs_restart = workers.get(&key).is_some_and(|worker| {
+            !worker.lane_is_active() || worker.config_signature != target.worker_config_signature()
+        });
         if needs_restart && let Some(worker) = workers.remove(&key) {
             retire_display_worker(worker, Arc::clone(&state.display_frames), key.1, false);
         }
@@ -629,20 +631,18 @@ async fn reconcile_display_workers(
             continue;
         }
 
-        let backend_io = {
-            let manager = state.backend_manager.lock().await;
-            manager.backend_io(&target.backend_id)
+        let output_lane = {
+            let mut manager = state.backend_manager.lock().await;
+            manager.display_output_lane(&target.backend_id, target.device_id)
         };
 
-        match backend_io {
-            Some(backend_io) => {
-                let display_sink = backend_io.display_sink(target.device_id).await;
+        match output_lane {
+            Some(output_lane) => {
                 workers.insert(
                     key,
                     DisplayWorkerHandle::spawn(
                         Arc::clone(target),
-                        backend_io,
-                        display_sink,
+                        output_lane,
                         state.power_state.clone(),
                         state.static_hold_refresh_interval,
                         Arc::clone(&state.display_frames),
@@ -677,17 +677,14 @@ fn retire_display_worker(
 
 async fn display_targets(
     registry: &DeviceRegistry,
-    spatial_engine: &Arc<RwLock<SpatialEngine>>,
+    spatial_engine: &SpatialService,
     logical_devices: &Arc<RwLock<HashMap<String, LogicalDevice>>>,
     event_bus: &Arc<HypercolorBus>,
     display_frames: &Arc<RwLock<DisplayFrameRuntime>>,
     cache: &mut DisplayTargetCache,
     face_fps_cap: u32,
 ) -> DisplayTargetsSnapshot {
-    let layout = {
-        let spatial = spatial_engine.read().await;
-        spatial.layout()
-    };
+    let layout = { spatial_engine.layout() };
     let (display_group_targets_revision, published_display_group_targets) =
         event_bus.display_group_targets_snapshot();
     let logical_store = logical_devices.read().await;

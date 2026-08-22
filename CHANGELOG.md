@@ -45,6 +45,14 @@ and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Replace display preview, capture picker, and playlist stop calls with
   `/displays/{id}/frame`, `PUT /capture/source`, and
   `POST /library/playlists/deactivate` respectively.
+- Device fingerprints now include a canonical namespace and driver qualifier.
+  Existing hardware may appear once under its new identity and require
+  re-adoption plus reapplying device-local settings. Hypercolor preserves old
+  persisted records and does not silently reset or delete them.
+- Portable driver identities now carry a generic driver-owned namespace.
+  `device-aliases.json` schema version 1 remains untouched but is no longer
+  loaded. Back up and remove that file, then rescan devices to rebuild the
+  schema version 2 alias overlay from the unchanged portable keys.
 
 ## [0.3.2] - 2026-08-15
 

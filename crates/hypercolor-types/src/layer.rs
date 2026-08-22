@@ -6,6 +6,7 @@ use std::ops::RangeInclusive;
 use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::asset::AssetId;
@@ -17,7 +18,7 @@ use crate::spatial::NormalizedPosition;
 use crate::viewport::{FitMode, ViewportRect};
 
 /// Stable identifier for a layer within a zone.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
 pub struct SceneLayerId(pub Uuid);
 
 impl SceneLayerId {
@@ -67,7 +68,7 @@ impl FromStr for SceneLayerId {
 }
 
 /// Authored layer inside a zone's bottom-to-top stack.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct SceneLayer {
     /// Stable identifier for this layer.
     pub id: SceneLayerId,
@@ -105,7 +106,7 @@ pub struct SceneLayer {
 }
 
 impl SceneLayer {
-    /// Create the legacy single-effect layer for a zone.
+    /// Create an effect-backed layer for a zone.
     #[must_use]
     pub fn from_effect(
         id: SceneLayerId,
@@ -162,7 +163,7 @@ impl SceneLayer {
 }
 
 /// Source that feeds one authored layer.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum LayerSource {
     /// A Hypercolor effect from the registry.
@@ -222,7 +223,7 @@ impl LayerSource {
 }
 
 /// Layer blend mode used by authored stacks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum LayerBlendMode {
     Replace,
@@ -276,7 +277,7 @@ impl From<DisplayFaceBlendMode> for LayerBlendMode {
 }
 
 /// Media playback settings for media-backed layers.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct MediaPlayback {
     #[serde(default = "default_playback_speed")]
     pub speed: f32,
@@ -314,7 +315,7 @@ impl MediaPlayback {
 }
 
 /// End-of-stream policy for media playback.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum LoopMode {
     None,
@@ -324,7 +325,7 @@ pub enum LoopMode {
 }
 
 /// Web viewport render policy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum WebViewportRender {
     #[default]
@@ -333,7 +334,7 @@ pub enum WebViewportRender {
 }
 
 /// Geometric placement for a layer source.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct LayerTransform {
     pub anchor: NormalizedPosition,
     pub scale: [f32; 2],
@@ -386,7 +387,7 @@ impl Default for LayerTransform {
 }
 
 /// Per-layer color adjustment settings.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct LayerAdjust {
     pub brightness: f32,
     pub saturation: f32,
@@ -452,7 +453,7 @@ impl Default for LayerAdjust {
 }
 
 /// Live mapping from runtime data to a scalar layer parameter.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct LayerBinding {
     pub target: LayerParameter,
     pub source: BindingSource,
@@ -467,7 +468,7 @@ impl LayerBinding {
 }
 
 /// Bindable scalar layer parameters.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum LayerParameter {
     Opacity,
@@ -483,7 +484,7 @@ pub enum LayerParameter {
 }
 
 /// Runtime source that drives a layer binding.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum BindingSource {
     AudioBand { band: AudioBand },
@@ -505,7 +506,7 @@ impl BindingSource {
 }
 
 /// Coarse audio features exposed to layer bindings.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum AudioBand {
     Bass,
@@ -518,7 +519,7 @@ pub enum AudioBand {
 }
 
 /// Time-domain waveform for layer bindings.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TimeWave {
     #[default]
@@ -529,7 +530,7 @@ pub enum TimeWave {
 }
 
 /// Linear mapping from source values into target parameter values.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct BindingMap {
     pub source_min: f32,
     pub source_max: f32,

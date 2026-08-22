@@ -108,15 +108,14 @@ def test_ws_protocol_generator_round_trips_non_bmp_strings() -> None:
     assert ast.literal_eval(quote(value)) == value
 
 
-def test_preview_transport_negotiates_the_v2_byte_ledger() -> None:
-    assert websocket_module._PREVIEW_TRANSPORT_CAPABILITY.startswith("preview_transport_v2:")
+def test_preview_transport_uses_the_manifest_byte_ledger() -> None:
     assert websocket_module._PREVIEW_TRANSPORT_LIMITS["reassembly"] > 0
     assert websocket_module._PREVIEW_TRANSPORT_LIMITS["sender"] > 0
     assert "chunks" not in websocket_module._PREVIEW_TRANSPORT_LIMITS
 
 
 @pytest.mark.asyncio
-async def test_subscribe_advertises_preview_transport_v2(
+async def test_subscribe_uses_the_lockstep_preview_transport(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     sent: list[dict[str, Any]] = []
@@ -128,45 +127,15 @@ async def test_subscribe_advertises_preview_transport_v2(
         _stream: HypercolorEventStream,
         _expected: type[SubscribedMessage] | type[UnsubscribedMessage],
     ) -> SubscribedMessage:
-        return SubscribedMessage([], websocket_module._PREVIEW_TRANSPORT_CAPABILITY)
+        return SubscribedMessage([])
 
     monkeypatch.setattr(HypercolorEventStream, "_send_json", capture)
     monkeypatch.setattr(HypercolorEventStream, "_wait_for_subscription_ack", acknowledge)
     stream = HypercolorEventStream(_TestClient())
 
-    acknowledgment = await stream.subscribe("screen_zones")
+    await stream.subscribe("screen_zones")
 
-    assert sent[0]["preview_transport"] == websocket_module._PREVIEW_TRANSPORT_CAPABILITY
-    assert sent[0]["preview_transport"].startswith("preview_transport_v2:")
-    assert acknowledgment.preview_transport == websocket_module._PREVIEW_TRANSPORT_CAPABILITY
-
-
-@pytest.mark.asyncio
-async def test_preview_reconfiguration_does_not_renegotiate_transport(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    sent: list[dict[str, Any]] = []
-
-    async def capture(_stream: HypercolorEventStream, payload: dict[str, Any]) -> None:
-        sent.append(payload)
-
-    async def acknowledge(
-        _stream: HypercolorEventStream,
-        _expected: type[SubscribedMessage] | type[UnsubscribedMessage],
-    ) -> SubscribedMessage:
-        return SubscribedMessage([], websocket_module._PREVIEW_TRANSPORT_CAPABILITY)
-
-    monkeypatch.setattr(HypercolorEventStream, "_send_json", capture)
-    monkeypatch.setattr(HypercolorEventStream, "_wait_for_subscription_ack", acknowledge)
-    stream = HypercolorEventStream(_TestClient())
-
-    await stream.open_interactive_preview("main", fps=30, width=320, height=180)
-    await stream.open_interactive_preview("main", fps=15, width=640, height=360)
-    await stream.subscribe("canvas")
-
-    assert sent[0]["preview_transport"] == websocket_module._PREVIEW_TRANSPORT_CAPABILITY
-    assert "preview_transport" not in sent[1]
-    assert "preview_transport" not in sent[2]
+    assert sent == [{"type": "subscribe", "topics": [{"topic": "screen_zones"}]}]
 
 
 def test_decode_hello_message() -> None:
@@ -373,13 +342,16 @@ def test_interactive_preview_rejects_truncated_raw_payloads(
 
 def test_subscribed_ack_is_a_distinct_public_message() -> None:
     message = HypercolorEventStream._decode_json(
-        '{"type":"subscribed","preview_transport":"preview_transport_v1",'
-        '"topics":[{"topic":"events"}]}'
+        msgspec.json.encode(
+            {
+                "type": "subscribed",
+                "topics": [{"topic": "events"}],
+            }
+        ).decode()
     )
 
     assert isinstance(message, SubscribedMessage)
     assert message.topics == [ActiveSubscription(topic="events")]
-    assert message.preview_transport == "preview_transport_v1"
 
 
 def _expect_dict(value: Any) -> dict[str, Any]:

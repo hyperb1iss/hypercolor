@@ -19,16 +19,13 @@ use std::collections::HashMap;
 
 use hypercolor_core::scene::LayerMutationError;
 use hypercolor_types::effect::ControlValue;
-use hypercolor_types::event::{HypercolorEvent, LayerStackChangeKind, ZoneChangeKind};
 use hypercolor_types::layer::{SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{SceneId, Zone, ZoneId};
 
-use crate::api::AppState;
 use crate::domain::commit::SceneCommit;
-use crate::domain::scene::{
-    MediaAdmissionContext, SceneMutation, SceneTarget, commit_scene, zone_changed_event,
-};
-use crate::domain::{DomainError, MutationContext, ResourceKind};
+use crate::domain::context::SceneContext;
+use crate::domain::scene::SceneMutation;
+use crate::domain::{DomainError, ResourceKind};
 
 /// The outcome of a layer-stack mutation.
 #[derive(Debug)]
@@ -62,19 +59,15 @@ pub type LayerResult = Result<LayerStackWritten, LayerMutationError>;
 /// [`DomainError::Conflict`] when a concurrent scene mutation
 /// lands first.
 pub async fn insert_layer(
-    state: &AppState,
-    target: SceneTarget,
+    ctx: &SceneContext,
     zone_id: ZoneId,
     layer: SceneLayer,
     index: Option<usize>,
     expected_revision: Option<u64>,
-    meta: MutationContext,
 ) -> Result<LayerResult, DomainError> {
-    let _ = meta;
-
-    let media_admission = MediaAdmissionContext::for_layer(state, &layer).await;
-    let mut mutation = state.begin_scene_mutation().await;
-    let scene_id = target.resolve(&mutation, "creating a layer in the live scene")?;
+    let media_admission = ctx.media_admission_for_layer(&layer).await;
+    let mut mutation = ctx.begin_mutation().await;
+    let scene_id = mutation.active_scene_for_runtime_mutation("creating a layer")?;
     crate::domain::scene_tree::check_scene_revision(&mutation, expected_revision)?;
     crate::domain::scene_tree::ensure_live_zone_mutable(&mutation, zone_id)?;
     let zone = match mutation.insert_layer(scene_id, zone_id, layer, index, None) {
@@ -88,14 +81,7 @@ pub async fn insert_layer(
             .ok_or_else(|| DomainError::not_found(ResourceKind::Scene, scene_id))?;
         media_admission.validate(scene)?;
     }
-    finish(
-        state,
-        mutation,
-        scene_id,
-        vec![zone],
-        LayerStackChangeKind::Created,
-    )
-    .await
+    finish(ctx, mutation, vec![zone]).await
 }
 
 /// Drop one layer out of a zone's stack.
@@ -104,31 +90,20 @@ pub async fn insert_layer(
 ///
 /// As [`insert_layer`].
 pub async fn remove_layer(
-    state: &AppState,
-    target: SceneTarget,
+    ctx: &SceneContext,
     zone_id: ZoneId,
     layer_id: SceneLayerId,
     expected_revision: Option<u64>,
-    meta: MutationContext,
 ) -> Result<LayerResult, DomainError> {
-    let _ = meta;
-
-    let mut mutation = state.begin_scene_mutation().await;
-    let scene_id = target.resolve(&mutation, "deleting a layer from the live scene")?;
+    let mut mutation = ctx.begin_mutation().await;
+    let scene_id = mutation.active_scene_for_runtime_mutation("deleting a layer")?;
     crate::domain::scene_tree::check_scene_revision(&mutation, expected_revision)?;
     crate::domain::scene_tree::ensure_live_zone_mutable(&mutation, zone_id)?;
     let zone = match mutation.remove_layer(scene_id, zone_id, layer_id, None) {
         Ok(zone) => zone,
         Err(refusal) => return Ok(Err(refusal)),
     };
-    finish(
-        state,
-        mutation,
-        scene_id,
-        vec![zone],
-        LayerStackChangeKind::Removed,
-    )
-    .await
+    finish(ctx, mutation, vec![zone]).await
 }
 
 /// Rewrite a zone's layer order.
@@ -137,45 +112,32 @@ pub async fn remove_layer(
 ///
 /// As [`insert_layer`].
 pub async fn reorder_layers(
-    state: &AppState,
-    target: SceneTarget,
+    ctx: &SceneContext,
     zone_id: ZoneId,
     layer_ids: Vec<SceneLayerId>,
     expected_revision: Option<u64>,
-    meta: MutationContext,
 ) -> Result<LayerResult, DomainError> {
-    let _ = meta;
-
-    let mut mutation = state.begin_scene_mutation().await;
-    let scene_id = target.resolve(&mutation, "reordering layers in the live scene")?;
+    let mut mutation = ctx.begin_mutation().await;
+    let scene_id = mutation.active_scene_for_runtime_mutation("reordering layers")?;
     crate::domain::scene_tree::check_scene_revision(&mutation, expected_revision)?;
     crate::domain::scene_tree::ensure_live_zone_mutable(&mutation, zone_id)?;
     let zone = match mutation.reorder_layers(scene_id, zone_id, layer_ids, None) {
         Ok(zone) => zone,
         Err(refusal) => return Ok(Err(refusal)),
     };
-    finish(
-        state,
-        mutation,
-        scene_id,
-        vec![zone],
-        LayerStackChangeKind::Reordered,
-    )
-    .await
+    finish(ctx, mutation, vec![zone]).await
 }
 
 pub(crate) async fn validate_candidate_media_admission(
-    state: &AppState,
+    ctx: &SceneContext,
     mutation: &SceneMutation,
     scene_id: SceneId,
 ) -> Result<(), DomainError> {
-    let asset_mime_types = crate::api::scenes::asset_mime_types(state).await;
-    let media_config = crate::api::scenes::current_media_config(state);
     let scene = mutation
         .scenes()
         .get(&scene_id)
         .ok_or_else(|| DomainError::not_found(crate::domain::ResourceKind::Scene, scene_id))?;
-    crate::domain::scene::validate_scene_media_admission(scene, &asset_mime_types, &media_config)
+    ctx.media_admission_context().await.validate(scene)
 }
 
 /// Merge control overrides into one effect layer.
@@ -184,70 +146,32 @@ pub(crate) async fn validate_candidate_media_admission(
 ///
 /// As [`insert_layer`].
 pub async fn patch_layer_controls(
-    state: &AppState,
-    target: SceneTarget,
+    ctx: &SceneContext,
     zone_id: ZoneId,
     layer_id: SceneLayerId,
     controls: HashMap<String, ControlValue>,
     expected_revision: Option<u64>,
-    meta: MutationContext,
 ) -> Result<LayerResult, DomainError> {
-    let _ = meta;
-
-    let mut mutation = state.begin_scene_mutation().await;
-    let scene_id = target.resolve(&mutation, "patching layer controls in the live scene")?;
+    let mut mutation = ctx.begin_mutation().await;
+    let scene_id = mutation.active_scene_for_runtime_mutation("patching layer controls")?;
     crate::domain::scene_tree::check_scene_revision(&mutation, expected_revision)?;
     crate::domain::scene_tree::ensure_live_zone_mutable(&mutation, zone_id)?;
     let zone = match mutation.patch_layer_controls(scene_id, zone_id, layer_id, controls, None) {
         Ok(zone) => zone,
         Err(refusal) => return Ok(Err(refusal)),
     };
-    finish(
-        state,
-        mutation,
-        scene_id,
-        vec![zone],
-        LayerStackChangeKind::ControlsPatched,
-    )
-    .await
+    finish(ctx, mutation, vec![zone]).await
 }
 
 /// Record both events every layer mutation publishes, commit, and record
 /// the new stack in the session snapshot.
 async fn finish(
-    state: &AppState,
-    mut mutation: SceneMutation,
-    scene_id: SceneId,
+    ctx: &SceneContext,
+    mutation: SceneMutation,
     zones: Vec<Zone>,
-    kind: LayerStackChangeKind,
 ) -> Result<LayerResult, DomainError> {
-    let revision = mutation
-        .base_revision()
-        .checked_add(1)
-        .expect("scene revision must not exhaust u64");
-    for zone in &zones {
-        mutation.record(zone_changed_event(scene_id, zone, zone_change_kind(kind)));
-        mutation.record(HypercolorEvent::LayerStackChanged {
-            scene_id,
-            zone_id: zone.id,
-            revision,
-            kind,
-        });
-    }
-
-    let commit = commit_scene(state, mutation).await?;
-    crate::api::save_runtime_session_snapshot(state).await;
+    let commit = ctx.commit(mutation).await?;
+    ctx.save_runtime_session().await;
 
     Ok(Ok(LayerStackWritten { zones, commit }))
-}
-
-/// How the compositor reads a layer-stack change.
-const fn zone_change_kind(kind: LayerStackChangeKind) -> ZoneChangeKind {
-    match kind {
-        LayerStackChangeKind::ControlsPatched => ZoneChangeKind::ControlsPatched,
-        LayerStackChangeKind::Created
-        | LayerStackChangeKind::Updated
-        | LayerStackChangeKind::Removed
-        | LayerStackChangeKind::Reordered => ZoneChangeKind::Updated,
-    }
 }

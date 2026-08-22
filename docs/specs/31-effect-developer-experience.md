@@ -270,11 +270,8 @@ declaration.
 <meta audio-reactive="true" />
 ```
 
-If this tag is absent, the daemon applies a heuristic: it searches the HTML
-content for markers like `engine.audio`, `iAudio`, `audio.freq`, `audio.level`,
-`audio.density`. If any are found, the effect is flagged as audio-reactive.
-
-Explicit declaration is preferred.
+The tag is the authority. Runtime code does not infer audio reactivity from
+JavaScript source text.
 
 ### 3.7 Runtime Environment
 
@@ -1428,7 +1425,6 @@ Body: file=@my-effect.html
   "data": {
     "id": "550e8400-e29b-41d4-a716-446655440000",
     "name": "Aurora Borealis",
-    "source": "user",
     "path": "/home/user/.local/share/hypercolor/effects/user/aurora.html",
     "controls": 3,
     "presets": 2

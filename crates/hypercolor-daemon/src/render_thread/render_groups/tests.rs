@@ -241,10 +241,6 @@ fn sample_group(width: u32, height: u32) -> Zone {
         id: ZoneId::new(),
         name: "Preview Group".into(),
         description: None,
-        effect_id: Some(effect_id),
-        controls: HashMap::new(),
-        control_bindings: HashMap::new(),
-        preset_id: None,
         layers: vec![effect_layer(effect_id, HashMap::new())],
         layout: SpatialLayout {
             id: "preview-group".into(),
@@ -283,13 +279,10 @@ fn set_effect_group(
     effect_id: EffectId,
     controls: HashMap<String, ControlValue>,
 ) {
-    group.effect_id = Some(effect_id);
-    group.controls = controls.clone();
     group.layers = vec![effect_layer(effect_id, controls)];
 }
 
 fn make_color_fill_group(group: &mut Zone) {
-    group.effect_id = None;
     group.layers = vec![hypercolor_types::layer::SceneLayer {
         id: hypercolor_types::layer::SceneLayerId::new(),
         name: None,

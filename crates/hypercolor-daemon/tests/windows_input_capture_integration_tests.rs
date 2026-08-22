@@ -6,7 +6,6 @@
 #![cfg(target_os = "windows")]
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -26,15 +25,16 @@ use hypercolor_core::input::{
 };
 use hypercolor_core::scene::{SceneManager, make_scene};
 use hypercolor_core::spatial::SpatialEngine;
-use hypercolor_daemon::device_settings::DeviceSettingsStore;
+use hypercolor_daemon::domain::scene::SceneService;
+use hypercolor_daemon::domain::spatial::SpatialService;
 use hypercolor_daemon::interaction_routing::InteractionRoutingControl;
+use hypercolor_daemon::output_power::OutputPowerState;
 use hypercolor_daemon::performance::PerformanceTracker;
 use hypercolor_daemon::preview_runtime::PreviewRuntime;
 use hypercolor_daemon::render_thread::{
     CanvasDims, InputPublicationConsumer, InputPublicationDemand, RenderThread, RenderThreadState,
 };
 use hypercolor_daemon::scene_transactions::SceneTransactionQueue;
-use hypercolor_daemon::session::OutputPowerState;
 use hypercolor_daemon::zone_layout_preview::ZoneLayoutPreviewStore;
 use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::effect::EffectId;
@@ -88,7 +88,7 @@ fn builtin_effect_id(registry: &EffectRegistry, stem: &str) -> EffectId {
 }
 
 async fn install_effect_with_test_demand_activation(
-    state: &RenderThreadState,
+    state: &mut RenderThreadState,
     stem: &str,
     test_input_reactive: bool,
 ) {
@@ -106,14 +106,10 @@ async fn install_effect_with_test_demand_activation(
     let mut scene = make_scene("Windows input capture fixture");
     scene.transition.duration_ms = 0;
     scene.unassigned_behavior = UnassignedBehavior::Off;
-    scene.groups = vec![Zone {
+    scene.zones = vec![Zone {
         id: ZoneId::new(),
         name: "Fixture".to_owned(),
         description: None,
-        effect_id: Some(effect_id),
-        controls: HashMap::new(),
-        control_bindings: HashMap::new(),
-        preset_id: None,
         layers: Vec::new(),
         layout: empty_layout(),
         brightness: 1.0,
@@ -124,11 +120,14 @@ async fn install_effect_with_test_demand_activation(
         controls_version: 0,
         layers_version: 0,
     }];
-    let mut scenes = state.scene_manager.write().await;
+    let mut scenes = state.scene_manager.snapshot().await;
     scenes.create(scene.clone()).expect("fixture scene creates");
     scenes
         .activate(&scene.id, None)
         .expect("fixture scene activates");
+    let scene_manager = SceneService::in_memory(scenes, Arc::clone(&state.event_bus));
+    state.scene_plan = scene_manager.plan_reader();
+    state.scene_manager = scene_manager;
 }
 
 fn test_asset_library() -> Arc<RwLock<AssetLibrary>> {
@@ -141,10 +140,13 @@ fn test_asset_library() -> Arc<RwLock<AssetLibrary>> {
 fn render_state(input_manager: InputManager, screen_capture_configured: bool) -> RenderThreadState {
     let (_, power_state) = watch::channel(OutputPowerState::default());
     let event_bus = Arc::new(HypercolorBus::new());
+    let scene_manager =
+        SceneService::in_memory(SceneManager::with_default(), Arc::clone(&event_bus));
+    let scene_plan = scene_manager.plan_reader();
     RenderThreadState {
         effect_registry: Arc::new(RwLock::new(builtin_effect_registry())),
         asset_library: test_asset_library(),
-        spatial_engine: Arc::new(RwLock::new(SpatialEngine::new(empty_layout()))),
+        spatial_engine: SpatialService::new(SpatialEngine::new(empty_layout())),
         backend_manager: Arc::new(Mutex::new(BackendManager::new())),
         device_registry: DeviceRegistry::new(),
         performance: Arc::new(RwLock::new(PerformanceTracker::default())),
@@ -153,13 +155,11 @@ fn render_state(input_manager: InputManager, screen_capture_configured: bool) ->
         preview_runtime: Arc::new(PreviewRuntime::new(event_bus)),
         zone_layout_previews: Arc::new(ZoneLayoutPreviewStore::default()),
         render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
-        scene_manager: Arc::new(RwLock::new(SceneManager::with_default())),
+        scene_manager,
+        scene_plan,
         input_manager: Arc::new(Mutex::new(input_manager)),
         interaction_routing: InteractionRoutingControl::default(),
         power_state,
-        device_settings: Arc::new(RwLock::new(DeviceSettingsStore::new(PathBuf::from(
-            "windows-input-capture-fixture-settings.json",
-        )))),
         scene_transactions: SceneTransactionQueue::default(),
         screen_capture_configured,
         canvas_dims: CanvasDims::new(4, 3),
@@ -321,8 +321,8 @@ async fn raw_input_reaches_daemon_frame_routing_and_event_bus() {
     let statuses = manager.source_status_registry();
     manager.add_source(Box::new(source));
     manager.start_all().expect("fixture source starts");
-    let state = render_state(manager, false);
-    install_effect_with_test_demand_activation(&state, "solid_color", true).await;
+    let mut state = render_state(manager, false);
+    install_effect_with_test_demand_activation(&mut state, "solid_color", true).await;
     let mut event_receiver = state.event_bus.subscribe_all();
     let mut render_thread = start_render_thread(&state).await;
     let demand = render_thread.input_publication_demands();
@@ -439,8 +439,8 @@ async fn capture_frame_reaches_daemon_screen_and_canvas_watches() {
     let statuses = manager.source_status_registry();
     manager.add_source(Box::new(source));
     manager.start_all().expect("fixture source starts idle");
-    let state = render_state(manager, true);
-    install_effect_with_test_demand_activation(&state, "screen_cast", false).await;
+    let mut state = render_state(manager, true);
+    install_effect_with_test_demand_activation(&mut state, "screen_cast", false).await;
     let mut canvas_receiver = state.event_bus.canvas_receiver();
     let mut screen_receiver = state.event_bus.screen_canvas_receiver();
     let mut render_thread = start_render_thread(&state).await;

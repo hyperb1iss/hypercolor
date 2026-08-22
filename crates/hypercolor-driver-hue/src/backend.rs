@@ -2,25 +2,24 @@
 
 use std::collections::HashMap;
 use std::net::IpAddr;
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError, RwLock as StdRwLock};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 use hypercolor_color::Rgb;
-use hypercolor_driver_api::CredentialStore;
 use hypercolor_driver_api::{
     BackendInfo, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId, DeviceDeliveryObserver,
-    DeviceFrameSink, DeviceLifecyclePolicy, DeviceWriteOutcome, OutputCadence,
+    DeviceFrameSink, DeviceLifecyclePolicy, DeviceWriteOutcome, DiscoveredDevice, OutputCadence,
 };
-use hypercolor_types::device::{DeviceId, DeviceInfo};
+use hypercolor_driver_support::CredentialStore;
+use hypercolor_types::device::{DeviceError, DeviceId, DeviceInfo};
 
 use super::bridge::HueBridgeClient;
 use super::color::{CieXyb, ColorGamut, rgb_to_cie_xyb};
-use super::scanner::{HueKnownBridge, HueScanner};
 use super::streaming::HueStreamSession;
 use super::types::{
     HueBridgeIdentity, HueDiscoveredBridge, HueEntertainmentConfig, HueLight, build_device_info,
@@ -80,9 +79,8 @@ const fn bool_true() -> bool {
 pub struct HueBackend {
     config: HueConfig,
     credential_store: Arc<CredentialStore>,
-    mdns_enabled: bool,
-    discovered: HashMap<DeviceId, HueDiscoveredBridge>,
-    bridges: HashMap<DeviceId, Arc<Mutex<HueBridgeState>>>,
+    discovered: StdRwLock<HashMap<DeviceId, HueDiscoveredBridge>>,
+    bridges: StdRwLock<HashMap<DeviceId, Arc<Mutex<HueBridgeState>>>>,
 }
 
 struct HueBridgeState {
@@ -102,74 +100,12 @@ impl HueBackend {
     /// Create a new Hue backend using the configured manual bridge IPs.
     #[must_use]
     pub fn new(config: HueConfig, credential_store: Arc<CredentialStore>) -> Self {
-        Self::with_mdns_enabled(config, credential_store, true)
-    }
-
-    /// Create a backend with explicit `mDNS` enablement.
-    #[must_use]
-    pub fn with_mdns_enabled(
-        config: HueConfig,
-        credential_store: Arc<CredentialStore>,
-        mdns_enabled: bool,
-    ) -> Self {
         Self {
             config,
             credential_store,
-            mdns_enabled,
-            discovered: HashMap::new(),
-            bridges: HashMap::new(),
+            discovered: StdRwLock::new(HashMap::new()),
+            bridges: StdRwLock::new(HashMap::new()),
         }
-    }
-
-    /// Seed the backend with a previously discovered bridge.
-    pub fn remember_bridge(&mut self, bridge: HueDiscoveredBridge) {
-        self.discovered.insert(bridge.info.id, bridge);
-    }
-
-    fn known_bridges(&self) -> Vec<HueKnownBridge> {
-        let mut known: HashMap<IpAddr, HueKnownBridge> = self
-            .config
-            .bridge_ips
-            .iter()
-            .copied()
-            .map(HueKnownBridge::from_ip)
-            .map(|bridge| (bridge.ip, bridge))
-            .collect();
-
-        for bridge in self.discovered.values() {
-            known
-                .entry(bridge.ip)
-                .and_modify(|existing| {
-                    if existing.bridge_id.is_empty() {
-                        existing.bridge_id.clone_from(&bridge.bridge_id);
-                    }
-                    if existing.api_port == 0 {
-                        existing.api_port = bridge.api_port;
-                    }
-                    if existing.name.is_empty() {
-                        existing.name.clone_from(&bridge.info.name);
-                    }
-                    if existing.model_id.is_empty() {
-                        existing.model_id = bridge.info.model.clone().unwrap_or_default();
-                    }
-                    if existing.sw_version.is_empty() {
-                        existing.sw_version =
-                            bridge.info.firmware_version.clone().unwrap_or_default();
-                    }
-                })
-                .or_insert_with(|| HueKnownBridge {
-                    bridge_id: bridge.bridge_id.clone(),
-                    ip: bridge.ip,
-                    api_port: bridge.api_port,
-                    name: bridge.info.name.clone(),
-                    model_id: bridge.info.model.clone().unwrap_or_default(),
-                    sw_version: bridge.info.firmware_version.clone().unwrap_or_default(),
-                });
-        }
-
-        let mut resolved: Vec<_> = known.into_values().collect();
-        resolved.sort_by_key(|bridge| bridge.ip);
-        resolved
     }
 
     async fn write_bridge_colors(
@@ -222,9 +158,13 @@ struct HueFrameSink {
 
 #[async_trait::async_trait]
 impl DeviceFrameSink for HueFrameSink {
-    async fn write_colors_shared(&self, colors: Arc<Vec<[u8; 3]>>) -> Result<()> {
+    async fn write_colors_shared(
+        &self,
+        colors: Arc<Vec<[u8; 3]>>,
+    ) -> std::result::Result<(), DeviceError> {
         HueBackend::write_bridge_colors(&self.device_id, &self.bridge, colors.as_slice(), None)
             .await
+            .map_err(|error| DeviceError::write(self.device_id, error))
     }
 
     async fn deliver_colors_shared_observed(
@@ -242,6 +182,7 @@ impl DeviceFrameSink for HueFrameSink {
             Some((id, observer.as_ref())),
         )
         .await
+        .map_err(|error| DeviceError::write(self.device_id, error))
         .map(|()| DeviceWriteOutcome::Sent);
         DeviceDeliveryAck::from_write_result(id, payload_bytes, started_at.elapsed(), result)
     }
@@ -261,26 +202,59 @@ impl DeviceBackend for HueBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
-        let mut scanner = HueScanner::with_options(
-            self.known_bridges(),
-            Arc::clone(&self.credential_store),
-            Duration::from_secs(2),
-            self.mdns_enabled,
-            self.config.entertainment_config.clone(),
-        );
-        let bridges = scanner.scan_bridges().await?;
-        self.discovered = bridges
-            .iter()
-            .cloned()
-            .map(|bridge| (bridge.info.id, bridge))
-            .collect();
-
-        Ok(bridges.into_iter().map(|bridge| bridge.info).collect())
+    fn adopt_device(&self, discovered: &DiscoveredDevice) -> Result<(), DeviceError> {
+        let ip = discovered
+            .metadata
+            .get("ip")
+            .and_then(|value| value.parse::<IpAddr>().ok())
+            .ok_or(DeviceError::NotAdopted {
+                device_id: discovered.info.id,
+            })?;
+        let api_port = discovered
+            .metadata
+            .get("api_port")
+            .and_then(|value| value.parse::<u16>().ok())
+            .ok_or(DeviceError::NotAdopted {
+                device_id: discovered.info.id,
+            })?;
+        let bridge_id =
+            discovered
+                .metadata
+                .get("bridge_id")
+                .cloned()
+                .ok_or(DeviceError::NotAdopted {
+                    device_id: discovered.info.id,
+                })?;
+        self.discovered
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(
+                discovered.info.id,
+                HueDiscoveredBridge {
+                    bridge_id,
+                    ip,
+                    api_port,
+                    info: discovered.info.clone(),
+                    entertainment_config: None,
+                    lights: Vec::new(),
+                    connect_behavior: discovered.connect_behavior,
+                    metadata: discovered.metadata.clone(),
+                },
+            );
+        Ok(())
     }
 
-    async fn connected_device_info(&self, id: &DeviceId) -> Result<Option<DeviceInfo>> {
-        let Some(bridge) = self.bridges.get(id) else {
+    async fn connected_device_info(
+        &self,
+        id: &DeviceId,
+    ) -> std::result::Result<Option<DeviceInfo>, DeviceError> {
+        let bridge = self
+            .bridges
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(id)
+            .cloned();
+        let Some(bridge) = bridge else {
             return Ok(None);
         };
         Ok(Some(bridge.lock().await.info.clone()))
@@ -294,13 +268,24 @@ impl DeviceBackend for HueBackend {
         DeviceLifecyclePolicy::default().with_connect_timeout(HUE_CONNECT_TIMEOUT)
     }
 
-    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
-        if self.bridges.contains_key(id) {
+    async fn connect(&self, id: &DeviceId) -> std::result::Result<(), DeviceError> {
+        if self
+            .bridges
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains_key(id)
+        {
             return Ok(());
         }
 
-        let Some(discovered) = self.discovered.get(id).cloned() else {
-            bail!("Hue bridge {id} is not known; run discovery first");
+        let discovered = self
+            .discovered
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(id)
+            .cloned();
+        let Some(discovered) = discovered else {
+            return Err(DeviceError::NotAdopted { device_id: *id });
         };
 
         let (api_key, client_key) =
@@ -311,7 +296,8 @@ impl DeviceBackend for HueBackend {
                         "Hue bridge {} at {} requires pairing credentials",
                         discovered.info.name, discovered.ip
                     )
-                })?;
+                })
+                .map_err(|error| DeviceError::connection(id, error))?;
 
         let client = HueBridgeClient::authenticated_with_port(
             discovered.ip,
@@ -327,11 +313,13 @@ impl DeviceBackend for HueBackend {
         let lights = client
             .lights()
             .await
-            .context("failed to fetch Hue bridge lights")?;
+            .context("failed to fetch Hue bridge lights")
+            .map_err(|error| DeviceError::connection(id, error))?;
         let configs = client
             .entertainment_configs()
             .await
-            .context("failed to fetch Hue entertainment configurations")?;
+            .context("failed to fetch Hue entertainment configurations")
+            .map_err(|error| DeviceError::connection(id, error))?;
         let entertainment_config = choose_entertainment_config(
             self.config.entertainment_config.as_deref(),
             configs.as_slice(),
@@ -342,7 +330,8 @@ impl DeviceBackend for HueBackend {
                 "Hue bridge {} does not expose a compatible entertainment configuration",
                 discovered.info.name
             )
-        })?;
+        })
+        .map_err(|error| DeviceError::connection(id, error))?;
 
         client
             .start_streaming(&entertainment_config.id)
@@ -352,7 +341,8 @@ impl DeviceBackend for HueBackend {
                     "failed to activate Hue entertainment config {} on {}",
                     entertainment_config.name, discovered.info.name
                 )
-            })?;
+            })
+            .map_err(|error| DeviceError::connection(id, error))?;
 
         let stream = match HueStreamSession::connect(
             discovered.ip,
@@ -366,12 +356,11 @@ impl DeviceBackend for HueBackend {
             Ok(stream) => stream,
             Err(error) => {
                 let _ = client.stop_streaming(&entertainment_config.id).await;
-                return Err(error).with_context(|| {
-                    format!(
-                        "failed to establish Hue entertainment stream for {}",
-                        discovered.info.name
-                    )
-                });
+                let error = error.context(format!(
+                    "failed to establish Hue entertainment stream for {}",
+                    discovered.info.name
+                ));
+                return Err(DeviceError::connection(id, error));
             }
         };
 
@@ -386,19 +375,22 @@ impl DeviceBackend for HueBackend {
         let channel_gamuts =
             resolve_channel_gamuts(entertainment_config.channels.as_slice(), lights.as_slice());
 
-        self.discovered.insert(
-            *id,
-            HueDiscoveredBridge {
-                bridge_id: bridge_identity.bridge_id.clone(),
-                ip: discovered.ip,
-                api_port: discovered.api_port,
-                info: info.clone(),
-                entertainment_config: Some(entertainment_config.clone()),
-                lights,
-                connect_behavior: discovered.connect_behavior,
-                metadata: discovered.metadata,
-            },
-        );
+        self.discovered
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(
+                *id,
+                HueDiscoveredBridge {
+                    bridge_id: bridge_identity.bridge_id.clone(),
+                    ip: discovered.ip,
+                    api_port: discovered.api_port,
+                    info: info.clone(),
+                    entertainment_config: Some(entertainment_config.clone()),
+                    lights,
+                    connect_behavior: discovered.connect_behavior,
+                    metadata: discovered.metadata,
+                },
+            );
 
         let channels = entertainment_config.channels.len();
         let bridge = HueBridgeState {
@@ -413,7 +405,10 @@ impl DeviceBackend for HueBackend {
             brightness: u8::MAX,
             last_size_mismatch_warn_at: None,
         };
-        self.bridges.insert(*id, Arc::new(Mutex::new(bridge)));
+        self.bridges
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(*id, Arc::new(Mutex::new(bridge)));
 
         info!(
             device_id = %id,
@@ -425,9 +420,16 @@ impl DeviceBackend for HueBackend {
         Ok(())
     }
 
-    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
-        let Some(bridge) = self.bridges.remove(id) else {
-            bail!("Hue bridge {id} is not connected");
+    async fn disconnect(&self, id: &DeviceId) -> std::result::Result<(), DeviceError> {
+        let bridge = self
+            .bridges
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(id);
+        let Some(bridge) = bridge else {
+            return Err(DeviceError::Disconnected {
+                device: id.to_string(),
+            });
         };
         let bridge = bridge.lock().await;
 
@@ -445,24 +447,44 @@ impl DeviceBackend for HueBackend {
             "Disconnected from Hue bridge"
         );
 
-        close_result?;
-        stop_result?;
+        close_result.map_err(|error| DeviceError::write(id, error))?;
+        stop_result.map_err(|error| DeviceError::write(id, error))?;
         Ok(())
     }
 
-    async fn write_colors(&mut self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(
+        &self,
+        id: &DeviceId,
+        colors: &[[u8; 3]],
+    ) -> std::result::Result<(), DeviceError> {
         let bridge = self
             .bridges
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
             .get(id)
-            .with_context(|| format!("Hue bridge {id} is not connected"))?;
-        Self::write_bridge_colors(id, bridge, colors, None).await
+            .cloned()
+            .ok_or_else(|| DeviceError::Disconnected {
+                device: id.to_string(),
+            })?;
+        Self::write_bridge_colors(id, &bridge, colors, None)
+            .await
+            .map_err(|error| DeviceError::write(id, error))
     }
 
-    async fn set_brightness(&mut self, id: &DeviceId, brightness: u8) -> Result<()> {
+    async fn set_brightness(
+        &self,
+        id: &DeviceId,
+        brightness: u8,
+    ) -> std::result::Result<(), DeviceError> {
         let bridge = self
             .bridges
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
             .get(id)
-            .with_context(|| format!("Hue bridge {id} is not connected"))?;
+            .cloned()
+            .ok_or_else(|| DeviceError::Disconnected {
+                device: id.to_string(),
+            })?;
         bridge.lock().await.brightness = brightness;
         Ok(())
     }
@@ -476,12 +498,16 @@ impl DeviceBackend for HueBackend {
     }
 
     fn frame_sink(&self, id: &DeviceId) -> Option<Arc<dyn DeviceFrameSink>> {
-        self.bridges.get(id).map(|bridge| {
-            Arc::new(HueFrameSink {
-                device_id: *id,
-                bridge: Arc::clone(bridge),
-            }) as Arc<dyn DeviceFrameSink>
-        })
+        self.bridges
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(id)
+            .map(|bridge| {
+                Arc::new(HueFrameSink {
+                    device_id: *id,
+                    bridge: Arc::clone(bridge),
+                }) as Arc<dyn DeviceFrameSink>
+            })
     }
 }
 

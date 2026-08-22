@@ -9,16 +9,16 @@ from attrs import field as _attrs_field
 from ..models.input_source_platform_status_type_0_type import (
     InputSourcePlatformStatusType0Type,
 )
-from ..models.macos_authorization_state_api import MacosAuthorizationStateApi
-from ..models.macos_capability_owner_api import MacosCapabilityOwnerApi
-from ..models.macos_protected_source_state_api import MacosProtectedSourceStateApi
+from ..models.macos_authorization_state import MacosAuthorizationState
+from ..models.macos_capability_owner import MacosCapabilityOwner
+from ..models.macos_protected_source_state import MacosProtectedSourceState
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
-    from ..models.macos_daemon_owner_conflict_api_status import (
-        MacosDaemonOwnerConflictApiStatus,
+    from ..models.macos_daemon_owner_conflict_status import (
+        MacosDaemonOwnerConflictStatus,
     )
-    from ..models.macos_input_telemetry_api_status import MacosInputTelemetryApiStatus
+    from ..models.macos_input_telemetry import MacosInputTelemetry
 
 
 T = TypeVar("T", bound="InputSourcePlatformStatusType0")
@@ -28,31 +28,31 @@ T = TypeVar("T", bound="InputSourcePlatformStatusType0")
 class InputSourcePlatformStatusType0:
     """
     Attributes:
-        keyboard (MacosProtectedSourceStateApi):
-        keyboard_owner (MacosCapabilityOwnerApi):
-        keyboard_tcc (MacosAuthorizationStateApi):
-        pointer (MacosProtectedSourceStateApi):
-        pointer_owner (MacosCapabilityOwnerApi):
+        keyboard (MacosProtectedSourceState):
+        keyboard_owner (MacosCapabilityOwner):
+        keyboard_tcc (MacosAuthorizationState):
+        pointer (MacosProtectedSourceState):
+        pointer_owner (MacosCapabilityOwner):
         secure_input_active (bool):
-        telemetry (MacosInputTelemetryApiStatus):
+        telemetry (MacosInputTelemetry):
         type_ (InputSourcePlatformStatusType0Type):
-        owner_conflict (MacosDaemonOwnerConflictApiStatus | None | Unset):
+        owner_conflict (MacosDaemonOwnerConflictStatus | None | Unset):
     """
 
-    keyboard: MacosProtectedSourceStateApi
-    keyboard_owner: MacosCapabilityOwnerApi
-    keyboard_tcc: MacosAuthorizationStateApi
-    pointer: MacosProtectedSourceStateApi
-    pointer_owner: MacosCapabilityOwnerApi
+    keyboard: MacosProtectedSourceState
+    keyboard_owner: MacosCapabilityOwner
+    keyboard_tcc: MacosAuthorizationState
+    pointer: MacosProtectedSourceState
+    pointer_owner: MacosCapabilityOwner
     secure_input_active: bool
-    telemetry: MacosInputTelemetryApiStatus
+    telemetry: MacosInputTelemetry
     type_: InputSourcePlatformStatusType0Type
-    owner_conflict: MacosDaemonOwnerConflictApiStatus | None | Unset = UNSET
+    owner_conflict: MacosDaemonOwnerConflictStatus | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        from ..models.macos_daemon_owner_conflict_api_status import (
-            MacosDaemonOwnerConflictApiStatus,
+        from ..models.macos_daemon_owner_conflict_status import (
+            MacosDaemonOwnerConflictStatus,
         )
 
         keyboard = self.keyboard.value
@@ -74,7 +74,7 @@ class InputSourcePlatformStatusType0:
         owner_conflict: dict[str, Any] | None | Unset
         if isinstance(self.owner_conflict, Unset):
             owner_conflict = UNSET
-        elif isinstance(self.owner_conflict, MacosDaemonOwnerConflictApiStatus):
+        elif isinstance(self.owner_conflict, MacosDaemonOwnerConflictStatus):
             owner_conflict = self.owner_conflict.to_dict()
         else:
             owner_conflict = self.owner_conflict
@@ -100,33 +100,31 @@ class InputSourcePlatformStatusType0:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.macos_daemon_owner_conflict_api_status import (
-            MacosDaemonOwnerConflictApiStatus,
+        from ..models.macos_daemon_owner_conflict_status import (
+            MacosDaemonOwnerConflictStatus,
         )
-        from ..models.macos_input_telemetry_api_status import (
-            MacosInputTelemetryApiStatus,
-        )
+        from ..models.macos_input_telemetry import MacosInputTelemetry
 
         d = dict(src_dict)
-        keyboard = MacosProtectedSourceStateApi(d.pop("keyboard"))
+        keyboard = MacosProtectedSourceState(d.pop("keyboard"))
 
-        keyboard_owner = MacosCapabilityOwnerApi(d.pop("keyboard_owner"))
+        keyboard_owner = MacosCapabilityOwner(d.pop("keyboard_owner"))
 
-        keyboard_tcc = MacosAuthorizationStateApi(d.pop("keyboard_tcc"))
+        keyboard_tcc = MacosAuthorizationState(d.pop("keyboard_tcc"))
 
-        pointer = MacosProtectedSourceStateApi(d.pop("pointer"))
+        pointer = MacosProtectedSourceState(d.pop("pointer"))
 
-        pointer_owner = MacosCapabilityOwnerApi(d.pop("pointer_owner"))
+        pointer_owner = MacosCapabilityOwner(d.pop("pointer_owner"))
 
         secure_input_active = d.pop("secure_input_active")
 
-        telemetry = MacosInputTelemetryApiStatus.from_dict(d.pop("telemetry"))
+        telemetry = MacosInputTelemetry.from_dict(d.pop("telemetry"))
 
         type_ = InputSourcePlatformStatusType0Type(d.pop("type"))
 
         def _parse_owner_conflict(
             data: object,
-        ) -> MacosDaemonOwnerConflictApiStatus | None | Unset:
+        ) -> MacosDaemonOwnerConflictStatus | None | Unset:
             if data is None:
                 return data
             if isinstance(data, Unset):
@@ -134,14 +132,12 @@ class InputSourcePlatformStatusType0:
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                owner_conflict_type_1 = MacosDaemonOwnerConflictApiStatus.from_dict(
-                    data
-                )
+                owner_conflict_type_1 = MacosDaemonOwnerConflictStatus.from_dict(data)
 
                 return owner_conflict_type_1
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
-            return cast(MacosDaemonOwnerConflictApiStatus | None | Unset, data)
+            return cast(MacosDaemonOwnerConflictStatus | None | Unset, data)
 
         owner_conflict = _parse_owner_conflict(d.pop("owner_conflict", UNSET))
 

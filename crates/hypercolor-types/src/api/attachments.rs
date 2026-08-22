@@ -1,8 +1,9 @@
 //! Component-template catalog API contracts — `/api/v1/attachments/*`.
 
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
-use crate::api::common::Pagination;
+use crate::api::envelope::ListResponse;
 use crate::attachment::{
     ComponentCanvasSize, ComponentCategory, ComponentCompatibility, ComponentOrigin,
 };
@@ -27,7 +28,9 @@ where
 ///
 /// Every field narrows the catalog; an empty query lists everything the
 /// registry knows.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema, utoipa::IntoParams,
+)]
 pub struct ListTemplatesQuery {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub offset: Option<usize>,
@@ -60,20 +63,14 @@ pub struct ListTemplatesQuery {
 // proves transitively that nothing in this response is a float. A float
 // here would be a wire hazard, because the shapes these types replace
 // were built with `json!`, which widens f32 to f64 and reprints it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TemplateListResponse {
-    #[serde(default)]
-    pub items: Vec<TemplateSummary>,
-    #[serde(default)]
-    pub pagination: Pagination,
-}
+pub type TemplateListResponse = ListResponse<TemplateSummary>;
 
 /// One template in the catalog listing.
 ///
 /// `led_count` is the template's resolved LED total, derived from its
 /// topology rather than stored, so it is always present even for
 /// templates whose topology is generated.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct TemplateSummary {
     pub id: String,
     pub name: String,
@@ -106,7 +103,7 @@ pub struct TemplateSummary {
 // the promotion, so it never passed through `serde_json::json!` and was
 // never exposed to the f32-to-f64 reprint the fence guards against. Its
 // serialization path is unchanged.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct TemplateDetail {
     pub id: String,
     pub name: String,
@@ -132,5 +129,6 @@ pub struct TemplateDetail {
     pub image_url: Option<String>,
     /// Physical footprint in millimeters, as `[width, height]`.
     #[serde(default)]
+    #[schema(value_type = Option<Vec<f32>>, min_items = 2, max_items = 2)]
     pub physical_size_mm: Option<(f32, f32)>,
 }

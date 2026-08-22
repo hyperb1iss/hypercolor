@@ -3679,7 +3679,7 @@ fn continuity_transition_retains_old_until_exact_new_branch_is_live() {
             &second_zone_metadata,
         )
         .expect("newer staged publication supersedes its receipt");
-    assert!(new_receipt.publication().publication_epoch().get() > 0);
+    assert!(new_receipt.publication().branch_sequence().get() > 0);
     assert!(new_receipt.publication().native_sequence().get() > 0);
     let failure = old_lease
         .stage(&new, &hub)

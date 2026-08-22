@@ -9,6 +9,7 @@ use leptos_router::path;
 
 use hypercolor_leptos_ext::events::Input;
 use hypercolor_leptos_ext::prelude::now_ms;
+use hypercolor_types::control::ControlValue as CanonicalControlValue;
 use hypercolor_types::effect::{ControlDefinition, ControlValue};
 use hypercolor_types::event::LayerHealth;
 use hypercolor_types::scene::{SceneKind, SceneMutationMode};
@@ -41,8 +42,8 @@ use crate::ws::messages::scene_event_affects_active_effect;
 use crate::ws::{
     AudioLevel, BackpressureNotice, CanvasFrame, ControlSurfaceEventHint, DeviceEventHint,
     EffectErrorHint, ExtensionEventHint, InputInjectEdge, InputSourceStatusEventHint,
-    InteractivePreviewLifecycle, InteractivePreviewRequest, MacosDaemonOwnershipEventHint,
-    PerformanceMetrics, SceneEventHint, ScreenZonesFrame, WsManager,
+    InteractivePreviewLifecycle, InteractivePreviewRequest, PerformanceMetrics, SceneEventHint,
+    ScreenZonesFrame, WsManager,
 };
 
 mod effect_state;
@@ -50,7 +51,7 @@ mod effect_state;
 use effect_state::{
     apply_active_effect_snapshot, apply_active_scene_snapshot, apply_effect_to_current_led_zones,
     capture_active_effect_state, clear_active_scene_state, effect_error_toast_message,
-    preferences_restore_inline, restore_active_effect_state,
+    restore_active_effect_state,
 };
 
 /// Global WebSocket state provided via Leptos context.
@@ -103,7 +104,7 @@ pub struct WsContext {
     /// canonical REST status snapshot.
     pub last_input_source_status_event: ReadSignal<Option<InputSourceStatusEventHint>>,
     /// Latest daemon-owner transition, used to invalidate canonical status.
-    pub last_macos_daemon_ownership_event: ReadSignal<Option<MacosDaemonOwnershipEventHint>>,
+    pub last_macos_daemon_ownership_event: ReadSignal<Option<api::MacosDaemonOwnershipStatus>>,
     /// Increments each time the daemon socket (re)opens. Fold into fetcher
     /// epochs to refetch REST mirrors after a reconnect gap, since bus
     /// events are not replayed.
@@ -264,7 +265,6 @@ impl EffectsContext {
     pub fn apply_effect(&self, id: String) {
         let apply_target = self.apply_target.get_untracked();
         let stored_prefs = self.preferences.get(&id);
-        let restores_inline = preferences_restore_inline(stored_prefs.as_ref());
         if apply_target == ApplyTarget::AllZones {
             let ctx = *self;
             leptos::task::spawn_local(async move {
@@ -277,21 +277,34 @@ impl EffectsContext {
         // named zone has to be targeted.
         let target_zone_id = apply_target.zone_id().map(ToOwned::to_owned);
         let body =
-            (stored_prefs.is_some() || target_zone_id.is_some()).then(|| api::ApplyEffectBody {
+            (stored_prefs.is_some() || target_zone_id.is_some()).then(|| api::ApplyEffectRequest {
                 preset_id: stored_prefs
                     .as_ref()
                     .and_then(|prefs| prefs.preset_id.as_deref())
                     .and_then(|preset_id| preset_id.parse().ok()),
                 controls: stored_prefs.as_ref().and_then(|prefs| {
-                    (!prefs.control_values.is_empty())
-                        .then(|| prefs.control_values.clone().into_iter().collect())
+                    (!prefs.control_values.is_empty()).then(|| {
+                        prefs
+                            .control_values
+                            .clone()
+                            .into_iter()
+                            .map(|(name, value)| {
+                                (
+                                    name,
+                                    CanonicalControlValue::try_from(value).expect(
+                                        "stored effect controls must satisfy canonical invariants",
+                                    ),
+                                )
+                            })
+                            .collect()
+                    })
                 }),
                 zone: target_zone_id.as_deref().and_then(|zone_id| {
                     uuid::Uuid::parse_str(zone_id)
                         .ok()
                         .map(hypercolor_types::scene::ZoneId)
                 }),
-                ..api::ApplyEffectBody::default()
+                ..api::ApplyEffectRequest::default()
             });
 
         // A named-zone apply renders into that zone and leaves the default
@@ -313,10 +326,8 @@ impl EffectsContext {
             return;
         }
 
-        // Legacy bundled IDs require the asynchronous migration path, even
-        // though their control snapshot can be sent with the initial apply.
         self.restored_effects.update_value(|set| {
-            if restores_inline {
+            if stored_prefs.is_some() {
                 set.insert(id.clone());
             } else {
                 set.remove(&id);
@@ -332,7 +343,7 @@ impl EffectsContext {
         self.set_active_effect_category.set(
             selected_effect
                 .as_ref()
-                .map(|effect| effect.category.clone())
+                .map(|effect| effect.category.as_str().to_owned())
                 .unwrap_or_default(),
         );
         // Optimistically mirror the stored controls locally so the sidebar
@@ -626,15 +637,21 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
                 .zip(surfaces)
                 .filter(|(_, surface)| surface.kind == crate::zones::surface::SurfaceKind::Light)
                 .map(|(group, surface)| {
-                    let effect_id = group.effect_id.as_ref().map(ToString::to_string);
+                    let effect = api::zone_effect(group);
+                    let effect_id = effect.map(|effect| effect.effect_id.to_string());
                     let indexed = effect_id
                         .as_ref()
                         .and_then(|id| effects.iter().find(|entry| entry.effect.id == *id));
                     crate::zones::ZoneEffectState {
                         effect_name: indexed.map(|entry| entry.effect.name.clone()),
-                        effect_category: indexed.map(|entry| entry.effect.category.clone()),
-                        control_values: group.controls.clone(),
-                        preset_id: group.preset_id.as_ref().map(ToString::to_string),
+                        effect_category: indexed
+                            .map(|entry| entry.effect.category.as_str().to_owned()),
+                        control_values: effect
+                            .map(|effect| effect.controls.clone())
+                            .unwrap_or_default(),
+                        preset_id: effect
+                            .and_then(|effect| effect.preset_id)
+                            .map(|preset_id| preset_id.to_string()),
                         revision: scene.revision,
                         effect_id,
                         zone: surface,
@@ -847,7 +864,7 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
                 effects_ctx
                     .effect_summary(&effect_error.effect_id)
                     .is_some_and(|effect| {
-                        !effect.category.eq_ignore_ascii_case("display")
+                        effect.category != hypercolor_types::effect::EffectCategory::Display
                             && Some(effect_error.effect_id.clone()) != active_effect_id
                     })
             })

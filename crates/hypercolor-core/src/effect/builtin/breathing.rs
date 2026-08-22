@@ -7,12 +7,13 @@
 use std::path::PathBuf;
 
 use hypercolor_types::canvas::{Canvas, LinearRgba};
+use hypercolor_types::control::{ControlDeltaBatch, ControlValue as CanonicalControlValue};
 use hypercolor_types::effect::{
     ControlDefinition, ControlValue, EffectCategory, EffectMetadata, EffectSource, PresetTemplate,
 };
 
 use super::common::{builtin_effect_id, color_control, preset, preset_with_desc, slider_control};
-use crate::effect::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
+use crate::effect::traits::{ControlError, EffectRenderer, FrameInput, prepare_target_canvas};
 
 /// Pulsing brightness effect with sinusoidal modulation.
 pub struct BreathingRenderer {
@@ -74,32 +75,34 @@ impl EffectRenderer for BreathingRenderer {
         Ok(())
     }
 
-    fn set_control(&mut self, name: &str, value: &ControlValue) {
-        match name {
-            "color" => {
-                if let ControlValue::Color(c) = value {
-                    self.color = *c;
+    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> Result<(), ControlError> {
+        for (control_id, value) in batch.changes {
+            match control_id.as_str() {
+                "color" => {
+                    if let CanonicalControlValue::ColorLinear(color) = value {
+                        self.color = [color.r, color.g, color.b, color.a];
+                    }
                 }
-            }
-            "speed" => {
-                if let Some(v) = value.as_f32() {
-                    self.speed_bpm = v.max(0.1);
+                "speed" => {
+                    if let Some(value) = value.as_effect_f32() {
+                        self.speed_bpm = value.max(0.1);
+                    }
                 }
-            }
-            "min_brightness" => {
-                if let Some(v) = value.as_f32() {
-                    self.min_brightness = v.clamp(0.0, 1.0);
+                "min_brightness" => {
+                    if let Some(value) = value.as_effect_f32() {
+                        self.min_brightness = value.clamp(0.0, 1.0);
+                    }
                 }
-            }
-            "max_brightness" => {
-                if let Some(v) = value.as_f32() {
-                    self.max_brightness = v.clamp(0.0, 1.0);
+                "max_brightness" => {
+                    if let Some(value) = value.as_effect_f32() {
+                        self.max_brightness = value.clamp(0.0, 1.0);
+                    }
                 }
+                _ => {}
             }
-            _ => {}
         }
+        Ok(())
     }
-
     fn destroy(&mut self) {}
 }
 

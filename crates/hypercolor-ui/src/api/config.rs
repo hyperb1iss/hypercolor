@@ -1,28 +1,11 @@
 //! Config and audio device API functions.
 
-use serde::Deserialize;
-
 pub use hypercolor_types::api::capture::CaptureMonitor;
+use hypercolor_types::api::system::AudioDevicesResponse;
 use hypercolor_types::config_registry::ConfigKeySchemaEntry;
 
 use super::client;
 use crate::control_surface_api::path_segment;
-
-// ── Types ───────────────────────────────────────────────────────────────────
-
-/// Audio device info from `GET /api/v1/system/audio-devices`.
-#[derive(Debug, Clone, Deserialize)]
-pub struct AudioDeviceInfo {
-    pub id: String,
-    pub name: String,
-    #[serde(default)]
-    pub description: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct AudioDevicesData {
-    pub devices: Vec<AudioDeviceInfo>,
-}
 
 // ── Fetch Functions ─────────────────────────────────────────────────────────
 
@@ -67,7 +50,7 @@ pub async fn fetch_capture_monitors() -> Result<Vec<CaptureMonitor>, String> {
 }
 
 /// Enumerate available audio devices.
-pub async fn fetch_audio_devices() -> Result<AudioDevicesData, String> {
+pub async fn fetch_audio_devices() -> Result<AudioDevicesResponse, String> {
     client::fetch_json("/api/v1/system/audio-devices")
         .await
         .map_err(Into::into)

@@ -5,10 +5,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Result;
 use async_trait::async_trait;
-use hypercolor_driver_api::CredentialStore;
 use hypercolor_driver_api::{
     BackendRebindActions, DeviceControlStore, DriverConfigProvider, DriverControlHost,
-    DriverControlStore, DriverCredentialStore, DriverDiscoveryState, DriverHost,
+    DriverControlStore, DriverCredentialStore, DriverDiscoveryState, DriverError, DriverHost,
     DriverLifecycleActions, DriverModule, DriverRuntimeActions, DriverTrackedDevice,
     TrackedDeviceCtx,
 };
@@ -16,6 +15,7 @@ use hypercolor_driver_nanoleaf::{
     NanoleafConfig, NanoleafDriverModule, nanoleaf_device_control_surface,
     nanoleaf_driver_control_surface, resolve_nanoleaf_probe_devices_from_sources,
 };
+use hypercolor_driver_support::CredentialStore;
 use hypercolor_types::controls::{
     ActionConfirmationLevel, ApplyImpact, ControlAccess, ControlActionStatus, ControlSurfaceEvent,
     ControlValue, ControlValueMap,
@@ -91,12 +91,9 @@ fn resolve_nanoleaf_probe_devices_merges_tracked_metadata() {
 #[test]
 fn nanoleaf_module_advertises_presentation_metadata() {
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
-    let module = NanoleafDriverModule::new(
-        Arc::new(
-            CredentialStore::open_blocking(tempdir.path()).expect("credential store should open"),
-        ),
-        false,
-    );
+    let module = NanoleafDriverModule::new(Arc::new(
+        CredentialStore::open_blocking(tempdir.path()).expect("credential store should open"),
+    ));
 
     let descriptor = module.module_descriptor();
     assert!(descriptor.capabilities.presentation);
@@ -113,15 +110,43 @@ fn nanoleaf_module_advertises_presentation_metadata() {
     );
 }
 
+#[tokio::test]
+async fn nanoleaf_auth_summary_propagates_credential_store_failure() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let module = NanoleafDriverModule::new(Arc::new(
+        CredentialStore::open_blocking(tempdir.path()).expect("credential store should open"),
+    ));
+    let tracked = tracked_nanoleaf_device();
+    let host = TestHost::default();
+    host.credentials.fail_reads.store(true, Ordering::SeqCst);
+    let device = TrackedDeviceCtx {
+        device_id: tracked.info.id,
+        info: &tracked.info,
+        metadata: Some(&tracked.metadata),
+        current_state: &tracked.current_state,
+    };
+
+    let error = module
+        .pairing()
+        .expect("Nanoleaf should expose pairing")
+        .auth_summary(&host, &device)
+        .await
+        .expect_err("credential failure should cross the pairing boundary");
+
+    assert!(matches!(error, DriverError::Pairing { .. }));
+    assert!(
+        error
+            .to_string()
+            .contains("injected credential read failure")
+    );
+}
+
 #[test]
 fn nanoleaf_config_validation_rejects_non_routable_device_ips() {
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
-    let module = NanoleafDriverModule::new(
-        Arc::new(
-            CredentialStore::open_blocking(tempdir.path()).expect("credential store should open"),
-        ),
-        false,
-    );
+    let module = NanoleafDriverModule::new(Arc::new(
+        CredentialStore::open_blocking(tempdir.path()).expect("credential store should open"),
+    ));
     let mut config = module
         .config()
         .expect("Nanoleaf should expose config provider")
@@ -251,12 +276,9 @@ fn nanoleaf_device_control_surface_exposes_tracked_metadata() {
 #[tokio::test]
 async fn nanoleaf_refresh_topology_action_schedules_device_reconnect() {
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
-    let module = NanoleafDriverModule::new(
-        Arc::new(
-            CredentialStore::open_blocking(tempdir.path()).expect("credential store should open"),
-        ),
-        false,
-    );
+    let module = NanoleafDriverModule::new(Arc::new(
+        CredentialStore::open_blocking(tempdir.path()).expect("credential store should open"),
+    ));
     let tracked = tracked_nanoleaf_device();
     let host = TestHost::default();
     let device = TrackedDeviceCtx {
@@ -286,11 +308,15 @@ async fn nanoleaf_refresh_topology_action_schedules_device_reconnect() {
 #[derive(Default)]
 struct TestCredentialStore {
     values: Mutex<HashMap<String, Value>>,
+    fail_reads: AtomicBool,
 }
 
 #[async_trait]
 impl DriverCredentialStore for TestCredentialStore {
     async fn get_json(&self, driver_id: &str, key: &str) -> Result<Option<Value>> {
+        if self.fail_reads.load(Ordering::SeqCst) {
+            anyhow::bail!("injected credential read failure");
+        }
         Ok(self
             .values
             .lock()

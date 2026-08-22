@@ -5,10 +5,9 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::LazyLock;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
-use anyhow::{Result, bail};
 use axum::extract::State;
 use axum::{Router, body::to_bytes, routing::get};
 use hypercolor_core::config::{BootConfig, ConfigManager};
@@ -17,14 +16,14 @@ use hypercolor_core::device::manager::{
 };
 use hypercolor_core::engine::RenderLoopState;
 use hypercolor_core::spatial::SpatialEngine;
-use hypercolor_daemon::api::{AppState, system::get_status};
+use hypercolor_daemon::api::system::get_status;
+use hypercolor_daemon::app_state::AppState;
 use hypercolor_daemon::daemon::{
     DaemonRunOptions, bind_api_listener, effective_bind_target, effective_bind_targets,
     effective_startup_bind_targets, serve_api_listeners_with_shutdown_timeout,
     validate_network_bind_auth,
 };
 use hypercolor_daemon::discovery;
-use hypercolor_daemon::session::current_global_brightness;
 use hypercolor_daemon::startup::{
     DaemonState, collect_unmapped_driver_layout_targets, collect_unmapped_prefixed_layout_targets,
     config_sources, default_config, install_signal_handlers, parse_config_toml,
@@ -37,14 +36,14 @@ use hypercolor_types::config::{
     NetworkAccessMode, RenderAccelerationMode,
 };
 use hypercolor_types::device::{
-    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
-    DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, SegmentInfo,
-    SegmentLayoutHint,
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceError, DeviceFamily,
+    DeviceFeatures, DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint,
+    SegmentInfo, SegmentLayoutHint,
 };
 use hypercolor_types::effect::EffectSource;
 use hypercolor_types::event::{EffectStopReason, HypercolorEvent};
 use hypercolor_types::identity::LayoutId;
-use hypercolor_types::layer::{SceneLayer, SceneLayerId};
+use hypercolor_types::layer::{LayerSource, SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{SceneId, Zone, ZoneId, ZoneRole};
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
@@ -53,6 +52,14 @@ use hypercolor_types::spatial::{
 use serde_json::Value;
 use tempfile::NamedTempFile;
 use tokio::sync::Mutex;
+
+type Result<T> = std::result::Result<T, DeviceError>;
+
+macro_rules! bail {
+    ($($arg:tt)*) => {
+        return Err(DeviceError::protocol("test backend", format!($($arg)*)))
+    };
+}
 
 /// Minimal TOML content that `ConfigManager` can parse.
 const MINIMAL_TOML: &str = "schema_version = 5\n";
@@ -68,7 +75,7 @@ struct StuckHandlerState {
 struct ShutdownCleanupBackend {
     expected_device_id: DeviceId,
     disconnects: Arc<AtomicUsize>,
-    connected: bool,
+    connected: AtomicBool,
 }
 
 struct StaticHoldRecordingBackend {
@@ -86,19 +93,22 @@ impl DeviceBackend for StaticHoldRecordingBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
-        Ok(Vec::new())
-    }
-
-    async fn connect(&mut self, _id: &DeviceId) -> Result<()> {
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), hypercolor_types::device::DeviceError> {
         Ok(())
     }
 
-    async fn disconnect(&mut self, _id: &DeviceId) -> Result<()> {
+    async fn connect(&self, _id: &DeviceId) -> Result<()> {
         Ok(())
     }
 
-    async fn write_colors(&mut self, _id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+    async fn disconnect(&self, _id: &DeviceId) -> Result<()> {
+        Ok(())
+    }
+
+    async fn write_colors(&self, _id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
         if colors.iter().any(|color| *color != [0, 0, 0]) {
             bail!("static hold emitted a non-black color");
         }
@@ -117,7 +127,7 @@ impl ShutdownCleanupBackend {
         Self {
             expected_device_id,
             disconnects,
-            connected: false,
+            connected: AtomicBool::new(false),
         }
     }
 }
@@ -132,31 +142,34 @@ impl DeviceBackend for ShutdownCleanupBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
-        Ok(Vec::new())
-    }
-
-    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
-        if *id != self.expected_device_id {
-            bail!("unexpected device id {id}");
-        }
-        self.connected = true;
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), hypercolor_types::device::DeviceError> {
         Ok(())
     }
 
-    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn connect(&self, id: &DeviceId) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
-        if !self.connected {
+        self.connected.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+        if !self.connected.load(Ordering::Acquire) {
             bail!("disconnect called while backend was not connected");
         }
-        self.connected = false;
+        self.connected.store(false, Ordering::Release);
         self.disconnects.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 
-    async fn write_colors(&mut self, _id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, _id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
         Ok(())
     }
 }
@@ -165,6 +178,7 @@ struct TestDataDirGuard {
     _lock: tokio::sync::MutexGuard<'static, ()>,
     _dir: tempfile::TempDir,
     data_dir: PathBuf,
+    state_dir: PathBuf,
 }
 
 impl TestDataDirGuard {
@@ -172,11 +186,14 @@ impl TestDataDirGuard {
         let lock = DATA_DIR_LOCK.lock().await;
         let dir = tempfile::tempdir().expect("tempdir should be created");
         let data_dir = dir.path().join("data");
+        let state_dir = dir.path().join("state");
         ConfigManager::set_data_dir_override(Some(data_dir.clone()));
+        ConfigManager::set_state_dir_override(Some(state_dir.clone()));
         Self {
             _lock: lock,
             _dir: dir,
             data_dir,
+            state_dir,
         }
     }
 
@@ -185,7 +202,15 @@ impl TestDataDirGuard {
     }
 
     fn runtime_state_path(&self) -> PathBuf {
-        self.data_dir.join("runtime-state.json")
+        self.state_dir.join("runtime-state.json")
+    }
+
+    fn legacy_state_path(&self, file_name: &str) -> PathBuf {
+        self.data_dir.join(file_name)
+    }
+
+    fn state_path(&self, file_name: &str) -> PathBuf {
+        self.state_dir.join(file_name)
     }
 
     fn scenes_path(&self) -> PathBuf {
@@ -196,6 +221,7 @@ impl TestDataDirGuard {
 impl Drop for TestDataDirGuard {
     fn drop(&mut self) {
         ConfigManager::set_data_dir_override(None);
+        ConfigManager::set_state_dir_override(None);
     }
 }
 
@@ -220,6 +246,73 @@ impl TestConfigDirGuard {
 impl Drop for TestConfigDirGuard {
     fn drop(&mut self) {
         ConfigManager::set_config_dir_override(None);
+    }
+}
+
+#[tokio::test]
+async fn daemon_initialization_relocates_machine_state_out_of_data() {
+    let guard = TestDataDirGuard::new().await;
+    std::fs::create_dir_all(&guard.data_dir).expect("legacy data directory should be created");
+
+    let legacy_documents = [
+        (
+            "driver-inventory.json",
+            serde_json::json!({"schema_version": 1, "drivers": {}}),
+        ),
+        ("display-preferences.json", serde_json::json!({})),
+        (
+            "device-settings.json",
+            serde_json::json!({
+                "schema_version": 3,
+                "global_brightness": 0.42,
+                "devices": {},
+                "driver_controls": {},
+            }),
+        ),
+        (
+            "runtime-state.json",
+            serde_json::to_value(runtime_state::RuntimeSessionSnapshot::default())
+                .expect("runtime snapshot should serialize"),
+        ),
+        (
+            "device-aliases.json",
+            serde_json::json!({
+                "schema_version": 2,
+                "aliases": {},
+                "quarantined_keys": [],
+                "collisions": [],
+            }),
+        ),
+    ];
+    for (file_name, document) in &legacy_documents {
+        std::fs::write(
+            guard.legacy_state_path(file_name),
+            serde_json::to_vec_pretty(document).expect("legacy document should serialize"),
+        )
+        .expect("legacy document should be written");
+    }
+
+    let config = default_config();
+    let temp = temp_config_file();
+    let state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    )
+    .expect("state migration should succeed");
+
+    assert_eq!(state.runtime_state_path, guard.runtime_state_path());
+    assert_eq!(
+        state.device_aliases_path,
+        guard.state_path("device-aliases.json")
+    );
+    assert_eq!(
+        state.driver_host.driver_inventory().path(),
+        guard.state_path("driver-inventory.json")
+    );
+    assert_eq!(state.output_power.global_brightness(), 0.42);
+    for (file_name, _) in &legacy_documents {
+        assert!(guard.state_path(file_name).exists());
+        assert!(!guard.legacy_state_path(file_name).exists());
     }
 }
 
@@ -346,6 +439,34 @@ async fn initialize_rejects_explicit_gpu_render_acceleration_without_wgpu_featur
     };
 
     assert!(format!("{error:#}").contains("rebuild hypercolor-daemon with the `wgpu` feature"));
+}
+
+#[tokio::test]
+async fn initialize_rejects_a_corrupt_scene_store_without_overwriting_it() {
+    let guard = TestDataDirGuard::new().await;
+    std::fs::create_dir_all(&guard.data_dir).expect("test data directory should exist");
+    let corrupt = "{ definitely not scene json";
+    std::fs::write(guard.scenes_path(), corrupt).expect("corrupt scene store should write");
+    let temp = temp_config_file();
+    let config = default_config();
+
+    let Err(error) = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    ) else {
+        panic!("corrupt scene persistence must prevent startup");
+    };
+
+    assert!(
+        format!("{error:#}").contains("failed to load scenes"),
+        "the startup error identifies scene persistence: {error:#}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(guard.scenes_path())
+            .expect("corrupt scene store should remain readable"),
+        corrupt,
+        "startup must not replace corrupt scene persistence"
+    );
 }
 
 #[cfg(not(feature = "wgpu"))]
@@ -1018,7 +1139,7 @@ async fn daemon_shutdown_disconnects_renderable_devices() {
 
     {
         let mut manager = state.backend_manager.lock().await;
-        manager.register_backend(Box::new(ShutdownCleanupBackend::new(
+        manager.register_backend(Arc::new(ShutdownCleanupBackend::new(
             device_id,
             Arc::clone(&disconnects),
         )));
@@ -1087,7 +1208,7 @@ async fn daemon_state_default_scene_starts_with_default_zone() {
     )
     .expect("initialization should succeed");
 
-    let scenes = state.scene_manager.read().await;
+    let scenes = state.scene_manager.snapshot().await;
     assert!(
         scenes.active_scene_id().is_some_and(SceneId::is_default),
         "default scene should be active initially"
@@ -1109,7 +1230,7 @@ async fn daemon_state_scene_manager_starts_with_default_scene() {
     )
     .expect("initialization should succeed");
 
-    let scenes = state.scene_manager.read().await;
+    let scenes = state.scene_manager.snapshot().await;
     assert_eq!(
         scenes.scene_count(),
         1,
@@ -1138,7 +1259,7 @@ async fn named_scenes_persist_across_restart() {
     )
     .expect("initialization should succeed");
 
-    let scenes = state.scene_manager.read().await;
+    let scenes = state.scene_manager.snapshot().await;
     assert_eq!(scenes.scene_count(), 2);
     assert_eq!(scenes.active_scene_id(), Some(&SceneId::DEFAULT));
     assert_eq!(
@@ -1246,7 +1367,7 @@ async fn a_stale_runtime_snapshot_never_blocks_startup() {
         .expect("a stale snapshot must not block startup");
 
     // Nothing from the unreadable snapshot was restored.
-    assert!((current_global_brightness(&state.power_state) - 1.0).abs() < f32::EPSILON);
+    assert!((state.output_power.global_brightness() - 1.0).abs() < f32::EPSILON);
 
     state.shutdown().await.expect("shutdown should succeed");
 }
@@ -1276,7 +1397,6 @@ async fn daemon_start_restores_persisted_active_layout_from_disk() {
             active_scene_id: Some(SceneId::DEFAULT.to_string()),
             default_scene_groups: Vec::new(),
             active_layout_id: Some(restored_layout.id.clone()),
-            global_brightness: 1.0,
             manual_paused: false,
         },
     )
@@ -1297,7 +1417,7 @@ async fn daemon_start_restores_persisted_active_layout_from_disk() {
     state.start().await.expect("start should succeed");
 
     let active_layout = {
-        let spatial = state.spatial_engine.read().await;
+        let spatial = state.spatial_engine.snapshot();
         spatial.layout().as_ref().clone()
     };
     assert_eq!(active_layout.id, restored_layout.id);
@@ -1307,18 +1427,27 @@ async fn daemon_start_restores_persisted_active_layout_from_disk() {
 }
 
 #[tokio::test]
-async fn daemon_start_restores_manual_pause_before_rendering() {
+async fn daemon_start_discards_legacy_runtime_brightness_and_restores_pause() {
     let guard = TestDataDirGuard::new().await;
-    runtime_state::save(
-        &guard.runtime_state_path(),
-        &runtime_state::RuntimeSessionSnapshot {
-            active_scene_id: Some(SceneId::DEFAULT.to_string()),
-            global_brightness: 0.42,
-            manual_paused: true,
-            ..runtime_state::RuntimeSessionSnapshot::default()
-        },
+    let runtime_path = guard.runtime_state_path();
+    std::fs::create_dir_all(
+        runtime_path
+            .parent()
+            .expect("runtime state path should have a parent"),
     )
-    .expect("runtime state should save");
+    .expect("runtime state directory should build");
+    std::fs::write(
+        &runtime_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "active_scene_id": SceneId::DEFAULT.to_string(),
+            "default_scene_groups": [],
+            "active_layout_id": null,
+            "global_brightness": 0.42,
+            "manual_paused": true,
+        }))
+        .expect("legacy runtime snapshot should serialize"),
+    )
+    .expect("legacy runtime snapshot should write");
 
     let mut config = default_config();
     config.daemon.start_scene = "default".into();
@@ -1331,8 +1460,13 @@ async fn daemon_start_restores_manual_pause_before_rendering() {
 
     state.start().await.expect("start should succeed");
 
-    assert!(state.power_state.borrow().manually_paused());
-    assert_eq!(current_global_brightness(&state.power_state), 1.0);
+    assert!(state.output_power.snapshot().manually_paused());
+    assert_eq!(state.output_power.global_brightness(), 1.0);
+    let rewritten: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&runtime_path).expect("rewritten runtime snapshot should read"),
+    )
+    .expect("rewritten runtime snapshot should parse");
+    assert!(rewritten.get("global_brightness").is_none());
     assert_eq!(
         state.render_loop.read().await.state(),
         RenderLoopState::Paused
@@ -1409,18 +1543,24 @@ async fn runtime_state_and_driver_inventory_persist_independently() {
 
     {
         let layout = {
-            let spatial = state.spatial_engine.read().await;
+            let spatial = state.spatial_engine.snapshot();
             spatial.layout().as_ref().clone()
         };
-        let mut scene_manager = state.scene_manager.write().await;
-        scene_manager
-            .upsert_primary_group(
+        let api_state = AppState::from_daemon_state(&state);
+        let mut mutation = api_state.scene_manager.begin_mutation().await;
+        mutation
+            .upsert_primary_zone(
                 &metadata,
                 std::collections::HashMap::new(),
                 Some(preset_id),
                 layout,
+                hypercolor_types::event::ChangeTrigger::System,
+                None,
             )
             .expect("native effect should activate");
+        hypercolor_daemon::domain::scene::commit_scene(&api_state.domains.scene, mutation)
+            .await
+            .expect("native effect should commit");
     }
 
     let mut wled_metadata = std::collections::HashMap::new();
@@ -1446,7 +1586,7 @@ async fn runtime_state_and_driver_inventory_persist_independently() {
                 firmware_version: Some("0.15.3".to_owned()),
                 capabilities: DeviceCapabilities::default(),
             },
-            DeviceFingerprint("net:aa:bb:cc:dd:ee:ff".to_owned()),
+            DeviceFingerprint::from_persisted("net:aa:bb:cc:dd:ee:ff".to_owned()),
             wled_metadata,
         )
         .await;
@@ -1458,11 +1598,17 @@ async fn runtime_state_and_driver_inventory_persist_independently() {
         .expect("runtime state snapshot should exist");
     assert_eq!(snapshot.active_scene_id, Some(SceneId::DEFAULT.to_string()));
     assert_eq!(snapshot.default_scene_groups.len(), 1);
-    assert_eq!(
-        snapshot.default_scene_groups[0].effect_id,
-        Some(metadata.id)
-    );
-    assert_eq!(snapshot.default_scene_groups[0].preset_id, Some(preset_id));
+    assert!(matches!(
+        snapshot.default_scene_groups[0]
+            .layers
+            .first()
+            .map(|layer| &layer.source),
+        Some(LayerSource::Effect {
+            effect_id,
+            preset_id: Some(candidate),
+            ..
+        }) if *effect_id == metadata.id && *candidate == preset_id
+    ));
     let wled_cache = state.driver_host.driver_inventory().driver_cache("wled");
     let probe_ips: Vec<std::net::IpAddr> = serde_json::from_value(wled_cache["probe_ips"].clone())
         .expect("probe IP inventory should deserialize");
@@ -1485,10 +1631,6 @@ async fn daemon_start_restores_named_active_scene_and_default_groups() {
         id: ZoneId::new(),
         name: "Saved Default Group".to_owned(),
         description: None,
-        effect_id: None,
-        controls: std::collections::HashMap::new(),
-        control_bindings: std::collections::HashMap::new(),
-        preset_id: None,
         layers: Vec::new(),
         layout: SpatialLayout {
             id: "default_saved".to_owned(),
@@ -1516,7 +1658,6 @@ async fn daemon_start_restores_named_active_scene_and_default_groups() {
             active_scene_id: Some(named_scene_id.to_string()),
             default_scene_groups: vec![default_group.clone()],
             active_layout_id: None,
-            global_brightness: 1.0,
             manual_paused: false,
         },
     )
@@ -1533,12 +1674,12 @@ async fn daemon_start_restores_named_active_scene_and_default_groups() {
 
     state.start().await.expect("start should succeed");
 
-    let scenes = state.scene_manager.read().await;
+    let scenes = state.scene_manager.snapshot().await;
     assert_eq!(scenes.active_scene_id(), Some(&named_scene_id));
     let default_scene = scenes
         .get(&SceneId::DEFAULT)
         .expect("default scene should exist");
-    assert_eq!(default_scene.groups, vec![default_group]);
+    assert_eq!(default_scene.zones, vec![default_group]);
     drop(scenes);
 
     state.shutdown().await.expect("shutdown should succeed");
@@ -1585,12 +1726,12 @@ async fn daemon_start_activates_configured_scene_name_without_runtime_snapshot()
     state.start().await.expect("start should succeed");
 
     assert_eq!(
-        state.scene_manager.read().await.active_scene_id(),
+        state.scene_manager.snapshot().await.active_scene_id(),
         Some(&named_scene_id)
     );
-    assert!((current_global_brightness(&state.power_state) - 0.35).abs() < f32::EPSILON);
+    assert!((state.output_power.global_brightness() - 0.35).abs() < f32::EPSILON);
     assert_eq!(
-        state.spatial_engine.read().await.layout().id,
+        state.spatial_engine.snapshot().layout().id,
         selected_layout.id
     );
 
@@ -1618,7 +1759,7 @@ async fn daemon_start_activates_configured_scene_id() {
     state.start().await.expect("start should succeed");
 
     assert_eq!(
-        state.scene_manager.read().await.active_scene_id(),
+        state.scene_manager.snapshot().await.active_scene_id(),
         Some(&named_scene_id)
     );
 
@@ -1660,10 +1801,6 @@ async fn default_scene_contents_restore_on_restart() {
                 id: zone_id,
                 name: "Saved Default Group".to_owned(),
                 description: Some("Restored from runtime snapshot".to_owned()),
-                effect_id: Some(effect_id),
-                controls: controls.clone(),
-                control_bindings: std::collections::HashMap::new(),
-                preset_id: None,
                 layers: vec![SceneLayer::from_effect(
                     SceneLayerId::new(),
                     effect_id,
@@ -1692,7 +1829,6 @@ async fn default_scene_contents_restore_on_restart() {
                 layers_version: 0,
             }],
             active_layout_id: None,
-            global_brightness: 1.0,
             manual_paused: false,
         },
     )
@@ -1700,19 +1836,27 @@ async fn default_scene_contents_restore_on_restart() {
 
     state.start().await.expect("start should succeed");
 
-    let scenes = state.scene_manager.read().await;
+    let scenes = state.scene_manager.snapshot().await;
     assert_eq!(scenes.active_scene_id(), Some(&SceneId::DEFAULT));
     let default_scene = scenes
         .get(&SceneId::DEFAULT)
         .expect("default scene should exist");
-    assert_eq!(default_scene.groups.len(), 1);
-    assert_eq!(default_scene.groups[0].name, "Saved Default Group");
-    assert_eq!(default_scene.groups[0].effect_id, Some(effect_id));
-    assert_eq!(
-        default_scene.groups[0].controls.get("speed"),
-        Some(&hypercolor_types::effect::ControlValue::Float(4.5))
-    );
-    assert_eq!(default_scene.groups[0].brightness, 0.75);
+    assert_eq!(default_scene.zones.len(), 1);
+    assert_eq!(default_scene.zones[0].name, "Saved Default Group");
+    assert!(matches!(
+        default_scene.zones[0]
+            .layers
+            .first()
+            .map(|layer| &layer.source),
+        Some(LayerSource::Effect {
+            effect_id: candidate,
+            controls,
+            ..
+        }) if *candidate == effect_id
+            && controls.get("speed")
+                == Some(&hypercolor_types::effect::ControlValue::Float(4.5))
+    ));
+    assert_eq!(default_scene.zones[0].brightness, 0.75);
     drop(scenes);
 
     state.shutdown().await.expect("shutdown should succeed");
@@ -1725,7 +1869,6 @@ async fn paused_startup_seeds_and_reasserts_late_connected_device_output() {
         &guard.runtime_state_path(),
         &runtime_state::RuntimeSessionSnapshot {
             active_scene_id: Some(SceneId::DEFAULT.to_string()),
-            global_brightness: 1.0,
             manual_paused: true,
             ..runtime_state::RuntimeSessionSnapshot::default()
         },
@@ -1784,22 +1927,24 @@ async fn paused_startup_seeds_and_reasserts_late_connected_device_output() {
             .await,
         "late device should enter connected state"
     );
-    *state.spatial_engine.write().await = SpatialEngine::try_new(SpatialLayout {
-        id: "late-paused-layout".to_owned(),
-        name: "Late Paused Layout".to_owned(),
-        description: None,
-        canvas_width: 32,
-        canvas_height: 18,
-        zones: vec![test_zone("late-paused-zone", &layout_device_id)],
-        default_sampling_mode: SamplingMode::Bilinear,
-        default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
-        version: 1,
-    })
-    .expect("late-connect layout should be valid");
+    state.spatial_engine.replace(
+        SpatialEngine::try_new(SpatialLayout {
+            id: "late-paused-layout".to_owned(),
+            name: "Late Paused Layout".to_owned(),
+            description: None,
+            canvas_width: 32,
+            canvas_height: 18,
+            zones: vec![test_zone("late-paused-zone", &layout_device_id)],
+            default_sampling_mode: SamplingMode::Bilinear,
+            default_edge_behavior: EdgeBehavior::Clamp,
+            spaces: None,
+            version: 1,
+        })
+        .expect("late-connect layout should be valid"),
+    );
     {
         let mut manager = state.backend_manager.lock().await;
-        manager.register_backend(Box::new(StaticHoldRecordingBackend {
+        manager.register_backend(Arc::new(StaticHoldRecordingBackend {
             writes: Arc::clone(&writes),
             write_notify: Arc::clone(&write_notify),
         }));
@@ -2903,14 +3048,26 @@ async fn effect_error_fallback_worker_clears_active_groups_when_configured() {
 
     let group_id = {
         let layout = {
-            let spatial = state.spatial_engine.read().await;
+            let spatial = state.spatial_engine.snapshot();
             spatial.layout().as_ref().clone()
         };
-        let mut scene_manager = state.scene_manager.write().await;
-        scene_manager
-            .upsert_primary_group(&metadata, std::collections::HashMap::new(), None, layout)
+        let api_state = AppState::from_daemon_state(&state);
+        let mut mutation = api_state.scene_manager.begin_mutation().await;
+        let group_id = mutation
+            .upsert_primary_zone(
+                &metadata,
+                std::collections::HashMap::new(),
+                None,
+                layout,
+                hypercolor_types::event::ChangeTrigger::System,
+                None,
+            )
             .expect("native effect should activate")
-            .id
+            .id;
+        hypercolor_daemon::domain::scene::commit_scene(&api_state.domains.scene, mutation)
+            .await
+            .expect("native effect should commit");
+        group_id
     };
 
     let mut rx = state.event_bus.subscribe_all();
@@ -2955,11 +3112,11 @@ async fn effect_error_fallback_worker_clears_active_groups_when_configured() {
     .expect("effect-error fallback worker should react");
 
     let cleared_effect = {
-        let scene_manager = state.scene_manager.read().await;
+        let scene_manager = state.scene_manager.snapshot().await;
         scene_manager
             .active_scene()
-            .and_then(|scene| scene.groups.iter().find(|group| group.id == group_id))
-            .and_then(|group| group.effect_id)
+            .and_then(|scene| scene.zones.iter().find(|group| group.id == group_id))
+            .and_then(|group| group.effect_ids().next())
     };
     assert_eq!(cleared_effect, None);
 

@@ -346,9 +346,8 @@ as one `LatestFrameMetrics`, which includes:
   composition_bypassed
 - composition structure: logical_layer_count, render_group_count, scene_active,
   scene_transition_active
-- actual scene, direct-render, preview, and compositor pool state. The legacy
-  `slot_count`, `free_slots`, `published_slots`, and `dequeued_slots` fields
-  remain scene-pool aliases for v1 clients
+- actual scene, direct-render, preview, and compositor pool state, named by
+  pool so every metric has one unambiguous owner
 - copies: full_frame_copy_count, full_frame_copy_bytes
 - output_errors
 - a `FrameTimeline` with wake-to-publish absolute checkpoints

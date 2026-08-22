@@ -6,6 +6,7 @@ use gloo_net::http::Method;
 use hypercolor_types::api::scene::{
     ClearSceneRequest, PatchControlsRequest, ReplaceLayerRequest, SceneDocument,
 };
+use hypercolor_types::control::ControlValue as CanonicalControlValue;
 use hypercolor_types::effect::{ControlDefinition, ControlValue};
 use hypercolor_types::layer::LayerSource;
 use hypercolor_types::scene::ZoneRole;
@@ -20,7 +21,7 @@ pub use hypercolor_types::api::effects::{
     EffectCapabilitySet, EffectDetailResponse, EffectListResponse, EffectPresetListResponse,
     EffectPresetOrigin, EffectPresetSummary, EffectSummary, InstalledEffectResponse,
 };
-pub use hypercolor_types::api::scene::ApplyEffectRequest as ApplyEffectBody;
+pub use hypercolor_types::api::scene::ApplyEffectRequest;
 
 /// UI projection of the top effect layer in the live scene.
 #[derive(Debug, Clone, PartialEq)]
@@ -102,9 +103,9 @@ pub async fn apply_effect_preset(
         .transpose()?;
     client::post_json_discard(
         &path,
-        &ApplyEffectBody {
+        &ApplyEffectRequest {
             zone,
-            ..ApplyEffectBody::default()
+            ..ApplyEffectRequest::default()
         },
     )
     .await
@@ -113,7 +114,7 @@ pub async fn apply_effect_preset(
 
 /// Apply an effect by ID or name. Pass `None` for a bare start; pass
 /// `Some(body)` to deliver preferences atomically.
-pub async fn apply_effect(id: &str, body: Option<&ApplyEffectBody>) -> Result<(), String> {
+pub async fn apply_effect(id: &str, body: Option<&ApplyEffectRequest>) -> Result<(), String> {
     let path = format!("/api/v1/effects/{}/apply", path_segment(id));
     match body {
         Some(body) => client::post_json_discard(&path, body)
@@ -280,6 +281,7 @@ async fn patch_controls(
         .iter()
         .map(|(name, value)| {
             control_value_from_json(value)
+                .and_then(|value| CanonicalControlValue::try_from(value).ok())
                 .map(|value| (name.clone(), value))
                 .ok_or_else(|| format!("Unsupported control value for {name}"))
         })
@@ -363,7 +365,7 @@ pub async fn upload_effect(file: File) -> Result<InstalledEffectResponse, String
     }
 
     response
-        .json::<super::ApiEnvelope<InstalledEffectResponse>>()
+        .json::<hypercolor_types::api::ApiResponse<InstalledEffectResponse>>()
         .await
         .map(|payload| payload.data)
         .map_err(|error| error.to_string())

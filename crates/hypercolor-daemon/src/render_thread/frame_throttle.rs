@@ -2,9 +2,9 @@ use std::time::Instant;
 
 use tracing::{debug, trace, warn};
 
-use hypercolor_core::types::audio::AudioData;
-use hypercolor_core::types::canvas::Canvas;
-use hypercolor_core::types::event::FrameTiming;
+use hypercolor_types::audio::AudioData;
+use hypercolor_types::canvas::Canvas;
+use hypercolor_types::event::FrameTiming;
 use hypercolor_types::session::OffOutputBehavior;
 
 use super::frame_io::{FramePublicationRequest, FramePublicationSurfaces, publish_frame_updates};
@@ -144,7 +144,7 @@ pub(crate) async fn maybe_sleep_throttle(
     let push_start = Instant::now();
     let (write_stats, async_failures) = {
         let mut manager = state.backend_manager.lock().await;
-        let write_stats = manager.write_frame(zone_colors, layout.as_ref()).await;
+        let write_stats = manager.write_frame(zone_colors, layout.as_ref());
         let async_failures = manager.async_write_failures();
         (write_stats, async_failures)
     };

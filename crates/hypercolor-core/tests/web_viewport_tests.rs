@@ -1,5 +1,8 @@
 #![cfg(feature = "servo")]
 
+#[path = "support/control_renderer.rs"]
+mod control_renderer;
+
 use std::path::PathBuf;
 use std::sync::LazyLock;
 use std::thread;
@@ -18,6 +21,8 @@ use hypercolor_types::viewport::ViewportRect;
 use reqwest::Url;
 use tempfile::tempdir;
 use uuid::Uuid;
+
+use control_renderer::TestControlRenderer;
 
 const FRAME_DT_SECONDS: f32 = 1.0 / 30.0;
 const OUTPUT_WIDTH: u32 = 32;
@@ -116,11 +121,12 @@ fn render_until(
     predicate: impl Fn(&Canvas, Option<&Canvas>) -> bool,
 ) -> (Canvas, Option<Canvas>) {
     let mut last_preview = None::<Canvas>;
+    let mut canvas = Canvas::new(OUTPUT_WIDTH, OUTPUT_HEIGHT);
 
     for frame_number in 0..60 {
-        let canvas = renderer
-            .tick(&frame(frame_number))
-            .expect("tick should succeed");
+        renderer
+            .render_into(&frame(frame_number), &mut canvas)
+            .expect("frame should render");
         let preview = renderer.preview_canvas();
         if predicate(&canvas, preview.as_ref()) {
             return (canvas, preview);
@@ -156,10 +162,10 @@ fn canvas_is_black(canvas: &Canvas) -> bool {
 fn web_viewport_renders_local_fixture_and_exposes_preview_canvas() {
     let fixture = write_two_panel_fixture();
     let mut renderer = WebViewportRenderer::new();
-    renderer.set_control("url", &ControlValue::Text(fixture.url));
-    renderer.set_control("fit_mode", &ControlValue::Enum("Stretch".into()));
-    renderer.set_control("render_width", &ControlValue::Float(PREVIEW_WIDTH as f32));
-    renderer.set_control("render_height", &ControlValue::Float(PREVIEW_HEIGHT as f32));
+    renderer.apply_test_control("url", &ControlValue::Text(fixture.url));
+    renderer.apply_test_control("fit_mode", &ControlValue::Enum("Stretch".into()));
+    renderer.apply_test_control("render_width", &ControlValue::Float(PREVIEW_WIDTH as f32));
+    renderer.apply_test_control("render_height", &ControlValue::Float(PREVIEW_HEIGHT as f32));
     renderer
         .init(&metadata())
         .expect("web viewport init should succeed");
@@ -188,11 +194,11 @@ fn web_viewport_renders_local_fixture_and_exposes_preview_canvas() {
 fn web_viewport_viewport_control_crops_the_requested_region() {
     let fixture = write_two_panel_fixture();
     let mut renderer = WebViewportRenderer::new();
-    renderer.set_control("url", &ControlValue::Text(fixture.url));
-    renderer.set_control("fit_mode", &ControlValue::Enum("Stretch".into()));
-    renderer.set_control("render_width", &ControlValue::Float(PREVIEW_WIDTH as f32));
-    renderer.set_control("render_height", &ControlValue::Float(PREVIEW_HEIGHT as f32));
-    renderer.set_control(
+    renderer.apply_test_control("url", &ControlValue::Text(fixture.url));
+    renderer.apply_test_control("fit_mode", &ControlValue::Enum("Stretch".into()));
+    renderer.apply_test_control("render_width", &ControlValue::Float(PREVIEW_WIDTH as f32));
+    renderer.apply_test_control("render_height", &ControlValue::Float(PREVIEW_HEIGHT as f32));
+    renderer.apply_test_control(
         "viewport",
         &ControlValue::Rect(ViewportRect::new(0.55, 0.0, 0.45, 1.0)),
     );
@@ -219,9 +225,9 @@ fn web_viewport_viewport_control_crops_the_requested_region() {
 #[ignore = "requires full Servo runtime and local file rendering"]
 fn web_viewport_invalid_url_falls_back_to_black() {
     let mut renderer = WebViewportRenderer::new();
-    renderer.set_control("url", &ControlValue::Text("not a valid url value".into()));
-    renderer.set_control("render_width", &ControlValue::Float(PREVIEW_WIDTH as f32));
-    renderer.set_control("render_height", &ControlValue::Float(PREVIEW_HEIGHT as f32));
+    renderer.apply_test_control("url", &ControlValue::Text("not a valid url value".into()));
+    renderer.apply_test_control("render_width", &ControlValue::Float(PREVIEW_WIDTH as f32));
+    renderer.apply_test_control("render_height", &ControlValue::Float(PREVIEW_HEIGHT as f32));
     renderer
         .init(&metadata())
         .expect("invalid URL should not abort renderer init");

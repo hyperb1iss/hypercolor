@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use arc_swap::{ArcSwap, ArcSwapOption};
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use sysinfo::{MemoryRefreshKind, RefreshKind, System};
-use tokio::sync::{Mutex, RwLock, watch};
+use tokio::sync::{Mutex, RwLock};
 use tracing::{info, warn};
 
 use hypercolor_core::asset::{AssetLibrary, StreamUrlPolicy};
@@ -48,7 +48,7 @@ use hypercolor_core::input::screen::{ScreenAdmissionCapacity, ScreenAnalysisReso
 use hypercolor_core::input::{InputManager, SensorPoller, SourceStatusHandle};
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
-use hypercolor_driver_api::CredentialStore;
+use hypercolor_driver_support::CredentialStore;
 use hypercolor_types::audio::{AudioPipelineConfig, AudioSourceType};
 use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
@@ -56,16 +56,21 @@ use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 use crate::attachment_profiles::ComponentProfileStore;
 use crate::device_metrics::DeviceMetricsSnapshot;
 use crate::device_settings::DeviceSettingsStore;
+use crate::domain::context::{
+    DeviceContext, DomainContextResources, DomainContexts, RuntimeSessionService, SceneContext,
+};
+use crate::domain::layout::LayoutContext;
+use crate::domain::output::OutputContext;
 use crate::driver_inventory::{DRIVER_INVENTORY_FILENAME, DriverInventoryStore};
 use crate::extensions::ExtensionRegistry;
 use crate::interaction_routing::InteractionRoutingControl;
 use crate::layout_auto_exclusions;
 use crate::network::{self, DaemonDriverHost};
+use crate::output_power::OutputPower;
 use crate::performance::PerformanceTracker;
 use crate::preview_runtime::PreviewRuntime;
 use crate::scene_store::SceneStore;
 use crate::scene_transactions::SceneTransactionQueue;
-use crate::session::{OutputPowerState, set_global_brightness};
 use crate::simulators::{SimulatedDisplayBackend, SimulatedDisplayRuntime, SimulatedDisplayStore};
 use crate::zone_layout_preview::ZoneLayoutPreviewStore;
 
@@ -127,6 +132,8 @@ impl DaemonState {
         macos_owner_snapshot: Option<crate::macos_owner::MacosOwnerSnapshot>,
     ) -> Result<Self> {
         let config: &HypercolorConfig = &boot;
+        let data_dir = ConfigManager::data_dir();
+        let state_dir = ConfigManager::state_dir();
         info!("Initializing daemon subsystems");
         #[cfg(not(target_os = "macos"))]
         let _ = macos_owner_snapshot;
@@ -220,9 +227,7 @@ impl DaemonState {
         let asset_library = Arc::new(RwLock::new(asset_library));
         info!(path = %asset_library_path.display(), "Asset library ready");
 
-        let (power_state, _) = watch::channel(OutputPowerState::default());
         let scene_transactions = SceneTransactionQueue::default();
-        info!("Session power state channel created");
 
         // ── Device Registry ─────────────────────────────────────────────
         let device_registry = DeviceRegistry::new();
@@ -290,27 +295,8 @@ impl DaemonState {
         // ── Scene Manager / Store ──────────────────────────────────────
         let scenes_path = ConfigManager::data_dir().join("scenes.json");
         let profiles_path = ConfigManager::data_dir().join("profiles.json");
-        let mut scene_store_inner = match SceneStore::load(&scenes_path) {
-            Ok(store) => store,
-            Err(error) if profiles_path.exists() => {
-                return Err(error).with_context(|| {
-                    format!(
-                        "failed to load scenes before importing {}",
-                        profiles_path.display()
-                    )
-                });
-            }
-            Err(error) => {
-                warn!(
-                    path = %scenes_path.display(),
-                    %error,
-                    cause = %error.root_cause(),
-                    "Failed to load scenes; starting with empty store"
-                );
-                SceneStore::new(scenes_path.clone())
-                    .context("failed to prepare empty scene persistence")?
-            }
-        };
+        let mut scene_store_inner = SceneStore::load(&scenes_path)
+            .with_context(|| format!("failed to load scenes from {}", scenes_path.display()))?;
         match crate::profile_import::import_profiles(
             &profiles_path,
             &mut scene_store_inner,
@@ -330,8 +316,13 @@ impl DaemonState {
                 warn!(%error, "Failed to install persisted named scene");
             }
         }
-        let scene_manager = Arc::new(RwLock::new(scene_manager_inner));
         let scene_store = Arc::new(RwLock::new(scene_store_inner));
+        let scene_manager = crate::domain::scene::SceneService::new(
+            scene_manager_inner,
+            Arc::clone(&event_bus),
+            Arc::clone(&scene_store),
+            Arc::clone(&zone_layout_previews),
+        );
         info!(path = %scenes_path.display(), "Scene manager created");
 
         // ── Render Loop ─────────────────────────────────────────────────
@@ -347,15 +338,23 @@ impl DaemonState {
         info!("Device metrics snapshot store created");
 
         // ── Spatial Engine ──────────────────────────────────────────────
-        let spatial_engine = Arc::new(RwLock::new(
+        let spatial_engine = crate::domain::spatial::SpatialService::new(
             SpatialEngine::try_new(default_layout.clone())
                 .context("failed to prepare the default spatial layout")?,
-        ));
+        );
         info!("Spatial engine created (empty default layout)");
 
-        let driver_inventory = Arc::new(
-            DriverInventoryStore::open(ConfigManager::data_dir().join(DRIVER_INVENTORY_FILENAME))
-                .context("failed to open driver inventory store")?,
+        let driver_inventory_path = state_dir.join(DRIVER_INVENTORY_FILENAME);
+        let (driver_inventory, driver_inventory_migration) = DriverInventoryStore::open_migrated(
+            data_dir.join(DRIVER_INVENTORY_FILENAME),
+            driver_inventory_path.clone(),
+        )
+        .context("failed to open driver inventory store")?;
+        let driver_inventory = Arc::new(driver_inventory);
+        info!(
+            path = %driver_inventory_path.display(),
+            migration = ?driver_inventory_migration,
+            "Driver inventory store ready"
         );
         let credential_store = Arc::new(
             CredentialStore::open_blocking(&ConfigManager::data_dir())
@@ -475,12 +474,20 @@ impl DaemonState {
         info!("Attachment profile store ready");
 
         // ── Display Preferences Store ─────────────────────────────
-        let display_preferences_path = ConfigManager::data_dir().join("display-preferences.json");
+        let display_preferences_path = state_dir.join("display-preferences.json");
         let display_preferences_inner =
-            match crate::display_preferences::DisplayPreferencesStore::load(
+            match crate::display_preferences::DisplayPreferencesStore::load_migrated(
+                &data_dir.join("display-preferences.json"),
                 &display_preferences_path,
             ) {
-                Ok(store) => store,
+                Ok((store, migration)) => {
+                    info!(
+                        path = %display_preferences_path.display(),
+                        ?migration,
+                        "Display preferences store ready"
+                    );
+                    store
+                }
                 Err(error) => {
                     warn!(
                         path = %display_preferences_path.display(),
@@ -497,19 +504,29 @@ impl DaemonState {
         info!("Display preferences store ready");
 
         // ── Output Settings Store ───────────────────────────────────
-        let device_settings_path = ConfigManager::data_dir().join("device-settings.json");
-        let device_settings_inner = DeviceSettingsStore::load(&device_settings_path)
-            .unwrap_or_else(|error| {
-                warn!(
-                    path = %device_settings_path.display(),
-                    %error,
-                    "Failed to load device settings; starting with defaults"
-                );
-                DeviceSettingsStore::new(device_settings_path)
-            });
-        let initial_global_brightness = device_settings_inner.global_brightness();
-        let device_settings = Arc::new(RwLock::new(device_settings_inner));
-        set_global_brightness(&power_state, initial_global_brightness);
+        let device_settings_path = state_dir.join("device-settings.json");
+        let device_settings_inner = DeviceSettingsStore::load_migrated(
+            &data_dir.join("device-settings.json"),
+            &device_settings_path,
+        )
+        .map(|(store, migration)| {
+            info!(
+                path = %device_settings_path.display(),
+                ?migration,
+                "Device settings store ready"
+            );
+            store
+        })
+        .unwrap_or_else(|error| {
+            warn!(
+                path = %device_settings_path.display(),
+                %error,
+                "Failed to load device settings; starting with defaults"
+            );
+            DeviceSettingsStore::new(device_settings_path)
+        });
+        let output_power = OutputPower::new(device_settings_inner);
+        let device_settings = output_power.device_settings();
         info!("Device settings store ready");
 
         // ── Simulator Store ─────────────────────────────────────────
@@ -557,39 +574,88 @@ impl DaemonState {
         );
 
         // ── Runtime Session Store ───────────────────────────────────
-        let runtime_state_path = ConfigManager::data_dir().join("runtime-state.json");
-        info!(
-            path = %runtime_state_path.display(),
-            "Runtime session store ready"
-        );
+        let runtime_state_path = state_dir.join("runtime-state.json");
+        let startup_runtime_snapshot = match crate::runtime_state::load_migrated(
+            &data_dir.join("runtime-state.json"),
+            &runtime_state_path,
+        ) {
+            Ok((snapshot, migration)) => {
+                info!(
+                    path = %runtime_state_path.display(),
+                    ?migration,
+                    "Runtime session store ready"
+                );
+                snapshot
+            }
+            Err(error) => {
+                warn!(
+                    path = %runtime_state_path.display(),
+                    %error,
+                    "Failed to load runtime session snapshot"
+                );
+                None
+            }
+        };
 
+        let device_aliases_path = state_dir.join(crate::device_aliases::DEVICE_ALIASES_FILE);
+        let startup_device_aliases = match crate::device_aliases::load_migrated(
+            &data_dir.join(crate::device_aliases::DEVICE_ALIASES_FILE),
+            &device_aliases_path,
+        ) {
+            Ok((aliases, migration)) => {
+                info!(
+                    path = %device_aliases_path.display(),
+                    ?migration,
+                    "Device alias store ready"
+                );
+                aliases
+            }
+            Err(error) => {
+                warn!(
+                    path = %device_aliases_path.display(),
+                    %error,
+                    "Failed to load device aliases; starting with an empty overlay"
+                );
+                crate::device_aliases::DeviceAliasFile::default()
+            }
+        };
         let discovery_in_progress = Arc::new(AtomicBool::new(false));
         let driver_registry = Arc::new(
-            network::build_builtin_driver_module_registry(config, Arc::clone(&credential_store))
-                .context("failed to build driver module registry")?,
+            network::build_builtin_driver_module_registry(
+                config,
+                Arc::clone(&credential_store),
+                usb_protocol_configs.clone(),
+            )
+            .context("failed to build driver module registry")?,
         );
+        let discovery_runtime = crate::discovery::DiscoveryRuntime {
+            device_registry: device_registry.clone(),
+            backend_manager: Arc::clone(&backend_manager),
+            lifecycle_manager: Arc::clone(&lifecycle_manager),
+            reconnect_tasks: Arc::clone(&reconnect_tasks),
+            event_bus: Arc::clone(&event_bus),
+            spatial_engine: spatial_engine.clone(),
+            scene_manager: scene_manager.clone(),
+            layouts: Arc::clone(&layouts),
+            layouts_path: layouts_path.clone(),
+            layout_auto_exclusions: Arc::clone(&layout_auto_exclusions),
+            logical_devices: Arc::clone(&logical_devices),
+            attachment_registry: Arc::clone(&attachment_registry),
+            attachment_profiles: Arc::clone(&attachment_profiles),
+            device_settings: device_settings.clone(),
+            scene_transactions: scene_transactions.clone(),
+            runtime_state_path: runtime_state_path.clone(),
+            device_aliases_path: device_aliases_path.clone(),
+            usb_protocol_configs: usb_protocol_configs.clone(),
+            credential_store: Arc::clone(&credential_store),
+            in_progress: Arc::clone(&discovery_in_progress),
+            pending_scans: Arc::default(),
+            task_spawner: tokio::runtime::Handle::current(),
+        };
         let driver_host = Arc::new(DaemonDriverHost::new(
-            device_registry.clone(),
-            Arc::clone(&backend_manager),
-            Arc::clone(&lifecycle_manager),
-            Arc::clone(&reconnect_tasks),
-            Arc::clone(&event_bus),
-            Arc::clone(&spatial_engine),
-            Arc::clone(&scene_manager),
-            Arc::clone(&layouts),
-            layouts_path.clone(),
-            Arc::clone(&layout_auto_exclusions),
-            Arc::clone(&logical_devices),
-            Arc::clone(&attachment_registry),
-            Arc::clone(&attachment_profiles),
-            Arc::clone(&device_settings),
-            runtime_state_path.clone(),
+            discovery_runtime,
             driver_inventory,
-            usb_protocol_configs.clone(),
-            Arc::clone(&credential_store),
             Arc::clone(&driver_registry),
-            Arc::clone(&discovery_in_progress),
-            scene_transactions.clone(),
             Some(Arc::clone(&config_manager)),
         ));
         info!(
@@ -605,17 +671,16 @@ impl DaemonState {
                     "backend manager lock unexpectedly contended during daemon initialization"
                 )
             })?;
-            backend_manager_inner.register_backend(Box::new(SimulatedDisplayBackend::new(
+            backend_manager_inner.register_backend(Arc::new(SimulatedDisplayBackend::new(
                 Arc::clone(&simulated_displays),
                 Arc::clone(&simulated_display_runtime),
             )));
-            backend_manager_inner.register_backend(Box::new(MockDeviceBackend::new()));
+            backend_manager_inner.register_backend(Arc::new(MockDeviceBackend::new()));
             network::register_enabled_device_backends(
                 &mut backend_manager_inner,
                 driver_registry.as_ref(),
                 driver_host.as_ref(),
                 config,
-                usb_protocol_configs.clone(),
             )
             .context("failed to register enabled device backends")?;
         }
@@ -623,9 +688,69 @@ impl DaemonState {
 
         let library_path = ConfigManager::data_dir().join("library.json");
         let library_store = open_persisted_library_store(&library_path)?;
+        let start_time = Instant::now();
+        let runtime_session = RuntimeSessionService::new(
+            runtime_state_path.clone(),
+            scene_manager.clone(),
+            spatial_engine.clone(),
+            output_power.clone(),
+            Arc::clone(&driver_host),
+            Arc::clone(&driver_registry),
+        );
+        let devices = DeviceContext::new(
+            device_registry.clone(),
+            Arc::clone(&lifecycle_manager),
+            Arc::clone(&driver_host),
+            Arc::clone(&driver_registry),
+            Some(Arc::clone(&config_manager)),
+            Arc::clone(&layout_auto_exclusions),
+            layout_auto_exclusions_path.clone(),
+        );
+        let scene = SceneContext::new(
+            scene_manager.clone(),
+            runtime_session.clone(),
+            Arc::clone(&asset_library),
+            Some(Arc::clone(&config_manager)),
+            Arc::clone(&render_loop),
+            devices.clone(),
+        );
+        let layout = LayoutContext::new(
+            Arc::clone(&layouts),
+            spatial_engine.clone(),
+            scene_manager.clone(),
+            scene_transactions.clone(),
+            runtime_state_path.clone(),
+            runtime_session.clone(),
+            devices.clone(),
+        );
+        let output = OutputContext::new(
+            output_power.clone(),
+            Arc::clone(&event_bus),
+            runtime_session.clone(),
+            Arc::clone(&performance),
+            Arc::clone(&render_loop),
+            spatial_engine.clone(),
+            Arc::clone(&backend_manager),
+            Arc::clone(&preview_runtime),
+            devices.clone(),
+            start_time,
+        );
+        let domains = DomainContexts::assemble(
+            runtime_session,
+            devices,
+            scene,
+            layout,
+            output,
+            DomainContextResources {
+                effect_registry: Arc::clone(&effect_registry),
+                spatial: spatial_engine.clone(),
+                event_bus: Arc::clone(&event_bus),
+            },
+        );
         info!("All subsystems initialized");
 
         Ok(Self {
+            domains,
             config_manager,
             extensions: ExtensionRegistry::default(),
             api_extensions,
@@ -634,7 +759,6 @@ impl DaemonState {
             effect_registry,
             scene_manager,
             scene_store,
-            scene_commits: Arc::new(crate::domain::commit::SceneCommitSequencer::new()),
             event_bus,
             macos_daemon_ownership,
             #[cfg(target_os = "macos")]
@@ -677,9 +801,11 @@ impl DaemonState {
             layout_auto_exclusions,
             layout_auto_exclusions_path,
             runtime_state_path,
+            device_aliases_path,
+            startup_device_aliases: Some(startup_device_aliases),
+            startup_runtime_snapshot,
             discovery_in_progress,
-            power_state,
-            output_power_transition: Arc::new(Mutex::new(())),
+            output_power,
             scene_transactions,
             render_thread: None,
             display_output_thread: None,
@@ -691,7 +817,7 @@ impl DaemonState {
             device_metrics_collector_task: None,
             input_status_event_publisher: None,
             session_controller: None,
-            start_time: Instant::now(),
+            start_time,
             server_identity,
         })
     }

@@ -7,7 +7,7 @@
 use hypercolor_types::layer::LayerSource;
 use hypercolor_types::scene::ZoneRole;
 
-use crate::api::LiveZoneView;
+use crate::api::ZoneResource;
 
 /// Synthetic rail-entry id for the §9.4 Unassigned entry. It is not a
 /// surface — it has no layer stack and no Stage — so it never collides
@@ -63,7 +63,7 @@ impl Surface {
 /// this exceeds one — the trigger for the per-zone controls and the
 /// zone-assignment panel.
 #[must_use]
-pub fn led_zone_count(groups: &[LiveZoneView]) -> usize {
+pub fn led_zone_count(groups: &[ZoneResource]) -> usize {
     groups
         .iter()
         .filter(|group| group.role != ZoneRole::Display)
@@ -74,7 +74,7 @@ pub fn led_zone_count(groups: &[LiveZoneView]) -> usize {
 /// order. LED-role groups become zone surfaces; display-role groups become
 /// Screens.
 #[must_use]
-pub fn surfaces_from_zones(groups: &[LiveZoneView]) -> Vec<Surface> {
+pub fn surfaces_from_zones(groups: &[ZoneResource]) -> Vec<Surface> {
     groups
         .iter()
         .map(|group| {
@@ -108,7 +108,7 @@ pub fn surfaces_from_zones(groups: &[LiveZoneView]) -> Vec<Surface> {
 /// Display label of a group's top layer — the last entry of the
 /// bottom-to-top authored stack. Uses the layer's user-set name when it
 /// has one, otherwise a plain-words label for its source kind.
-fn top_layer_label(group: &LiveZoneView) -> Option<String> {
+fn top_layer_label(group: &ZoneResource) -> Option<String> {
     let top = group.layers.last()?;
     Some(
         top.name
@@ -134,7 +134,7 @@ fn layer_source_kind(source: &LayerSource) -> &'static str {
 /// name. The `Primary` group is the Default zone (§3): it shows the
 /// user's typed name, or **"Default zone"** while still unnamed. The
 /// default zone is a zone at every scale.
-fn surface_name(group: &LiveZoneView, kind: SurfaceKind) -> String {
+fn surface_name(group: &ZoneResource, kind: SurfaceKind) -> String {
     if kind != SurfaceKind::Light || group.role != ZoneRole::Primary {
         return group.name.clone();
     }

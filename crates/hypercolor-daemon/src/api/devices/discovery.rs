@@ -9,12 +9,14 @@ use axum::response::{IntoResponse, Response};
 
 use hypercolor_types::config::HypercolorConfig;
 
-use crate::api::AppState;
-use crate::api::envelope::ApiResponse;
+use crate::api::envelope;
+use crate::app_state::AppState;
 use crate::discovery;
 use crate::domain::DomainError;
 
-pub use hypercolor_types::api::devices::DiscoverRequest;
+pub use hypercolor_types::api::devices::{
+    DiscoverRequest, DiscoverResponse, DiscoveryCompletedResponse, DiscoveryStartedResponse,
+};
 
 /// `POST /api/v1/devices/discover` — Trigger device discovery.
 pub async fn discover_devices(
@@ -59,10 +61,10 @@ pub async fn discover_devices(
         )
         .await;
 
-        return ApiResponse::ok(serde_json::json!({
-            "scan_id": scan_id,
-            "status": "completed",
-            "result": result,
+        return envelope::ok(DiscoverResponse::Completed(DiscoveryCompletedResponse {
+            scan_id,
+            status: "completed".to_owned(),
+            result,
         }));
     }
 
@@ -80,10 +82,10 @@ pub async fn discover_devices(
         .await;
     });
 
-    ApiResponse::accepted(serde_json::json!({
-        "scan_id": scan_id,
-        "status": "scanning",
-        "targets": target_names,
-        "timeout_ms": u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
+    envelope::accepted(DiscoverResponse::Started(DiscoveryStartedResponse {
+        scan_id,
+        status: "scanning".to_owned(),
+        targets: target_names,
+        timeout_ms: u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
     }))
 }

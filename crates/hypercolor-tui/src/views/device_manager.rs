@@ -345,7 +345,6 @@ impl DeviceManagerView {
                 Some(Action::ApplyDeviceControlChange {
                     device_id,
                     surface_id: target.surface_id,
-                    expected_revision: target.revision,
                     field_id,
                     value,
                 })
@@ -395,7 +394,6 @@ impl DeviceManagerView {
                     .filter_map(|field| {
                         Some(InteractiveControlTarget {
                             surface_id: surface.surface_id.clone(),
-                            revision: surface.revision,
                             kind: InteractiveControlKind::Field {
                                 field_id: field.id.clone(),
                                 value_type: field.value_type.clone(),
@@ -411,7 +409,6 @@ impl DeviceManagerView {
                         let input = default_action_input(action)?;
                         Some(InteractiveControlTarget {
                             surface_id: surface.surface_id.clone(),
-                            revision: surface.revision,
                             kind: InteractiveControlKind::Action {
                                 action_id: action.id.clone(),
                                 input,
@@ -651,7 +648,6 @@ impl Component for DeviceManagerView {
 #[derive(Clone)]
 struct InteractiveControlTarget {
     surface_id: String,
-    revision: u64,
     kind: InteractiveControlKind,
 }
 

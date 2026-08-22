@@ -4,11 +4,14 @@ description = "How to implement a Hypercolor network driver: the driver-api boun
 weight = 40
 +++
 
-Network drivers live in their own crates behind the stable `hypercolor-driver-api` boundary.
-They depend on `hypercolor-driver-api` and `hypercolor-types`, never on `hypercolor-core`
-directly. The `hypercolor-network` crate holds only the registry and capability-dispatch
-shell; protocol logic stays in each driver crate. This page walks through the full lifecycle
-of adding a new one, using WLED and Govee as concrete reference implementations.
+Network drivers live in their own crates behind the stable
+`hypercolor-driver-api` boundary. They depend on `hypercolor-driver-api` and
+`hypercolor-types`, never on `hypercolor-core` directly. Native drivers can
+also use `hypercolor-driver-support` for credentials, mDNS, control documents,
+pairing lifecycle, and endpoint validation. The `hypercolor-network` crate
+holds only the registry and capability-dispatch shell; protocol logic stays in
+each driver crate. This page walks through the full lifecycle of adding a new
+one, using WLED and Govee as concrete reference implementations.
 
 ---
 
@@ -18,14 +21,24 @@ of adding a new one, using WLED and Govee as concrete reference implementations.
 dependency rule is strict:
 
 ```
-hypercolor-types ──▶ hypercolor-driver-api ──▶ your-driver-crate
-                                              ╰──▶ hypercolor-network (registry)
-                                              ╰──▶ hypercolor-driver-builtin (bundle)
+hypercolor-types ──▶ hypercolor-driver-api ──▶ hypercolor-driver-support
+                              │                         │
+                              ╰───────────┬─────────────╯
+                                          ▼
+                                  your-driver-crate
+                                          │
+                         ╭────────────────┴────────────────╮
+                         ▼                                 ▼
+             hypercolor-network (registry)   hypercolor-driver-builtin (bundle)
 ```
 
 Never reach into `hypercolor-core` from a driver crate. Core depends on `driver-api`, not
 the reverse. The `hypercolor-network` crate is only the `DriverModuleRegistry` orchestration
 layer; it does not own any protocol logic.
+
+The API crate contains only capability contracts and shared wire values. The
+support crate owns concrete native behavior, so crypto, mDNS, filesystem I/O,
+and reusable driver policy never leak into the stable trait boundary.
 
 ### Key types at a glance
 
@@ -33,8 +46,9 @@ layer; it does not own any protocol logic.
 |---|---|---|
 | `DriverModule` | `driver_api::module` | Capability root: the entry point the host sees |
 | `DriverDescriptor` | `driver_api::descriptor` | Static ID, display name, transport kind, schema version |
-| `DeviceBackend` | `driver_api::backend` | Hot-path trait: `discover`, `connect`, `disconnect`, `write_colors` |
-| `DiscoveryCapability` | `driver_api::driver_discovery` | Async scan returning `DiscoveryResult` |
+| `DeviceBackendFactory` | `driver_api::module` | Constructs one finalized output backend |
+| `DeviceBackend` | `driver_api::backend` | Adopts discoveries and owns connected-device output |
+| `DiscoveryCapability` | `driver_api::driver_discovery` | Async scan returning `Vec<DiscoveredDevice>` |
 | `PairingCapability` | `driver_api::pairing` | `auth_summary`, `pair`, `clear_credentials` |
 | `DriverControlProvider` | `driver_api::controls` | Driver-level and device-level control surfaces |
 | `DriverRuntimeCacheProvider` | `driver_api::module` | Persist discovery hints across daemon restarts |
@@ -69,10 +83,14 @@ Set `supports_discovery` to `true` if you implement `DiscoveryCapability`. Set
 compile-time configuration the module needs, for example whether mDNS browsing is enabled.
 
 ```rust
+use std::sync::Arc;
+
 use hypercolor_driver_api::{
-    DeviceBackend, DiscoveryCapability, DriverConfigProvider, DriverConfigView,
-    DriverDescriptor, DriverHost, DriverModule,
+    DeviceBackend, DeviceBackendFactory, DiscoveryCapability,
+    DriverConfigProvider, DriverConfigView, DriverDescriptor, DriverError,
+    DriverHost, DriverModule, OutputBinding,
 };
+use hypercolor_types::identity::BackendId;
 
 pub struct AcmeDriverModule {
     mdns_enabled: bool,
@@ -83,17 +101,11 @@ impl DriverModule for AcmeDriverModule {
         &DESCRIPTOR
     }
 
-    fn has_output_backend(&self) -> bool {
-        true
-    }
-
-    fn build_output_backend(
-        &self,
-        host: &dyn DriverHost,
-        config: DriverConfigView<'_>,
-    ) -> anyhow::Result<Option<Box<dyn DeviceBackend>>> {
-        let cfg = config.parse_settings::<AcmeConfig>()?;
-        Ok(Some(Box::new(AcmeBackend::new(cfg, self.mdns_enabled))))
+    fn output(&self) -> OutputBinding<'_> {
+        OutputBinding::Owned {
+            id: BackendId::new(DESCRIPTOR.id).expect("Acme backend ID must be valid"),
+            factory: self,
+        }
     }
 
     fn discovery(&self) -> Option<&dyn DiscoveryCapability> {
@@ -102,6 +114,17 @@ impl DriverModule for AcmeDriverModule {
 
     fn config(&self) -> Option<&dyn DriverConfigProvider> {
         Some(self)
+    }
+}
+
+impl DeviceBackendFactory for AcmeDriverModule {
+    fn build(
+        &self,
+        _host: &dyn DriverHost,
+        config: DriverConfigView<'_>,
+    ) -> Result<Arc<dyn DeviceBackend>, DriverError> {
+        let cfg = config.parse_settings::<AcmeConfig>()?;
+        Ok(Arc::new(AcmeBackend::new(cfg, self.mdns_enabled)))
     }
 }
 ```
@@ -119,8 +142,10 @@ those `Option` returns.
 `Send + Sync` and must not block the async executor.
 
 ```rust
-use hypercolor_driver_api::{BackendInfo, DeviceBackend, OutputCadence};
-use hypercolor_types::device::{DeviceId, DeviceInfo};
+use hypercolor_driver_api::{
+    BackendInfo, DeviceBackend, DiscoveredDevice, OutputCadence,
+};
+use hypercolor_types::device::{DeviceError, DeviceId};
 
 #[async_trait::async_trait]
 impl DeviceBackend for AcmeBackend {
@@ -132,22 +157,26 @@ impl DeviceBackend for AcmeBackend {
         }
     }
 
-    async fn discover(&mut self) -> anyhow::Result<Vec<DeviceInfo>> {
-        // Scan the network and return DeviceInfo for each reachable device.
-        // Fingerprint on MAC address so DHCP changes don't lose the device.
-        todo!()
+    fn adopt_device(&self, discovered: &DiscoveredDevice) -> Result<(), DeviceError> {
+        // Validate driver metadata, then install the route under discovered.info.id.
+        self.routes.insert(discovered)?;
+        Ok(())
     }
 
-    async fn connect(&mut self, id: &DeviceId) -> anyhow::Result<()> {
+    async fn connect(&self, id: &DeviceId) -> Result<(), DeviceError> {
         // Open the UDP socket or handshake as required.
         todo!()
     }
 
-    async fn disconnect(&mut self, id: &DeviceId) -> anyhow::Result<()> {
+    async fn disconnect(&self, id: &DeviceId) -> Result<(), DeviceError> {
         todo!()
     }
 
-    async fn write_colors(&mut self, id: &DeviceId, colors: &[[u8; 3]]) -> anyhow::Result<()> {
+    async fn write_colors(
+        &self,
+        id: &DeviceId,
+        colors: &[[u8; 3]],
+    ) -> Result<(), DeviceError> {
         // Encode and send one frame. Called on every render tick; keep allocations minimal.
         todo!()
     }
@@ -187,7 +216,7 @@ impl DiscoveryCapability for WledDriverModule {
         host: &dyn DriverHost,
         request: &DiscoveryRequest,
         config: DriverConfigView<'_>,
-    ) -> anyhow::Result<DiscoveryResult> {
+    ) -> Result<Vec<DiscoveredDevice>, DriverError> {
         let config = config.parse_settings::<WledConfig>()?;
         let tracked = host.discovery_state().tracked_devices(DESCRIPTOR.id).await;
         let known_targets = resolve_wled_probe_targets_from_sources(
@@ -196,19 +225,13 @@ impl DiscoveryCapability for WledDriverModule {
         let mut scanner = WledScanner::with_known_targets(
             known_targets, request.mdns_enabled, request.timeout,
         );
-        let devices = scanner
-            .scan()
-            .await?
-            .into_iter()
-            .map(DriverDiscoveredDevice::from)
-            .collect();
-        Ok(DiscoveryResult { devices })
+        scanner.scan().await.map_err(DriverError::discovery)
     }
 }
 ```
 
-Device fingerprints use the MAC address (`net:<mac>`) rather than the IP address, so a DHCP
-reassignment keeps the same `DeviceId`.
+Device fingerprints use `DeviceFingerprint::mint(FingerprintNamespace::Net, "wled", mac)`
+rather than the IP address, so a DHCP reassignment keeps the same `DeviceId`.
 
 ### Govee: UDP multicast + optional cloud fallback
 
@@ -255,9 +278,10 @@ impl PairingCapability for GoveeDriverModule {
         &self,
         host: &dyn DriverHost,
         device: &TrackedDeviceCtx<'_>,
-    ) -> Option<DeviceAuthSummary> {
+    ) -> Result<Option<DeviceAuthSummary>, DriverError> {
         // Inspect host.credentials() and return the current auth state.
         // Return None only if this driver cannot describe auth for this device at all.
+        todo!()
     }
 
     async fn pair(
@@ -265,16 +289,25 @@ impl PairingCapability for GoveeDriverModule {
         host: &dyn DriverHost,
         device: &TrackedDeviceCtx<'_>,
         request: &PairDeviceRequest,
-    ) -> anyhow::Result<PairDeviceOutcome> {
+    ) -> Result<PairDeviceOutcome, DriverError> {
         // Validate the credential against the remote service, then store it.
-        let api_key = api_key_from_request(request)
-            .ok_or_else(|| anyhow::anyhow!("API key is required."))?;
-        self.cloud_client(api_key.clone())?
+        let Some(api_key) = api_key_from_request(request) else {
+            return Ok(PairDeviceOutcome {
+                status: PairDeviceStatus::InvalidInput,
+                message: "API key is required.".into(),
+                auth_state: DeviceAuthState::Open,
+                activated: false,
+            });
+        };
+        self.cloud_client(api_key.clone())
+            .map_err(DriverError::pairing)?
             .list_v1_devices()
-            .await?;                          // validation call, fails fast on bad key
+            .await
+            .map_err(DriverError::pairing)?;
         host.credentials()
             .set_json(DESCRIPTOR.id, "account", serde_json::json!({ "api_key": api_key }))
-            .await?;
+            .await
+            .map_err(DriverError::pairing)?;
         Ok(PairDeviceOutcome {
             status: PairDeviceStatus::Paired,
             message: "API key validated and stored.".into(),
@@ -287,8 +320,11 @@ impl PairingCapability for GoveeDriverModule {
         &self,
         host: &dyn DriverHost,
         device: &TrackedDeviceCtx<'_>,
-    ) -> anyhow::Result<ClearPairingOutcome> {
-        host.credentials().remove(DESCRIPTOR.id, "account").await?;
+    ) -> Result<ClearPairingOutcome, DriverError> {
+        host.credentials()
+            .remove(DESCRIPTOR.id, "account")
+            .await
+            .map_err(DriverError::pairing)?;
         Ok(ClearPairingOutcome {
             message: "Credentials removed.".into(),
             auth_state: DeviceAuthState::Open,

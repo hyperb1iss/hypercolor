@@ -45,11 +45,11 @@ pub fn set_zone_enabled(zones_ctx: ZonesContext, zone_id: String, enabled: bool)
     };
     let revision = scene.revision;
     spawn_local(async move {
-        let request = api::zones::UpdateZoneRequest {
+        let request = api::zones::PatchZoneRequest {
             enabled: Some(enabled),
             ..Default::default()
         };
-        match api::zones::update_zone(&zone_id, &request, Some(revision)).await {
+        match api::zones::update_zone(&zone_id, &request, revision).await {
             Ok(ZoneOutcome::Applied(_)) => zones_ctx.refresh.run(()),
             Ok(ZoneOutcome::Stale { .. }) => {
                 zones_ctx.refresh.run(());
@@ -178,7 +178,7 @@ pub fn ZoneEffectChips() -> impl IntoView {
                             .zone
                             .color
                             .clone()
-                            .unwrap_or_else(|| "var(--color-electric-purple)".to_owned());
+                            .unwrap_or_else(|| "var(--color-accent)".to_owned());
                         let dot_glow = format!("0 0 6px {dot}");
                         let label = state.display_label();
                         let enabled = state.zone.enabled;

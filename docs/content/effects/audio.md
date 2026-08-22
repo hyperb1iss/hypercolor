@@ -52,8 +52,8 @@ The shader uniform surface is a strict subset of the canvas surface. Array field
 ```typescript
 interface AudioData {
   // Levels
-  level: number; // 0-1 overall RMS
-  levelRaw: number; // raw dB, -100 to 0
+  levelDb: number; // overall level in dB, -100 to 0
+  levelLinear: number; // normalized overall level, 0-1
   levelShort: number; // short-window envelope
   levelLong: number; // long-window envelope
   density: number; // spectral flatness (0-1)
@@ -229,7 +229,6 @@ import {
   getBeatAnticipation,
   getScreenZoneData,
   isOnBeat,
-  normalizeAudioLevel,
   normalizeFrequencyBin,
   smoothValue,
 } from "hypercolor";

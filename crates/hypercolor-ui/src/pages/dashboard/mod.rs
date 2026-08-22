@@ -145,7 +145,7 @@ impl MetricsSample {
         let phase = phase_frame_from_timeline(&m.timeline);
 
         Self {
-            engine_fps: stabilize_fps_for_display(m.fps.delivered_or_legacy(), m.fps.target),
+            engine_fps: stabilize_fps_for_display(m.fps.delivered, m.fps.target),
             frame_time_avg: m.frame_time.avg_ms,
             frame_time_p95: m.frame_time.p95_ms,
             jitter_p95: m.pacing.jitter_p95_ms,
@@ -412,7 +412,7 @@ pub fn DashboardPage() -> impl IntoView {
                             type="button"
                             class="relative p-1.5 rounded-lg text-fg-tertiary hover:text-fg-primary \
                                    hover:bg-surface-hover/40 transition-all"
-                            class=("text-electric-purple", move || layout_menu_open.get())
+                            class=("text-accent", move || layout_menu_open.get())
                             title="Dashboard layout"
                             on:click=move |_| set_layout_menu_open.update(|v| *v = !*v)
                         >
@@ -652,9 +652,9 @@ fn LayoutMenu(
                     icon=LuLayoutDashboard
                     width="12px"
                     height="12px"
-                    style="color: var(--color-electric-purple)"
+                    style="color: var(--color-accent)"
                 />
-                <span class="text-[10px] font-mono uppercase tracking-[0.16em] font-semibold text-electric-purple">
+                <span class="text-[10px] font-mono uppercase tracking-[0.16em] font-semibold text-accent">
                     "Dashboard panels"
                 </span>
             </div>
@@ -684,7 +684,7 @@ fn LayoutMenu(
                                     <span
                                         class="shrink-0 inline-flex items-center justify-center w-4 h-4 rounded \
                                                transition-all"
-                                        class=("text-electric-purple", move || visible)
+                                        class=("text-accent", move || visible)
                                         class=("text-fg-tertiary/40", move || !visible)
                                         style=if visible {
                                             "background: rgba(225, 53, 255, 0.12); \
@@ -722,7 +722,7 @@ fn LayoutMenu(
             <button
                 type="button"
                 class="w-full px-3 py-2.5 flex items-center gap-2 text-[11px] text-fg-tertiary \
-                       hover:text-electric-purple hover:bg-electric-purple/5 transition-colors"
+                       hover:text-accent hover:bg-accent/5 transition-colors"
                 on:click=move |_| on_reset.run(())
             >
                 <Icon icon=LuRotateCcw width="11px" height="11px" />

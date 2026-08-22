@@ -8,15 +8,17 @@ use axum::{Extension, Json};
 use hypercolor_core::device::{UsbActorMetricsSnapshot, usb_actor_metrics_snapshot};
 use hypercolor_types::device::USB_OUTPUT_BACKEND_ID;
 use serde::Serialize;
+use utoipa::ToSchema;
 
-use crate::api::AppState;
 use crate::api::capture::protected_control_rejection;
-use crate::api::envelope::ApiResponse;
+use crate::api::envelope;
 use crate::api::security::RequestAuthContext;
-use crate::api::system::{InputStatus, actionable_input_diagnostics, input_status_snapshot};
+use crate::api::system::{actionable_input_diagnostics, input_status_snapshot};
+use crate::app_state::AppState;
 use crate::device_metrics::{DeviceMetrics, DeviceMetricsSnapshot};
 use crate::display_frames::DisplayOutputMetricsSnapshot;
 use crate::performance::{LatestFrameMetrics, PerformanceSnapshot};
+use hypercolor_types::api::system::InputStatus;
 
 pub use hypercolor_types::api::diagnose::DiagnoseRequest;
 
@@ -24,14 +26,14 @@ const RENDER_FRAME_STALE_WARNING_MS: f64 = 2_000.0;
 const RENDER_FRAME_STALE_FAIL_MS: f64 = 10_000.0;
 const DEFAULT_SAFE_CHECKS: [&str; 6] = ["daemon", "render", "devices", "config", "input", "memory"];
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub(crate) struct DiagnoseResponse {
     checks: Vec<DiagnoseCheck>,
     summary: DiagnoseSummary,
     snapshot: DiagnoseSnapshot,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 struct DiagnoseCheck {
     category: String,
     name: String,
@@ -39,14 +41,14 @@ struct DiagnoseCheck {
     detail: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 struct DiagnoseSummary {
     passed: usize,
     warnings: usize,
     failed: usize,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 struct DiagnoseSnapshot {
     input: InputStatus,
     render: DiagnoseRenderSnapshot,
@@ -57,13 +59,13 @@ struct DiagnoseSnapshot {
     macos_screen_parity: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 struct DiagnoseRenderSnapshot {
     latest_frame: Option<DiagnoseLatestFrameSnapshot>,
     recent_window: DiagnoseRenderWindowSnapshot,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 #[allow(
     clippy::struct_excessive_bools,
     reason = "diagnostics snapshot mirrors independent frame freshness flags"
@@ -88,10 +90,8 @@ struct DiagnoseLatestFrameSnapshot {
     gpu_sample_queue_saturated: bool,
     gpu_sample_wait_blocked: bool,
     gpu_sample_cpu_fallback: bool,
-    cpu_sampling_late_readback: bool,
     cpu_readback_skipped: bool,
     gpu_readback_failed: bool,
-    led_sampling_readback: bool,
     input_us: u32,
     render_us: u32,
     producer_us: u32,
@@ -104,7 +104,7 @@ struct DiagnoseLatestFrameSnapshot {
     output_errors: u32,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 struct DiagnoseRenderWindowSnapshot {
     frames: u32,
     gpu_sample_deferred: u32,
@@ -113,7 +113,6 @@ struct DiagnoseRenderWindowSnapshot {
     gpu_sample_queue_saturated: u32,
     gpu_sample_wait_blocked: u32,
     gpu_sample_cpu_fallback: u32,
-    led_sampling_readback: u32,
     output_current_frame: u32,
     output_published_frame: u32,
     output_routed_reuse: u32,
@@ -125,7 +124,7 @@ struct DiagnoseRenderWindowSnapshot {
     publish_p95_ms: f64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 #[allow(
     clippy::struct_field_names,
     reason = "JSON names mirror the USB actor metrics exported elsewhere"
@@ -138,7 +137,7 @@ struct DiagnoseUsbActorSnapshot {
     display_led_priority_wait_max_ms: f64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 struct DiagnoseDisplayOutputSnapshot {
     captured_devices: usize,
     preview_subscribers: usize,
@@ -157,7 +156,7 @@ struct DiagnoseDisplayOutputSnapshot {
     last_failure_age_ms: Option<u64>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 struct DiagnoseDeviceOutputSnapshot {
     queues: usize,
     usb_queues: usize,
@@ -168,7 +167,7 @@ struct DiagnoseDeviceOutputSnapshot {
     items: Vec<DiagnoseDeviceOutputItem>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 struct DiagnoseDeviceOutputItem {
     id: String,
     backend_id: String,
@@ -203,6 +202,10 @@ struct DiagnoseDeviceOutputItem {
     last_transport_started_sequence: u64,
     last_transport_completed_sequence: u64,
     last_transport_failed_sequence: u64,
+    display_queue_generation: Option<u64>,
+    display_transport_started: u64,
+    display_transport_completed: u64,
+    display_transport_failed: u64,
 }
 
 /// `POST /api/v1/diagnose` — Run lightweight daemon diagnostics.
@@ -228,7 +231,7 @@ pub(crate) async fn run_diagnostics(
 
     let include_system = body.as_ref().and_then(|b| b.system).unwrap_or(false);
     let response = collect_diagnostics(&state, &requested, include_system).await;
-    ApiResponse::ok(response)
+    envelope::ok(response)
 }
 
 pub(crate) async fn collect_default_diagnostics(state: &AppState) -> DiagnoseResponse {
@@ -640,10 +643,8 @@ fn build_render_snapshot(
                 gpu_sample_queue_saturated: frame.gpu_sample_queue_saturated,
                 gpu_sample_wait_blocked: frame.gpu_sample_wait_blocked,
                 gpu_sample_cpu_fallback: frame.gpu_sample_cpu_fallback,
-                cpu_sampling_late_readback: false,
                 cpu_readback_skipped: frame.cpu_readback_skipped,
                 gpu_readback_failed: frame.gpu_readback_failed,
-                led_sampling_readback: false,
                 input_us: frame.input_us,
                 render_us: frame.render_us,
                 producer_us: frame.producer_us,
@@ -663,7 +664,6 @@ fn build_render_snapshot(
             gpu_sample_queue_saturated: pacing.gpu_sample_queue_saturated,
             gpu_sample_wait_blocked: pacing.gpu_sample_wait_blocked,
             gpu_sample_cpu_fallback: pacing.gpu_sample_cpu_fallback,
-            led_sampling_readback: 0,
             output_current_frame: pacing.output_current_frame,
             output_published_frame: pacing.output_published_frame,
             output_routed_reuse: pacing.output_routed_reuse,
@@ -777,6 +777,10 @@ fn build_device_output_snapshot(metrics: &DeviceMetricsSnapshot) -> DiagnoseDevi
             last_transport_started_sequence: item.last_transport_started_sequence,
             last_transport_completed_sequence: item.last_transport_completed_sequence,
             last_transport_failed_sequence: item.last_transport_failed_sequence,
+            display_queue_generation: item.display_queue_generation,
+            display_transport_started: item.display_transport_started,
+            display_transport_completed: item.display_transport_completed,
+            display_transport_failed: item.display_transport_failed,
         })
         .collect();
 

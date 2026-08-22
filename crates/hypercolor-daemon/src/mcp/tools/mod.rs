@@ -8,9 +8,11 @@ use std::collections::HashMap;
 use std::sync::LazyLock;
 
 use jsonschema::error::ValidationErrorKind;
+use serde::Serialize;
 use serde_json::{Value, json};
+use utoipa::ToSchema;
 
-use crate::api::AppState;
+use crate::app_state::AppState;
 use crate::mcp::selector::SelectorError;
 
 mod devices;
@@ -92,6 +94,18 @@ static INPUT_CONTRACTS: LazyLock<Result<HashMap<String, InputContract>, String>>
                         )
                     })
                     .map_err(|error| format!("invalid input schema for {}: {error}", tool.name))
+            })
+            .collect()
+    });
+
+static OUTPUT_CONTRACTS: LazyLock<Result<HashMap<String, jsonschema::Validator>, String>> =
+    LazyLock::new(|| {
+        build_tool_definitions()
+            .into_iter()
+            .map(|tool| {
+                jsonschema::validator_for(&tool.output_schema)
+                    .map(|validator| (tool.name.clone(), validator))
+                    .map_err(|error| format!("invalid output schema for {}: {error}", tool.name))
             })
             .collect()
     });
@@ -286,11 +300,77 @@ fn normalize_integer_values(
     Ok(())
 }
 
-pub(super) fn default_output_schema() -> Value {
-    json!({
-        "type": "object",
-        "description": "Structured JSON result returned by this tool. Field-level schemas are intentionally broad for now and should be tightened as the MCP surface stabilizes."
-    })
+pub(super) fn output_schema<T: ToSchema>() -> Value {
+    let mut definitions = Vec::new();
+    T::schemas(&mut definitions);
+
+    let mut root = serde_json::to_value(T::schema())
+        .expect("utoipa output schemas should serialize to JSON values");
+    rewrite_schema_refs(&mut root);
+    close_typed_objects(&mut root);
+
+    if !definitions.is_empty() {
+        let definitions = definitions
+            .into_iter()
+            .map(|(name, schema)| {
+                let mut schema = serde_json::to_value(schema)
+                    .expect("utoipa referenced schemas should serialize to JSON values");
+                rewrite_schema_refs(&mut schema);
+                close_typed_objects(&mut schema);
+                (name, schema)
+            })
+            .collect();
+        root.as_object_mut()
+            .expect("MCP output schemas must have an object root")
+            .insert("$defs".to_owned(), Value::Object(definitions));
+    }
+
+    root
+}
+
+pub(super) fn serialize_result<T: Serialize>(result: T) -> Result<Value, ToolError> {
+    serde_json::to_value(result).map_err(|error| ToolError::Internal(error.to_string()))
+}
+
+fn rewrite_schema_refs(schema: &mut Value) {
+    match schema {
+        Value::Object(object) => {
+            if let Some(reference) = object.get_mut("$ref")
+                && let Some(value) = reference.as_str()
+                && let Some(name) = value.strip_prefix("#/components/schemas/")
+            {
+                *reference = Value::String(format!("#/$defs/{name}"));
+            }
+            for value in object.values_mut() {
+                rewrite_schema_refs(value);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                rewrite_schema_refs(item);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn close_typed_objects(schema: &mut Value) {
+    match schema {
+        Value::Object(object) => {
+            if object.contains_key("properties") && !object.contains_key("additionalProperties") {
+                object.insert("additionalProperties".to_owned(), Value::Bool(false));
+            }
+            for value in object.values_mut() {
+                close_typed_objects(value);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                close_typed_objects(item);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Execute a tool with live daemon state access.
@@ -300,7 +380,7 @@ pub async fn execute_tool_with_state(
     state: &AppState,
 ) -> Result<Value, ToolError> {
     let params = validate_params(name, params)?;
-    match name {
+    let result = match name {
         "set_effect" => effects::handle_set_effect_with_state(&params, state).await,
         "list_effects" => effects::handle_list_effects_with_state(&params, state).await,
         "set_output_power" => system::handle_set_output_power_with_state(&params, state).await,
@@ -313,13 +393,31 @@ pub async fn execute_tool_with_state(
         "activate_scene" => scenes::handle_activate_scene_with_state(&params, state).await,
         "list_scenes" => scenes::handle_list_scenes_with_state(&params, state).await,
         "create_scene" => scenes::handle_create_scene_with_state(&params, state).await,
-        "get_audio_state" => Ok(system::handle_get_audio_state_with_state(state)),
+        "get_audio_state" => system::handle_get_audio_state_with_state(state),
         "get_sensor_data" => system::handle_get_sensor_data_with_state(&params, state).await,
         "set_display_face" => displays::handle_set_display_face_with_state(&params, state).await,
         "get_layout" => system::handle_get_layout_with_state(state).await,
         "diagnose" => system::handle_diagnose_with_state(&params, state).await,
         _ => Err(ToolError::NotFound(name.to_owned())),
+    }?;
+    validate_result(name, &result)?;
+    Ok(result)
+}
+
+fn validate_result(name: &str, result: &Value) -> Result<(), ToolError> {
+    let contracts = OUTPUT_CONTRACTS
+        .as_ref()
+        .map_err(|error| ToolError::Internal(error.clone()))?;
+    let Some(contract) = contracts.get(name) else {
+        return Ok(());
+    };
+    if let Some(error) = contract.iter_errors(result).next() {
+        tracing::error!(tool = name, %error, "MCP result violated its schema");
+        return Err(ToolError::Internal(format!(
+            "{name} produced a result outside its declared schema"
+        )));
     }
+    Ok(())
 }
 
 /// Errors that can occur during tool execution.
@@ -398,10 +496,12 @@ pub(super) async fn find_effect_metadata(
     primary_name: &str,
     fallback_name: &str,
 ) -> Option<hypercolor_types::effect::EffectMetadata> {
-    let registry = state.effect_registry.read().await;
-    registry
-        .iter()
-        .map(|(_, entry)| entry.metadata.clone())
+    state
+        .domains
+        .effects
+        .all_metadata()
+        .await
+        .into_iter()
         .find(|metadata| {
             metadata.name.eq_ignore_ascii_case(primary_name)
                 || metadata.name.eq_ignore_ascii_case(fallback_name)
@@ -413,20 +513,20 @@ pub(super) async fn resolve_effect_selector(
     parameter: &str,
     query: &str,
 ) -> Result<hypercolor_types::effect::EffectMetadata, ToolError> {
-    let candidates = {
-        let registry = state.effect_registry.read().await;
-        registry
-            .iter()
-            .map(|(_, entry)| {
-                let metadata = entry.metadata.clone();
-                crate::mcp::selector::SelectorCandidate::named(
-                    metadata.id.to_string(),
-                    metadata.name.clone(),
-                    metadata,
-                )
-            })
-            .collect()
-    };
+    let candidates = state
+        .domains
+        .effects
+        .all_metadata()
+        .await
+        .into_iter()
+        .map(|metadata| {
+            crate::mcp::selector::SelectorCandidate::named(
+                metadata.id.to_string(),
+                metadata.name.clone(),
+                metadata,
+            )
+        })
+        .collect();
     crate::mcp::selector::resolve(query, candidates)
         .map_err(|error| ToolError::selector(parameter, error))
 }

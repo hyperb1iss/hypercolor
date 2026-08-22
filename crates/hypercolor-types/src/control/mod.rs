@@ -8,11 +8,10 @@
 //! is preserved, so every value from either system round-trips through
 //! canonical losslessly.
 //!
-//! The canonical type is deliberately **not serializable**. Wires and
-//! persisted files speak the two existing projections; the write-side
-//! flip to any canonical encoding is its own reviewed wave under the §0
-//! lockstep doctrine. Keeping serde off the canonical type makes "which
-//! encoding is this?" unrepresentable.
+//! The canonical JSON wire is internally tagged as
+//! `{ "kind": "...", "value": ... }`. Every REST control mutation
+//! speaks this encoding. Effect and driver values remain projections at
+//! their internal engine boundaries, never competing public wires.
 //!
 //! # Per-variant contract
 //!
@@ -59,16 +58,208 @@
 //! one-time-forward per §0, so a shape that no longer canonicalizes is
 //! hand-migrated or refused, not dual-read.
 
+use std::borrow::Borrow;
 use std::collections::BTreeMap;
+use std::fmt;
 use std::net::IpAddr;
 use std::time::Duration;
 
 use hypercolor_color::{LinearRgba, Rgb, Rgba};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use utoipa::{PartialSchema, ToSchema};
 
 use crate::controls as driver;
 use crate::effect::{self, GradientStop};
 use crate::spatial::NormalizedRect;
 use crate::viewport::ViewportRect;
+
+/// Stable identifier for a renderer control.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ControlId(String);
+
+impl ControlId {
+    /// Create an identifier from its authored name.
+    #[must_use]
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    /// Borrow the authored identifier.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Borrow<str> for ControlId {
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl fmt::Display for ControlId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl From<String> for ControlId {
+    fn from(value: String) -> Self {
+        Self::new(value)
+    }
+}
+
+impl From<&str> for ControlId {
+    fn from(value: &str) -> Self {
+        Self::new(value)
+    }
+}
+
+/// Revision of an authoritative control set.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SetRevision(u64);
+
+impl SetRevision {
+    /// Create a revision from the owning scene's monotonic counter.
+    #[must_use]
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    /// Return the monotonic counter value.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl From<u64> for SetRevision {
+    fn from(value: u64) -> Self {
+        Self::new(value)
+    }
+}
+
+impl fmt::Display for SetRevision {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+/// A validated, ordered control snapshot owned by one effect slot.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ControlSet {
+    set_revision: SetRevision,
+    values: BTreeMap<ControlId, ControlValue>,
+}
+
+impl ControlSet {
+    /// Create an empty control set at the supplied revision.
+    #[must_use]
+    pub const fn new(set_revision: SetRevision) -> Self {
+        Self {
+            set_revision,
+            values: BTreeMap::new(),
+        }
+    }
+
+    /// Build a set while validating every value at the admission boundary.
+    pub fn try_from_entries(
+        set_revision: SetRevision,
+        entries: impl IntoIterator<Item = (ControlId, ControlValue)>,
+    ) -> Result<Self, ControlSetError> {
+        let mut controls = Self::new(set_revision);
+        for (control_id, value) in entries {
+            controls.insert(control_id, value)?;
+        }
+        Ok(controls)
+    }
+
+    /// Return the authoritative revision.
+    #[must_use]
+    pub const fn set_revision(&self) -> SetRevision {
+        self.set_revision
+    }
+
+    /// Return a value by authored identifier.
+    #[must_use]
+    pub fn get(&self, control_id: &str) -> Option<&ControlValue> {
+        self.values.get(control_id)
+    }
+
+    /// Iterate in stable identifier order.
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = (&ControlId, &ControlValue)> {
+        self.values.iter()
+    }
+
+    /// Return the number of controls in the authoritative snapshot.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.values.len()
+    }
+
+    /// Return whether the authoritative snapshot contains no controls.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.values.is_empty()
+    }
+
+    /// Insert a value after validating the canonical invariants.
+    pub fn insert(
+        &mut self,
+        control_id: ControlId,
+        value: ControlValue,
+    ) -> Result<Option<ControlValue>, ControlSetError> {
+        value.validate().map_err(|source| ControlSetError {
+            control_id: control_id.clone(),
+            source,
+        })?;
+        Ok(self.values.insert(control_id, value))
+    }
+}
+
+/// Ordered resolved control changes delivered atomically to one renderer.
+#[derive(Debug, Clone, Copy)]
+pub struct ControlDeltaBatch<'a> {
+    /// Revision of the authoritative authored control set.
+    pub set_revision: SetRevision,
+    /// Sequence for resolved changes within the same authored revision.
+    pub resolution_seq: u64,
+    /// Stable, ordered control changes in this delivery.
+    pub changes: &'a [(ControlId, ControlValue)],
+}
+
+impl<'a> ControlDeltaBatch<'a> {
+    /// Create an atomic renderer delivery batch.
+    #[must_use]
+    pub const fn new(
+        set_revision: SetRevision,
+        resolution_seq: u64,
+        changes: &'a [(ControlId, ControlValue)],
+    ) -> Self {
+        Self {
+            set_revision,
+            resolution_seq,
+            changes,
+        }
+    }
+
+    /// Return whether the batch carries no changed values.
+    #[must_use]
+    pub const fn is_empty(self) -> bool {
+        self.changes.is_empty()
+    }
+}
+
+/// A value rejected while constructing an authoritative control set.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("control '{control_id}': {source}")]
+pub struct ControlSetError {
+    /// Identifier whose value failed validation.
+    pub control_id: ControlId,
+    /// Canonical invariant violation.
+    #[source]
+    pub source: ControlValueInvalid,
+}
 
 /// An opaque reference into the credential store. The secret itself
 /// never transits — this is the name of a stored secret, distinct from
@@ -236,12 +427,169 @@ pub enum ControlValue {
     /// Structured object (driver-only).
     Map(BTreeMap<String, ControlValue>),
     /// Value whose `kind` a newer schema minted. Round-trips as the
-    /// unit `unknown` variant — the legacy driver deserializer already
-    /// discards unrecognized payloads at the wire, so the payload loss
-    /// is inherited, not introduced here. The §0 write-side flip must
-    /// solve unknown-payload preservation before any canonical
-    /// encoding becomes a storage format.
+    /// unit `unknown` variant, matching the established driver value
+    /// semantics.
     Unknown,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case", tag = "kind", content = "value")]
+enum ControlValueRef<'a> {
+    Null,
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    Text(&'a str),
+    SecretRef(&'a str),
+    Ip(&'a str),
+    Mac(&'a str),
+    Duration(u64),
+    ColorRgb(Rgb),
+    ColorRgba(Rgba),
+    ColorLinear(LinearRgba),
+    Gradient(&'a [GradientStop]),
+    Rect(NormalizedRect),
+    Enum(&'a str),
+    Flags(&'a [String]),
+    List(&'a [ControlValue]),
+    Map(&'a BTreeMap<String, ControlValue>),
+    Unknown,
+}
+
+#[derive(Deserialize, ToSchema)]
+#[schema(no_recursion)]
+#[serde(rename_all = "snake_case", tag = "kind", content = "value")]
+enum ControlValueWire {
+    Null,
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    Text(String),
+    SecretRef(String),
+    Ip(String),
+    Mac(String),
+    Duration(u64),
+    ColorRgb(Rgb),
+    ColorRgba(Rgba),
+    ColorLinear(LinearRgba),
+    Gradient(Vec<GradientStop>),
+    Rect(NormalizedRect),
+    Enum(String),
+    Flags(Vec<String>),
+    List(Vec<ControlValue>),
+    Map(BTreeMap<String, ControlValue>),
+    Unknown,
+}
+
+impl utoipa::__dev::ComposeSchema for ControlValue {
+    fn compose(
+        _new_generics: Vec<utoipa::openapi::RefOr<utoipa::openapi::schema::Schema>>,
+    ) -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+        ControlValueWire::schema()
+    }
+}
+
+impl ToSchema for ControlValue {
+    fn name() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("ControlValue")
+    }
+
+    fn schemas(
+        schemas: &mut Vec<(
+            String,
+            utoipa::openapi::RefOr<utoipa::openapi::schema::Schema>,
+        )>,
+    ) {
+        ControlValueWire::schemas(schemas);
+        for (name, schema) in [
+            (Rgb::name().into_owned(), Rgb::schema()),
+            (Rgba::name().into_owned(), Rgba::schema()),
+            (LinearRgba::name().into_owned(), LinearRgba::schema()),
+            (GradientStop::name().into_owned(), GradientStop::schema()),
+            (
+                NormalizedRect::name().into_owned(),
+                NormalizedRect::schema(),
+            ),
+        ] {
+            schemas.push((name, schema));
+        }
+    }
+}
+
+impl Serialize for ControlValue {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.validate().map_err(serde::ser::Error::custom)?;
+        let wire = match self {
+            Self::Null => ControlValueRef::Null,
+            Self::Bool(value) => ControlValueRef::Bool(*value),
+            Self::Int(value) => ControlValueRef::Int(*value),
+            Self::Float(value) => ControlValueRef::Float(*value),
+            Self::Text(value) => ControlValueRef::Text(value),
+            Self::SecretRef(value) => ControlValueRef::SecretRef(value.as_str()),
+            Self::Ip(value) => ControlValueRef::Ip(value.as_str()),
+            Self::Mac(value) => ControlValueRef::Mac(value.as_str()),
+            Self::Duration(value) => {
+                if value.subsec_nanos() % 1_000_000 != 0 {
+                    return Err(serde::ser::Error::custom(
+                        DriverProjectionError::SubMillisecondDuration,
+                    ));
+                }
+                let millis = u64::try_from(value.as_millis()).map_err(|_| {
+                    serde::ser::Error::custom(DriverProjectionError::DurationOverflow)
+                })?;
+                ControlValueRef::Duration(millis)
+            }
+            Self::ColorRgb(value) => ControlValueRef::ColorRgb(*value),
+            Self::ColorRgba(value) => ControlValueRef::ColorRgba(*value),
+            Self::ColorLinear(value) => ControlValueRef::ColorLinear(*value),
+            Self::Gradient(value) => ControlValueRef::Gradient(value),
+            Self::Rect(value) => ControlValueRef::Rect(*value),
+            Self::Enum(value) => ControlValueRef::Enum(value),
+            Self::Flags(value) => ControlValueRef::Flags(value),
+            Self::List(value) => ControlValueRef::List(value),
+            Self::Map(value) => ControlValueRef::Map(value),
+            Self::Unknown => ControlValueRef::Unknown,
+        };
+        wire.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for ControlValue {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = match ControlValueWire::deserialize(deserializer)? {
+            ControlValueWire::Null => Self::Null,
+            ControlValueWire::Bool(value) => Self::Bool(value),
+            ControlValueWire::Int(value) => Self::Int(value),
+            ControlValueWire::Float(value) => Self::Float(value),
+            ControlValueWire::Text(value) => Self::Text(value),
+            ControlValueWire::SecretRef(value) => Self::SecretRef(SecretRef::new(value)),
+            ControlValueWire::Ip(value) => {
+                Self::Ip(IpText::new(value).map_err(serde::de::Error::custom)?)
+            }
+            ControlValueWire::Mac(value) => {
+                Self::Mac(MacText::new(value).map_err(serde::de::Error::custom)?)
+            }
+            ControlValueWire::Duration(value) => Self::Duration(Duration::from_millis(value)),
+            ControlValueWire::ColorRgb(value) => Self::ColorRgb(value),
+            ControlValueWire::ColorRgba(value) => Self::ColorRgba(value),
+            ControlValueWire::ColorLinear(value) => Self::ColorLinear(value),
+            ControlValueWire::Gradient(value) => Self::Gradient(value),
+            ControlValueWire::Rect(value) => Self::Rect(value),
+            ControlValueWire::Enum(value) => Self::Enum(value),
+            ControlValueWire::Flags(value) => Self::Flags(value),
+            ControlValueWire::List(value) => Self::List(value),
+            ControlValueWire::Map(value) => Self::Map(value),
+            ControlValueWire::Unknown => Self::Unknown,
+        };
+        value.validate().map_err(serde::de::Error::custom)?;
+        Ok(value)
+    }
 }
 
 /// Why a value violates the canonical invariants.
@@ -366,6 +714,28 @@ impl ControlValue {
             Self::List(_) => "list",
             Self::Map(_) => "map",
             Self::Unknown => "unknown",
+        }
+    }
+
+    /// Return an effect-compatible scalar when this value is numeric.
+    ///
+    /// Values outside the effect renderer's `f32`/`i32` range are refused
+    /// instead of narrowing to infinity or silently losing integer width.
+    #[must_use]
+    pub fn as_effect_f32(&self) -> Option<f32> {
+        match self {
+            Self::Float(value) => {
+                #[expect(clippy::cast_possible_truncation, clippy::as_conversions)]
+                let narrowed = *value as f32;
+                narrowed.is_finite().then_some(narrowed)
+            }
+            Self::Int(value) => i32::try_from(*value).ok().map(|value| {
+                #[expect(clippy::cast_precision_loss, clippy::as_conversions)]
+                let narrowed = value as f32;
+                narrowed
+            }),
+            Self::Bool(value) => Some(if *value { 1.0 } else { 0.0 }),
+            _ => None,
         }
     }
 

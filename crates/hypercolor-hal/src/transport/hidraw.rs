@@ -509,19 +509,42 @@ fn map_async_hid_error(error: HidError) -> TransportError {
         HidError::NotConnected => TransportError::NotFound {
             detail: "hidraw device is not connected".to_owned(),
         },
-        HidError::Disconnected => TransportError::IoError {
+        HidError::Disconnected => TransportError::Disconnected {
             detail: "hidraw device disconnected".to_owned(),
         },
-        HidError::Message(message) => map_error_detail(message.into_owned()),
-        HidError::Other(error) => map_error_detail(error.to_string()),
+        HidError::Message(message) => TransportError::IoError {
+            detail: message.into_owned(),
+        },
+        HidError::Other(error) => map_backend_error(error.as_ref()),
     }
 }
 
-fn map_error_detail(detail: String) -> TransportError {
-    if detail.to_ascii_lowercase().contains("permission") {
-        TransportError::PermissionDenied { detail }
-    } else {
-        TransportError::IoError { detail }
+fn map_backend_error(error: &(dyn std::error::Error + 'static)) -> TransportError {
+    let detail = error.to_string();
+    let mut source = Some(error);
+    while let Some(current) = source {
+        if let Some(error) = current.downcast_ref::<std::io::Error>() {
+            return map_backend_io_kind(error.kind(), detail);
+        }
+        if let Some(error) = current.downcast_ref::<nix::errno::Errno>() {
+            let kind = std::io::Error::from_raw_os_error(*error as i32).kind();
+            return map_backend_io_kind(kind, detail);
+        }
+        source = current.source();
+    }
+
+    TransportError::IoError { detail }
+}
+
+fn map_backend_io_kind(kind: std::io::ErrorKind, detail: String) -> TransportError {
+    match kind {
+        std::io::ErrorKind::PermissionDenied => TransportError::PermissionDenied { detail },
+        std::io::ErrorKind::NotFound => TransportError::NotFound { detail },
+        std::io::ErrorKind::BrokenPipe
+        | std::io::ErrorKind::ConnectionReset
+        | std::io::ErrorKind::UnexpectedEof
+        | std::io::ErrorKind::NotConnected => TransportError::Disconnected { detail },
+        _ => TransportError::IoError { detail },
     }
 }
 
@@ -677,5 +700,41 @@ fn format_hex_preview(bytes: &[u8], max_bytes: usize) -> String {
         "<empty>".to_owned()
     } else {
         rendered
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn async_hid_disconnect_preserves_transport_liveness() {
+        assert!(matches!(
+            map_async_hid_error(HidError::Disconnected),
+            TransportError::Disconnected { detail }
+                if detail == "hidraw device disconnected"
+        ));
+    }
+
+    #[test]
+    fn async_hid_classification_uses_typed_backend_causes() {
+        assert!(matches!(
+            map_async_hid_error(HidError::message("permission denied and device not found")),
+            TransportError::IoError { .. }
+        ));
+
+        let permission = std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "harmless display text",
+        );
+        assert!(matches!(
+            map_async_hid_error(HidError::from_backend(permission)),
+            TransportError::PermissionDenied { .. }
+        ));
+
+        assert!(matches!(
+            map_async_hid_error(HidError::from_backend(nix::errno::Errno::ENOENT)),
+            TransportError::NotFound { .. }
+        ));
     }
 }

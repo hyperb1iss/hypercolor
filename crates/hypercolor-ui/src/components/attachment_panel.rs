@@ -623,7 +623,7 @@ pub fn WiringPanel(
                                                                                     type="number" min="1" max=slot_max_leds.to_string()
                                                                                     class="w-14 bg-surface-base/40 border border-edge-subtle rounded px-1.5 py-0.5
                                                                                            text-[11px] font-mono tabular-nums text-right shrink-0
-                                                                                           focus:outline-none focus:border-neon-cyan/30"
+                                                                                           focus:outline-none focus:border-cyan/30"
                                                                                     style="color: rgba(128, 255, 234, 0.8)"
                                                                                     prop:value=move || strip_led_count.get().to_string()
                                                                                     on:input=move |ev| {
@@ -644,7 +644,7 @@ pub fn WiringPanel(
                                                                                         type="number" min="1" max="64"
                                                                                         class="w-10 bg-surface-base/40 border border-edge-subtle rounded px-1 py-0.5
                                                                                                text-[11px] font-mono tabular-nums text-right
-                                                                                               focus:outline-none focus:border-neon-cyan/30"
+                                                                                               focus:outline-none focus:border-cyan/30"
                                                                                         style="color: rgba(128, 255, 234, 0.8)"
                                                                                         prop:value=move || matrix_cols_sig.get().to_string()
                                                                                         on:input=move |ev| {
@@ -664,7 +664,7 @@ pub fn WiringPanel(
                                                                                         type="number" min="1" max="64"
                                                                                         class="w-10 bg-surface-base/40 border border-edge-subtle rounded px-1 py-0.5
                                                                                                text-[11px] font-mono tabular-nums text-right
-                                                                                               focus:outline-none focus:border-neon-cyan/30"
+                                                                                               focus:outline-none focus:border-cyan/30"
                                                                                         style="color: rgba(128, 255, 234, 0.8)"
                                                                                         prop:value=move || matrix_rows_sig.get().to_string()
                                                                                         on:input=move |ev| {
@@ -727,7 +727,7 @@ pub fn WiringPanel(
                                                                         <button
                                                                             class="w-5 h-5 flex items-center justify-center rounded shrink-0
                                                                                    opacity-0 group-hover/row:opacity-100 transition-opacity
-                                                                                   text-fg-tertiary/40 hover:text-error-red btn-press"
+                                                                                   text-fg-tertiary/40 hover:text-status-error btn-press"
                                                                             on:click=move |_| {
                                                                                 set_drafts.update(|rows| { rows.retain(|r| r.row_id != row_id); });
                                                                             }
@@ -807,7 +807,7 @@ pub fn WiringPanel(
                                 }.into_any()
                             }
                             Err(error) => view! {
-                                <div class="text-[10px] text-error-red py-2">{error}</div>
+                                <div class="text-[10px] text-status-error py-2">{error}</div>
                             }.into_any(),
                         })
                     }}

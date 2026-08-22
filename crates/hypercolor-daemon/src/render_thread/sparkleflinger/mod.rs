@@ -39,8 +39,8 @@ use hypercolor_core::input::screen::ScreenBranchPublication;
 use hypercolor_core::input::screen::ScreenNativeExecutionTarget;
 use hypercolor_core::spatial::PreparedZonePlan;
 #[cfg(feature = "wgpu")]
-use hypercolor_core::types::canvas::Rgba;
-use hypercolor_core::types::canvas::{
+use hypercolor_types::canvas::Rgba;
+use hypercolor_types::canvas::{
     Canvas, PublishedSurface, RenderSurfacePool, SurfaceDescriptor, SurfaceLease,
     SurfaceStateCounts,
 };

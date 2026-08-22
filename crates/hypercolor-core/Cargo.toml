@@ -14,6 +14,7 @@ workspace = true
 [features]
 default = []
 allocation-contract-tests = []
+persistence-test-hooks = []
 spatial-workspace-test-hooks = []
 windows-capture-fixtures = []
 macos-native-fixtures = []
@@ -101,6 +102,7 @@ servo = { workspace = true, features = ["baked-in-resources", "js_jit"], optiona
 # glReadPixels path in servo/worker.rs can call into Servo's context.
 gleam = { version = "0.15", optional = true }
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
+tempfile = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libpulse-binding = { workspace = true }

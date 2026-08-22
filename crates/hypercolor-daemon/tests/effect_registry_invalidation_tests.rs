@@ -5,8 +5,8 @@ use std::sync::{Arc, LazyLock, Mutex};
 use axum::body::Body;
 use http::{Request, StatusCode};
 use hypercolor_core::config::ConfigManager;
-use hypercolor_core::effect::EffectRegistry;
-use hypercolor_daemon::api::{self, AppState};
+use hypercolor_daemon::api;
+use hypercolor_daemon::app_state::AppState;
 use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 use tower::ServiceExt;
@@ -95,15 +95,23 @@ async fn install_effect_invalidates_active_render_group_revision() {
     let app = api::build_router(Arc::clone(&state), None);
     let metadata = sample_effect_metadata("seed");
 
-    {
-        let mut scene_manager = state.scene_manager.write().await;
-        scene_manager
-            .upsert_primary_group(&metadata, HashMap::new(), None, sample_layout())
-            .expect("primary group should be created");
-    }
+    let mut mutation = state.scene_manager.begin_mutation().await;
+    mutation
+        .upsert_primary_zone(
+            &metadata,
+            HashMap::new(),
+            None,
+            sample_layout(),
+            hypercolor_types::event::ChangeTrigger::System,
+            None,
+        )
+        .expect("primary group should be created");
+    hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
+        .await
+        .expect("primary group should commit");
 
     let revision_before = {
-        let scene_manager = state.scene_manager.read().await;
+        let scene_manager = state.scene_manager.snapshot().await;
         scene_manager.active_render_groups_revision()
     };
 
@@ -132,7 +140,7 @@ async fn install_effect_invalidates_active_render_group_revision() {
     assert_eq!(response.status(), StatusCode::CREATED);
 
     let revision_after = {
-        let scene_manager = state.scene_manager.read().await;
+        let scene_manager = state.scene_manager.snapshot().await;
         scene_manager.active_render_groups_revision()
     };
 
@@ -149,23 +157,27 @@ async fn rescan_effects_invalidates_active_render_group_revision() {
     let app = api::build_router(Arc::clone(&state), None);
     let metadata = sample_effect_metadata("seed");
 
-    {
-        let mut scene_manager = state.scene_manager.write().await;
-        scene_manager
-            .upsert_primary_group(&metadata, HashMap::new(), None, sample_layout())
-            .expect("primary group should be created");
-    }
+    let mut mutation = state.scene_manager.begin_mutation().await;
+    mutation
+        .upsert_primary_zone(
+            &metadata,
+            HashMap::new(),
+            None,
+            sample_layout(),
+            hypercolor_types::event::ChangeTrigger::System,
+            None,
+        )
+        .expect("primary group should be created");
+    hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
+        .await
+        .expect("primary group should commit");
 
     let revision_before = {
-        let scene_manager = state.scene_manager.read().await;
+        let scene_manager = state.scene_manager.snapshot().await;
         scene_manager.active_render_groups_revision()
     };
 
-    let user_effects_dir = tempdir.path().join("effects");
-    {
-        let mut registry = state.effect_registry.write().await;
-        *registry = EffectRegistry::new(vec![user_effects_dir.clone()]);
-    }
+    let user_effects_dir = tempdir.path().join("data/effects");
     std::fs::create_dir_all(&user_effects_dir).expect("user effects dir should be created");
     std::fs::write(
         user_effects_dir.join("rescan.html"),
@@ -193,7 +205,7 @@ async fn rescan_effects_invalidates_active_render_group_revision() {
     assert_eq!(response.status(), StatusCode::OK);
 
     let revision_after = {
-        let scene_manager = state.scene_manager.read().await;
+        let scene_manager = state.scene_manager.snapshot().await;
         scene_manager.active_render_groups_revision()
     };
 

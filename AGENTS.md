@@ -61,6 +61,7 @@ crates/
   hypercolor-windows-helper/       # Signed elevated helper for Windows privileged operations
   hypercolor-platform-fs/          # Audited platform filesystem operations
   hypercolor-driver-api/           # Stable trait/type boundary between the daemon and all driver implementations
+  hypercolor-driver-support/       # Native credential and discovery services layered on the driver API
   hypercolor-driver-builtin/       # Compile-time bundle assembling HAL + network drivers into a registry via feature flags
   hypercolor-driver-hue/           # Philips Hue Bridge driver (Entertainment API over DTLS)
   hypercolor-driver-nanoleaf/      # Nanoleaf panels driver (HTTP pairing + UDP external control)
@@ -104,14 +105,15 @@ graph TD
     WI[hypercolor-windows-input] --> CORE
     WH[hypercolor-windows-helper]
     T & CORE --> DAPI[hypercolor-driver-api]
-    DAPI --> HUE[hypercolor-driver-hue]
-    DAPI --> NL[hypercolor-driver-nanoleaf]
-    DAPI --> WLED[hypercolor-driver-wled]
-    DAPI --> GV[hypercolor-driver-govee]
+    DAPI --> DS[hypercolor-driver-support]
+    DAPI & DS --> HUE[hypercolor-driver-hue]
+    DAPI & DS --> NL[hypercolor-driver-nanoleaf]
+    DAPI & DS --> WLED[hypercolor-driver-wled]
+    DAPI & DS --> GV[hypercolor-driver-govee]
     ORS[hypercolor-openrgb-sdk] & DAPI --> ORD[hypercolor-driver-openrgb]
     DAPI --> NET[hypercolor-network]
-    HAL & HUE & NL & WLED & GV & ORD --> DB[hypercolor-driver-builtin]
-    CORE & HAL & DB & NET & PFS[hypercolor-platform-fs] --> D[hypercolor-daemon]
+    HAL & HUE & NL & WLED & GV & ORD & DS --> DB[hypercolor-driver-builtin]
+    CORE & HAL & DB & DS & NET & PFS[hypercolor-platform-fs] --> D[hypercolor-daemon]
     CORE --> CLI[hypercolor-cli]
     T --> TUI[hypercolor-tui]
     TUI -.->|optional| CLI
@@ -174,8 +176,9 @@ Rule of thumb: events are broadcast, data streams are watch.
 
 ### Key Traits
 
-- **`DeviceBackend`** (`core/src/device/traits.rs`): hardware communication.
-  Methods: discover, connect, write_colors, disconnect. Long-running I/O dispatched internally.
+- **`DeviceBackend`** (`driver-api/src/backend.rs`): hardware communication.
+  Discovery adopts devices before connect; frame and display sinks own hot-path delivery.
+  Long-running I/O is dispatched internally.
 - **`EffectRenderer`** (`core/src/effect/traits.rs`): polymorphic renderer (wgpu and Servo
   both implement this). Input: `FrameInput` (timing, audio, interaction, screen). Output: `Canvas`.
 - **`InputSource`** (`core/src/input/traits.rs`): audio, screen capture, keyboard, MIDI.

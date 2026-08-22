@@ -59,6 +59,7 @@ def render(manifest: dict[str, Any]) -> str:
         message for message in binary_messages if message.get("layout") == "preview_frame"
     ]
     preview_formats = expect_dict(expect_dict(manifest["preview_frame"])["formats"])
+    preview_transport = render_python_value(manifest["preview_transport"], indent=0)
 
     lines = [
         '"""Generated WebSocket protocol constants."""',
@@ -76,6 +77,9 @@ def render(manifest: dict[str, Any]) -> str:
         *[f"    {quote(topic)}," for topic in topics],
         ")",
         *tuple_assignment("WS_CAPABILITIES", manifest["capabilities"]),
+        "",
+        f"PREVIEW_TRANSPORT: Final = {preview_transport[0]}",
+        *preview_transport[1:],
         "",
         f"JSON_PAYLOAD_CONTRACTS: Final = {json_payload_contracts[0]}",
         *json_payload_contracts[1:],

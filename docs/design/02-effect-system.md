@@ -1163,7 +1163,8 @@ pub struct AudioData {
 const audio = window.engine.audio;
 
 // Basic
-audio.level; // -100 to 0 (dB scale, LightScript compat) or 0-1 (Hypercolor mode)
+audio.levelDb; // -100 to 0 dB
+audio.levelLinear; // 0-1 normalized amplitude
 audio.bass; // 0.0 - 1.0
 audio.mid; // 0.0 - 1.0
 audio.treble; // 0.0 - 1.0
@@ -1234,7 +1235,7 @@ A cookbook of proven audio-to-visual mappings:
 | **Bass = Brightness**      | `audio.bass`         | Global brightness multiplier          | Bass frequencies are felt physically; brightness mirrors that impact |
 | **Treble = Speed**         | `audio.treble`       | Animation speed / particle velocity   | High frequencies feel fast; speed matches that perception            |
 | **Beat = Flash**           | `audio.beatPulse`    | Additive white flash with decay       | The most instinctive mapping: drum hit = visual impact               |
-| **Level = Scale**          | `audio.level`        | Object size or effect radius          | Louder = bigger. Universal metaphor                                  |
+| **Level = Scale**          | `audio.levelLinear`  | Object size or effect radius          | Louder = bigger. Universal metaphor                                  |
 | **Chromagram = Hue**       | `audio.harmonicHue`  | Base hue rotation                     | Maps musical key to color wheel. C=red, F#=cyan. Synesthesia         |
 | **Mood = Temperature**     | `audio.chordMood`    | Warm-cool color shift                 | Minor chords feel cold (blue); major chords feel warm (orange)       |
 | **Spectral Flux = Chaos**  | `audio.spectralFlux` | Particle spawn rate / distortion      | Musical transitions (drops, builds) create visual complexity         |

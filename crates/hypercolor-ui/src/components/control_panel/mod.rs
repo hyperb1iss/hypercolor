@@ -42,12 +42,12 @@ use viewport_picker::{UrlInputBinding, ViewportPicker};
 /// Using CSS `var(...)` here would break equality and leave swatches un-highlighted.
 /// The values intentionally mirror the SilkCircuit token palette:
 ///   `#6000fc` — deep purple (no token)
-///   `#e135ff` — `var(--color-electric-purple)`
+///   `#e135ff` — `var(--color-accent)`
 ///   `#ff6ac1` — `var(--color-coral)`
-///   `#80ffea` — `var(--color-neon-cyan)`
-///   `#f1fa8c` — `var(--color-electric-yellow)`
-///   `#50fa7b` — `var(--color-success-green)`
-///   `#82aaff` — `var(--color-info-blue)`
+///   `#80ffea` — `var(--color-cyan)`
+///   `#f1fa8c` — `var(--color-status-warning)`
+///   `#50fa7b` — `var(--color-status-success)`
+///   `#82aaff` — `var(--color-status-info)`
 ///   `#ffffff` — pure white
 ///   `#ff8c42` — warm orange (no token)
 ///   `#0a0910` — near-black surface (no token)
@@ -348,7 +348,7 @@ fn ControlWidget(
             <div class="flex items-center gap-2.5 rounded-lg px-3 py-2 opacity-40">
                 <Icon icon=icon width="15px" height="15px" style=icon_style.clone() />
                 <label class="text-xs text-fg-secondary font-medium shrink-0 min-w-[80px] max-w-[120px] truncate">{name.clone()}</label>
-                <div class="flex-1 h-5 rounded-lg bg-gradient-to-r from-electric-purple via-neon-cyan to-coral opacity-30" />
+                <div class="flex-1 h-5 rounded-lg bg-gradient-to-r from-accent via-cyan to-coral opacity-30" />
             </div>
         }
         .into_any(),

@@ -35,9 +35,9 @@ use crate::shared::{
     CaptureError, CaptureExtent, CaptureLane, CaptureRegion, CaptureResourceAdmission,
     CaptureResourceKind, CaptureResourceLease, CaptureResult, CpuDesktopFrame, CursorInfo,
     DisplayRotation, Frame, GpuAdapterLuid, GpuReductionAdmission, GpuSurfaceAdmission,
-    GpuSurfaceDescriptor, GpuSurfacePlanGeneration, GpuSurfaceSourceColorSpace, LegacyFramePlane,
-    LegacyFramePool, MonitorInfo, MonitorSelector, ReductionPath, ReductionTelemetry,
-    commit_capture_resource, default_capture_resource_admission, recycle_legacy_frame_plane,
+    GpuSurfaceDescriptor, GpuSurfacePlanGeneration, GpuSurfaceSourceColorSpace, MonitorInfo,
+    MonitorSelector, ReductionPath, ReductionTelemetry, RgbaFramePlane, RgbaFramePool,
+    commit_capture_resource, default_capture_resource_admission, recycle_rgba_frame_plane,
     reserve_capture_resource, subsample_stride_within, subsampled_extent,
 };
 
@@ -145,13 +145,13 @@ pub struct CapturePumpReport {
 
 use gpu_reduction::{GpuReducer, ReducedFrame, SubmitOutcome};
 
-enum CompatibilityGpuReducer {
+enum AnalysisGpuReducer {
     Uninitialized,
     Ready(GpuReducer),
     Disabled,
 }
 
-impl CompatibilityGpuReducer {
+impl AnalysisGpuReducer {
     const fn is_ready(&self) -> bool {
         matches!(self, Self::Ready(_))
     }
@@ -276,10 +276,10 @@ fn require_plane_capacity(
 }
 
 fn take_frame_plane(
-    pool: &LegacyFramePool,
+    pool: &RgbaFramePool,
     admission: &dyn CaptureResourceAdmission,
     requested_bytes: usize,
-) -> CaptureResult<LegacyFramePlane> {
+) -> CaptureResult<RgbaFramePlane> {
     let mut pool = pool
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -296,30 +296,27 @@ fn take_frame_plane(
 
     let retained_bytes =
         u64::try_from(requested_bytes).map_err(|_| CaptureError::ResourceExhausted {
-            operation: "reserve compatibility capture plane",
+            operation: "reserve RGBA capture plane",
             requested_bytes,
         })?;
     let reservation = reserve_capture_resource(
         admission,
-        CaptureResourceKind::CompatibilityFramePlane,
+        CaptureResourceKind::RgbaFramePlane,
         retained_bytes,
-        "reserve compatibility capture plane",
+        "reserve RGBA capture plane",
     )?;
     let mut rgba = Vec::new();
     rgba.try_reserve_exact(requested_bytes)
         .map_err(|_| CaptureError::ResourceExhausted {
-            operation: "allocate compatibility capture plane",
+            operation: "allocate RGBA capture plane",
             requested_bytes,
         })?;
     rgba.resize(requested_bytes, 0);
     let mut rgba = rgba.into_boxed_slice().into_vec();
     rgba.clear();
-    let resource_lease = commit_capture_resource(
-        reservation,
-        retained_bytes,
-        "commit compatibility capture plane",
-    )?;
-    Ok(LegacyFramePlane {
+    let resource_lease =
+        commit_capture_resource(reservation, retained_bytes, "commit RGBA capture plane")?;
+    Ok(RgbaFramePlane {
         rgba,
         resource_lease,
     })
@@ -963,10 +960,10 @@ pub struct DesktopDuplicator {
     duplication: Option<IDXGIOutputDuplication>,
     /// Canonical GPU-resident desktop paired with the acquisition that produced it.
     clean_desktop: Option<RetainedDesktop>,
-    /// CPU-readable scratch texture used only by the legacy fallback path.
+    /// CPU-readable scratch texture used only by the CPU fallback path.
     cpu_staging: Option<AdmittedStagingTexture>,
     /// RGBA allocations returned by frames after their last consumer drops.
-    frame_pool: LegacyFramePool,
+    frame_pool: RgbaFramePool,
     /// Set while a duplicated frame is held and must be released before the
     /// next acquire. DXGI rejects back-to-back acquires without a release.
     frame_held: bool,
@@ -983,7 +980,7 @@ pub struct DesktopDuplicator {
     region: Option<CaptureRegion>,
     capture_sequence: u64,
     latest_capture: Option<CaptureMetadata>,
-    gpu_reducer: CompatibilityGpuReducer,
+    gpu_reducer: AnalysisGpuReducer,
     reduction_telemetry: ReductionTelemetry,
     analysis_pending: bool,
     resource_admission: Arc<dyn CaptureResourceAdmission>,
@@ -1067,7 +1064,7 @@ impl DesktopDuplicator {
             native_scanout_extent(logical_width, logical_height, rotation);
         let (origin_x, origin_y) = output_origin(&output)?;
         let source_color_space = output_color_space(&output);
-        let gpu_reducer = CompatibilityGpuReducer::Uninitialized;
+        let gpu_reducer = AnalysisGpuReducer::Uninitialized;
         let reduction_telemetry = ReductionTelemetry {
             path: ReductionPath::Gpu,
             ..ReductionTelemetry::default()
@@ -1990,7 +1987,7 @@ impl DesktopDuplicator {
     /// loss is handled internally by rebuilding the duplication interface.
     pub fn next_frame(&mut self, timeout: Duration) -> CaptureResult<Option<Frame>> {
         self.release_frame();
-        self.ensure_compatibility_reducer()?;
+        self.ensure_analysis_reducer()?;
 
         let mut ready = self.poll_gpu_frame()?;
         if self.analysis_pending && self.gpu_reducer.is_ready() {
@@ -2032,8 +2029,8 @@ impl DesktopDuplicator {
         Ok(ready)
     }
 
-    fn ensure_compatibility_reducer(&mut self) -> CaptureResult<()> {
-        if !matches!(self.gpu_reducer, CompatibilityGpuReducer::Uninitialized) {
+    fn ensure_analysis_reducer(&mut self) -> CaptureResult<()> {
+        if !matches!(self.gpu_reducer, AnalysisGpuReducer::Uninitialized) {
             return Ok(());
         }
         match GpuReducer::new(
@@ -2042,7 +2039,7 @@ impl DesktopDuplicator {
             Arc::clone(&self.resource_admission),
         ) {
             Ok(reducer) => {
-                self.gpu_reducer = CompatibilityGpuReducer::Ready(reducer);
+                self.gpu_reducer = AnalysisGpuReducer::Ready(reducer);
                 Ok(())
             }
             Err(error) => {
@@ -2106,9 +2103,9 @@ impl DesktopDuplicator {
             return Ok(None);
         };
         let Some(output_len) = reducer.output_byte_len().map_err(|error| {
-            error.as_capture_error().unwrap_or_else(|| {
-                CaptureError::windows("quote compatibility reduction frame", error)
-            })
+            error
+                .as_capture_error()
+                .unwrap_or_else(|| CaptureError::windows("quote analysis reduction frame", error))
         })?
         else {
             return Ok(None);
@@ -2150,7 +2147,7 @@ impl DesktopDuplicator {
     }
 
     fn cpu_frame_from_retained(&mut self) -> CaptureResult<Option<Frame>> {
-        let Some(output_len) = self.compatibility_output_byte_len()? else {
+        let Some(output_len) = self.analysis_output_byte_len()? else {
             return Ok(None);
         };
         let mut plane = take_frame_plane(
@@ -2177,7 +2174,7 @@ impl DesktopDuplicator {
         }
     }
 
-    fn compatibility_output_byte_len(&self) -> CaptureResult<Option<usize>> {
+    fn analysis_output_byte_len(&self) -> CaptureResult<Option<usize>> {
         let Some(clean) = self.clean_desktop.as_ref() else {
             return Ok(None);
         };
@@ -2186,10 +2183,10 @@ impl DesktopDuplicator {
             subsample_stride_within(region.width(), region.height(), self.requested_extent);
         let width = subsampled_extent(region.width(), stride);
         let height = subsampled_extent(region.height(), stride);
-        checked_rgba_len(width, height, "reserve compatibility capture plane").map(Some)
+        checked_rgba_len(width, height, "reserve RGBA capture plane").map(Some)
     }
 
-    fn frame_from_reduction(&self, reduced: ReducedFrame, plane: LegacyFramePlane) -> Frame {
+    fn frame_from_reduction(&self, reduced: ReducedFrame, plane: RgbaFramePlane) -> Frame {
         self.frame_from_metadata(reduced.metadata, reduced.width, reduced.height, plane)
     }
 
@@ -2198,7 +2195,7 @@ impl DesktopDuplicator {
         metadata: CaptureMetadata,
         width: u32,
         height: u32,
-        plane: LegacyFramePlane,
+        plane: RgbaFramePlane,
     ) -> Frame {
         let (origin_x, origin_y) = capture_region_origin(&metadata);
         let cursor = region_cursor(metadata.cursor, metadata.region);
@@ -2221,13 +2218,13 @@ impl DesktopDuplicator {
         )
     }
 
-    fn recycle_plane(&self, mut plane: LegacyFramePlane) {
+    fn recycle_plane(&self, mut plane: RgbaFramePlane) {
         plane.rgba.clear();
-        recycle_legacy_frame_plane(&self.frame_pool, plane);
+        recycle_rgba_frame_plane(&self.frame_pool, plane);
     }
 
     fn degrade_gpu(&mut self, issue: String) {
-        self.gpu_reducer = CompatibilityGpuReducer::Disabled;
+        self.gpu_reducer = AnalysisGpuReducer::Disabled;
         self.reduction_telemetry.path = ReductionPath::CpuFallback;
         self.reduction_telemetry.gpu_failures =
             self.reduction_telemetry.gpu_failures.saturating_add(1);
@@ -2334,23 +2331,23 @@ impl DesktopDuplicator {
             let texture_bytes = u64::try_from(checked_rgba_len(
                 desc.Width,
                 desc.Height,
-                "reserve compatibility staging texture",
+                "reserve analysis staging texture",
             )?)
             .map_err(|_| CaptureError::ResourceExhausted {
-                operation: "reserve compatibility staging texture",
+                operation: "reserve analysis staging texture",
                 requested_bytes: usize::MAX,
             })?;
             let reservation = reserve_capture_resource(
                 self.resource_admission.as_ref(),
-                CaptureResourceKind::CompatibilityCpuStagingTexture,
+                CaptureResourceKind::AnalysisCpuStagingTexture,
                 texture_bytes,
-                "reserve compatibility staging texture",
+                "reserve analysis staging texture",
             )?;
             let staging = create_staging_texture(&self.device, &desc)?;
             let resource_lease = commit_capture_resource(
                 reservation,
                 texture_bytes,
-                "commit compatibility staging texture",
+                "commit analysis staging texture",
             )?;
             self.cpu_staging = Some(AdmittedStagingTexture {
                 texture: staging.clone(),
@@ -2538,7 +2535,7 @@ impl DesktopDuplicator {
         self.source_color_space = source_color_space;
         self.region = region;
         self.latest_capture = None;
-        self.gpu_reducer = CompatibilityGpuReducer::Uninitialized;
+        self.gpu_reducer = AnalysisGpuReducer::Uninitialized;
         self.analysis_pending = false;
         self.reduction_telemetry.path = ReductionPath::Gpu;
         self.reduction_telemetry.issue = None;

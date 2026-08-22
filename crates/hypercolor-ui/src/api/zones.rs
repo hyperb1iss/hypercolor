@@ -1,6 +1,4 @@
 //! Live scene zone API client.
-#![allow(dead_code)]
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use gloo_net::http::Method;
@@ -14,18 +12,11 @@ use hypercolor_types::spatial::{Output, SpatialLayout};
 
 use super::client;
 use super::client::MutationOutcome;
-use super::scenes::{LiveZoneView, zone_projection};
 use crate::control_surface_api::path_segment;
 
 pub type ZoneOutcome<T> = MutationOutcome<T>;
 
-pub use hypercolor_types::api::scene::PatchZoneRequest as UpdateZoneRequest;
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct ZoneListResponse {
-    pub items: Vec<LiveZoneView>,
-    pub revision: u64,
-}
+pub use hypercolor_types::api::scene::PatchZoneRequest;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum OutputAssignment {
@@ -33,77 +24,65 @@ pub enum OutputAssignment {
     Existing { id: String },
 }
 
-pub async fn list_zones() -> Result<ZoneListResponse, String> {
-    let scene: SceneDocument = client::fetch_json("/api/v1/scene").await?;
-    let revision = scene.revision;
-    Ok(ZoneListResponse {
-        items: scene.zones.into_iter().map(zone_projection).collect(),
-        revision,
-    })
-}
-
 pub async fn create_zone(
     name: &str,
     color: Option<&str>,
-    expected_revision: Option<u64>,
-) -> Result<ZoneOutcome<LiveZoneView>, String> {
+    expected_revision: u64,
+) -> Result<ZoneOutcome<ZoneResource>, String> {
     let request = CreateZoneRequest {
         name: name.to_owned(),
         role: None,
         color: color.map(str::to_owned),
     };
-    let outcome = client::send_json_versioned::<_, ZoneResource>(
+    client::send_json_versioned::<_, ZoneResource>(
         Method::POST,
         "/api/v1/scene/zones",
         Some(&request),
-        expected_revision,
+        Some(expected_revision),
     )
-    .await?;
-    zone_outcome(outcome, expected_revision).await
+    .await
+    .map_err(Into::into)
 }
 
 pub async fn update_zone(
     zone_id: &str,
-    request: &UpdateZoneRequest,
-    expected_revision: Option<u64>,
-) -> Result<ZoneOutcome<LiveZoneView>, String> {
-    let outcome = client::send_json_versioned::<_, ZoneResource>(
+    request: &PatchZoneRequest,
+    expected_revision: u64,
+) -> Result<ZoneOutcome<ZoneResource>, String> {
+    client::send_json_versioned::<_, ZoneResource>(
         Method::PATCH,
         &format!("/api/v1/scene/zones/{}", path_segment(zone_id)),
         Some(request),
-        expected_revision,
+        Some(expected_revision),
     )
-    .await?;
-    zone_outcome(outcome, expected_revision).await
+    .await
+    .map_err(Into::into)
 }
 
 pub async fn update_zone_layout(
     zone_id: &str,
     layout: &SpatialLayout,
-    expected_revision: Option<u64>,
-) -> Result<ZoneOutcome<LiveZoneView>, String> {
+    expected_revision: u64,
+) -> Result<ZoneOutcome<ZoneResource>, String> {
     let request = ZoneLayoutRequest {
         placements: layout.zones.iter().map(member_placement).collect(),
     };
-    let outcome = client::send_json_versioned::<_, ZoneResource>(
+    client::send_json_versioned::<_, ZoneResource>(
         Method::PUT,
         &format!("/api/v1/scene/zones/{}/layout", path_segment(zone_id)),
         Some(&request),
-        expected_revision,
+        Some(expected_revision),
     )
-    .await?;
-    zone_outcome(outcome, expected_revision).await
+    .await
+    .map_err(Into::into)
 }
 
-pub async fn delete_zone(
-    zone_id: &str,
-    expected_revision: Option<u64>,
-) -> Result<ZoneOutcome<()>, String> {
+pub async fn delete_zone(zone_id: &str, expected_revision: u64) -> Result<ZoneOutcome<()>, String> {
     client::send_json_versioned::<(), SceneDocument>(
         Method::DELETE,
         &format!("/api/v1/scene/zones/{}", path_segment(zone_id)),
         None,
-        expected_revision,
+        Some(expected_revision),
     )
     .await
     .map(|outcome| outcome.map(|_| ()))
@@ -116,7 +95,7 @@ pub async fn assign_devices(
     zone_id: &str,
     assignments: Vec<OutputAssignment>,
     preserve_placement: bool,
-    expected_revision: Option<u64>,
+    expected_revision: u64,
 ) -> Result<ZoneOutcome<u64>, String> {
     let scene: SceneDocument = client::fetch_json("/api/v1/scene").await?;
     let mut by_device = BTreeMap::<String, BTreeSet<String>>::new();
@@ -151,7 +130,7 @@ pub async fn assign_devices(
         }
     }
 
-    let mut revision = expected_revision.unwrap_or(scene.revision);
+    let mut revision = expected_revision;
     let mut written_zone = scene
         .zones
         .into_iter()
@@ -208,7 +187,7 @@ pub async fn assign_devices(
 pub async fn unassign_device(
     zone_id: &str,
     member_id: &str,
-    expected_revision: Option<u64>,
+    expected_revision: u64,
 ) -> Result<ZoneOutcome<u64>, String> {
     let outcome = client::send_json_versioned::<(), ZoneResource>(
         Method::DELETE,
@@ -218,12 +197,12 @@ pub async fn unassign_device(
             path_segment(member_id)
         ),
         None,
-        expected_revision,
+        Some(expected_revision),
     )
     .await?;
     match outcome {
         MutationOutcome::Applied(_) => Ok(MutationOutcome::Applied(
-            next_revision(expected_revision).await?,
+            expected_revision.saturating_add(1),
         )),
         MutationOutcome::Stale { current } => Ok(MutationOutcome::Stale { current }),
     }
@@ -231,7 +210,7 @@ pub async fn unassign_device(
 
 pub async fn update_unassigned_behavior(
     behavior: &UnassignedBehavior,
-    expected_revision: Option<u64>,
+    expected_revision: u64,
 ) -> Result<ZoneOutcome<UnassignedBehavior>, String> {
     let request = ScenePatchRequest {
         name: None,
@@ -241,46 +220,11 @@ pub async fn update_unassigned_behavior(
         Method::PATCH,
         "/api/v1/scene",
         Some(&request),
-        expected_revision,
+        Some(expected_revision),
     )
     .await
     .map(|outcome| outcome.map(|scene| scene.unassigned_behavior))
     .map_err(Into::into)
-}
-
-async fn zone_outcome(
-    outcome: MutationOutcome<ZoneResource>,
-    expected_revision: Option<u64>,
-) -> Result<ZoneOutcome<LiveZoneView>, String> {
-    match outcome {
-        MutationOutcome::Applied(zone) => {
-            let projected = match expected_revision {
-                Some(_) => zone_projection(zone),
-                None => {
-                    let zone_id = zone.id;
-                    let scene: SceneDocument = client::fetch_json("/api/v1/scene").await?;
-                    let current = scene
-                        .zones
-                        .into_iter()
-                        .find(|candidate| candidate.id == zone_id)
-                        .ok_or_else(|| "The written zone left the live scene".to_owned())?;
-                    zone_projection(current)
-                }
-            };
-            Ok(MutationOutcome::Applied(projected))
-        }
-        MutationOutcome::Stale { current } => Ok(MutationOutcome::Stale { current }),
-    }
-}
-
-async fn next_revision(expected_revision: Option<u64>) -> Result<u64, String> {
-    match expected_revision {
-        Some(revision) => Ok(revision.saturating_add(1)),
-        None => client::fetch_json::<SceneDocument>("/api/v1/scene")
-            .await
-            .map(|scene| scene.revision)
-            .map_err(Into::into),
-    }
 }
 
 fn add_member_target(

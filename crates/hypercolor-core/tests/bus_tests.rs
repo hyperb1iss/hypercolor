@@ -4,15 +4,16 @@ use std::sync::Arc;
 
 use hypercolor_core::bus::{
     CanvasFrame, DisplayGroupFrame, DisplayGroupTarget, EventFilter, EventTimestamp, HypercolorBus,
-    INPUT_STATUS_EVENT_KIND, INPUT_STATUS_EVENT_SOURCE, TimestampedEvent,
+    INPUT_STATUS_EVENT_KIND, INPUT_STATUS_EVENT_SOURCE, PreviewKind, TimestampedEvent, WatchLane,
+    ZonePreviewFrame,
 };
 use hypercolor_core::input::{SourceKind, SourceState, SourceStatusReporter};
-use hypercolor_core::types::canvas::{Canvas, Rgba};
-use hypercolor_core::types::event::{
+use hypercolor_types::canvas::{Canvas, Rgba};
+use hypercolor_types::device::{ConnectionType, DeviceId, DeviceOrigin};
+use hypercolor_types::event::{
     ChangeTrigger, DisconnectReason, EffectRef, EventCategory, EventPriority, FrameData,
     HypercolorEvent, Severity, SpectrumData, ZoneColors,
 };
-use hypercolor_types::device::{ConnectionType, DeviceId, DeviceOrigin};
 use hypercolor_types::scene::{DisplayFaceBlendMode, ZoneId};
 use tokio::sync::broadcast;
 use tokio::time::{Duration, timeout};
@@ -238,6 +239,171 @@ async fn screen_canvas_receiver_count_tracks_drops() {
 
     drop(rx2);
     assert_eq!(bus.screen_canvas_receiver_count(), 0);
+}
+
+#[test]
+fn watch_lane_stats_count_only_successful_publications() {
+    let bus = HypercolorBus::new();
+    let lane = bus.canvas_lane();
+
+    assert!(lane.send(CanvasFrame::empty()).is_err());
+    assert_eq!(lane.stats().published, 0);
+    assert_eq!(lane.stats().revision, 0);
+
+    let receiver = lane.subscribe();
+    lane.send(CanvasFrame::empty())
+        .expect("live receiver should accept publication");
+    lane.send_replace(CanvasFrame::empty());
+
+    assert_eq!(lane.stats().receivers, 1);
+    assert_eq!(lane.stats().published, 2);
+    assert_eq!(lane.stats().revision, 2);
+
+    drop(receiver);
+    assert_eq!(lane.stats().receivers, 0);
+}
+
+#[test]
+fn watch_lane_rejected_send_does_not_change_late_subscriber_state() {
+    let lane = WatchLane::new(7_u64);
+
+    assert!(lane.send(11).is_err());
+
+    let receiver = lane.subscribe();
+    assert_eq!(*receiver.borrow(), 7);
+    assert_eq!(
+        lane.stats(),
+        hypercolor_core::bus::WatchLaneStats {
+            receivers: 1,
+            published: 0,
+            revision: 0,
+        }
+    );
+}
+
+#[test]
+fn watch_lane_replace_is_visible_to_late_subscribers() {
+    let lane = WatchLane::new(7_u64);
+
+    assert_eq!(lane.send_replace_weighted(11, 3), 7);
+
+    let receiver = lane.subscribe();
+    assert_eq!(*receiver.borrow(), 11);
+    assert_eq!(
+        lane.stats(),
+        hypercolor_core::bus::WatchLaneStats {
+            receivers: 1,
+            published: 3,
+            revision: 1,
+        }
+    );
+}
+
+#[test]
+fn watch_lane_revision_advances_only_for_notified_changes() {
+    let lane = WatchLane::new(7_u64);
+    let _receiver = lane.subscribe();
+
+    assert!(!lane.send_if_modified(|_| false));
+    assert_eq!(lane.stats().revision, 0);
+
+    assert!(lane.send_if_modified(|value| {
+        *value = 11;
+        true
+    }));
+    assert_eq!(lane.stats().published, 1);
+    assert_eq!(lane.stats().revision, 1);
+    assert_eq!(*lane.borrow(), 11);
+}
+
+#[test]
+fn watch_lane_keeps_exact_counters_across_concurrent_publishers() {
+    const WRITERS: u64 = 4;
+    const PUBLICATIONS_PER_WRITER: u64 = 64;
+
+    let lane = Arc::new(WatchLane::new(0_u64));
+    std::thread::scope(|scope| {
+        for writer in 0..WRITERS {
+            let lane = Arc::clone(&lane);
+            scope.spawn(move || {
+                for publication in 0..PUBLICATIONS_PER_WRITER {
+                    lane.send_replace_weighted(writer * PUBLICATIONS_PER_WRITER + publication, 2);
+                }
+            });
+        }
+    });
+
+    let stats = lane.stats();
+    let expected_revisions = WRITERS * PUBLICATIONS_PER_WRITER;
+    assert_eq!(stats.revision, expected_revisions);
+    assert_eq!(stats.published, expected_revisions * 2);
+}
+
+#[test]
+fn bus_lanes_keep_preview_telemetry_independent_by_kind() {
+    let bus = HypercolorBus::new();
+    let canvas = bus.lanes().preview(PreviewKind::Canvas);
+    let screen = bus.lanes().preview(PreviewKind::ScreenCanvas);
+    let _canvas_receiver = canvas.subscribe();
+
+    canvas.send_replace(CanvasFrame::empty());
+
+    assert_eq!(canvas.stats().published, 1);
+    assert_eq!(canvas.stats().revision, 1);
+    assert_eq!(screen.stats().published, 0);
+    assert_eq!(screen.stats().revision, 0);
+}
+
+#[test]
+fn zone_preview_lane_counts_frames_and_batch_revisions_separately() {
+    let bus = HypercolorBus::new();
+    let lane = bus.zone_preview_lane();
+    let _receiver = lane.subscribe();
+    let scene_id = hypercolor_types::scene::SceneId::new();
+    let frames: Arc<[ZonePreviewFrame]> = vec![
+        ZonePreviewFrame {
+            scene_id,
+            zone_id: ZoneId::new(),
+            frame: CanvasFrame::empty(),
+        },
+        ZonePreviewFrame {
+            scene_id,
+            zone_id: ZoneId::new(),
+            frame: CanvasFrame::empty(),
+        },
+    ]
+    .into();
+
+    lane.send_weighted(frames, 2)
+        .expect("live receiver should accept zone previews");
+    lane.send_weighted(Arc::from([]), 0)
+        .expect("live receiver should accept clear publication");
+
+    assert_eq!(lane.stats().published, 2);
+    assert_eq!(lane.stats().revision, 2);
+}
+
+#[test]
+fn zone_preview_clear_is_visible_after_subscriber_reconnects() {
+    let bus = HypercolorBus::new();
+    let lane = bus.zone_preview_lane();
+    let receiver = lane.subscribe();
+    let frames: Arc<[ZonePreviewFrame]> = vec![ZonePreviewFrame {
+        scene_id: hypercolor_types::scene::SceneId::new(),
+        zone_id: ZoneId::new(),
+        frame: CanvasFrame::empty(),
+    }]
+    .into();
+
+    lane.send_weighted(frames, 1)
+        .expect("live receiver should accept zone previews");
+    drop(receiver);
+    lane.send_replace_weighted(Arc::from([]), 0);
+
+    let reconnected = lane.subscribe();
+    assert!(reconnected.borrow().is_empty());
+    assert_eq!(lane.stats().published, 1);
+    assert_eq!(lane.stats().revision, 2);
 }
 
 #[tokio::test]
@@ -615,9 +781,9 @@ async fn frame_watch_latest_value_semantics() {
         300,
     );
 
-    bus.frame_sender().send_replace(frame1);
-    bus.frame_sender().send_replace(frame2);
-    bus.frame_sender().send_replace(frame3);
+    bus.frame_lane().send_replace(frame1);
+    bus.frame_lane().send_replace(frame2);
+    bus.frame_lane().send_replace(frame3);
 
     // changed() should resolve, and we should see only the latest frame.
     timeout(Duration::from_secs(1), rx.changed())
@@ -645,7 +811,7 @@ async fn frame_watch_multiple_receivers() {
         50,
     );
 
-    bus.frame_sender().send_replace(frame);
+    bus.frame_lane().send_replace(frame);
 
     timeout(Duration::from_secs(1), rx1.changed())
         .await
@@ -679,7 +845,7 @@ async fn spectrum_watch_latest_value_semantics() {
     spec.bpm = Some(128.0);
     spec.bins = vec![0.1, 0.5, 0.9];
 
-    bus.spectrum_sender().send_replace(spec);
+    bus.spectrum_lane().send_replace(spec);
 
     timeout(Duration::from_secs(1), rx.changed())
         .await
@@ -702,7 +868,7 @@ async fn spectrum_watch_skips_intermediate_values() {
         let mut spec = SpectrumData::empty();
         spec.timestamp_ms = (i + 1) * 10;
         spec.level = 0.1 * f32::from(u16::try_from(i + 1).expect("small index"));
-        bus.spectrum_sender().send_replace(spec);
+        bus.spectrum_lane().send_replace(spec);
     }
 
     timeout(Duration::from_secs(1), rx.changed())
@@ -730,7 +896,7 @@ async fn canvas_watch_latest_value_semantics() {
     let mut canvas = Canvas::new(2, 1);
     canvas.set_pixel(0, 0, Rgba::new(1, 2, 3, 255));
     canvas.set_pixel(1, 0, Rgba::new(4, 5, 6, 255));
-    bus.canvas_sender()
+    bus.canvas_lane()
         .send_replace(CanvasFrame::from_canvas(&canvas, 9, 123));
 
     timeout(Duration::from_secs(1), rx.changed())
@@ -761,7 +927,7 @@ async fn screen_canvas_watch_latest_value_semantics() {
     let mut canvas = Canvas::new(2, 1);
     canvas.set_pixel(0, 0, Rgba::new(7, 8, 9, 255));
     canvas.set_pixel(1, 0, Rgba::new(10, 11, 12, 255));
-    bus.screen_canvas_sender()
+    bus.screen_canvas_lane()
         .send_replace(CanvasFrame::from_canvas(&canvas, 12, 345));
 
     timeout(Duration::from_secs(1), rx.changed())

@@ -7,6 +7,7 @@ use std::time::Instant;
 
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
+use hypercolor_types::api::effects::EffectSourceKind;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -17,8 +18,9 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::action::Action;
 use crate::component::Component;
 use crate::state::{
-    ActiveScene, CanvasPreviewState, ControlDefinition, ControlValue, EffectSummary, PreviewSource,
-    SimulatedDisplaySummary, ZoneSummary,
+    CanvasPreviewState, ControlDefinition, ControlValue, EffectSummary, PreviewSource,
+    SceneDocument, SimulatedDisplaySummary, ZoneResource, primary_zone, scene_is_multi_zone,
+    scene_zone, zone_effect_controls, zone_effect_id,
 };
 use crate::widgets::{
     ColorPickerPopup, ParamSlider, Split, SplitDirection, hsl_to_rgb, rgb_to_hsl,
@@ -64,7 +66,7 @@ pub struct EffectBrowserView {
     all_effects: Vec<EffectSummary>,
     effects: Vec<EffectSummary>,
     favorites: Vec<String>,
-    active_scene: Option<Arc<ActiveScene>>,
+    active_scene: Option<Arc<SceneDocument>>,
     focused_zone: Option<String>,
     selected_index: usize,
     scroll_offset: Cell<usize>,
@@ -166,7 +168,7 @@ impl EffectBrowserView {
                 .iter()
                 .filter(|e| {
                     e.name.to_lowercase().contains(&query)
-                        || e.category.to_lowercase().contains(&query)
+                        || e.category.as_str().contains(&query)
                         || e.tags.iter().any(|t| t.to_lowercase().contains(&query))
                 })
                 .cloned()
@@ -262,12 +264,12 @@ impl EffectBrowserView {
     }
 
     /// The zone that apply/control actions currently target.
-    fn target_zone(&self) -> Option<&ZoneSummary> {
+    fn target_zone(&self) -> Option<&ZoneResource> {
         let scene = self.active_scene.as_deref()?;
         self.focused_zone
             .as_deref()
-            .and_then(|id| scene.zone(id))
-            .or_else(|| scene.primary())
+            .and_then(|id| scene_zone(scene, id))
+            .or_else(|| primary_zone(scene))
     }
 
     /// Label for the apply target, shown only in multi-zone scenes.
@@ -275,7 +277,7 @@ impl EffectBrowserView {
         if !self
             .active_scene
             .as_deref()
-            .is_some_and(ActiveScene::multi_zone)
+            .is_some_and(scene_is_multi_zone)
         {
             return None;
         }
@@ -315,15 +317,10 @@ impl EffectBrowserView {
         let Some(zone) = self.target_zone() else {
             return;
         };
-        if zone.effect_id.as_deref() != Some(effect_id.as_str()) {
+        if zone_effect_id(zone).as_deref() != Some(effect_id.as_str()) {
             return;
         }
-        let live: Vec<_> = zone
-            .controls
-            .iter()
-            .map(|(id, value)| (id.clone(), value.clone()))
-            .collect();
-        for (id, value) in live {
+        for (id, value) in zone_effect_controls(zone) {
             self.control_values.insert(id, value);
         }
     }
@@ -418,15 +415,15 @@ impl EffectBrowserView {
     /// Map a visual row offset (within the list area) to an effect index.
     fn effect_index_at_visual_row(&self, target_row: usize) -> Option<usize> {
         let mut visual_row = 0;
-        let mut current_category = String::new();
+        let mut current_category = None;
 
         for (flat_idx, effect) in self.effects.iter().enumerate() {
-            if effect.category != current_category {
-                if !current_category.is_empty() {
+            if Some(effect.category) != current_category {
+                if current_category.is_some() {
                     visual_row += 1; // blank separator
                 }
                 visual_row += 1; // category header
-                current_category.clone_from(&effect.category);
+                current_category = Some(effect.category);
             }
 
             if visual_row == target_row {
@@ -920,24 +917,20 @@ impl EffectBrowserView {
 
     fn build_list_items(&self, avail_width: u16) -> (Vec<ListItem<'_>>, Option<usize>) {
         let mut items: Vec<ListItem<'_>> = Vec::new();
-        let mut current_category = String::new();
+        let mut current_category = None;
         let mut selected_item_idx = None;
 
         for (flat_idx, effect) in self.effects.iter().enumerate() {
-            if effect.category != current_category {
-                if !current_category.is_empty() {
+            if Some(effect.category) != current_category {
+                if current_category.is_some() {
                     items.push(ListItem::new(Line::from("")));
                 }
-                let cat_display = if effect.category.is_empty() {
-                    "Uncategorized"
-                } else {
-                    &effect.category
-                };
+                let cat_display = effect.category.as_str();
                 items.push(ListItem::new(Line::from(Span::styled(
                     format!("\u{2500}\u{2500} {cat_display} \u{2500}\u{2500}"),
                     Style::default().fg(DIM_GRAY).add_modifier(Modifier::BOLD),
                 ))));
-                current_category.clone_from(&effect.category);
+                current_category = Some(effect.category);
             }
 
             if flat_idx == self.selected_index {
@@ -966,10 +959,10 @@ impl EffectBrowserView {
         let pointer = if is_selected { "\u{25B8} " } else { "  " };
         let fav_marker = if is_fav { " \u{2605}" } else { "" };
 
-        let source_badge = match effect.source.as_str() {
-            "native" | "wgpu" => "\u{2726} native",
-            "web" | "servo" => "\u{25C8} web",
-            _ => "",
+        let source_badge = match effect.source {
+            EffectSourceKind::Native => "\u{2726} native",
+            EffectSourceKind::Html => "\u{25C8} web",
+            EffectSourceKind::Shader => "\u{25C6} shader",
         };
 
         let name_style = if is_selected {
@@ -1036,7 +1029,7 @@ impl EffectBrowserView {
                     ""
                 };
                 let author_part = if effect.author.is_empty() {
-                    effect.source.clone()
+                    effect.source.to_string()
                 } else {
                     format!("{} \u{00B7} {}", effect.author, effect.source)
                 };
@@ -1656,7 +1649,7 @@ impl Component for EffectBrowserView {
                 self.favorites.clone_from(favs);
             }
             Action::ActiveSceneUpdated(scene) => {
-                self.active_scene.clone_from(scene);
+                self.active_scene = Some(scene.clone());
                 self.overlay_zone_controls();
             }
             Action::ZoneFocusChanged(zone) => {

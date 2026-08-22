@@ -102,13 +102,6 @@ fn effect_names_for_groups(groups: &[Zone], registry: &EffectRegistry) -> Vec<St
                 push_effect(effect_id, &mut names);
             }
         }
-        // Default-face overlay zones carry their effect on the legacy
-        // zone-level field with no layer stack.
-        if group.layers.is_empty()
-            && let Some(effect_id) = group.effect_id.as_ref()
-        {
-            push_effect(effect_id, &mut names);
-        }
     }
     names
 }

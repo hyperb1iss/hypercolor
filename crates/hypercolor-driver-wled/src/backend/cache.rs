@@ -1,18 +1,10 @@
 //! Device identity and metadata cache for WLED backends.
 //!
 //! Holds the types parsed from `/json/info` and `/json/state`, the
-//! fingerprinting logic used to produce stable [`DeviceId`]s across
-//! rediscoveries, and the translation into a generic [`DeviceInfo`].
-
-use std::net::IpAddr;
+//! state used to construct frames and negotiate output behavior.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-
-use hypercolor_types::device::{
-    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
-    DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, SegmentInfo,
-};
 
 // ── WLED Device Info ────────────────────────────────────────────────────
 
@@ -181,65 +173,4 @@ pub fn parse_wled_segments(json: &serde_json::Value) -> Result<Vec<WledSegmentIn
         .collect();
 
     Ok(result)
-}
-
-// ── Fingerprint / DeviceInfo translation ────────────────────────────────
-
-/// Produce a stable [`DeviceFingerprint`] for a WLED device, preferring
-/// the MAC address when available and falling back to hostname or IP.
-pub(super) fn wled_fingerprint(
-    ip: IpAddr,
-    hostname: Option<&str>,
-    wled_info: &WledDeviceInfo,
-) -> DeviceFingerprint {
-    if !wled_info.mac.is_empty() {
-        return DeviceFingerprint(format!("net:{}", wled_info.mac.to_ascii_lowercase()));
-    }
-
-    if let Some(hostname) = hostname {
-        return DeviceFingerprint(format!("net:wled:{}", hostname.to_ascii_lowercase()));
-    }
-
-    DeviceFingerprint(format!("net:wled:{ip}"))
-}
-
-/// Build a generic [`DeviceInfo`] from parsed WLED data.
-pub(super) fn build_device_info(
-    device_id: DeviceId,
-    wled_info: &WledDeviceInfo,
-    _ip: IpAddr,
-) -> DeviceInfo {
-    let color_format = if wled_info.rgbw {
-        DeviceColorFormat::Rgbw
-    } else {
-        DeviceColorFormat::Rgb
-    };
-
-    DeviceInfo {
-        id: device_id,
-        name: wled_info.name.clone(),
-        vendor: "WLED".to_owned(),
-        family: DeviceFamily::new_static("wled", "WLED"),
-        model: None,
-        connection_type: ConnectionType::Network,
-        origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
-        segments: vec![SegmentInfo {
-            name: "Main".to_owned(),
-            led_count: u32::from(wled_info.led_count),
-            topology: DeviceTopologyHint::Strip,
-            color_format,
-            layout_hint: None,
-        }],
-        firmware_version: Some(wled_info.firmware_version.clone()),
-        capabilities: DeviceCapabilities {
-            led_count: u32::from(wled_info.led_count),
-            supports_direct: true,
-            supports_brightness: true,
-            has_display: false,
-            display_resolution: None,
-            max_fps: wled_info.negotiated_target_fps(),
-            color_space: hypercolor_types::device::DeviceColorSpace::default(),
-            features: DeviceFeatures::default(),
-        },
-    }
 }

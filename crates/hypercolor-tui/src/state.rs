@@ -4,8 +4,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use bytes::Bytes;
+use hypercolor_types::api::effects::EffectSourceKind;
+pub use hypercolor_types::api::scene::{SceneDocument, ZoneResource};
+use hypercolor_types::effect::{ControlValue as ApiControlValue, EffectCategory};
+use hypercolor_types::layer::{LayerSource, SceneLayer};
 use hypercolor_types::library::PresetId;
-use hypercolor_types::scene::{SceneKind, SceneMutationMode};
+use hypercolor_types::scene::ZoneRole;
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::screen::ScreenId;
@@ -33,7 +37,7 @@ pub struct AppState {
     pub devices: Vec<DeviceSummary>,
     pub favorites: Vec<String>,
     pub scenes: Vec<SceneSummary>,
-    pub active_scene: Option<Arc<ActiveScene>>,
+    pub active_scene: Option<Arc<SceneDocument>>,
     /// Zone targeted by apply/control edits. `None` = the primary zone.
     pub focused_zone: Option<String>,
     pub spectrum: Option<Arc<SpectrumSnapshot>>,
@@ -48,12 +52,12 @@ impl AppState {
     /// Falls back to the primary zone when no explicit focus is set or the
     /// focused zone no longer exists in the active scene.
     #[must_use]
-    pub fn target_zone(&self) -> Option<&ZoneSummary> {
+    pub fn target_zone(&self) -> Option<&ZoneResource> {
         let scene = self.active_scene.as_deref()?;
         self.focused_zone
             .as_deref()
-            .and_then(|id| scene.zone(id))
-            .or_else(|| scene.primary())
+            .and_then(|id| scene_zone(scene, id))
+            .or_else(|| primary_zone(scene))
     }
 }
 
@@ -62,56 +66,75 @@ impl AppState {
 /// One saved scene, as listed by `GET /scenes` (shared wire contract).
 pub use hypercolor_types::api::scenes::SceneSummary;
 
-/// The active scene with its zones.
-#[derive(Debug, Clone)]
-pub struct ActiveScene {
-    pub id: String,
-    pub name: String,
-    pub kind: SceneKind,
-    pub mutation_mode: SceneMutationMode,
-    pub snapshot_locked: bool,
-    pub revision: u64,
-    pub zones: Vec<ZoneSummary>,
+/// Whether the live scene contains more than one authored zone.
+#[must_use]
+pub fn scene_is_multi_zone(scene: &SceneDocument) -> bool {
+    scene.zones.len() > 1
 }
 
-impl ActiveScene {
-    /// Whether the scene runs more than one zone.
-    #[must_use]
-    pub fn multi_zone(&self) -> bool {
-        self.zones.len() > 1
-    }
-
-    /// Look up a zone by id.
-    #[must_use]
-    pub fn zone(&self, id: &str) -> Option<&ZoneSummary> {
-        self.zones.iter().find(|zone| zone.id == id)
-    }
-
-    /// The scene's primary zone, if any.
-    #[must_use]
-    pub fn primary(&self) -> Option<&ZoneSummary> {
-        self.zones
-            .iter()
-            .find(|zone| zone.is_primary)
-            .or_else(|| self.zones.first())
-    }
+/// Look up a zone by its canonical wire id.
+#[must_use]
+pub fn scene_zone<'a>(scene: &'a SceneDocument, id: &str) -> Option<&'a ZoneResource> {
+    scene.zones.iter().find(|zone| zone.id.to_string() == id)
 }
 
-/// A render group (zone) within the active scene.
-///
-/// Projection of the canonical live zone carrying the effect layer id
-/// needed for control patches.
-#[derive(Debug, Clone)]
-pub struct ZoneSummary {
-    pub id: String,
-    pub name: String,
-    pub layer_id: Option<String>,
-    pub effect_id: Option<String>,
-    pub brightness: f32,
-    pub enabled: bool,
-    pub is_primary: bool,
-    pub color: Option<String>,
-    pub controls: HashMap<String, ControlValue>,
+/// Select the primary zone, falling back to the first authored zone.
+#[must_use]
+pub fn primary_zone(scene: &SceneDocument) -> Option<&ZoneResource> {
+    scene
+        .zones
+        .iter()
+        .find(|zone| zone.role == ZoneRole::Primary)
+        .or_else(|| scene.zones.first())
+}
+
+/// Select the topmost effect layer from a canonical zone resource.
+#[must_use]
+pub fn zone_effect_layer(zone: &ZoneResource) -> Option<&SceneLayer> {
+    zone.layers
+        .iter()
+        .rev()
+        .find(|layer| matches!(layer.source, LayerSource::Effect { .. }))
+}
+
+/// Select the topmost effect id from a canonical zone resource.
+#[must_use]
+pub fn zone_effect_id(zone: &ZoneResource) -> Option<String> {
+    let LayerSource::Effect { effect_id, .. } = &zone_effect_layer(zone)?.source else {
+        return None;
+    };
+    Some(effect_id.to_string())
+}
+
+/// Materialize the selected effect layer's controls for TUI widgets.
+#[must_use]
+pub fn zone_effect_controls(zone: &ZoneResource) -> HashMap<String, ControlValue> {
+    let Some(layer) = zone_effect_layer(zone) else {
+        return HashMap::new();
+    };
+    let LayerSource::Effect { controls, .. } = &layer.source else {
+        return HashMap::new();
+    };
+    controls
+        .iter()
+        .map(|(name, value)| (name.clone(), ControlValue::from_api(value)))
+        .collect()
+}
+
+/// Update one selected effect control in a canonical zone resource.
+pub fn set_zone_effect_control(zone: &mut ZoneResource, id: &str, value: &ControlValue) {
+    let Some(layer) = zone
+        .layers
+        .iter_mut()
+        .rev()
+        .find(|layer| matches!(layer.source, LayerSource::Effect { .. }))
+    else {
+        return;
+    };
+    let LayerSource::Effect { controls, .. } = &mut layer.source else {
+        return;
+    };
+    controls.insert(id.to_owned(), value.to_api());
 }
 
 // ── Daemon State ────────────────────────────────────────────────────
@@ -123,9 +146,6 @@ pub struct DaemonState {
     pub brightness: u8,
     pub fps_target: f32,
     pub fps_actual: f32,
-    pub scene_name: Option<String>,
-    #[serde(default)]
-    pub scene_snapshot_locked: bool,
     pub device_count: u32,
     pub total_leds: u32,
 }
@@ -141,10 +161,8 @@ pub struct EffectSummary {
     pub description: String,
     #[serde(default)]
     pub author: String,
-    #[serde(default)]
-    pub category: String,
-    #[serde(default)]
-    pub source: String,
+    pub category: EffectCategory,
+    pub source: EffectSourceKind,
     #[serde(default)]
     pub audio_reactive: bool,
     #[serde(default)]
@@ -222,6 +240,35 @@ pub enum ControlValue {
 }
 
 impl ControlValue {
+    fn from_api(value: &ApiControlValue) -> Self {
+        match value {
+            ApiControlValue::Float(value) => Self::Float(*value),
+            ApiControlValue::Integer(value) => Self::Integer(*value),
+            ApiControlValue::Boolean(value) => Self::Boolean(*value),
+            ApiControlValue::Color(value) => Self::Color(*value),
+            ApiControlValue::Enum(value) | ApiControlValue::Text(value) => {
+                Self::Text(value.clone())
+            }
+            ApiControlValue::Gradient(stops) => {
+                Self::Text(format!("{} gradient stops", stops.len()))
+            }
+            ApiControlValue::Rect(rect) => Self::Text(format!(
+                "{:.2},{:.2} {:.2}×{:.2}",
+                rect.x, rect.y, rect.width, rect.height,
+            )),
+        }
+    }
+
+    fn to_api(&self) -> ApiControlValue {
+        match self {
+            Self::Float(value) => ApiControlValue::Float(*value),
+            Self::Integer(value) => ApiControlValue::Integer(*value),
+            Self::Boolean(value) => ApiControlValue::Boolean(*value),
+            Self::Color(value) => ApiControlValue::Color(*value),
+            Self::Text(value) => ApiControlValue::Text(value.clone()),
+        }
+    }
+
     /// Extract as f32, if numeric.
     #[must_use]
     pub fn as_f32(&self) -> Option<f32> {

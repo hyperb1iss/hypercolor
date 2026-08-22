@@ -7,6 +7,9 @@ use anyhow::{Result, anyhow};
 
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::Canvas;
+use hypercolor_types::control::{
+    ControlDeltaBatch, ControlId, ControlSet, ControlValue as CanonicalControlValue, SetRevision,
+};
 use hypercolor_types::display::DisplayDescriptor;
 use hypercolor_types::effect::{
     ControlBinding, ControlDefinition, ControlKind, ControlValue, EffectId, EffectMetadata,
@@ -31,10 +34,24 @@ pub struct EffectPool {
     asset_library: Option<Arc<RwLock<AssetLibrary>>>,
 }
 
-/// Fully constructed effect-pool changes that can be committed without failure.
+/// Effect-pool changes with allocation and control validation completed.
 pub struct PreparedEffectPoolReconcile {
     slots: HashMap<EffectSlotKey, EffectSlot>,
     reused_keys: Vec<EffectSlotKey>,
+    control_updates: Vec<PreparedControlUpdate>,
+}
+
+struct PreparedControlUpdate {
+    key: EffectSlotKey,
+    state: PreparedLayerState,
+}
+
+struct PreparedLayerState {
+    controls: ControlSet,
+    control_bindings: HashMap<String, ControlBinding>,
+    changed_bindings: Vec<String>,
+    changes: Vec<(ControlId, CanonicalControlValue)>,
+    revision: SetRevision,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -83,8 +100,7 @@ impl EffectPool {
         display_descriptors: &HashMap<ZoneId, DisplayDescriptor>,
     ) -> Result<()> {
         let prepared = self.prepare_reconcile(groups, registry, display_descriptors)?;
-        self.commit_reconcile(prepared);
-        Ok(())
+        self.commit_reconcile(prepared)
     }
 
     /// Construct every replacement renderer before changing the live pool.
@@ -104,6 +120,8 @@ impl EffectPool {
         slots.try_reserve(desired_layers.len())?;
         let mut reused_keys = Vec::new();
         reused_keys.try_reserve(desired_layers.len())?;
+        let mut control_updates = Vec::new();
+        control_updates.try_reserve(desired_layers.len())?;
 
         for (group, layer) in desired_layers {
             let Some(source) = layer_effect_source(&layer) else {
@@ -127,7 +145,7 @@ impl EffectPool {
                     display_descriptor,
                     group.layout.canvas_width,
                     group.layout.canvas_height,
-                ) || slot.layer_source != source
+                )
             });
             if needs_replacement {
                 let slot = EffectSlot::build(
@@ -139,19 +157,44 @@ impl EffectPool {
                 )?;
                 slots.insert(key, slot);
             } else {
+                let slot = self
+                    .slots
+                    .get(&key)
+                    .expect("replacement check requires an existing effect slot");
+                let revision = SetRevision::new(group.controls_version);
+                if slot.controls.set_revision() != revision
+                    || slot.control_bindings != source.control_bindings
+                {
+                    control_updates.push(PreparedControlUpdate {
+                        key,
+                        state: slot.prepare_layer_state(source, revision)?,
+                    });
+                }
                 reused_keys.push(key);
             }
         }
 
-        Ok(PreparedEffectPoolReconcile { slots, reused_keys })
+        Ok(PreparedEffectPoolReconcile {
+            slots,
+            reused_keys,
+            control_updates,
+        })
     }
 
-    /// Commit a previously prepared reconciliation without fallible work.
-    pub fn commit_reconcile(&mut self, prepared: PreparedEffectPoolReconcile) {
+    /// Commit a previously prepared reconciliation without allocating.
+    pub fn commit_reconcile(&mut self, prepared: PreparedEffectPoolReconcile) -> Result<()> {
         let PreparedEffectPoolReconcile {
             mut slots,
             reused_keys,
+            control_updates,
         } = prepared;
+        for update in control_updates {
+            let slot = self
+                .slots
+                .get_mut(&update.key)
+                .ok_or_else(|| anyhow!("prepared effect slot disappeared before commit"))?;
+            slot.commit_prepared_layer_state(update.state)?;
+        }
         let mut live_slots = std::mem::take(&mut self.slots);
         for key in reused_keys {
             if let Some(slot) = live_slots.remove(&key) {
@@ -159,6 +202,7 @@ impl EffectPool {
             }
         }
         self.slots = slots;
+        Ok(())
     }
 
     pub fn clear(&mut self) {
@@ -371,7 +415,6 @@ impl Default for EffectPool {
 
 struct EffectSlot {
     effect_id: EffectId,
-    layer_source: LayerEffectSource,
     registry_metadata: EffectMetadata,
     registry_source_path: PathBuf,
     registry_modified: SystemTime,
@@ -380,8 +423,11 @@ struct EffectSlot {
     canvas_width: u32,
     canvas_height: u32,
     renderer: Box<dyn EffectRenderer>,
-    controls: HashMap<String, ControlValue>,
+    controls: ControlSet,
+    control_bindings: HashMap<String, ControlBinding>,
+    controls_initialized: bool,
     binding_state: HashMap<String, ActiveBindingState>,
+    resolution_seq: u64,
     elapsed: Duration,
     frame_number: u64,
 }
@@ -409,7 +455,6 @@ impl EffectSlot {
 
         let mut slot = Self {
             effect_id: entry.metadata.id,
-            layer_source: layer_source.clone(),
             registry_metadata: entry.metadata.clone(),
             registry_source_path: entry.source_path.clone(),
             registry_modified: entry.modified,
@@ -418,12 +463,15 @@ impl EffectSlot {
             canvas_width: group.layout.canvas_width,
             canvas_height: group.layout.canvas_height,
             renderer,
-            controls: HashMap::new(),
+            controls: ControlSet::new(SetRevision::new(group.controls_version)),
+            control_bindings: HashMap::new(),
+            controls_initialized: false,
             binding_state: HashMap::new(),
+            resolution_seq: 0,
             elapsed: Duration::ZERO,
             frame_number: 0,
         };
-        slot.sync_layer_state(&layer_source);
+        slot.sync_layer_state(layer_source, SetRevision::new(group.controls_version))?;
         Ok(slot)
     }
 
@@ -444,37 +492,92 @@ impl EffectSlot {
             || self.canvas_height != canvas_height
     }
 
-    fn sync_layer_state(&mut self, source: &LayerEffectSource) {
-        let mut desired = HashMap::new();
+    fn sync_layer_state(&mut self, source: LayerEffectSource, revision: SetRevision) -> Result<()> {
+        let prepared = self.prepare_layer_state(source, revision)?;
+        self.commit_prepared_layer_state(prepared)
+    }
 
-        for definition in &mut self.metadata.controls {
-            let next_binding = source
-                .control_bindings
-                .get(definition.control_id())
-                .cloned();
-            if definition.binding != next_binding {
-                definition.binding = next_binding;
-                self.binding_state.remove(definition.control_id());
+    fn prepare_layer_state(
+        &self,
+        source: LayerEffectSource,
+        revision: SetRevision,
+    ) -> Result<PreparedLayerState> {
+        let controls = canonical_control_set(revision, &self.metadata, &source)?;
+        let changed_bindings = self
+            .control_bindings
+            .keys()
+            .chain(source.control_bindings.keys())
+            .filter(|control_id| {
+                self.control_bindings.get(*control_id) != source.control_bindings.get(*control_id)
+            })
+            .cloned()
+            .collect::<std::collections::HashSet<_>>();
+
+        let changes = if self.controls_initialized {
+            controls
+                .iter()
+                .filter_map(|(control_id, authored_value)| {
+                    let control_id_text = control_id.as_str();
+                    let binding_changed = changed_bindings.contains(control_id_text);
+                    let previous_value = self
+                        .binding_state
+                        .get(control_id_text)
+                        .filter(|_| self.control_bindings.contains_key(control_id_text))
+                        .map_or_else(
+                            || self.controls.get(control_id_text),
+                            |state| Some(&state.control_value),
+                        );
+                    let desired_value = self
+                        .binding_state
+                        .get(control_id_text)
+                        .filter(|_| {
+                            !binding_changed
+                                && source.control_bindings.contains_key(control_id_text)
+                        })
+                        .map_or(authored_value, |state| &state.control_value);
+                    (previous_value != Some(desired_value))
+                        .then(|| (control_id.clone(), desired_value.clone()))
+                })
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+
+        let mut changed_bindings = changed_bindings.into_iter().collect::<Vec<_>>();
+        changed_bindings.sort_unstable();
+
+        Ok(PreparedLayerState {
+            controls,
+            control_bindings: source.control_bindings,
+            changed_bindings,
+            changes,
+            revision,
+        })
+    }
+
+    fn commit_prepared_layer_state(&mut self, prepared: PreparedLayerState) -> Result<()> {
+        if self.controls_initialized {
+            if !prepared.changes.is_empty() {
+                let batch = ControlDeltaBatch::new(prepared.revision, 0, &prepared.changes);
+                if self.renderer.apply_controls(&batch).is_err() {
+                    self.renderer
+                        .initialize_controls(prepared.revision, &prepared.controls)?;
+                    self.binding_state.clear();
+                }
             }
-            let value = source
-                .controls
-                .get(definition.control_id())
-                .cloned()
-                .unwrap_or_else(|| definition.default_value.clone());
-            desired.insert(definition.control_id().to_owned(), value);
+        } else {
+            self.renderer
+                .initialize_controls(prepared.revision, &prepared.controls)?;
         }
 
-        for (name, value) in &source.controls {
-            desired.entry(name.clone()).or_insert_with(|| value.clone());
+        for control_id in prepared.changed_bindings {
+            self.binding_state.remove(&control_id);
         }
-
-        for (name, value) in &desired {
-            if self.controls.get(name) != Some(value) {
-                self.renderer.set_control(name, value);
-            }
-        }
-
-        self.controls = desired;
+        self.controls = prepared.controls;
+        self.control_bindings = prepared.control_bindings;
+        self.controls_initialized = true;
+        self.resolution_seq = 0;
+        Ok(())
     }
 
     #[expect(
@@ -497,10 +600,12 @@ impl EffectSlot {
         apply_sensor_bindings(
             self.renderer.as_mut(),
             &self.metadata,
+            &self.control_bindings,
             &self.controls,
             &mut self.binding_state,
+            &mut self.resolution_seq,
             sensors,
-        );
+        )?;
         let input = FrameInput {
             time_secs,
             delta_secs,
@@ -537,10 +642,12 @@ impl EffectSlot {
         apply_sensor_bindings(
             self.renderer.as_mut(),
             &self.metadata,
+            &self.control_bindings,
             &self.controls,
             &mut self.binding_state,
+            &mut self.resolution_seq,
             sensors,
-        );
+        )?;
         let input = FrameInput {
             time_secs,
             delta_secs,
@@ -577,10 +684,12 @@ impl EffectSlot {
         apply_sensor_bindings(
             self.renderer.as_mut(),
             &self.metadata,
+            &self.control_bindings,
             &self.controls,
             &mut self.binding_state,
+            &mut self.resolution_seq,
             sensors,
-        );
+        )?;
         let input = FrameInput {
             time_secs,
             delta_secs,
@@ -623,7 +732,8 @@ fn desired_effect_layers(groups: &[Zone]) -> Vec<(&Zone, SceneLayer)> {
         .filter(|group| group.enabled)
         .flat_map(|group| {
             group
-                .effective_layers()
+                .layers
+                .clone()
                 .into_iter()
                 .filter(|layer| layer.enabled && layer_effect_source(layer).is_some())
                 .map(move |layer| (group, layer))
@@ -637,7 +747,8 @@ fn single_enabled_effect_layer(group: &Zone) -> Result<Option<SceneLayer>> {
     }
 
     let mut layers = group
-        .effective_layers()
+        .layers
+        .clone()
         .into_iter()
         .filter(|layer| layer.enabled && layer_effect_source(layer).is_some());
     let Some(layer) = layers.next() else {
@@ -715,26 +826,67 @@ const fn fit_mode_control_value(fit: FitMode) -> &'static str {
     }
 }
 
+fn canonical_control_set(
+    revision: SetRevision,
+    metadata: &EffectMetadata,
+    source: &LayerEffectSource,
+) -> Result<ControlSet> {
+    let mut controls = ControlSet::new(revision);
+    for definition in &metadata.controls {
+        let control_id = definition.control_id();
+        let value = source
+            .controls
+            .get(control_id)
+            .unwrap_or(&definition.default_value);
+        controls.insert(
+            ControlId::from(control_id),
+            canonical_control_value(control_id, value)?,
+        )?;
+    }
+    for (control_id, value) in &source.controls {
+        if controls.get(control_id).is_none() {
+            controls.insert(
+                ControlId::from(control_id.as_str()),
+                canonical_control_value(control_id, value)?,
+            )?;
+        }
+    }
+    Ok(controls)
+}
+
+fn canonical_control_value(
+    control_id: &str,
+    value: &ControlValue,
+) -> Result<CanonicalControlValue> {
+    CanonicalControlValue::try_from(value.clone())
+        .map_err(|error| anyhow!("control '{control_id}' is invalid: {error}"))
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct ActiveBindingState {
     sensor_value: Option<f32>,
-    control_value: ControlValue,
+    control_value: CanonicalControlValue,
 }
 
 fn apply_sensor_bindings(
     renderer: &mut dyn EffectRenderer,
     metadata: &EffectMetadata,
-    controls: &HashMap<String, ControlValue>,
+    bindings: &HashMap<String, ControlBinding>,
+    controls: &ControlSet,
     binding_state: &mut HashMap<String, ActiveBindingState>,
+    resolution_seq: &mut u64,
     sensors: &SystemSnapshot,
-) {
+) -> Result<()> {
+    let mut next_binding_state = binding_state.clone();
+    let mut changes = Vec::new();
+
     for control in &metadata.controls {
         let control_id = control.control_id();
-        let Some(binding) = control.binding.as_ref() else {
-            if binding_state.remove(control_id).is_some()
+        let Some(binding) = bindings.get(control_id) else {
+            if next_binding_state.remove(control_id).is_some()
                 && let Some(base_value) = controls.get(control_id)
             {
-                renderer.set_control(control_id, base_value);
+                changes.push((ControlId::from(control_id), base_value.clone()));
             }
             continue;
         };
@@ -768,10 +920,32 @@ fn apply_sensor_bindings(
             });
 
         if binding_state.get(control_id) != Some(&next_state) {
-            renderer.set_control(control_id, &next_state.control_value);
+            changes.push((
+                ControlId::from(control_id),
+                next_state.control_value.clone(),
+            ));
         }
-        binding_state.insert(control_id.to_owned(), next_state);
+        next_binding_state.insert(control_id.to_owned(), next_state);
     }
+
+    if changes.is_empty() {
+        *binding_state = next_binding_state;
+        return Ok(());
+    }
+
+    let next_sequence = resolution_seq
+        .checked_add(1)
+        .ok_or_else(|| anyhow!("control resolution sequence overflowed"))?;
+    let batch = ControlDeltaBatch::new(controls.set_revision(), next_sequence, &changes);
+    if let Err(error) = renderer.apply_controls(&batch) {
+        renderer.initialize_controls(controls.set_revision(), controls)?;
+        binding_state.clear();
+        return Err(error.into());
+    }
+
+    *binding_state = next_binding_state;
+    *resolution_seq = next_sequence;
+    Ok(())
 }
 
 #[expect(
@@ -788,7 +962,7 @@ fn evaluate_sensor_binding(
     deadband: f32,
     smoothing: f32,
     previous: Option<&ActiveBindingState>,
-) -> Option<ControlValue> {
+) -> Option<CanonicalControlValue> {
     let source_span = sensor_max - sensor_min;
     if !source_span.is_finite()
         || source_span.abs() < f32::EPSILON
@@ -808,21 +982,23 @@ fn evaluate_sensor_binding(
     let normalized = ((sensor_value - sensor_min) / source_span).clamp(0.0, 1.0);
     let mapped = target_min + normalized * (target_max - target_min);
     let smoothed = previous
-        .and_then(|state| state.control_value.as_f32())
+        .and_then(|state| state.control_value.as_effect_f32())
         .map_or(mapped, |previous_value| {
             let alpha = 1.0 - smoothing;
             previous_value + (mapped - previous_value) * alpha
         });
 
     match control.kind {
-        ControlKind::Number | ControlKind::Hue | ControlKind::Area => {
-            control.validate_value(&ControlValue::Float(smoothed)).ok()
-        }
+        ControlKind::Number | ControlKind::Hue | ControlKind::Area => control
+            .validate_value(&ControlValue::Float(smoothed))
+            .ok()
+            .and_then(|value| CanonicalControlValue::try_from(value).ok()),
         ControlKind::Boolean => {
             let midpoint = target_min + (target_max - target_min) * 0.5;
             control
                 .validate_value(&ControlValue::Boolean(smoothed >= midpoint))
                 .ok()
+                .and_then(|value| CanonicalControlValue::try_from(value).ok())
         }
         _ => None,
     }
@@ -832,8 +1008,8 @@ fn evaluate_sensor_binding(
 mod tests {
     use std::collections::HashMap;
     use std::path::PathBuf;
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::{Arc, Mutex};
     use std::time::{Duration, SystemTime};
 
     use anyhow::Result;
@@ -843,14 +1019,21 @@ mod tests {
     use super::{EffectPool, EffectSlot, EffectSlotKey};
     use crate::effect::builtin::register_builtin_effects;
     use crate::effect::registry::EffectRegistry;
-    use crate::effect::traits::{EffectRenderer, FrameDataSources, FrameInput};
+    use crate::effect::traits::{ControlError, EffectRenderer, FrameDataSources, FrameInput};
     use crate::input::InteractionData;
     use hypercolor_types::audio::AudioData;
     use hypercolor_types::canvas::Canvas;
-    use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
+    use hypercolor_types::control::{
+        ControlDeltaBatch, ControlId, ControlSet, ControlValue as CanonicalControlValue,
+        SetRevision,
+    };
+    use hypercolor_types::effect::{
+        ControlBinding, ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory,
+        EffectId, EffectMetadata, EffectSource,
+    };
     #[cfg(feature = "servo")]
-    use hypercolor_types::layer::{LayerAdjust, LayerBlendMode, LayerSource, LayerTransform};
-    use hypercolor_types::layer::{SceneLayer, SceneLayerId};
+    use hypercolor_types::layer::{LayerAdjust, LayerBlendMode, LayerTransform};
+    use hypercolor_types::layer::{LayerSource, SceneLayer, SceneLayerId};
     use hypercolor_types::scene::{Zone, ZoneId, ZoneRole};
     use hypercolor_types::spatial::{
         EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
@@ -863,6 +1046,20 @@ mod tests {
 
     struct AdvanceSpyRenderer {
         advanced: Arc<AtomicU64>,
+    }
+
+    struct RejectOnceRenderer {
+        reject_next: bool,
+        initialized: Arc<Mutex<Vec<ControlSet>>>,
+        applied: SharedControlBatchLog,
+    }
+
+    type RecordedControlBatch = Vec<(String, CanonicalControlValue)>;
+    type SharedControlBatchLog = Arc<Mutex<Vec<RecordedControlBatch>>>;
+
+    #[derive(Default)]
+    struct ControlSpyRenderer {
+        applied: Vec<(String, CanonicalControlValue)>,
     }
 
     impl DestroySpyRenderer {
@@ -880,7 +1077,9 @@ mod tests {
             Ok(())
         }
 
-        fn set_control(&mut self, _name: &str, _value: &hypercolor_types::effect::ControlValue) {}
+        fn apply_controls(&mut self, _batch: &ControlDeltaBatch<'_>) -> Result<(), ControlError> {
+            Ok(())
+        }
 
         fn destroy(&mut self) {
             self.destroyed.store(true, Ordering::SeqCst);
@@ -903,7 +1102,75 @@ mod tests {
             Ok(())
         }
 
-        fn set_control(&mut self, _name: &str, _value: &hypercolor_types::effect::ControlValue) {}
+        fn apply_controls(&mut self, _batch: &ControlDeltaBatch<'_>) -> Result<(), ControlError> {
+            Ok(())
+        }
+
+        fn destroy(&mut self) {}
+    }
+
+    impl EffectRenderer for ControlSpyRenderer {
+        fn init(&mut self, _metadata: &EffectMetadata) -> Result<()> {
+            Ok(())
+        }
+
+        fn render_into(&mut self, _input: &FrameInput<'_>, _target: &mut Canvas) -> Result<()> {
+            Ok(())
+        }
+
+        fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> Result<(), ControlError> {
+            self.applied.extend(
+                batch
+                    .changes
+                    .iter()
+                    .map(|(control_id, value)| (control_id.to_string(), value.clone())),
+            );
+            Ok(())
+        }
+
+        fn destroy(&mut self) {}
+    }
+
+    impl EffectRenderer for RejectOnceRenderer {
+        fn init(&mut self, _metadata: &EffectMetadata) -> Result<()> {
+            Ok(())
+        }
+
+        fn render_into(&mut self, _input: &FrameInput<'_>, _target: &mut Canvas) -> Result<()> {
+            Ok(())
+        }
+
+        fn initialize_controls(
+            &mut self,
+            _revision: SetRevision,
+            controls: &ControlSet,
+        ) -> Result<(), ControlError> {
+            self.initialized
+                .lock()
+                .expect("control initialization log should be available")
+                .push(controls.clone());
+            Ok(())
+        }
+
+        fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> Result<(), ControlError> {
+            self.applied
+                .lock()
+                .expect("control delta log should be available")
+                .push(
+                    batch
+                        .changes
+                        .iter()
+                        .map(|(control_id, value)| (control_id.to_string(), value.clone()))
+                        .collect(),
+                );
+            if self.reject_next {
+                self.reject_next = false;
+                return Err(ControlError::Rejected {
+                    reason: "injected rejection".to_owned(),
+                });
+            }
+            Ok(())
+        }
 
         fn destroy(&mut self) {}
     }
@@ -971,11 +1238,6 @@ mod tests {
         let registry_metadata = spy_metadata(effect_id);
         EffectSlot {
             effect_id,
-            layer_source: super::LayerEffectSource {
-                effect_id,
-                controls: HashMap::new(),
-                control_bindings: HashMap::new(),
-            },
             registry_metadata: registry_metadata.clone(),
             registry_source_path: PathBuf::from("mock/destroy-spy.wgsl"),
             registry_modified: SystemTime::UNIX_EPOCH,
@@ -984,8 +1246,11 @@ mod tests {
             canvas_width: 1,
             canvas_height: 1,
             renderer: Box::new(DestroySpyRenderer::new(destroyed)),
-            controls: HashMap::new(),
+            controls: ControlSet::new(SetRevision::default()),
+            control_bindings: HashMap::new(),
+            controls_initialized: true,
             binding_state: HashMap::new(),
+            resolution_seq: 0,
             elapsed: Duration::ZERO,
             frame_number: 0,
         }
@@ -995,11 +1260,6 @@ mod tests {
         let registry_metadata = spy_metadata(effect_id);
         EffectSlot {
             effect_id,
-            layer_source: super::LayerEffectSource {
-                effect_id,
-                controls: HashMap::new(),
-                control_bindings: HashMap::new(),
-            },
             registry_metadata: registry_metadata.clone(),
             registry_source_path: PathBuf::from("mock/advance-spy.wgsl"),
             registry_modified: SystemTime::UNIX_EPOCH,
@@ -1008,8 +1268,11 @@ mod tests {
             canvas_width: 1,
             canvas_height: 1,
             renderer: Box::new(AdvanceSpyRenderer { advanced }),
-            controls: HashMap::new(),
+            controls: ControlSet::new(SetRevision::default()),
+            control_bindings: HashMap::new(),
+            controls_initialized: true,
             binding_state: HashMap::new(),
+            resolution_seq: 0,
             elapsed: Duration::ZERO,
             frame_number: 0,
         }
@@ -1035,10 +1298,6 @@ mod tests {
             id,
             name: "Desk".into(),
             description: None,
-            effect_id: Some(effect_id),
-            controls: HashMap::new(),
-            control_bindings: HashMap::new(),
-            preset_id: None,
             layers: vec![SceneLayer::from_effect(
                 SceneLayerId::new(),
                 effect_id,
@@ -1078,6 +1337,304 @@ mod tests {
 
         assert!(after > before);
         assert_eq!(after, slot.elapsed.as_secs_f64());
+    }
+
+    #[test]
+    fn rejected_authored_delta_replays_the_authoritative_snapshot() {
+        let effect_id = EffectId::new(uuid::Uuid::now_v7());
+        let mut metadata = spy_metadata(effect_id);
+        metadata.controls.push(ControlDefinition {
+            id: "speed".into(),
+            name: "Speed".into(),
+            kind: ControlKind::Number,
+            control_type: ControlType::Slider,
+            default_value: ControlValue::Float(1.0),
+            min: Some(0.0),
+            max: Some(10.0),
+            step: Some(1.0),
+            labels: Vec::new(),
+            group: None,
+            tooltip: None,
+            aspect_lock: None,
+            preview_source: None,
+            binding: None,
+        });
+        let initialized = Arc::new(Mutex::new(Vec::new()));
+        let applied = Arc::new(Mutex::new(Vec::new()));
+        let mut slot = EffectSlot {
+            effect_id,
+            registry_metadata: metadata.clone(),
+            registry_source_path: PathBuf::from("mock/reject-once.wgsl"),
+            registry_modified: SystemTime::UNIX_EPOCH,
+            metadata,
+            display_descriptor: None,
+            canvas_width: 1,
+            canvas_height: 1,
+            renderer: Box::new(RejectOnceRenderer {
+                reject_next: true,
+                initialized: Arc::clone(&initialized),
+                applied,
+            }),
+            controls: ControlSet::try_from_entries(
+                SetRevision::default(),
+                [(ControlId::from("speed"), CanonicalControlValue::Float(1.0))],
+            )
+            .expect("valid initial controls"),
+            control_bindings: HashMap::new(),
+            controls_initialized: true,
+            binding_state: HashMap::new(),
+            resolution_seq: 0,
+            elapsed: Duration::ZERO,
+            frame_number: 0,
+        };
+        let source = super::LayerEffectSource {
+            effect_id,
+            controls: HashMap::from([("speed".into(), ControlValue::Float(2.0))]),
+            control_bindings: HashMap::new(),
+        };
+
+        slot.sync_layer_state(source, SetRevision::new(1))
+            .expect("snapshot replay should recover the renderer");
+
+        assert_eq!(
+            initialized
+                .lock()
+                .expect("control initialization log should be available")
+                .len(),
+            1
+        );
+        assert_eq!(slot.controls.set_revision(), SetRevision::new(1));
+        assert_eq!(
+            slot.controls.get("speed"),
+            Some(&CanonicalControlValue::Float(2.0))
+        );
+    }
+
+    #[test]
+    fn snapshot_replay_invalidates_active_sensor_resolution() {
+        let effect_id = EffectId::new(uuid::Uuid::now_v7());
+        let binding = ControlBinding {
+            sensor: "cpu_temp".into(),
+            sensor_min: 30.0,
+            sensor_max: 100.0,
+            target_min: 0.0,
+            target_max: 10.0,
+            deadband: 0.0,
+            smoothing: 0.0,
+        };
+        let mut metadata = spy_metadata(effect_id);
+        metadata.controls.extend([
+            ControlDefinition {
+                id: "speed".into(),
+                name: "Speed".into(),
+                kind: ControlKind::Number,
+                control_type: ControlType::Slider,
+                default_value: ControlValue::Float(5.0),
+                min: Some(0.0),
+                max: Some(10.0),
+                step: Some(1.0),
+                labels: Vec::new(),
+                group: None,
+                tooltip: None,
+                aspect_lock: None,
+                preview_source: None,
+                binding: Some(binding.clone()),
+            },
+            ControlDefinition {
+                id: "brightness".into(),
+                name: "Brightness".into(),
+                kind: ControlKind::Number,
+                control_type: ControlType::Slider,
+                default_value: ControlValue::Float(1.0),
+                min: Some(0.0),
+                max: Some(10.0),
+                step: Some(1.0),
+                labels: Vec::new(),
+                group: None,
+                tooltip: None,
+                aspect_lock: None,
+                preview_source: None,
+                binding: None,
+            },
+        ]);
+        let initialized = Arc::new(Mutex::new(Vec::new()));
+        let applied = Arc::new(Mutex::new(Vec::new()));
+        let mut slot = EffectSlot {
+            effect_id,
+            registry_metadata: metadata.clone(),
+            registry_source_path: PathBuf::from("mock/reject-once.wgsl"),
+            registry_modified: SystemTime::UNIX_EPOCH,
+            metadata,
+            display_descriptor: None,
+            canvas_width: 1,
+            canvas_height: 1,
+            renderer: Box::new(RejectOnceRenderer {
+                reject_next: true,
+                initialized: Arc::clone(&initialized),
+                applied: Arc::clone(&applied),
+            }),
+            controls: ControlSet::try_from_entries(
+                SetRevision::default(),
+                [
+                    (ControlId::from("speed"), CanonicalControlValue::Float(5.0)),
+                    (
+                        ControlId::from("brightness"),
+                        CanonicalControlValue::Float(1.0),
+                    ),
+                ],
+            )
+            .expect("valid initial controls"),
+            control_bindings: HashMap::from([("speed".into(), binding.clone())]),
+            controls_initialized: true,
+            binding_state: HashMap::from([(
+                "speed".into(),
+                super::ActiveBindingState {
+                    sensor_value: Some(58.0),
+                    control_value: CanonicalControlValue::Float(4.0),
+                },
+            )]),
+            resolution_seq: 1,
+            elapsed: Duration::ZERO,
+            frame_number: 0,
+        };
+        let source = super::LayerEffectSource {
+            effect_id,
+            controls: HashMap::from([
+                ("speed".into(), ControlValue::Float(5.0)),
+                ("brightness".into(), ControlValue::Float(2.0)),
+            ]),
+            control_bindings: HashMap::from([("speed".into(), binding)]),
+        };
+
+        slot.sync_layer_state(source, SetRevision::new(1))
+            .expect("snapshot replay should recover the renderer");
+
+        assert!(slot.binding_state.is_empty());
+        assert_eq!(slot.resolution_seq, 0);
+        assert_eq!(
+            initialized
+                .lock()
+                .expect("control initialization log should be available")[0]
+                .get("speed"),
+            Some(&CanonicalControlValue::Float(5.0))
+        );
+
+        let sensors = hypercolor_types::sensor::SystemSnapshot {
+            cpu_temp_celsius: Some(58.0),
+            ..hypercolor_types::sensor::SystemSnapshot::empty()
+        };
+        super::apply_sensor_bindings(
+            slot.renderer.as_mut(),
+            &slot.metadata,
+            &slot.control_bindings,
+            &slot.controls,
+            &mut slot.binding_state,
+            &mut slot.resolution_seq,
+            &sensors,
+        )
+        .expect("sensor value should be redelivered after snapshot replay");
+
+        assert_eq!(slot.resolution_seq, 1);
+        assert_eq!(
+            applied
+                .lock()
+                .expect("control delta log should be available")
+                .last(),
+            Some(&vec![("speed".into(), CanonicalControlValue::Float(4.0))])
+        );
+    }
+
+    #[test]
+    fn sensor_bindings_apply_and_restore_the_authored_control() {
+        let mut metadata = spy_metadata(EffectId::new(uuid::Uuid::now_v7()));
+        metadata.controls.push(ControlDefinition {
+            id: "speed".into(),
+            name: "Speed".into(),
+            kind: ControlKind::Number,
+            control_type: ControlType::Slider,
+            default_value: ControlValue::Float(5.0),
+            min: Some(0.0),
+            max: Some(10.0),
+            step: Some(1.0),
+            labels: Vec::new(),
+            group: None,
+            tooltip: None,
+            aspect_lock: None,
+            preview_source: None,
+            binding: Some(ControlBinding {
+                sensor: "cpu_temp".into(),
+                sensor_min: 30.0,
+                sensor_max: 100.0,
+                target_min: 0.0,
+                target_max: 10.0,
+                deadband: 0.0,
+                smoothing: 0.0,
+            }),
+        });
+        let controls = ControlSet::try_from_entries(
+            SetRevision::default(),
+            [(ControlId::from("speed"), CanonicalControlValue::Float(5.0))],
+        )
+        .expect("valid controls");
+        let bindings = HashMap::from([(
+            "speed".into(),
+            metadata.controls[0]
+                .binding
+                .clone()
+                .expect("sensor binding"),
+        )]);
+        let mut binding_state = HashMap::new();
+        let mut resolution_seq = 0;
+        let mut renderer = ControlSpyRenderer::default();
+        let live_sensors = hypercolor_types::sensor::SystemSnapshot {
+            cpu_temp_celsius: Some(58.0),
+            ..hypercolor_types::sensor::SystemSnapshot::empty()
+        };
+
+        super::apply_sensor_bindings(
+            &mut renderer,
+            &metadata,
+            &bindings,
+            &controls,
+            &mut binding_state,
+            &mut resolution_seq,
+            &live_sensors,
+        )
+        .expect("first sensor delivery");
+        assert_eq!(resolution_seq, 1);
+        assert_eq!(
+            renderer.applied.last(),
+            Some(&("speed".into(), CanonicalControlValue::Float(4.0)))
+        );
+
+        super::apply_sensor_bindings(
+            &mut renderer,
+            &metadata,
+            &bindings,
+            &controls,
+            &mut binding_state,
+            &mut resolution_seq,
+            &live_sensors,
+        )
+        .expect("unchanged sensor delivery");
+        assert_eq!(resolution_seq, 1);
+        assert_eq!(renderer.applied.len(), 1);
+
+        super::apply_sensor_bindings(
+            &mut renderer,
+            &metadata,
+            &bindings,
+            &controls,
+            &mut binding_state,
+            &mut resolution_seq,
+            &hypercolor_types::sensor::SystemSnapshot::empty(),
+        )
+        .expect("authored value restoration");
+        assert_eq!(resolution_seq, 2);
+        assert_eq!(
+            renderer.applied.last(),
+            Some(&("speed".into(), CanonicalControlValue::Float(5.0)))
+        );
     }
 
     #[test]
@@ -1150,10 +1707,11 @@ mod tests {
         let group_id = ZoneId::new();
         let group = render_group(group_id, effect_id);
         let layer = group
-            .effective_layers()
+            .layers
+            .clone()
             .into_iter()
             .next()
-            .expect("legacy effect group should expose an effective layer");
+            .expect("effect zone should expose its authored layer");
         let mut pool = EffectPool::new();
         pool.slots.insert(
             EffectSlotKey::new(group_id, layer.id),
@@ -1205,6 +1763,36 @@ mod tests {
 
         assert!(destroyed.load(Ordering::SeqCst));
         assert_eq!(pool.slots.len(), 1);
+    }
+
+    #[test]
+    fn reconcile_applies_control_deltas_without_rebuilding_the_slot() {
+        let registry = registry_with_builtins();
+        let effect_id = builtin_effect_id(&registry, "solid_color");
+        let group_id = ZoneId::new();
+        let mut group = render_group(group_id, effect_id);
+        let layer_id = group.layers[0].id;
+        let key = EffectSlotKey::new(group_id, layer_id);
+        let mut pool = EffectPool::new();
+        pool.reconcile(std::slice::from_ref(&group), &registry, &HashMap::new())
+            .expect("initial reconcile");
+        pool.slots.get_mut(&key).expect("effect slot").frame_number = 41;
+
+        let LayerSource::Effect { controls, .. } = &mut group.layers[0].source else {
+            panic!("test layer should be an effect");
+        };
+        controls.insert("brightness".into(), ControlValue::Float(0.25));
+        group.controls_version = 1;
+        pool.reconcile(std::slice::from_ref(&group), &registry, &HashMap::new())
+            .expect("control delta reconcile");
+
+        let slot = pool.slots.get(&key).expect("reused effect slot");
+        assert_eq!(slot.frame_number, 41);
+        assert_eq!(slot.controls.set_revision(), SetRevision::new(1));
+        assert_eq!(
+            slot.controls.get("brightness"),
+            Some(&CanonicalControlValue::Float(0.25))
+        );
     }
 
     #[cfg(feature = "servo")]

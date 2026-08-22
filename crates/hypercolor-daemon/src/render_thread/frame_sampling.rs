@@ -13,9 +13,9 @@ use hypercolor_core::spatial::generate_positions;
 #[cfg(test)]
 use hypercolor_core::spatial::is_led_sampled_zone;
 use hypercolor_core::spatial::{PreparedZonePlan, SpatialEngine};
-use hypercolor_core::types::canvas::{Canvas, Rgb};
+use hypercolor_types::canvas::{Canvas, Rgb};
 #[cfg(test)]
-use hypercolor_core::types::event::FrameData;
+use hypercolor_types::event::FrameData;
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::scene::ColorInterpolation;
 #[cfg(test)]
@@ -268,6 +268,7 @@ fn discard_zone_sampling_backlog(sampling: &mut SamplingRuntime<'_>) {
 
 fn scene_transition_key(transition: &SceneTransitionSnapshot) -> Option<SceneTransitionKey> {
     Some(SceneTransitionKey {
+        epoch: transition.epoch,
         from_scene: transition.from_scene?,
         to_scene: transition.to_scene?,
     })
@@ -464,7 +465,7 @@ pub(crate) fn resolve_led_sampling(
             prepared_zones.as_ref(),
         ));
         (can_reuse_published_frame, can_hold_published_frame) = {
-            let published_frame = state.event_bus.frame_sender().borrow();
+            let published_frame = state.event_bus.frame_lane().borrow();
             (
                 render_stage.screen_retained
                     && can_hold_zone_colors_for_prepared_sampling(
@@ -803,7 +804,7 @@ pub(crate) fn resolve_led_sampling(
                 match sampling.zone_transition_planner.last_stable_layout.as_ref() {
                     Some(stable_layout) => RetainedZoneFrame {
                         layout: Arc::clone(stable_layout),
-                        zones: state.event_bus.frame_sender().borrow().zones.clone(),
+                        zones: state.event_bus.frame_lane().borrow().zones.clone(),
                     },
                     None => RetainedZoneFrame {
                         layout: Arc::clone(&layout),
@@ -841,7 +842,7 @@ pub(crate) fn resolve_led_sampling(
     );
     let zone_shape_signature = zone_shape_signature.unwrap_or_else(|| {
         if reuses_published_frame {
-            let published_frame = state.event_bus.frame_sender().borrow();
+            let published_frame = state.event_bus.frame_lane().borrow();
             zone_shape_signature_for_zone_colors(&published_frame.zones)
         } else {
             zone_shape_signature_for_zone_colors(sampling.output_artifacts.zones())

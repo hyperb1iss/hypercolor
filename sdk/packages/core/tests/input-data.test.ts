@@ -10,7 +10,6 @@ describe('input data contract', () => {
     test('returns an idle snapshot without an engine', () => {
         const input = getInputData()
 
-        expect(input.available).toBeFalse()
         expect(input.declared).toBeFalse()
         expect(input.routed).toBeFalse()
         expect(input.healthy).toBeFalse()
@@ -94,7 +93,6 @@ describe('input data contract', () => {
 
         const input = getInputData()
 
-        expect(input.available).toBeTrue()
         expect(input.declared).toBeTrue()
         expect(input.routed).toBeTrue()
         expect(input.healthy).toBeTrue()
@@ -171,7 +169,7 @@ describe('input data contract', () => {
         ])
     })
 
-    test('keeps an idle healthy routed source available', () => {
+    test('keeps an idle source healthy and routed', () => {
         ;(globalThis as { engine?: unknown }).engine = {
             inputAvailability: {
                 declared: true,
@@ -185,19 +183,19 @@ describe('input data contract', () => {
 
         const input = getInputData()
 
-        expect(input.available).toBeTrue()
         expect(input.healthy).toBeTrue()
         expect(input.fresh).toBeTrue()
     })
 
-    test('does not infer availability from recent activity', () => {
+    test('does not infer source health from recent activity', () => {
         ;(globalThis as { engine?: unknown }).engine = {
             keyboard: { events: [], keys: { w: true }, recent: [] },
         }
 
         const input = getInputData()
 
-        expect(input.available).toBeFalse()
+        expect(input.healthy).toBeFalse()
+        expect(input.routed).toBeFalse()
         expect(input.mouse.available).toBeFalse()
         expect(input.mouse.mode).toBe('none')
     })
@@ -221,7 +219,6 @@ describe('input data contract', () => {
 
         const input = getInputData()
 
-        expect(input.available).toBeFalse()
         expect(input.declared).toBeTrue()
         expect(input.routed).toBeTrue()
         expect(input.healthy).toBeFalse()
@@ -247,7 +244,6 @@ describe('input data contract', () => {
 
         const input = getInputData()
 
-        expect(input.available).toBeFalse()
         expect(input.declared).toBeFalse()
         expect(input.routed).toBeFalse()
         expect(input.healthy).toBeFalse()

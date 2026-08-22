@@ -681,7 +681,7 @@ fn screen_capture_input_produces_screen_data() {
             assert!(downscale.width() <= DEFAULT_CANVAS_WIDTH);
             assert_eq!(
                 downscale.get_pixel(0, 0),
-                hypercolor_core::types::canvas::Rgba::new(200, 100, 50, 255)
+                hypercolor_types::canvas::Rgba::new(200, 100, 50, 255)
             );
             for zc in &screen.zone_colors {
                 assert_eq!(zc.colors.len(), 1, "one color per zone");

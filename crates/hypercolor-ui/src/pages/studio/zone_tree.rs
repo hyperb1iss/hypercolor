@@ -127,13 +127,11 @@ pub fn ZoneTree() -> impl IntoView {
             .get()
             .into_iter()
             .map(|surface| {
-                let outputs = scene
+                let mut base_rows = scene
                     .zones
                     .iter()
                     .find(|group| group.id.to_string() == surface.id)
-                    .map(|group| group.layout.zones.clone())
-                    .unwrap_or_default();
-                let mut base_rows = device_rows_for_zone(&outputs, &metas);
+                    .map_or_else(Vec::new, |zone| device_rows_for_zone(zone, &metas));
                 sort_device_rows(&mut base_rows);
                 retain_by_search(&mut base_rows, &search);
                 let rows = base_rows
@@ -287,8 +285,9 @@ fn ZoneNode(
         let (Some(ws), Some(scene)) = (ws, studio.active_scene.get()) else {
             return false;
         };
-        ws.layer_health
-            .with(|map| group_has_degraded_layer(map, &scene.id, &health_group, &health_layer_ids))
+        ws.layer_health.with(|map| {
+            group_has_degraded_layer(map, &scene.id.to_string(), &health_group, &health_layer_ids)
+        })
     });
 
     let controls_open = RwSignal::new(false);

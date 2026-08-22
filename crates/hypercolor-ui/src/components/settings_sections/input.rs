@@ -2,7 +2,10 @@ use hypercolor_types::config::{HypercolorConfig, InteractionRoutePolicy};
 use leptos::prelude::*;
 
 use super::{MacosCaptureOwnerRestartAction, read_config, validate_macos_restart_owner};
-use crate::api::{self, InputSourcePlatformStatus, InputStatus};
+use crate::api::{
+    self, InputSourcePlatformStatus, InputStatus, MacosAuthorizationState,
+    MacosProtectedSourceState,
+};
 use crate::app::WsContext;
 use crate::components::settings_controls::{
     AdvancedDisclosure, SectionHeader, SectionReset, SettingDropdown, SettingToggle,
@@ -260,11 +263,13 @@ pub(super) fn macos_keyboard_needs_authorization(status: &InputStatus) -> bool {
             return false;
         };
         matches!(
-            keyboard.as_deref(),
-            Some("needs_user_action" | "permission_denied" | "revoked")
+            keyboard,
+            MacosProtectedSourceState::NeedsUserAction
+                | MacosProtectedSourceState::PermissionDenied
+                | MacosProtectedSourceState::Revoked
         ) || matches!(
-            keyboard_tcc.as_deref(),
-            Some("not_determined" | "denied" | "revoked")
+            keyboard_tcc,
+            MacosAuthorizationState::NotDetermined | MacosAuthorizationState::Denied
         )
     })
 }
@@ -277,7 +282,7 @@ fn macos_keyboard_restart_coordinates(status: &crate::api::SystemStatus) -> Opti
         matches!(
             source.platform.as_ref(),
             Some(InputSourcePlatformStatus::MacosInput { keyboard, .. })
-                if keyboard.as_deref() == Some("needs_process_restart")
+                if *keyboard == MacosProtectedSourceState::NeedsProcessRestart
         )
     });
     needs_restart
@@ -285,8 +290,8 @@ fn macos_keyboard_restart_coordinates(status: &crate::api::SystemStatus) -> Opti
         .flatten()
         .and_then(|ownership| {
             Some((
-                validate_macos_restart_owner(ownership.active_owner.as_deref()?)?,
-                ownership.owner_epoch?,
+                validate_macos_restart_owner(ownership.active_owner)?,
+                ownership.owner_epoch,
             ))
         })
 }
@@ -303,8 +308,8 @@ fn route_value(route: InteractionRoutePolicy) -> String {
 #[cfg(test)]
 mod tests {
     use crate::api::{
-        InputSourcePlatformStatus, InputSourceStatus, InputStatus, MacosDaemonOwnershipStatus,
-        SystemStatus,
+        InputSourcePlatformStatus, InputSourceStatus, InputStatus, MacosAuthorizationState,
+        MacosCapabilityOwner, MacosDaemonOwnershipStatus, MacosProtectedSourceState, SystemStatus,
     };
 
     use super::{
@@ -332,6 +337,7 @@ mod tests {
             capabilities: Vec::new(),
             input,
             macos_daemon_ownership,
+            ..SystemStatus::default()
         }
     }
 
@@ -340,12 +346,14 @@ mod tests {
         let mut status = InputStatus {
             sources: vec![InputSourceStatus {
                 platform: Some(InputSourcePlatformStatus::MacosInput {
-                    keyboard: Some("needs_user_action".to_owned()),
-                    pointer: Some("live".to_owned()),
-                    keyboard_tcc: Some("not_determined".to_owned()),
-                    keyboard_owner: Some("app_sidecar".to_owned()),
-                    pointer_owner: Some("app_sidecar".to_owned()),
+                    keyboard: MacosProtectedSourceState::NeedsUserAction,
+                    pointer: MacosProtectedSourceState::Live,
+                    keyboard_tcc: MacosAuthorizationState::NotDetermined,
+                    secure_input_active: false,
+                    keyboard_owner: MacosCapabilityOwner::AppSidecar,
+                    pointer_owner: MacosCapabilityOwner::AppSidecar,
                     owner_conflict: None,
+                    telemetry: Default::default(),
                 }),
                 ..InputSourceStatus::default()
             }],
@@ -358,12 +366,14 @@ mod tests {
         status.sources[0].retired = false;
 
         status.sources[0].platform = Some(InputSourcePlatformStatus::MacosInput {
-            keyboard: Some("live".to_owned()),
-            pointer: Some("live".to_owned()),
-            keyboard_tcc: Some("authorized".to_owned()),
-            keyboard_owner: Some("app_sidecar".to_owned()),
-            pointer_owner: Some("app_sidecar".to_owned()),
+            keyboard: MacosProtectedSourceState::Live,
+            pointer: MacosProtectedSourceState::Live,
+            keyboard_tcc: MacosAuthorizationState::Authorized,
+            secure_input_active: false,
+            keyboard_owner: MacosCapabilityOwner::AppSidecar,
+            pointer_owner: MacosCapabilityOwner::AppSidecar,
             owner_conflict: None,
+            telemetry: Default::default(),
         });
         assert!(!macos_keyboard_needs_authorization(&status));
     }
@@ -374,13 +384,14 @@ mod tests {
             sources: vec![InputSourceStatus {
                 kind: "screen".to_owned(),
                 platform: Some(InputSourcePlatformStatus::MacosScreen {
-                    state: Some("permission_denied".to_owned()),
-                    tcc: Some("denied".to_owned()),
-                    owner: Some("app_sidecar".to_owned()),
-                    selection: None,
-                    tahoe: None,
+                    state: MacosProtectedSourceState::PermissionDenied,
+                    tcc: MacosAuthorizationState::Denied,
+                    owner: MacosCapabilityOwner::AppSidecar,
+                    selection: Default::default(),
+                    tahoe: Default::default(),
                     tahoe_selection: None,
                     owner_conflict: None,
+                    telemetry: Default::default(),
                 }),
                 ..InputSourceStatus::default()
             }],
@@ -393,13 +404,14 @@ mod tests {
         status.sources[0].retired = false;
 
         status.sources[0].platform = Some(InputSourcePlatformStatus::MacosScreen {
-            state: Some("live".to_owned()),
-            tcc: Some("authorized".to_owned()),
-            owner: Some("app_sidecar".to_owned()),
-            selection: None,
-            tahoe: None,
+            state: MacosProtectedSourceState::Live,
+            tcc: MacosAuthorizationState::Authorized,
+            owner: MacosCapabilityOwner::AppSidecar,
+            selection: Default::default(),
+            tahoe: Default::default(),
             tahoe_selection: None,
             owner_conflict: None,
+            telemetry: Default::default(),
         });
         assert!(!super::super::macos_screen_needs_authorization(&status));
     }
@@ -431,20 +443,22 @@ mod tests {
             InputStatus {
                 sources: vec![InputSourceStatus {
                     platform: Some(InputSourcePlatformStatus::MacosInput {
-                        keyboard: Some("needs_process_restart".to_owned()),
-                        pointer: Some("live".to_owned()),
-                        keyboard_tcc: Some("authorized".to_owned()),
-                        keyboard_owner: Some("homebrew_service".to_owned()),
-                        pointer_owner: Some("homebrew_service".to_owned()),
+                        keyboard: MacosProtectedSourceState::NeedsProcessRestart,
+                        pointer: MacosProtectedSourceState::Live,
+                        keyboard_tcc: MacosAuthorizationState::Authorized,
+                        secure_input_active: false,
+                        keyboard_owner: MacosCapabilityOwner::HomebrewService,
+                        pointer_owner: MacosCapabilityOwner::HomebrewService,
                         owner_conflict: None,
+                        telemetry: Default::default(),
                     }),
                     ..InputSourceStatus::default()
                 }],
                 ..InputStatus::default()
             },
             Some(MacosDaemonOwnershipStatus {
-                active_owner: Some("homebrew_service".to_owned()),
-                owner_epoch: Some(29),
+                active_owner: MacosCapabilityOwner::HomebrewService,
+                owner_epoch: 29,
                 ..MacosDaemonOwnershipStatus::default()
             }),
         );
@@ -457,12 +471,14 @@ mod tests {
         assert_eq!(macos_keyboard_restart_coordinates(&status), None);
         status.input.sources[0].retired = false;
         status.input.sources[0].platform = Some(InputSourcePlatformStatus::MacosInput {
-            keyboard: Some("permission_denied".to_owned()),
-            pointer: Some("live".to_owned()),
-            keyboard_tcc: Some("denied".to_owned()),
-            keyboard_owner: Some("homebrew_service".to_owned()),
-            pointer_owner: Some("homebrew_service".to_owned()),
+            keyboard: MacosProtectedSourceState::PermissionDenied,
+            pointer: MacosProtectedSourceState::Live,
+            keyboard_tcc: MacosAuthorizationState::Denied,
+            secure_input_active: false,
+            keyboard_owner: MacosCapabilityOwner::HomebrewService,
+            pointer_owner: MacosCapabilityOwner::HomebrewService,
             owner_conflict: None,
+            telemetry: Default::default(),
         });
         assert_eq!(macos_keyboard_restart_coordinates(&status), None);
     }

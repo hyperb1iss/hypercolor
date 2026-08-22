@@ -6,18 +6,19 @@ use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, bail};
 use hypercolor_core::device::mock::{MockDeviceBackend, MockDeviceConfig};
-use hypercolor_core::device::{
-    BackendInfo, BackendManager, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId,
-    DeviceDeliveryObserver, DeviceFrameSink, DeviceWriteOutcome, OutputCadence, SegmentRange,
+use hypercolor_core::device::{BackendManager, SegmentRange};
+use hypercolor_driver_api::{
+    BackendInfo, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId, DeviceDeliveryObserver,
+    DeviceFrameSink, DeviceWriteOutcome, OutputCadence,
 };
 use hypercolor_types::canvas::{linear_to_output_u8, srgb_to_linear};
 use hypercolor_types::device::{
-    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceError, DeviceFamily,
+    DeviceFeatures,
 };
 use hypercolor_types::device::{
-    DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, SegmentInfo,
+    DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, OwnedDisplayFramePayload, SegmentInfo,
 };
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::spatial::{
@@ -26,6 +27,14 @@ use hypercolor_types::spatial::{
 };
 use tokio::sync::{Mutex, Notify};
 use tracing_subscriber::fmt::writer::MakeWriter;
+
+type Result<T> = std::result::Result<T, DeviceError>;
+
+macro_rules! bail {
+    ($($arg:tt)*) => {
+        return Err(DeviceError::protocol("test backend", format!($($arg)*)))
+    };
+}
 
 fn format_error_chain(error: &anyhow::Error) -> String {
     error
@@ -84,25 +93,28 @@ impl DeviceBackend for SharedSlowBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
-        Ok(Vec::new())
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), hypercolor_types::device::DeviceError> {
+        Ok(())
     }
 
-    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn connect(&self, id: &DeviceId) -> Result<()> {
         if !self.contains(id) {
             bail!("unexpected device id {id}");
         }
         Ok(())
     }
 
-    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
         if !self.contains(id) {
             bail!("unexpected device id {id}");
         }
         Ok(())
     }
 
-    async fn write_colors(&mut self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
         if !self.contains(id) {
             bail!("unexpected device id {id}");
         }
@@ -164,36 +176,22 @@ impl DeviceBackend for SlowRecordingBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
-        Ok(vec![DeviceInfo {
-            id: self.expected_device_id,
-            name: "Slow Device".to_owned(),
-            vendor: "Test".to_owned(),
-            family: DeviceFamily::named("Test"),
-            model: None,
-            connection_type: ConnectionType::Network,
-            origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
-            segments: vec![SegmentInfo {
-                name: "Main".to_owned(),
-                led_count: 10,
-                topology: DeviceTopologyHint::Strip,
-                color_format: DeviceColorFormat::Rgb,
-                layout_hint: None,
-            }],
-            firmware_version: None,
-            capabilities: DeviceCapabilities::default(),
-        }])
-    }
-
-    async fn connect(&mut self, _id: &DeviceId) -> Result<()> {
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), hypercolor_types::device::DeviceError> {
         Ok(())
     }
 
-    async fn disconnect(&mut self, _id: &DeviceId) -> Result<()> {
+    async fn connect(&self, _id: &DeviceId) -> Result<()> {
         Ok(())
     }
 
-    async fn write_colors(&mut self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+    async fn disconnect(&self, _id: &DeviceId) -> Result<()> {
+        Ok(())
+    }
+
+    async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
@@ -227,7 +225,7 @@ impl DeviceBackend for SlowRecordingBackend {
 
 struct DirectControlRecordingBackend {
     expected_device_id: DeviceId,
-    connected: bool,
+    connected: AtomicBool,
     writes: Arc<Mutex<Vec<Vec<[u8; 3]>>>>,
     brightness_writes: Arc<Mutex<Vec<u8>>>,
 }
@@ -250,7 +248,7 @@ impl SharedPayloadRecordingBackend {
 
 struct FailingDisconnectBackend {
     expected_device_id: DeviceId,
-    connected: bool,
+    connected: AtomicBool,
 }
 
 #[async_trait::async_trait]
@@ -263,48 +261,36 @@ impl DeviceBackend for FailingDisconnectBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
-        Ok(vec![DeviceInfo {
-            id: self.expected_device_id,
-            name: "Failing Disconnect Device".to_owned(),
-            vendor: "Test".to_owned(),
-            family: DeviceFamily::named("Test"),
-            model: None,
-            connection_type: ConnectionType::Network,
-            origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
-            segments: vec![SegmentInfo {
-                name: "Main".to_owned(),
-                led_count: 4,
-                topology: DeviceTopologyHint::Strip,
-                color_format: DeviceColorFormat::Rgb,
-                layout_hint: None,
-            }],
-            firmware_version: None,
-            capabilities: DeviceCapabilities::default(),
-        }])
-    }
-
-    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
-        if *id != self.expected_device_id {
-            bail!("unexpected device id {id}");
-        }
-        self.connected = true;
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), hypercolor_types::device::DeviceError> {
         Ok(())
     }
 
-    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn connect(&self, id: &DeviceId) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+        self.connected.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
         bail!("simulated disconnect failure")
     }
 
-    async fn write_colors(&mut self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
-        if !self.connected {
-            bail!("write while disconnected");
+        if !self.connected.load(Ordering::Acquire) {
+            return Err(DeviceError::Disconnected {
+                device: id.to_string(),
+            });
         }
         Ok(())
     }
@@ -320,50 +306,32 @@ impl DeviceBackend for SharedPayloadRecordingBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
-        Ok(vec![DeviceInfo {
-            id: self.expected_device_id,
-            name: "Shared Payload Device".to_owned(),
-            vendor: "Test".to_owned(),
-            family: DeviceFamily::named("Test"),
-            model: None,
-            connection_type: ConnectionType::Network,
-            origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
-            segments: vec![SegmentInfo {
-                name: "Main".to_owned(),
-                led_count: 4,
-                topology: DeviceTopologyHint::Strip,
-                color_format: DeviceColorFormat::Rgb,
-                layout_hint: None,
-            }],
-            firmware_version: None,
-            capabilities: DeviceCapabilities::default(),
-        }])
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), hypercolor_types::device::DeviceError> {
+        Ok(())
     }
 
-    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn connect(&self, id: &DeviceId) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
         Ok(())
     }
 
-    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
         Ok(())
     }
 
-    async fn write_colors(&mut self, _id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, _id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
         bail!("borrowed color path should not be used for shared payload backend")
     }
 
-    async fn write_colors_shared(
-        &mut self,
-        id: &DeviceId,
-        colors: Arc<Vec<[u8; 3]>>,
-    ) -> Result<()> {
+    async fn write_colors_shared(&self, id: &DeviceId, colors: Arc<Vec<[u8; 3]>>) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
@@ -530,42 +498,28 @@ impl DeviceBackend for FastFrameSinkBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
-        Ok(vec![DeviceInfo {
-            id: self.expected_device_id,
-            name: "Fast Sink Device".to_owned(),
-            vendor: "Test".to_owned(),
-            family: DeviceFamily::named("Test"),
-            model: None,
-            connection_type: ConnectionType::Usb,
-            origin: DeviceOrigin::native("test", "fast_sink", ConnectionType::Usb),
-            segments: vec![SegmentInfo {
-                name: "Main".to_owned(),
-                led_count: 4,
-                topology: DeviceTopologyHint::Strip,
-                color_format: DeviceColorFormat::Rgb,
-                layout_hint: None,
-            }],
-            firmware_version: None,
-            capabilities: DeviceCapabilities::default(),
-        }])
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), hypercolor_types::device::DeviceError> {
+        Ok(())
     }
 
-    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn connect(&self, id: &DeviceId) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
         Ok(())
     }
 
-    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
         Ok(())
     }
 
-    async fn write_colors(&mut self, _id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, _id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
         bail!("backend-wide write path should not be used when a frame sink is available")
     }
 
@@ -600,7 +554,7 @@ impl DirectControlRecordingBackend {
     ) -> Self {
         Self {
             expected_device_id,
-            connected: false,
+            connected: AtomicBool::new(false),
             writes,
             brightness_writes,
         }
@@ -617,72 +571,53 @@ impl DeviceBackend for DirectControlRecordingBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
-        Ok(vec![DeviceInfo {
-            id: self.expected_device_id,
-            name: "Recording Device".to_owned(),
-            vendor: "Test".to_owned(),
-            family: DeviceFamily::named("Test"),
-            model: None,
-            connection_type: ConnectionType::Network,
-            origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
-            segments: vec![SegmentInfo {
-                name: "Main".to_owned(),
-                led_count: 4,
-                topology: DeviceTopologyHint::Strip,
-                color_format: DeviceColorFormat::Rgb,
-                layout_hint: None,
-            }],
-            firmware_version: None,
-            capabilities: DeviceCapabilities {
-                led_count: 4,
-                supports_direct: true,
-                supports_brightness: true,
-                has_display: false,
-                display_resolution: None,
-                max_fps: 60,
-                color_space: hypercolor_types::device::DeviceColorSpace::default(),
-                features: DeviceFeatures::default(),
-            },
-        }])
-    }
-
-    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
-        if *id != self.expected_device_id {
-            bail!("unexpected device id {id}");
-        }
-
-        self.connected = true;
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), hypercolor_types::device::DeviceError> {
         Ok(())
     }
 
-    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn connect(&self, id: &DeviceId) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
 
-        self.connected = false;
+        self.connected.store(true, Ordering::Release);
         Ok(())
     }
 
-    async fn write_colors(&mut self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
-        if !self.connected {
-            bail!("write while disconnected");
+
+        self.connected.store(false, Ordering::Release);
+        Ok(())
+    }
+
+    async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+        if !self.connected.load(Ordering::Acquire) {
+            return Err(DeviceError::Disconnected {
+                device: id.to_string(),
+            });
         }
 
         self.writes.lock().await.push(colors.to_vec());
         Ok(())
     }
 
-    async fn set_brightness(&mut self, id: &DeviceId, brightness: u8) -> Result<()> {
+    async fn set_brightness(&self, id: &DeviceId, brightness: u8) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
-        if !self.connected {
-            bail!("brightness change while disconnected");
+        if !self.connected.load(Ordering::Acquire) {
+            return Err(DeviceError::Disconnected {
+                device: id.to_string(),
+            });
         }
 
         self.brightness_writes.lock().await.push(brightness);
@@ -727,43 +662,29 @@ impl DeviceBackend for FailOnceRecordingBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
-        Ok(vec![DeviceInfo {
-            id: self.expected_device_id,
-            name: "Fail Once Device".to_owned(),
-            vendor: "Test".to_owned(),
-            family: DeviceFamily::named("Test"),
-            model: None,
-            connection_type: ConnectionType::Network,
-            origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
-            segments: vec![SegmentInfo {
-                name: "Main".to_owned(),
-                led_count: 4,
-                topology: DeviceTopologyHint::Strip,
-                color_format: DeviceColorFormat::Rgb,
-                layout_hint: None,
-            }],
-            firmware_version: None,
-            capabilities: DeviceCapabilities::default(),
-        }])
-    }
-
-    async fn connect(&mut self, _id: &DeviceId) -> Result<()> {
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), hypercolor_types::device::DeviceError> {
         Ok(())
     }
 
-    async fn disconnect(&mut self, _id: &DeviceId) -> Result<()> {
+    async fn connect(&self, _id: &DeviceId) -> Result<()> {
         Ok(())
     }
 
-    async fn write_colors(&mut self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+    async fn disconnect(&self, _id: &DeviceId) -> Result<()> {
+        Ok(())
+    }
+
+    async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
 
         let attempt = self.attempts.fetch_add(1, Ordering::Relaxed);
         if attempt == 0 {
-            bail!("transient write failure");
+            return Err(DeviceError::write(id, "transient write failure"));
         }
 
         self.writes.lock().await.push(colors.to_vec());
@@ -782,7 +703,7 @@ impl DeviceBackend for FailOnceRecordingBackend {
 
 struct MetadataRefreshingBackend {
     expected_device_id: DeviceId,
-    connected: bool,
+    connected: AtomicBool,
     refreshed_info: DeviceInfo,
 }
 
@@ -790,7 +711,7 @@ impl MetadataRefreshingBackend {
     fn new(expected_device_id: DeviceId) -> Self {
         Self {
             expected_device_id,
-            connected: false,
+            connected: AtomicBool::new(false),
             refreshed_info: DeviceInfo {
                 id: expected_device_id,
                 name: "Connected Metadata Device".to_owned(),
@@ -841,34 +762,11 @@ impl DeviceBackend for MetadataRefreshingBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
-        Ok(vec![DeviceInfo {
-            id: self.expected_device_id,
-            name: "Initial Metadata Device".to_owned(),
-            vendor: "Test".to_owned(),
-            family: DeviceFamily::named("Test"),
-            model: Some("Initial".to_owned()),
-            connection_type: ConnectionType::Network,
-            origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
-            segments: vec![SegmentInfo {
-                name: "Main".to_owned(),
-                led_count: 1,
-                topology: DeviceTopologyHint::Point,
-                color_format: DeviceColorFormat::Rgb,
-                layout_hint: None,
-            }],
-            firmware_version: Some("1.0.0".to_owned()),
-            capabilities: DeviceCapabilities {
-                led_count: 1,
-                supports_direct: true,
-                supports_brightness: false,
-                has_display: false,
-                display_resolution: None,
-                max_fps: 60,
-                color_space: hypercolor_types::device::DeviceColorSpace::default(),
-                features: DeviceFeatures::default(),
-            },
-        }])
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), hypercolor_types::device::DeviceError> {
+        Ok(())
     }
 
     async fn connected_device_info(&self, id: &DeviceId) -> Result<Option<DeviceInfo>> {
@@ -876,28 +774,31 @@ impl DeviceBackend for MetadataRefreshingBackend {
             bail!("unexpected device id {id}");
         }
 
-        Ok(self.connected.then_some(self.refreshed_info.clone()))
+        Ok(self
+            .connected
+            .load(Ordering::Acquire)
+            .then_some(self.refreshed_info.clone()))
     }
 
-    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn connect(&self, id: &DeviceId) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
 
-        self.connected = true;
+        self.connected.store(true, Ordering::Release);
         Ok(())
     }
 
-    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
 
-        self.connected = false;
+        self.connected.store(false, Ordering::Release);
         Ok(())
     }
 
-    async fn write_colors(&mut self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
@@ -908,109 +809,146 @@ impl DeviceBackend for MetadataRefreshingBackend {
 
 struct DisplayRecordingBackend {
     expected_device_id: DeviceId,
-    connected: bool,
+    connected: AtomicBool,
     display_writes: Arc<Mutex<Vec<Vec<u8>>>>,
+}
+
+struct RecoveringDisplayBackend {
+    expected_device_id: DeviceId,
+    fail_next: Arc<AtomicBool>,
+    failure: DeviceError,
+}
+
+struct OrderedDisplayBackend {
+    backend_id: &'static str,
+    expected_device_id: DeviceId,
+    attempts: Arc<AtomicUsize>,
+    first_entered: Arc<Notify>,
+    release_first: Arc<Notify>,
+    entry_order: Arc<Mutex<Vec<u8>>>,
+    block_first: bool,
+}
+
+impl RecoveringDisplayBackend {
+    fn new(expected_device_id: DeviceId, fail_next: Arc<AtomicBool>) -> Self {
+        Self {
+            expected_device_id,
+            fail_next,
+            failure: DeviceError::WriteError {
+                device: expected_device_id.to_string(),
+                detail: "injected display failure".to_owned(),
+            },
+        }
+    }
+
+    fn with_failure(mut self, failure: DeviceError) -> Self {
+        self.failure = failure;
+        self
+    }
+}
+
+impl OrderedDisplayBackend {
+    fn new(
+        backend_id: &'static str,
+        expected_device_id: DeviceId,
+        attempts: Arc<AtomicUsize>,
+        first_entered: Arc<Notify>,
+        release_first: Arc<Notify>,
+        entry_order: Arc<Mutex<Vec<u8>>>,
+        block_first: bool,
+    ) -> Self {
+        Self {
+            backend_id,
+            expected_device_id,
+            attempts,
+            first_entered,
+            release_first,
+            entry_order,
+            block_first,
+        }
+    }
 }
 
 impl DisplayRecordingBackend {
     fn new(expected_device_id: DeviceId, display_writes: Arc<Mutex<Vec<Vec<u8>>>>) -> Self {
         Self {
             expected_device_id,
-            connected: false,
+            connected: AtomicBool::new(false),
             display_writes,
         }
     }
 }
 
-struct DiscoverRetryBackend {
+struct ConnectRecordingBackend {
     expected_device_id: DeviceId,
-    connected: bool,
-    connect_attempts: u32,
-    discover_count: u32,
+    connected: AtomicBool,
+    connect_attempts: Arc<AtomicUsize>,
+    fail_connect: bool,
     target_fps: u32,
 }
 
-impl DiscoverRetryBackend {
-    fn new(expected_device_id: DeviceId, target_fps: u32) -> Self {
+impl ConnectRecordingBackend {
+    fn new(
+        expected_device_id: DeviceId,
+        connect_attempts: Arc<AtomicUsize>,
+        fail_connect: bool,
+        target_fps: u32,
+    ) -> Self {
         Self {
             expected_device_id,
-            connected: false,
-            connect_attempts: 0,
-            discover_count: 0,
+            connected: AtomicBool::new(false),
+            connect_attempts,
+            fail_connect,
             target_fps,
         }
     }
 }
 
 #[async_trait::async_trait]
-impl DeviceBackend for DiscoverRetryBackend {
+impl DeviceBackend for ConnectRecordingBackend {
     fn info(&self) -> BackendInfo {
         BackendInfo {
-            id: "retry".to_owned(),
-            name: "Discover Retry Backend".to_owned(),
-            description: "Fails the first connect and succeeds after discover".to_owned(),
+            id: "connect_recording".to_owned(),
+            name: "Connect Recording Backend".to_owned(),
+            description: "Records direct connection attempts".to_owned(),
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
-        self.discover_count = self.discover_count.saturating_add(1);
-        Ok(vec![DeviceInfo {
-            id: self.expected_device_id,
-            name: "Retry Device".to_owned(),
-            vendor: "Test".to_owned(),
-            family: DeviceFamily::named("Test"),
-            model: None,
-            connection_type: ConnectionType::Network,
-            origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
-            segments: vec![SegmentInfo {
-                name: "Main".to_owned(),
-                led_count: 4,
-                topology: DeviceTopologyHint::Strip,
-                color_format: DeviceColorFormat::Rgb,
-                layout_hint: None,
-            }],
-            firmware_version: None,
-            capabilities: DeviceCapabilities {
-                led_count: 4,
-                supports_direct: true,
-                supports_brightness: false,
-                has_display: false,
-                display_resolution: None,
-                max_fps: self.target_fps,
-                color_space: hypercolor_types::device::DeviceColorSpace::default(),
-                features: DeviceFeatures::default(),
-            },
-        }])
-    }
-
-    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
-        if *id != self.expected_device_id {
-            bail!("unexpected device id {id}");
-        }
-
-        self.connect_attempts = self.connect_attempts.saturating_add(1);
-        if self.connect_attempts == 1 {
-            bail!("first connect attempt should fail");
-        }
-
-        self.connected = true;
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), hypercolor_types::device::DeviceError> {
         Ok(())
     }
 
-    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn connect(&self, id: &DeviceId) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
 
-        self.connected = false;
+        self.connect_attempts.fetch_add(1, Ordering::Relaxed);
+        if self.fail_connect {
+            bail!("connect failure");
+        }
+
+        self.connected.store(true, Ordering::Release);
         Ok(())
     }
 
-    async fn write_colors(&mut self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
+    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
-        if !self.connected {
+
+        self.connected.store(false, Ordering::Release);
+        Ok(())
+    }
+
+    async fn write_colors(&self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+        if !self.connected.load(Ordering::Acquire) {
             bail!("write while disconnected");
         }
 
@@ -1018,131 +956,21 @@ impl DeviceBackend for DiscoverRetryBackend {
     }
 
     fn target_fps(&self, id: &DeviceId) -> Option<u32> {
-        (*id == self.expected_device_id && self.connected).then_some(self.target_fps)
+        (*id == self.expected_device_id && self.connected.load(Ordering::Acquire))
+            .then_some(self.target_fps)
     }
-}
-
-struct CleanupRetryBackend {
-    expected_device_id: DeviceId,
-    connected: bool,
-    connect_attempts: Arc<AtomicUsize>,
-    disconnect_attempts: Arc<AtomicUsize>,
-    discover_attempts: Arc<AtomicUsize>,
-    target_fps: u32,
 }
 
 struct TimeoutConnectBackend {
     expected_device_id: DeviceId,
     connect_attempts: Arc<AtomicUsize>,
     disconnect_attempts: Arc<AtomicUsize>,
-    discover_attempts: Arc<AtomicUsize>,
 }
 
 struct TransportTimeoutConnectBackend {
     expected_device_id: DeviceId,
     connect_attempts: Arc<AtomicUsize>,
     disconnect_attempts: Arc<AtomicUsize>,
-    discover_attempts: Arc<AtomicUsize>,
-}
-
-impl CleanupRetryBackend {
-    fn new(
-        expected_device_id: DeviceId,
-        connect_attempts: Arc<AtomicUsize>,
-        disconnect_attempts: Arc<AtomicUsize>,
-        discover_attempts: Arc<AtomicUsize>,
-        target_fps: u32,
-    ) -> Self {
-        Self {
-            expected_device_id,
-            connected: true,
-            connect_attempts,
-            disconnect_attempts,
-            discover_attempts,
-            target_fps,
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl DeviceBackend for CleanupRetryBackend {
-    fn info(&self) -> BackendInfo {
-        BackendInfo {
-            id: "cleanup_retry".to_owned(),
-            name: "Cleanup Retry Backend".to_owned(),
-            description: "Requires disconnect cleanup before a retry can reconnect".to_owned(),
-        }
-    }
-
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
-        self.discover_attempts.fetch_add(1, Ordering::Relaxed);
-        Ok(vec![DeviceInfo {
-            id: self.expected_device_id,
-            name: "Cleanup Retry Device".to_owned(),
-            vendor: "Test".to_owned(),
-            family: DeviceFamily::named("Test"),
-            model: None,
-            connection_type: ConnectionType::Network,
-            origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
-            segments: vec![SegmentInfo {
-                name: "Main".to_owned(),
-                led_count: 4,
-                topology: DeviceTopologyHint::Strip,
-                color_format: DeviceColorFormat::Rgb,
-                layout_hint: None,
-            }],
-            firmware_version: None,
-            capabilities: DeviceCapabilities {
-                led_count: 4,
-                supports_direct: true,
-                supports_brightness: false,
-                has_display: false,
-                display_resolution: None,
-                max_fps: self.target_fps,
-                color_space: hypercolor_types::device::DeviceColorSpace::default(),
-                features: DeviceFeatures::default(),
-            },
-        }])
-    }
-
-    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
-        if *id != self.expected_device_id {
-            bail!("unexpected device id {id}");
-        }
-
-        self.connect_attempts.fetch_add(1, Ordering::Relaxed);
-        if self.connected {
-            bail!("stale session still connected");
-        }
-
-        self.connected = true;
-        Ok(())
-    }
-
-    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
-        if *id != self.expected_device_id {
-            bail!("unexpected device id {id}");
-        }
-
-        self.disconnect_attempts.fetch_add(1, Ordering::Relaxed);
-        self.connected = false;
-        Ok(())
-    }
-
-    async fn write_colors(&mut self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
-        if *id != self.expected_device_id {
-            bail!("unexpected device id {id}");
-        }
-        if !self.connected {
-            bail!("write while disconnected");
-        }
-
-        Ok(())
-    }
-
-    fn target_fps(&self, id: &DeviceId) -> Option<u32> {
-        (*id == self.expected_device_id && self.connected).then_some(self.target_fps)
-    }
 }
 
 #[async_trait::async_trait]
@@ -1155,29 +983,14 @@ impl DeviceBackend for TimeoutConnectBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
-        self.discover_attempts.fetch_add(1, Ordering::Relaxed);
-        Ok(vec![DeviceInfo {
-            id: self.expected_device_id,
-            name: "Timeout Connect Device".to_owned(),
-            vendor: "Test".to_owned(),
-            family: DeviceFamily::named("Test"),
-            model: None,
-            connection_type: ConnectionType::Network,
-            origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
-            segments: vec![SegmentInfo {
-                name: "Main".to_owned(),
-                led_count: 4,
-                topology: DeviceTopologyHint::Strip,
-                color_format: DeviceColorFormat::Rgb,
-                layout_hint: None,
-            }],
-            firmware_version: None,
-            capabilities: DeviceCapabilities::default(),
-        }])
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), hypercolor_types::device::DeviceError> {
+        Ok(())
     }
 
-    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn connect(&self, id: &DeviceId) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
@@ -1187,7 +1000,7 @@ impl DeviceBackend for TimeoutConnectBackend {
         Ok(())
     }
 
-    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
@@ -1196,7 +1009,7 @@ impl DeviceBackend for TimeoutConnectBackend {
         Ok(())
     }
 
-    async fn write_colors(&mut self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
@@ -1215,39 +1028,25 @@ impl DeviceBackend for TransportTimeoutConnectBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
-        self.discover_attempts.fetch_add(1, Ordering::Relaxed);
-        Ok(vec![DeviceInfo {
-            id: self.expected_device_id,
-            name: "Transport Timeout Device".to_owned(),
-            vendor: "Test".to_owned(),
-            family: DeviceFamily::named("Test"),
-            model: None,
-            connection_type: ConnectionType::Usb,
-            origin: DeviceOrigin::native("test", "test", ConnectionType::Usb),
-            segments: vec![SegmentInfo {
-                name: "Main".to_owned(),
-                led_count: 4,
-                topology: DeviceTopologyHint::Strip,
-                color_format: DeviceColorFormat::Rgb,
-                layout_hint: None,
-            }],
-            firmware_version: None,
-            capabilities: DeviceCapabilities::default(),
-        }])
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), hypercolor_types::device::DeviceError> {
+        Ok(())
     }
 
-    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn connect(&self, id: &DeviceId) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
 
         self.connect_attempts.fetch_add(1, Ordering::Relaxed);
-        Err(anyhow::anyhow!("transport timeout after 1000ms"))
-            .context("failed to run init sequence for Ableton Push 2")
+        Err(DeviceError::Timeout {
+            after: Duration::from_secs(1),
+        })
     }
 
-    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
@@ -1256,7 +1055,7 @@ impl DeviceBackend for TransportTimeoutConnectBackend {
         Ok(())
     }
 
-    async fn write_colors(&mut self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
@@ -1275,59 +1074,32 @@ impl DeviceBackend for DisplayRecordingBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
-        Ok(vec![DeviceInfo {
-            id: self.expected_device_id,
-            name: "Display Device".to_owned(),
-            vendor: "Test".to_owned(),
-            family: DeviceFamily::named("Test"),
-            model: None,
-            connection_type: ConnectionType::Network,
-            origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
-            segments: vec![SegmentInfo {
-                name: "Display".to_owned(),
-                led_count: 0,
-                topology: DeviceTopologyHint::Display {
-                    width: 480,
-                    height: 480,
-                    circular: true,
-                },
-                color_format: DeviceColorFormat::Jpeg,
-                layout_hint: None,
-            }],
-            firmware_version: None,
-            capabilities: DeviceCapabilities {
-                led_count: 0,
-                supports_direct: false,
-                supports_brightness: false,
-                has_display: true,
-                display_resolution: Some((480, 480)),
-                max_fps: 30,
-                color_space: hypercolor_types::device::DeviceColorSpace::default(),
-                features: DeviceFeatures::default(),
-            },
-        }])
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), hypercolor_types::device::DeviceError> {
+        Ok(())
     }
 
-    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn connect(&self, id: &DeviceId) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
 
-        self.connected = true;
+        self.connected.store(true, Ordering::Release);
         Ok(())
     }
 
-    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
 
-        self.connected = false;
+        self.connected.store(false, Ordering::Release);
         Ok(())
     }
 
-    async fn write_colors(&mut self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
@@ -1335,15 +1107,121 @@ impl DeviceBackend for DisplayRecordingBackend {
         Ok(())
     }
 
-    async fn write_display_frame(&mut self, id: &DeviceId, jpeg_data: &[u8]) -> Result<()> {
+    async fn write_display_frame(&self, id: &DeviceId, jpeg_data: &[u8]) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
-        if !self.connected {
+        if !self.connected.load(Ordering::Acquire) {
             bail!("display write while disconnected");
         }
 
         self.display_writes.lock().await.push(jpeg_data.to_vec());
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl DeviceBackend for RecoveringDisplayBackend {
+    fn info(&self) -> BackendInfo {
+        BackendInfo {
+            id: "recovering_display".to_owned(),
+            name: "Recovering Display Backend".to_owned(),
+            description: "Fails one display delivery for fencing tests".to_owned(),
+        }
+    }
+
+    fn adopt_device(&self, _discovered: &hypercolor_driver_api::DiscoveredDevice) -> Result<()> {
+        Ok(())
+    }
+
+    async fn connect(&self, id: &DeviceId) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+        Ok(())
+    }
+
+    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+        Ok(())
+    }
+
+    async fn write_colors(&self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+        Ok(())
+    }
+
+    async fn write_display_payload_owned(
+        &self,
+        id: &DeviceId,
+        _payload: Arc<OwnedDisplayFramePayload>,
+    ) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+        if self.fail_next.swap(false, Ordering::AcqRel) {
+            return Err(self.failure.clone());
+        }
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl DeviceBackend for OrderedDisplayBackend {
+    fn info(&self) -> BackendInfo {
+        BackendInfo {
+            id: self.backend_id.to_owned(),
+            name: "Ordered Display Backend".to_owned(),
+            description: "Blocks display deliveries for serialization tests".to_owned(),
+        }
+    }
+
+    fn adopt_device(&self, _discovered: &hypercolor_driver_api::DiscoveredDevice) -> Result<()> {
+        Ok(())
+    }
+
+    async fn connect(&self, id: &DeviceId) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+        Ok(())
+    }
+
+    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+        Ok(())
+    }
+
+    async fn write_colors(&self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+        Ok(())
+    }
+
+    async fn write_display_payload_owned(
+        &self,
+        id: &DeviceId,
+        payload: Arc<OwnedDisplayFramePayload>,
+    ) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+        let attempt = self.attempts.fetch_add(1, Ordering::AcqRel);
+        self.entry_order
+            .lock()
+            .await
+            .push(payload.data.first().copied().unwrap_or_default());
+        if attempt == 0 && self.block_first {
+            self.first_entered.notify_one();
+            self.release_first.notified().await;
+        }
         Ok(())
     }
 }
@@ -1582,7 +1460,7 @@ fn new_manager_is_empty() {
 fn register_backend() {
     let mut manager = BackendManager::new();
     let backend = MockDeviceBackend::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
 
     assert_eq!(manager.backend_count(), 1);
     let ids = manager.backend_ids();
@@ -1592,8 +1470,8 @@ fn register_backend() {
 #[test]
 fn register_replaces_existing_backend() {
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(MockDeviceBackend::new()));
-    manager.register_backend(Box::new(MockDeviceBackend::new()));
+    manager.register_backend(Arc::new(MockDeviceBackend::new()));
+    manager.register_backend(Arc::new(MockDeviceBackend::new()));
 
     // Still only one backend — replaced, not duplicated.
     assert_eq!(manager.backend_count(), 1);
@@ -1602,7 +1480,7 @@ fn register_replaces_existing_backend() {
 #[test]
 fn routing_snapshot_marks_registered_backend() {
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(MockDeviceBackend::new()));
+    manager.register_backend(Arc::new(MockDeviceBackend::new()));
 
     let device_id = DeviceId::new();
     manager.map_device("mock:device_1", "mock", device_id);
@@ -1671,7 +1549,7 @@ fn unmap_device_clears_cached_target_fps_when_last_mapping_is_removed() {
     .with_target_fps(33);
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
 
     let runtime = tokio::runtime::Runtime::new().expect("create tokio runtime");
     runtime
@@ -1698,7 +1576,7 @@ async fn connect_device_connects_backend_and_maps_layout_device() {
 
     let backend = MockDeviceBackend::new().with_device(&mock_config);
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
 
     manager
         .connect_device("mock", device_id, "mock:connect-flow")
@@ -1712,7 +1590,7 @@ async fn connect_device_connects_backend_and_maps_layout_device() {
         zone_id: "zone_0".into(),
         colors: vec![[12, 34, 56]; 6],
     }];
-    let stats = manager.write_frame(&zone_colors, &layout).await;
+    let stats = manager.write_frame(&zone_colors, &layout);
     assert_eq!(stats.devices_written, 1);
     assert_eq!(stats.total_leds, 6);
     assert!(stats.errors.is_empty());
@@ -1724,7 +1602,7 @@ async fn write_frame_hands_shared_led_payload_to_backend_queue() {
     let writes = Arc::new(Mutex::new(Vec::new()));
     let backend = SharedPayloadRecordingBackend::new(device_id, Arc::clone(&writes));
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager
         .connect_device("shared", device_id, "shared:leds")
         .await
@@ -1736,7 +1614,7 @@ async fn write_frame_hands_shared_led_payload_to_backend_queue() {
         colors: vec![[12, 34, 56]; 4],
     }];
 
-    let stats = manager.write_frame(&zone_colors, &layout).await;
+    let stats = manager.write_frame(&zone_colors, &layout);
     tokio::time::sleep(Duration::from_millis(30)).await;
 
     assert_eq!(stats.devices_written, 1);
@@ -1775,7 +1653,7 @@ async fn disconnect_device_disconnects_and_unmaps_layout_device() {
 
     let backend = MockDeviceBackend::new().with_device(&mock_config);
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
 
     manager
         .connect_device("mock", device_id, "mock:disconnect-flow")
@@ -1794,7 +1672,7 @@ async fn disconnect_device_disconnects_and_unmaps_layout_device() {
         zone_id: "zone_0".into(),
         colors: vec![[200, 200, 200]; 5],
     }];
-    let stats = manager.write_frame(&zone_colors, &layout).await;
+    let stats = manager.write_frame(&zone_colors, &layout);
     assert_eq!(stats.devices_written, 0);
     assert!(stats.errors.is_empty());
 }
@@ -1804,10 +1682,10 @@ async fn disconnect_device_cleans_routing_even_when_backend_disconnect_fails() {
     let device_id = DeviceId::new();
     let backend = FailingDisconnectBackend {
         expected_device_id: device_id,
-        connected: false,
+        connected: AtomicBool::new(false),
     };
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
 
     manager
         .connect_device("fail_disconnect", device_id, "fail_disconnect:zombie")
@@ -1819,7 +1697,7 @@ async fn disconnect_device_cleans_routing_even_when_backend_disconnect_fails() {
         zone_id: "zone_0".into(),
         colors: vec![[80, 40, 20]; 4],
     }];
-    let stats = manager.write_frame(&zone_colors, &layout).await;
+    let stats = manager.write_frame(&zone_colors, &layout);
     assert_eq!(stats.devices_written, 1);
     tokio::time::sleep(Duration::from_millis(30)).await;
     assert_eq!(manager.debug_snapshot().queue_count, 1);
@@ -1837,7 +1715,7 @@ async fn disconnect_device_cleans_routing_even_when_backend_disconnect_fails() {
     assert_eq!(manager.mapped_device_count(), 0);
     assert_eq!(manager.debug_snapshot().queue_count, 0);
 
-    let stats = manager.write_frame(&zone_colors, &layout).await;
+    let stats = manager.write_frame(&zone_colors, &layout);
     assert_eq!(stats.devices_written, 0);
     assert!(stats.errors.is_empty());
 }
@@ -1856,7 +1734,7 @@ async fn connect_device_caches_backend_target_fps_for_output_queue() {
     .with_target_fps(37);
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager
         .connect_device("slow", device_id, "slow:fps-cache")
         .await
@@ -1867,7 +1745,7 @@ async fn connect_device_caches_backend_target_fps_for_output_queue() {
         zone_id: "zone_0".into(),
         colors: vec![[1, 2, 3]; 4],
     }];
-    manager.write_frame(&zone_colors, &layout).await;
+    manager.write_frame(&zone_colors, &layout);
     tokio::time::sleep(Duration::from_millis(40)).await;
 
     assert_eq!(manager.cached_target_fps("slow", device_id), Some(37));
@@ -1896,16 +1774,16 @@ async fn disconnect_device_surfaces_backend_errors() {
 
     let backend = MockDeviceBackend::new().with_device(&mock_config);
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
 
     let error = manager
         .disconnect_device("mock", device_id, "mock:error")
         .await
         .expect_err("disconnect of non-connected device should fail");
-    assert!(
-        error.to_string().contains("failed to disconnect device"),
-        "unexpected error: {error}"
-    );
+    assert!(matches!(
+        error.downcast_ref::<DeviceError>(),
+        Some(DeviceError::Disconnected { device }) if device == &device_id.to_string()
+    ));
 }
 
 #[tokio::test]
@@ -1921,11 +1799,11 @@ async fn write_device_colors_writes_immediately_to_connected_device() {
         id: Some(device_id),
     };
 
-    let mut backend = MockDeviceBackend::new().with_device(&mock_config);
+    let backend = MockDeviceBackend::new().with_device(&mock_config);
     backend.connect(&device_id).await.expect("connect");
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
 
     manager
         .write_device_colors("mock", device_id, &[[1, 2, 3]; 4])
@@ -1934,53 +1812,55 @@ async fn write_device_colors_writes_immediately_to_connected_device() {
 }
 
 #[tokio::test]
-async fn backend_io_connect_with_refresh_retries_and_caches_target_fps() {
-    let device_id = DeviceId::new();
-    let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(DiscoverRetryBackend::new(device_id, 48)));
-
-    let io = manager
-        .backend_io("retry")
-        .expect("backend io handle should exist");
-    let output_cadence = io
-        .connect_with_refresh(device_id)
-        .await
-        .expect("connect with refresh should succeed");
-
-    manager.set_cached_output_cadence("retry", device_id, output_cadence);
-    manager.map_device("retry:device", "retry", device_id);
-
-    assert_eq!(output_cadence.target_fps(), 48);
-    assert_eq!(manager.cached_target_fps("retry", device_id), Some(48));
-}
-
-#[tokio::test]
-async fn backend_io_connect_with_refresh_cleans_up_stale_session_before_retry() {
+async fn backend_io_connects_once_and_caches_target_fps() {
     let device_id = DeviceId::new();
     let connect_attempts = Arc::new(AtomicUsize::new(0));
-    let disconnect_attempts = Arc::new(AtomicUsize::new(0));
-    let discover_attempts = Arc::new(AtomicUsize::new(0));
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(CleanupRetryBackend::new(
+    manager.register_backend(Arc::new(ConnectRecordingBackend::new(
         device_id,
         Arc::clone(&connect_attempts),
-        Arc::clone(&disconnect_attempts),
-        Arc::clone(&discover_attempts),
-        36,
+        false,
+        48,
     )));
 
     let io = manager
-        .backend_io("cleanup_retry")
+        .backend_io("connect_recording")
         .expect("backend io handle should exist");
-    let output_cadence = io
-        .connect_with_refresh(device_id)
-        .await
-        .expect("connect with refresh should recover after cleanup");
+    let output_cadence = io.connect(device_id).await.expect("connect should succeed");
 
-    assert_eq!(output_cadence.target_fps(), 36);
-    assert_eq!(connect_attempts.load(Ordering::Relaxed), 2);
-    assert_eq!(disconnect_attempts.load(Ordering::Relaxed), 1);
-    assert_eq!(discover_attempts.load(Ordering::Relaxed), 1);
+    manager.set_cached_output_cadence("connect_recording", device_id, output_cadence);
+    manager.map_device("connect_recording:device", "connect_recording", device_id);
+
+    assert_eq!(output_cadence.target_fps(), 48);
+    assert_eq!(connect_attempts.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        manager.cached_target_fps("connect_recording", device_id),
+        Some(48)
+    );
+}
+
+#[tokio::test]
+async fn backend_io_connect_failure_is_not_retried() {
+    let device_id = DeviceId::new();
+    let connect_attempts = Arc::new(AtomicUsize::new(0));
+    let mut manager = BackendManager::new();
+    manager.register_backend(Arc::new(ConnectRecordingBackend::new(
+        device_id,
+        Arc::clone(&connect_attempts),
+        true,
+        60,
+    )));
+
+    let io = manager
+        .backend_io("connect_recording")
+        .expect("backend io handle should exist");
+    let error = io
+        .connect(device_id)
+        .await
+        .expect_err("connect failure should surface directly");
+
+    assert!(error.to_string().contains("connect failure"));
+    assert_eq!(connect_attempts.load(Ordering::Relaxed), 1);
 }
 
 #[tokio::test]
@@ -1996,11 +1876,11 @@ async fn backend_io_connect_timeout_does_not_include_backend_lock_wait() {
     );
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     let io = manager
         .backend_io("slow")
         .expect("backend io handle should exist");
-    io.connect_with_refresh(device_id)
+    io.connect(device_id)
         .await
         .expect("initial connect should succeed");
 
@@ -2016,7 +1896,7 @@ async fn backend_io_connect_timeout_does_not_include_backend_lock_wait() {
     tokio::time::sleep(Duration::from_millis(10)).await;
 
     let output_cadence = io
-        .connect_with_refresh_timeout(device_id, Duration::from_millis(20))
+        .connect_with_timeout(device_id, Duration::from_millis(20))
         .await
         .expect("timeout should start after the backend lock is acquired");
 
@@ -2026,83 +1906,65 @@ async fn backend_io_connect_timeout_does_not_include_backend_lock_wait() {
 }
 
 #[tokio::test]
-async fn backend_io_connect_timeout_skips_discovery_refresh_retry() {
+async fn backend_io_connect_timeout_does_not_retry_or_disconnect() {
     let device_id = DeviceId::new();
     let connect_attempts = Arc::new(AtomicUsize::new(0));
     let disconnect_attempts = Arc::new(AtomicUsize::new(0));
-    let discover_attempts = Arc::new(AtomicUsize::new(0));
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(TimeoutConnectBackend {
+    manager.register_backend(Arc::new(TimeoutConnectBackend {
         expected_device_id: device_id,
         connect_attempts: Arc::clone(&connect_attempts),
         disconnect_attempts: Arc::clone(&disconnect_attempts),
-        discover_attempts: Arc::clone(&discover_attempts),
     }));
     let io = manager
         .backend_io("timeout_connect")
         .expect("backend io handle should exist");
 
     let error = io
-        .connect_with_refresh_timeout(device_id, Duration::from_millis(20))
+        .connect_with_timeout(device_id, Duration::from_millis(20))
         .await
         .expect_err("connect should time out");
 
-    assert!(
-        error.to_string().contains("device connect timed out"),
-        "unexpected error: {error}"
-    );
+    assert!(matches!(error, DeviceError::Timeout { .. }));
     assert_eq!(connect_attempts.load(Ordering::Relaxed), 1);
     assert_eq!(
         disconnect_attempts.load(Ordering::Relaxed),
         0,
-        "timeout cleanup must not drop backend discovery state"
-    );
-    assert_eq!(
-        discover_attempts.load(Ordering::Relaxed),
-        0,
-        "timeout retry must not run a fresh discovery scan"
+        "timeout handling must not mutate backend lifecycle state"
     );
 }
 
 #[tokio::test]
-async fn backend_io_transport_timeout_skips_discovery_refresh_retry() {
+async fn backend_io_transport_timeout_is_not_retried_or_disconnected() {
     let device_id = DeviceId::new();
     let connect_attempts = Arc::new(AtomicUsize::new(0));
     let disconnect_attempts = Arc::new(AtomicUsize::new(0));
-    let discover_attempts = Arc::new(AtomicUsize::new(0));
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(TransportTimeoutConnectBackend {
+    manager.register_backend(Arc::new(TransportTimeoutConnectBackend {
         expected_device_id: device_id,
         connect_attempts: Arc::clone(&connect_attempts),
         disconnect_attempts: Arc::clone(&disconnect_attempts),
-        discover_attempts: Arc::clone(&discover_attempts),
     }));
     let io = manager
         .backend_io("transport_timeout_connect")
         .expect("backend io handle should exist");
 
     let error = io
-        .connect_with_refresh(device_id)
+        .connect(device_id)
         .await
         .expect_err("connect should surface transport timeout");
-    let error_chain = format_error_chain(&error);
-
-    assert!(
-        error_chain.contains("transport timeout after 1000ms"),
-        "unexpected error chain: {error_chain}"
+    assert_eq!(
+        error.recoverability(),
+        hypercolor_types::device::ErrorRecoverability::Retry
     );
+    assert!(matches!(error, DeviceError::Timeout { .. }));
     assert_eq!(connect_attempts.load(Ordering::Relaxed), 1);
     assert_eq!(
         disconnect_attempts.load(Ordering::Relaxed),
         0,
-        "transport timeout cleanup must not drop backend discovery state"
-    );
-    assert_eq!(
-        discover_attempts.load(Ordering::Relaxed),
-        0,
-        "transport timeout retry must not run a fresh discovery scan"
+        "transport failures must not mutate backend lifecycle state"
     );
 }
 
@@ -2112,7 +1974,7 @@ async fn backend_io_write_colors_targets_backend_directly() {
     let writes = Arc::new(Mutex::new(Vec::new()));
     let brightness_writes = Arc::new(Mutex::new(Vec::new()));
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(DirectControlRecordingBackend::new(
+    manager.register_backend(Arc::new(DirectControlRecordingBackend::new(
         device_id,
         Arc::clone(&writes),
         Arc::clone(&brightness_writes),
@@ -2121,9 +1983,7 @@ async fn backend_io_write_colors_targets_backend_directly() {
     let io = manager
         .backend_io("recording")
         .expect("backend io handle should exist");
-    io.connect_with_refresh(device_id)
-        .await
-        .expect("connect should succeed");
+    io.connect(device_id).await.expect("connect should succeed");
     io.write_colors(device_id, &[[9, 8, 7]; 4])
         .await
         .expect("direct write should succeed");
@@ -2138,7 +1998,7 @@ async fn backend_io_set_brightness_targets_backend_directly() {
     let writes = Arc::new(Mutex::new(Vec::new()));
     let brightness_writes = Arc::new(Mutex::new(Vec::new()));
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(DirectControlRecordingBackend::new(
+    manager.register_backend(Arc::new(DirectControlRecordingBackend::new(
         device_id,
         Arc::clone(&writes),
         Arc::clone(&brightness_writes),
@@ -2147,9 +2007,7 @@ async fn backend_io_set_brightness_targets_backend_directly() {
     let io = manager
         .backend_io("recording")
         .expect("backend io handle should exist");
-    io.connect_with_refresh(device_id)
-        .await
-        .expect("connect should succeed");
+    io.connect(device_id).await.expect("connect should succeed");
     io.set_brightness(device_id, 64)
         .await
         .expect("brightness write should succeed");
@@ -2167,7 +2025,7 @@ async fn backend_io_disconnect_stops_future_direct_writes() {
     let writes = Arc::new(Mutex::new(Vec::new()));
     let brightness_writes = Arc::new(Mutex::new(Vec::new()));
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(DirectControlRecordingBackend::new(
+    manager.register_backend(Arc::new(DirectControlRecordingBackend::new(
         device_id,
         Arc::clone(&writes),
         Arc::clone(&brightness_writes),
@@ -2176,9 +2034,7 @@ async fn backend_io_disconnect_stops_future_direct_writes() {
     let io = manager
         .backend_io("recording")
         .expect("backend io handle should exist");
-    io.connect_with_refresh(device_id)
-        .await
-        .expect("connect should succeed");
+    io.connect(device_id).await.expect("connect should succeed");
     io.disconnect(device_id)
         .await
         .expect("disconnect should succeed");
@@ -2187,21 +2043,21 @@ async fn backend_io_disconnect_stops_future_direct_writes() {
         .write_colors(device_id, &[[1, 2, 3]; 4])
         .await
         .expect_err("writes should fail after disconnect");
-    assert!(error.to_string().contains("failed to write"));
+    assert!(
+        matches!(error, DeviceError::Disconnected { device } if device == device_id.to_string())
+    );
 }
 
 #[tokio::test]
 async fn backend_io_connected_device_info_returns_backend_metadata() {
     let device_id = DeviceId::new();
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(MetadataRefreshingBackend::new(device_id)));
+    manager.register_backend(Arc::new(MetadataRefreshingBackend::new(device_id)));
 
     let io = manager
         .backend_io("metadata")
         .expect("backend io handle should exist");
-    io.connect_with_refresh(device_id)
-        .await
-        .expect("connect should succeed");
+    io.connect(device_id).await.expect("connect should succeed");
 
     let info = io
         .connected_device_info(device_id)
@@ -2211,31 +2067,6 @@ async fn backend_io_connected_device_info_returns_backend_metadata() {
 
     assert_eq!(info.name, "Connected Metadata Device");
     assert_eq!(info.capabilities.led_count, 12);
-}
-
-#[tokio::test]
-async fn backend_io_write_display_frame_targets_backend_directly() {
-    let device_id = DeviceId::new();
-    let display_writes = Arc::new(Mutex::new(Vec::new()));
-    let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(DisplayRecordingBackend::new(
-        device_id,
-        Arc::clone(&display_writes),
-    )));
-
-    let io = manager
-        .backend_io("display")
-        .expect("backend io handle should exist");
-    io.connect_with_refresh(device_id)
-        .await
-        .expect("connect should succeed");
-
-    let jpeg_data = vec![0xFF, 0xD8, 0xFF, 0xD9];
-    io.write_display_frame(device_id, &jpeg_data)
-        .await
-        .expect("display write should succeed");
-
-    assert_eq!(*display_writes.lock().await, vec![jpeg_data]);
 }
 
 #[tokio::test]
@@ -2258,7 +2089,7 @@ async fn set_device_brightness_targets_backend_directly() {
     let writes = Arc::new(Mutex::new(Vec::new()));
     let brightness_writes = Arc::new(Mutex::new(Vec::new()));
 
-    let mut backend = DirectControlRecordingBackend::new(
+    let backend = DirectControlRecordingBackend::new(
         device_id,
         Arc::clone(&writes),
         Arc::clone(&brightness_writes),
@@ -2266,7 +2097,7 @@ async fn set_device_brightness_targets_backend_directly() {
     backend.connect(&device_id).await.expect("connect");
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
 
     manager
         .set_device_brightness("recording", device_id, 128)
@@ -2283,11 +2114,11 @@ async fn set_device_brightness_targets_backend_directly() {
 #[tokio::test]
 async fn connected_device_info_returns_backend_metadata() {
     let device_id = DeviceId::new();
-    let mut backend = MetadataRefreshingBackend::new(device_id);
+    let backend = MetadataRefreshingBackend::new(device_id);
     backend.connect(&device_id).await.expect("connect");
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
 
     let info = manager
         .connected_device_info("metadata", device_id)
@@ -2308,23 +2139,488 @@ async fn connected_device_info_returns_backend_metadata() {
 }
 
 #[tokio::test]
-async fn write_device_display_frame_targets_backend_directly() {
+async fn display_output_lane_targets_registered_backend() {
     let device_id = DeviceId::new();
     let display_writes = Arc::new(Mutex::new(Vec::new()));
 
-    let mut backend = DisplayRecordingBackend::new(device_id, Arc::clone(&display_writes));
+    let backend = DisplayRecordingBackend::new(device_id, Arc::clone(&display_writes));
     backend.connect(&device_id).await.expect("connect");
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
 
     let jpeg_data = vec![0xFF, 0xD8, 0xFF, 0xDB];
     manager
-        .write_device_display_frame("display", device_id, &jpeg_data)
+        .display_output_lane("display", device_id)
+        .expect("registered display backend should expose a lane")
+        .write(Arc::new(OwnedDisplayFramePayload::jpeg(
+            0,
+            0,
+            Arc::new(jpeg_data.clone()),
+        )))
         .await
         .expect("display write should succeed");
 
     assert_eq!(*display_writes.lock().await, vec![jpeg_data]);
+}
+
+#[tokio::test]
+async fn display_output_lane_tracks_delivery_telemetry() {
+    let device_id = DeviceId::new();
+    let display_writes = Arc::new(Mutex::new(Vec::new()));
+    let backend = DisplayRecordingBackend::new(device_id, Arc::clone(&display_writes));
+    backend.connect(&device_id).await.expect("connect");
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Arc::new(backend));
+    let lane = manager
+        .display_output_lane("display", device_id)
+        .expect("registered display backend should expose a lane");
+
+    let initial = lane.statistics();
+    assert_ne!(initial.queue_generation, 0);
+    assert_eq!(initial.transport_started, 0);
+    lane.write(Arc::new(OwnedDisplayFramePayload::jpeg(
+        16,
+        16,
+        Arc::new(vec![0xFF, 0xD8, 0xFF, 0xDB]),
+    )))
+    .await
+    .expect("display delivery should succeed");
+
+    let delivered = lane.statistics();
+    assert_eq!(delivered.queue_generation, initial.queue_generation);
+    assert_eq!(delivered.transport_started, 1);
+    assert_eq!(delivered.transport_completed, 1);
+    assert_eq!(delivered.transport_failed, 0);
+
+    let shared = manager.device_output_statistics();
+    assert_eq!(shared.len(), 1);
+    assert_eq!(shared[0].device_id, device_id);
+    assert_eq!(
+        shared[0].display_queue_generation,
+        Some(initial.queue_generation)
+    );
+    assert_eq!(shared[0].display_transport_started, 1);
+    assert_eq!(shared[0].display_transport_completed, 1);
+    assert_eq!(shared[0].display_transport_failed, 0);
+    assert_eq!(
+        manager.debug_snapshot().queues[0].display_transport_started,
+        1
+    );
+}
+
+#[tokio::test]
+async fn device_output_statistics_merge_led_and_display_lanes() {
+    let device_id = DeviceId::new();
+    let display_writes = Arc::new(Mutex::new(Vec::new()));
+    let backend = DisplayRecordingBackend::new(device_id, Arc::clone(&display_writes));
+    backend.connect(&device_id).await.expect("connect");
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Arc::new(backend));
+    manager.map_device("display:combined", "display", device_id);
+    let layout = make_layout(vec![make_zone("zone_0", "display:combined", 1)]);
+    manager.write_frame(
+        &[ZoneColors {
+            zone_id: "zone_0".into(),
+            colors: vec![[16, 32, 64]],
+        }],
+        &layout,
+    );
+    let lane = manager
+        .display_output_lane("display", device_id)
+        .expect("registered backend should expose a display lane");
+    lane.write(Arc::new(OwnedDisplayFramePayload::jpeg(
+        16,
+        16,
+        Arc::new(vec![1]),
+    )))
+    .await
+    .expect("display delivery should succeed");
+
+    let statistics = manager.device_output_statistics();
+    assert_eq!(statistics.len(), 1);
+    assert_eq!(statistics[0].device_id, device_id);
+    assert_ne!(statistics[0].queue_generation, 0);
+    assert_eq!(
+        statistics[0].display_queue_generation,
+        Some(lane.queue_generation())
+    );
+    assert_eq!(statistics[0].display_transport_started, 1);
+    assert_eq!(statistics[0].display_transport_completed, 1);
+}
+
+#[tokio::test]
+async fn display_output_failures_join_the_typed_lifecycle_fence() {
+    let device_id = DeviceId::new();
+    let fail_next = Arc::new(AtomicBool::new(true));
+    let mut manager = BackendManager::new();
+    manager.register_backend(Arc::new(RecoveringDisplayBackend::new(
+        device_id,
+        Arc::clone(&fail_next),
+    )));
+    let lane = manager
+        .display_output_lane("recovering_display", device_id)
+        .expect("registered display backend should expose a lane");
+    let payload = Arc::new(OwnedDisplayFramePayload::jpeg(
+        16,
+        16,
+        Arc::new(vec![0xFF, 0xD8, 0xFF, 0xDB]),
+    ));
+
+    lane.write(Arc::clone(&payload))
+        .await
+        .expect_err("first display delivery should fail");
+
+    let failures = manager.async_write_failures();
+    assert_eq!(failures.len(), 1);
+    let failure = failures[0].clone();
+    assert_eq!(failure.backend_id, "recovering_display");
+    assert_eq!(failure.device_id, device_id);
+    assert_eq!(
+        failure.delivery_id.queue_generation,
+        lane.queue_generation()
+    );
+    assert_eq!(failure.delivery_id.sequence, 1);
+    assert!(failure.is_current());
+    assert!(matches!(failure.error, DeviceError::WriteError { .. }));
+
+    lane.write(payload)
+        .await
+        .expect("newer successful display delivery should recover the lane");
+
+    assert!(!failure.is_current());
+    assert!(!failure.try_acknowledge());
+    assert!(manager.async_write_failures().is_empty());
+    assert_eq!(lane.statistics().transport_started, 2);
+    assert_eq!(lane.statistics().transport_completed, 1);
+    assert_eq!(lane.statistics().transport_failed, 1);
+}
+
+#[tokio::test]
+async fn concurrent_display_deliveries_preserve_physical_order() {
+    let device_id = DeviceId::new();
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let first_entered = Arc::new(Notify::new());
+    let release_first = Arc::new(Notify::new());
+    let entry_order = Arc::new(Mutex::new(Vec::new()));
+    let mut manager = BackendManager::new();
+    manager.register_backend(Arc::new(OrderedDisplayBackend::new(
+        "ordered_display",
+        device_id,
+        Arc::clone(&attempts),
+        Arc::clone(&first_entered),
+        Arc::clone(&release_first),
+        Arc::clone(&entry_order),
+        true,
+    )));
+    let lane = manager
+        .display_output_lane("ordered_display", device_id)
+        .expect("registered display backend should expose a lane");
+    let older_payload = Arc::new(OwnedDisplayFramePayload::jpeg(16, 16, Arc::new(vec![1])));
+    let newer_payload = Arc::new(OwnedDisplayFramePayload::jpeg(16, 16, Arc::new(vec![2])));
+
+    let older_lane = lane.clone();
+    let older_write = tokio::spawn(async move { older_lane.write(older_payload).await });
+    first_entered.notified().await;
+
+    let newer_lane = lane.clone();
+    let newer_write = tokio::spawn(async move { newer_lane.write(newer_payload).await });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert_eq!(attempts.load(Ordering::Acquire), 1);
+    assert_eq!(*entry_order.lock().await, vec![1]);
+
+    release_first.notify_one();
+    older_write
+        .await
+        .expect("older display task should complete")
+        .expect("older display delivery should succeed");
+    newer_write
+        .await
+        .expect("newer display task should complete")
+        .expect("newer display delivery should succeed");
+
+    assert_eq!(*entry_order.lock().await, vec![1, 2]);
+    assert_eq!(lane.statistics().transport_started, 2);
+    assert_eq!(lane.statistics().transport_completed, 2);
+    assert_eq!(lane.statistics().transport_failed, 0);
+}
+
+#[tokio::test]
+async fn backend_replacement_waits_for_in_flight_display_delivery() {
+    let device_id = DeviceId::new();
+    let old_attempts = Arc::new(AtomicUsize::new(0));
+    let new_attempts = Arc::new(AtomicUsize::new(0));
+    let old_entered = Arc::new(Notify::new());
+    let release_old = Arc::new(Notify::new());
+    let entry_order = Arc::new(Mutex::new(Vec::new()));
+    let mut manager = BackendManager::new();
+    manager.register_backend(Arc::new(OrderedDisplayBackend::new(
+        "replaceable_display",
+        device_id,
+        Arc::clone(&old_attempts),
+        Arc::clone(&old_entered),
+        Arc::clone(&release_old),
+        Arc::clone(&entry_order),
+        true,
+    )));
+    let old_lane = manager
+        .display_output_lane("replaceable_display", device_id)
+        .expect("initial backend should expose a lane");
+    let old_generation = old_lane.backend_generation();
+    let old_write_lane = old_lane.clone();
+    let old_write = tokio::spawn(async move {
+        old_write_lane
+            .write(Arc::new(OwnedDisplayFramePayload::jpeg(
+                16,
+                16,
+                Arc::new(vec![1]),
+            )))
+            .await
+    });
+    old_entered.notified().await;
+
+    manager.register_backend(Arc::new(OrderedDisplayBackend::new(
+        "replaceable_display",
+        device_id,
+        Arc::clone(&new_attempts),
+        Arc::new(Notify::new()),
+        Arc::new(Notify::new()),
+        Arc::clone(&entry_order),
+        false,
+    )));
+    let new_lane = manager
+        .display_output_lane("replaceable_display", device_id)
+        .expect("replacement backend should expose a lane");
+    assert!(!old_lane.is_active());
+    assert_ne!(new_lane.backend_generation(), old_generation);
+
+    let new_write_lane = new_lane.clone();
+    let new_write = tokio::spawn(async move {
+        new_write_lane
+            .write(Arc::new(OwnedDisplayFramePayload::jpeg(
+                16,
+                16,
+                Arc::new(vec![2]),
+            )))
+            .await
+    });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert_eq!(new_attempts.load(Ordering::Acquire), 0);
+    assert_eq!(*entry_order.lock().await, vec![1]);
+
+    release_old.notify_one();
+    old_write
+        .await
+        .expect("old write task should complete")
+        .expect("in-flight old write should drain");
+    new_write
+        .await
+        .expect("new write task should complete")
+        .expect("replacement write should succeed");
+    assert_eq!(*entry_order.lock().await, vec![1, 2]);
+}
+
+#[tokio::test]
+async fn backend_replacement_preserves_retired_display_failure_ticket_until_claimed() {
+    let device_id = DeviceId::new();
+    let fail_next = Arc::new(AtomicBool::new(true));
+    let mut manager = BackendManager::new();
+    manager.register_backend(Arc::new(RecoveringDisplayBackend::new(
+        device_id,
+        Arc::clone(&fail_next),
+    )));
+    let old_lane = manager
+        .display_output_lane("recovering_display", device_id)
+        .expect("initial backend should expose a lane");
+    old_lane
+        .write(Arc::new(OwnedDisplayFramePayload::jpeg(
+            16,
+            16,
+            Arc::new(vec![1]),
+        )))
+        .await
+        .expect_err("initial delivery should fail");
+    let failure = manager
+        .async_write_failures()
+        .into_iter()
+        .next()
+        .expect("initial lane should retain its failure");
+    assert!(failure.is_current());
+
+    manager.register_backend(Arc::new(RecoveringDisplayBackend::new(
+        device_id,
+        Arc::new(AtomicBool::new(false)),
+    )));
+    let new_lane = manager
+        .display_output_lane("recovering_display", device_id)
+        .expect("replacement backend should expose a lane");
+
+    assert!(!old_lane.is_active());
+    assert!(failure.is_current());
+    let retained_failure = manager
+        .async_write_failures()
+        .into_iter()
+        .next()
+        .expect("retired display failure should remain available to lifecycle fencing");
+    assert!(retained_failure.is_from_retired_generation());
+    assert!(retained_failure.try_acknowledge());
+    assert!(!failure.is_current());
+    assert!(manager.async_write_failures().is_empty());
+    assert_ne!(new_lane.queue_generation(), old_lane.queue_generation());
+    assert_ne!(new_lane.backend_generation(), old_lane.backend_generation());
+    old_lane
+        .write(Arc::new(OwnedDisplayFramePayload::jpeg(
+            16,
+            16,
+            Arc::new(vec![2]),
+        )))
+        .await
+        .expect_err("retired lane must reject new deliveries");
+    assert!(manager.async_write_failures().is_empty());
+}
+
+#[tokio::test]
+async fn claimed_retired_retry_failure_releases_supervisor_generation() {
+    let device_id = DeviceId::new();
+    let mut manager = BackendManager::new();
+    manager.register_backend(Arc::new(
+        RecoveringDisplayBackend::new(device_id, Arc::new(AtomicBool::new(true))).with_failure(
+            DeviceError::Timeout {
+                after: Duration::from_millis(25),
+            },
+        ),
+    ));
+    let old_lane = manager
+        .display_output_lane("recovering_display", device_id)
+        .expect("initial backend should expose a lane");
+    old_lane
+        .write(Arc::new(OwnedDisplayFramePayload::jpeg(
+            16,
+            16,
+            Arc::new(vec![1]),
+        )))
+        .await
+        .expect_err("initial delivery should time out");
+
+    manager.register_backend(Arc::new(RecoveringDisplayBackend::new(
+        device_id,
+        Arc::new(AtomicBool::new(false)),
+    )));
+    let _new_lane = manager
+        .display_output_lane("recovering_display", device_id)
+        .expect("replacement backend should expose a lane");
+    let failure = manager
+        .async_write_failures()
+        .into_iter()
+        .next()
+        .expect("retired retryable failure should remain available for one claim");
+
+    assert!(failure.is_from_retired_generation());
+    assert!(matches!(failure.error, DeviceError::Timeout { .. }));
+    assert!(failure.try_acknowledge());
+    assert!(manager.async_write_failures().is_empty());
+    assert_eq!(
+        manager
+            .display_delivery_supervisor_statistics()
+            .retained_generations,
+        1
+    );
+}
+
+#[tokio::test]
+async fn retired_retry_failure_precedes_current_generation_failure() {
+    let device_id = DeviceId::new();
+    let timeout_error = DeviceError::Timeout {
+        after: Duration::from_millis(25),
+    };
+    let mut manager = BackendManager::new();
+    manager.register_backend(Arc::new(
+        RecoveringDisplayBackend::new(device_id, Arc::new(AtomicBool::new(true)))
+            .with_failure(timeout_error.clone()),
+    ));
+    manager
+        .display_output_lane("recovering_display", device_id)
+        .expect("initial backend should expose a lane")
+        .write(Arc::new(OwnedDisplayFramePayload::jpeg(
+            16,
+            16,
+            Arc::new(vec![1]),
+        )))
+        .await
+        .expect_err("initial generation should time out");
+
+    manager.register_backend(Arc::new(
+        RecoveringDisplayBackend::new(device_id, Arc::new(AtomicBool::new(true)))
+            .with_failure(timeout_error),
+    ));
+    manager
+        .display_output_lane("recovering_display", device_id)
+        .expect("replacement backend should expose a lane")
+        .write(Arc::new(OwnedDisplayFramePayload::jpeg(
+            16,
+            16,
+            Arc::new(vec![2]),
+        )))
+        .await
+        .expect_err("current generation should time out");
+
+    let failures = manager.async_write_failures();
+    assert_eq!(failures.len(), 2);
+    assert!(failures[0].is_from_retired_generation());
+    assert!(!failures[1].is_from_retired_generation());
+    assert!(failures[0].try_acknowledge());
+    let current_failure = manager
+        .async_write_failures()
+        .into_iter()
+        .next()
+        .expect("current generation failure should remain after retired claim");
+    assert!(!current_failure.is_from_retired_generation());
+    assert!(current_failure.try_acknowledge());
+}
+
+#[tokio::test]
+async fn display_delivery_does_not_hold_the_backend_manager_lock() {
+    let device_id = DeviceId::new();
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let first_entered = Arc::new(Notify::new());
+    let release_first = Arc::new(Notify::new());
+    let manager = Arc::new(Mutex::new(BackendManager::new()));
+    let lane = {
+        let mut manager = manager.lock().await;
+        manager.register_backend(Arc::new(OrderedDisplayBackend::new(
+            "lock_release_display",
+            device_id,
+            attempts,
+            Arc::clone(&first_entered),
+            Arc::clone(&release_first),
+            Arc::new(Mutex::new(Vec::new())),
+            true,
+        )));
+        manager
+            .display_output_lane("lock_release_display", device_id)
+            .expect("registered backend should expose a lane")
+    };
+
+    let write = tokio::spawn(async move {
+        lane.write(Arc::new(OwnedDisplayFramePayload::jpeg(
+            16,
+            16,
+            Arc::new(vec![1]),
+        )))
+        .await
+    });
+    first_entered.notified().await;
+    let guard = tokio::time::timeout(Duration::from_millis(100), manager.lock())
+        .await
+        .expect("manager lock should remain available during display I/O");
+    drop(guard);
+    release_first.notify_one();
+    write
+        .await
+        .expect("display task should complete")
+        .expect("display delivery should succeed");
 }
 
 #[tokio::test]
@@ -2333,7 +2629,7 @@ async fn direct_control_suppresses_queued_writes_until_released() {
     let writes = Arc::new(Mutex::new(Vec::new()));
     let brightness_writes = Arc::new(Mutex::new(Vec::new()));
 
-    let mut backend = DirectControlRecordingBackend::new(
+    let backend = DirectControlRecordingBackend::new(
         device_id,
         Arc::clone(&writes),
         Arc::clone(&brightness_writes),
@@ -2341,7 +2637,7 @@ async fn direct_control_suppresses_queued_writes_until_released() {
     backend.connect(&device_id).await.expect("connect");
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device("recording:device", "recording", device_id);
 
     let layout = make_layout(vec![make_zone("zone_0", "recording:device", 4)]);
@@ -2356,7 +2652,7 @@ async fn direct_control_suppresses_queued_writes_until_released() {
     drop(nested_direct_control);
     assert!(manager.is_direct_control_active("recording", device_id));
 
-    let suppressed_stats = manager.write_frame(&zone_colors, &layout).await;
+    let suppressed_stats = manager.write_frame(&zone_colors, &layout);
     assert_eq!(suppressed_stats.devices_written, 0);
     assert_eq!(suppressed_stats.total_leds, 0);
     tokio::time::sleep(Duration::from_millis(30)).await;
@@ -2374,7 +2670,7 @@ async fn direct_control_suppresses_queued_writes_until_released() {
     drop(direct_control);
     assert!(!manager.is_direct_control_active("recording", device_id));
 
-    let resumed_stats = manager.write_frame(&zone_colors, &layout).await;
+    let resumed_stats = manager.write_frame(&zone_colors, &layout);
     assert_eq!(resumed_stats.devices_written, 1);
     assert_eq!(resumed_stats.total_leds, 4);
     tokio::time::sleep(Duration::from_millis(30)).await;
@@ -2437,11 +2733,11 @@ async fn write_frame_routes_to_correct_backend() {
         id: Some(device_id),
     };
 
-    let mut backend = MockDeviceBackend::new().with_device(&mock_config);
+    let backend = MockDeviceBackend::new().with_device(&mock_config);
     backend.connect(&device_id).await.expect("connect");
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device("mock:strip_1", "mock", device_id);
 
     let layout = make_layout(vec![make_zone("zone_0", "mock:strip_1", 10)]);
@@ -2451,7 +2747,7 @@ async fn write_frame_routes_to_correct_backend() {
         colors: vec![[255, 0, 0]; 10],
     }];
 
-    let stats = manager.write_frame(&zone_colors, &layout).await;
+    let stats = manager.write_frame(&zone_colors, &layout);
     assert_eq!(stats.devices_written, 1);
     assert_eq!(stats.total_leds, 10);
     assert!(stats.errors.is_empty());
@@ -2462,7 +2758,7 @@ async fn write_frame_scales_device_output_brightness() {
     let device_id = DeviceId::new();
     let writes = Arc::new(Mutex::new(Vec::new()));
     let brightness_writes = Arc::new(Mutex::new(Vec::new()));
-    let mut backend = DirectControlRecordingBackend::new(
+    let backend = DirectControlRecordingBackend::new(
         device_id,
         Arc::clone(&writes),
         Arc::clone(&brightness_writes),
@@ -2470,7 +2766,7 @@ async fn write_frame_scales_device_output_brightness() {
     backend.connect(&device_id).await.expect("connect");
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device("recording:strip", "recording", device_id);
     manager.set_device_output_brightness(device_id, 0.5);
 
@@ -2480,7 +2776,7 @@ async fn write_frame_scales_device_output_brightness() {
         colors: vec![[200, 100, 50]; 4],
     }];
 
-    let stats = manager.write_frame(&zone_colors, &layout).await;
+    let stats = manager.write_frame(&zone_colors, &layout);
     assert_eq!(stats.devices_written, 1);
     assert_eq!(stats.total_leds, 4);
     assert!(stats.errors.is_empty());
@@ -2536,7 +2832,7 @@ async fn write_frame_decodes_screen_referred_srgb_before_hardware_output() {
     let device_id = DeviceId::new();
     let writes = Arc::new(Mutex::new(Vec::new()));
     let brightness_writes = Arc::new(Mutex::new(Vec::new()));
-    let mut backend = DirectControlRecordingBackend::new(
+    let backend = DirectControlRecordingBackend::new(
         device_id,
         Arc::clone(&writes),
         Arc::clone(&brightness_writes),
@@ -2544,7 +2840,7 @@ async fn write_frame_decodes_screen_referred_srgb_before_hardware_output() {
     backend.connect(&device_id).await.expect("connect");
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device("recording:strip", "recording", device_id);
 
     let layout = make_layout(vec![make_zone("zone_0", "recording:strip", 3)]);
@@ -2553,7 +2849,7 @@ async fn write_frame_decodes_screen_referred_srgb_before_hardware_output() {
         colors: vec![[128, 128, 128], [255, 0, 255], [32, 64, 96]],
     }];
 
-    let stats = manager.write_frame(&zone_colors, &layout).await;
+    let stats = manager.write_frame(&zone_colors, &layout);
     assert_eq!(stats.devices_written, 1);
     assert_eq!(stats.total_leds, 3);
     assert!(stats.errors.is_empty());
@@ -2579,7 +2875,7 @@ async fn write_frame_lifts_dark_chromatic_colors_without_blowing_out_neutrals() 
     let device_id = DeviceId::new();
     let writes = Arc::new(Mutex::new(Vec::new()));
     let brightness_writes = Arc::new(Mutex::new(Vec::new()));
-    let mut backend = DirectControlRecordingBackend::new(
+    let backend = DirectControlRecordingBackend::new(
         device_id,
         Arc::clone(&writes),
         Arc::clone(&brightness_writes),
@@ -2587,7 +2883,7 @@ async fn write_frame_lifts_dark_chromatic_colors_without_blowing_out_neutrals() 
     backend.connect(&device_id).await.expect("connect");
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device("recording:strip", "recording", device_id);
 
     let layout = make_layout(vec![make_zone("zone_0", "recording:strip", 3)]);
@@ -2596,7 +2892,7 @@ async fn write_frame_lifts_dark_chromatic_colors_without_blowing_out_neutrals() 
         colors: vec![[0, 0, 128], [128, 128, 128], [255, 255, 255]],
     }];
 
-    let stats = manager.write_frame(&zone_colors, &layout).await;
+    let stats = manager.write_frame(&zone_colors, &layout);
     assert_eq!(stats.devices_written, 1);
     assert_eq!(stats.total_leds, 3);
     assert!(stats.errors.is_empty());
@@ -2629,7 +2925,7 @@ async fn write_frame_empty_layout_produces_no_writes() {
     let mut manager = BackendManager::new();
     let layout = make_layout(Vec::new());
 
-    let stats = manager.write_frame(&[], &layout).await;
+    let stats = manager.write_frame(&[], &layout);
     assert_eq!(stats.devices_written, 0);
     assert_eq!(stats.total_leds, 0);
     assert!(stats.errors.is_empty());
@@ -2648,11 +2944,11 @@ async fn write_frame_reuses_compiled_routing_plan_for_stable_layout() {
         id: Some(device_id),
     };
 
-    let mut backend = MockDeviceBackend::new().with_device(&mock_config);
+    let backend = MockDeviceBackend::new().with_device(&mock_config);
     backend.connect(&device_id).await.expect("connect");
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device("mock:cached-strip", "mock", device_id);
 
     let layout = make_layout(vec![make_zone("zone_0", "mock:cached-strip", 5)]);
@@ -2661,11 +2957,11 @@ async fn write_frame_reuses_compiled_routing_plan_for_stable_layout() {
         colors: vec![[255, 0, 0]; 5],
     }];
 
-    manager.write_frame(&zone_colors, &layout).await;
+    manager.write_frame(&zone_colors, &layout);
     assert_eq!(manager.routing_plan_rebuild_count(), 1);
     assert_eq!(manager.ordered_routing_zone_count(&layout), 1);
 
-    manager.write_frame(&zone_colors, &layout).await;
+    manager.write_frame(&zone_colors, &layout);
     assert_eq!(manager.routing_plan_rebuild_count(), 1);
 }
 
@@ -2682,11 +2978,11 @@ async fn ordered_routing_excludes_display_helper_zones() {
         id: Some(device_id),
     };
 
-    let mut backend = MockDeviceBackend::new().with_device(&mock_config);
+    let backend = MockDeviceBackend::new().with_device(&mock_config);
     backend.connect(&device_id).await.expect("connect");
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device("mock:display-helper", "mock", device_id);
 
     let mut display_zone = make_zone("display_helper", "mock:display-helper", 16);
@@ -2700,7 +2996,7 @@ async fn ordered_routing_excludes_display_helper_zones() {
         colors: vec![[255, 0, 0]; 5],
     }];
 
-    manager.write_frame(&zone_colors, &layout).await;
+    manager.write_frame(&zone_colors, &layout);
 
     assert_eq!(manager.routing_plan_rebuild_count(), 1);
     assert_eq!(manager.ordered_routing_zone_count(&layout), 1);
@@ -2719,11 +3015,11 @@ async fn write_frame_rebuilds_routing_plan_when_layout_changes() {
         id: Some(device_id),
     };
 
-    let mut backend = MockDeviceBackend::new().with_device(&mock_config);
+    let backend = MockDeviceBackend::new().with_device(&mock_config);
     backend.connect(&device_id).await.expect("connect");
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device("mock:cached-strip", "mock", device_id);
 
     let layout = make_layout(vec![make_zone("zone_0", "mock:cached-strip", 5)]);
@@ -2732,14 +3028,14 @@ async fn write_frame_rebuilds_routing_plan_when_layout_changes() {
         colors: vec![[255, 0, 0]; 5],
     }];
 
-    manager.write_frame(&zone_colors, &layout).await;
+    manager.write_frame(&zone_colors, &layout);
     assert_eq!(manager.routing_plan_rebuild_count(), 1);
 
     let mut remapped_zone = make_zone("zone_0", "mock:cached-strip", 5);
     remapped_zone.led_mapping = Some(vec![4, 3, 2, 1, 0]);
     let remapped_layout = make_layout(vec![remapped_zone]);
 
-    manager.write_frame(&zone_colors, &remapped_layout).await;
+    manager.write_frame(&zone_colors, &remapped_layout);
     assert_eq!(manager.routing_plan_rebuild_count(), 2);
 }
 
@@ -2748,7 +3044,7 @@ async fn write_frame_rebuilds_routing_plan_when_zone_brightness_changes() {
     let device_id = DeviceId::new();
     let writes = Arc::new(Mutex::new(Vec::new()));
     let brightness_writes = Arc::new(Mutex::new(Vec::new()));
-    let mut backend = DirectControlRecordingBackend::new(
+    let backend = DirectControlRecordingBackend::new(
         device_id,
         Arc::clone(&writes),
         Arc::clone(&brightness_writes),
@@ -2756,7 +3052,7 @@ async fn write_frame_rebuilds_routing_plan_when_zone_brightness_changes() {
     backend.connect(&device_id).await.expect("connect");
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device("recording:strip", "recording", device_id);
 
     let mut dim_zone = make_zone("zone_0", "recording:strip", 4);
@@ -2767,7 +3063,7 @@ async fn write_frame_rebuilds_routing_plan_when_zone_brightness_changes() {
         colors: vec![[200, 100, 50]; 4],
     }];
 
-    manager.write_frame(&zone_colors, &dim_layout).await;
+    manager.write_frame(&zone_colors, &dim_layout);
     assert_eq!(manager.routing_plan_rebuild_count(), 1);
     tokio::time::sleep(Duration::from_millis(30)).await;
 
@@ -2775,7 +3071,7 @@ async fn write_frame_rebuilds_routing_plan_when_zone_brightness_changes() {
     brighter_zone.brightness = Some(0.5);
     let brighter_layout = make_layout(vec![brighter_zone]);
 
-    manager.write_frame(&zone_colors, &brighter_layout).await;
+    manager.write_frame(&zone_colors, &brighter_layout);
     assert_eq!(manager.routing_plan_rebuild_count(), 2);
 
     tokio::time::sleep(Duration::from_millis(30)).await;
@@ -2825,11 +3121,11 @@ async fn write_frame_rebuilds_routing_plan_when_zone_segments_change() {
         id: Some(device_id),
     };
 
-    let mut backend = MockDeviceBackend::new().with_device(&mock_config);
+    let backend = MockDeviceBackend::new().with_device(&mock_config);
     backend.connect(&device_id).await.expect("connect");
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device("usb:dygma-defy", "mock", device_id);
 
     let mut zone = make_zone("zone_right_keys", "usb:dygma-defy", 4);
@@ -2845,7 +3141,7 @@ async fn write_frame_rebuilds_routing_plan_when_zone_segments_change() {
         &make_multi_zone_device_info(device_id, 2, 4)
     ));
 
-    manager.write_frame(&zone_colors, &layout).await;
+    manager.write_frame(&zone_colors, &layout);
     assert_eq!(manager.routing_plan_rebuild_count(), 1);
 
     assert!(manager.set_device_zone_segments(
@@ -2853,7 +3149,7 @@ async fn write_frame_rebuilds_routing_plan_when_zone_segments_change() {
         &make_multi_zone_device_info(device_id, 1, 5)
     ));
 
-    manager.write_frame(&zone_colors, &layout).await;
+    manager.write_frame(&zone_colors, &layout);
     assert_eq!(manager.routing_plan_rebuild_count(), 2);
 }
 
@@ -2998,7 +3294,7 @@ fn unassigned_output_zones_treats_slot_ids_as_zone_aliases() {
 #[tokio::test]
 async fn write_frame_unmapped_zones_are_silently_skipped() {
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(MockDeviceBackend::new()));
+    manager.register_backend(Arc::new(MockDeviceBackend::new()));
 
     let layout = make_layout(vec![make_zone("zone_0", "wled:unknown_device", 5)]);
 
@@ -3007,7 +3303,7 @@ async fn write_frame_unmapped_zones_are_silently_skipped() {
         colors: vec![[0, 255, 0]; 5],
     }];
 
-    let stats = manager.write_frame(&zone_colors, &layout).await;
+    let stats = manager.write_frame(&zone_colors, &layout);
     // No mapping for "wled:unknown_device" — silently skipped.
     assert_eq!(stats.devices_written, 0);
     assert!(stats.errors.is_empty());
@@ -3016,7 +3312,7 @@ async fn write_frame_unmapped_zones_are_silently_skipped() {
 #[tokio::test(flavor = "current_thread")]
 async fn write_frame_unmapped_zones_stay_quiet_until_warnings_enabled() {
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(MockDeviceBackend::new()));
+    manager.register_backend(Arc::new(MockDeviceBackend::new()));
 
     let layout_device_id = "wled:unknown_device";
     let layout = make_layout(vec![make_zone("zone_0", layout_device_id, 5)]);
@@ -3025,12 +3321,12 @@ async fn write_frame_unmapped_zones_stay_quiet_until_warnings_enabled() {
         colors: vec![[0, 255, 0]; 5],
     }];
 
-    manager.write_frame(&zone_colors, &layout).await;
+    manager.write_frame(&zone_colors, &layout);
 
     assert_eq!(manager.unmapped_layout_warning_count(), 0);
 
     manager.enable_unmapped_layout_warnings();
-    manager.write_frame(&zone_colors, &layout).await;
+    manager.write_frame(&zone_colors, &layout);
 
     assert_eq!(manager.unmapped_layout_warning_count(), 1);
 }
@@ -3038,7 +3334,7 @@ async fn write_frame_unmapped_zones_stay_quiet_until_warnings_enabled() {
 #[tokio::test(flavor = "current_thread")]
 async fn write_frame_unmapped_zone_warns_once_until_mapping_changes() {
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(MockDeviceBackend::new()));
+    manager.register_backend(Arc::new(MockDeviceBackend::new()));
     manager.enable_unmapped_layout_warnings();
 
     let layout_device_id = "wled:unknown_device";
@@ -3048,15 +3344,15 @@ async fn write_frame_unmapped_zone_warns_once_until_mapping_changes() {
         colors: vec![[0, 255, 0]; 5],
     }];
 
-    manager.write_frame(&zone_colors, &layout).await;
-    manager.write_frame(&zone_colors, &layout).await;
+    manager.write_frame(&zone_colors, &layout);
+    manager.write_frame(&zone_colors, &layout);
 
     assert_eq!(manager.unmapped_layout_warning_count(), 1);
 
     manager.map_device(layout_device_id, "mock", DeviceId::new());
     assert!(manager.unmap_device(layout_device_id));
 
-    manager.write_frame(&zone_colors, &layout).await;
+    manager.write_frame(&zone_colors, &layout);
 
     assert_eq!(manager.unmapped_layout_warning_count(), 2);
 }
@@ -3075,7 +3371,7 @@ async fn write_frame_missing_backend_reports_error() {
         colors: vec![[0, 0, 255]; 3],
     }];
 
-    let stats = manager.write_frame(&zone_colors, &layout).await;
+    let stats = manager.write_frame(&zone_colors, &layout);
     assert_eq!(stats.devices_written, 0);
     assert_eq!(stats.errors.len(), 1);
     assert!(stats.errors[0].contains("ghost"));
@@ -3099,7 +3395,7 @@ async fn write_frame_backend_errors_are_not_reported_synchronously() {
     backend.fail_write = true;
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device("mock:failing", "mock", device_id);
 
     let layout = make_layout(vec![make_zone("zone_0", "mock:failing", 5)]);
@@ -3109,7 +3405,7 @@ async fn write_frame_backend_errors_are_not_reported_synchronously() {
         colors: vec![[128, 128, 128]; 5],
     }];
 
-    let stats = manager.write_frame(&zone_colors, &layout).await;
+    let stats = manager.write_frame(&zone_colors, &layout);
     assert_eq!(stats.devices_written, 1);
     assert!(
         stats.errors.is_empty(),
@@ -3139,7 +3435,81 @@ async fn write_frame_backend_errors_are_not_reported_synchronously() {
     assert_eq!(failures.len(), 1);
     assert_eq!(failures[0].backend_id, "mock");
     assert_eq!(failures[0].device_id, device_id);
-    assert!(failures[0].error.contains("mock write failure"));
+    assert_eq!(
+        failures[0].delivery_id.queue_generation,
+        queue.queue_generation
+    );
+    assert_eq!(
+        failures[0].delivery_id.sequence,
+        queue.last_transport_failed_sequence
+    );
+    assert!(failures[0].is_current());
+    assert!(matches!(failures[0].error, DeviceError::WriteError { .. }));
+    assert!(failures[0].error.to_string().contains("mock write failure"));
+
+    let failure = failures[0].clone();
+    assert!(failure.try_acknowledge());
+    assert!(!failure.is_current());
+    assert!(manager.async_write_failures().is_empty());
+    assert!(
+        manager.device_output_statistics()[0]
+            .last_error
+            .as_deref()
+            .is_some_and(|error| error.contains("mock write failure"))
+    );
+}
+
+#[tokio::test]
+async fn newer_success_invalidates_exact_async_failure_ticket() {
+    let device_id = DeviceId::new();
+    let writes = Arc::new(Mutex::new(Vec::<Vec<[u8; 3]>>::new()));
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let backend =
+        FailOnceRecordingBackend::new(device_id, Arc::clone(&writes), Arc::clone(&attempts));
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Arc::new(backend));
+    manager.map_device("fail_once:fenced", "fail_once", device_id);
+
+    let layout = make_layout(vec![make_zone("zone_0", "fail_once:fenced", 4)]);
+    let first = vec![ZoneColors {
+        zone_id: "zone_0".into(),
+        colors: vec![[90, 45, 180]; 4],
+    }];
+    manager.write_frame(&first, &layout);
+
+    let failure = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if let Some(failure) = manager.async_write_failures().into_iter().next() {
+                break failure;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("first delivery should expose its exact failure ticket");
+    assert!(failure.is_current());
+
+    let second = vec![ZoneColors {
+        zone_id: "zone_0".into(),
+        colors: vec![[12, 34, 56]; 4],
+    }];
+    manager.write_frame(&second, &layout);
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if manager.device_output_statistics()[0].transport_completed == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("second delivery should complete");
+
+    assert!(!failure.is_current());
+    assert!(!failure.try_acknowledge());
+    assert!(manager.async_write_failures().is_empty());
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -3160,7 +3530,7 @@ async fn write_frame_dedupes_repeated_async_write_failure_warnings() {
     backend.fail_write = true;
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device("mock:failing", "mock", device_id);
 
     let layout = make_layout(vec![make_zone("zone_0", "mock:failing", 5)]);
@@ -3170,7 +3540,7 @@ async fn write_frame_dedupes_repeated_async_write_failure_warnings() {
     }];
 
     for _ in 0..3 {
-        manager.write_frame(&zone_colors, &layout).await;
+        manager.write_frame(&zone_colors, &layout);
         tokio::time::sleep(Duration::from_millis(30)).await;
     }
 
@@ -3204,11 +3574,11 @@ async fn write_frame_groups_multiple_zones_per_device() {
         id: Some(device_id),
     };
 
-    let mut backend = MockDeviceBackend::new().with_device(&mock_config);
+    let backend = MockDeviceBackend::new().with_device(&mock_config);
     backend.connect(&device_id).await.expect("connect");
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device("mock:multi", "mock", device_id);
 
     // Two zones map to the same device — colors should be concatenated.
@@ -3228,7 +3598,7 @@ async fn write_frame_groups_multiple_zones_per_device() {
         },
     ];
 
-    let stats = manager.write_frame(&zone_colors, &layout).await;
+    let stats = manager.write_frame(&zone_colors, &layout);
     assert_eq!(stats.devices_written, 1);
     assert_eq!(stats.total_leds, 8); // 4 + 4 grouped into one write.
     assert!(stats.errors.is_empty());
@@ -3248,7 +3618,7 @@ async fn write_frame_places_colors_into_configured_segments() {
     );
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device_with_segment(
         "mock:left-segment",
         "slow",
@@ -3277,7 +3647,7 @@ async fn write_frame_places_colors_into_configured_segments() {
         },
     ];
 
-    let stats = manager.write_frame(&zone_colors, &layout).await;
+    let stats = manager.write_frame(&zone_colors, &layout);
     assert_eq!(stats.devices_written, 1);
     assert_eq!(stats.total_leds, 6);
     assert!(stats.errors.is_empty());
@@ -3312,7 +3682,7 @@ async fn write_frame_fills_segment_from_single_sampled_color() {
     );
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device_with_segment(
         "mock:point-zone",
         "slow",
@@ -3326,7 +3696,7 @@ async fn write_frame_fills_segment_from_single_sampled_color() {
         colors: vec![[24, 48, 96]],
     }];
 
-    let stats = manager.write_frame(&zone_colors, &layout).await;
+    let stats = manager.write_frame(&zone_colors, &layout);
     assert_eq!(stats.devices_written, 1);
     assert_eq!(stats.total_leds, 4);
     assert!(stats.errors.is_empty());
@@ -3356,7 +3726,7 @@ async fn write_frame_resamples_segment_when_sample_count_differs() {
     );
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device_with_segment(
         "mock:resampled-zone",
         "slow",
@@ -3370,7 +3740,7 @@ async fn write_frame_resamples_segment_when_sample_count_differs() {
         colors: vec![[255, 0, 0], [0, 0, 255]],
     }];
 
-    let stats = manager.write_frame(&zone_colors, &layout).await;
+    let stats = manager.write_frame(&zone_colors, &layout);
     assert_eq!(stats.devices_written, 1);
     assert_eq!(stats.total_leds, 4);
     assert!(stats.errors.is_empty());
@@ -3403,7 +3773,7 @@ async fn write_frame_routes_multi_zone_device_by_zone_name() {
     );
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device_with_segment(
         "usb:dygma-defy",
         "slow",
@@ -3467,7 +3837,7 @@ async fn write_frame_routes_multi_zone_device_by_zone_name() {
         },
     ];
 
-    let stats = manager.write_frame(&zone_colors, &layout).await;
+    let stats = manager.write_frame(&zone_colors, &layout);
     assert_eq!(stats.devices_written, 1);
     assert_eq!(stats.total_leds, 6);
     assert!(stats.errors.is_empty());
@@ -3502,7 +3872,7 @@ async fn write_frame_routes_slot_alias_zone_name_to_hardware_segment() {
     );
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device_with_segment(
         "usb:nollie-32",
         "slow",
@@ -3557,7 +3927,7 @@ async fn write_frame_routes_slot_alias_zone_name_to_hardware_segment() {
         colors: vec![[12, 34, 56]; 3],
     }];
 
-    let stats = manager.write_frame(&zone_colors, &layout).await;
+    let stats = manager.write_frame(&zone_colors, &layout);
     assert_eq!(stats.devices_written, 1);
     assert_eq!(stats.total_leds, 5);
     assert!(stats.errors.is_empty());
@@ -3588,7 +3958,7 @@ async fn write_frame_pads_single_multi_zone_write_to_full_device_length() {
     );
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device_with_segment(
         "usb:dygma-defy",
         "slow",
@@ -3644,7 +4014,7 @@ async fn write_frame_pads_single_multi_zone_write_to_full_device_length() {
         colors: vec![[255, 0, 0]; 2],
     }];
 
-    let stats = manager.write_frame(&zone_colors, &layout).await;
+    let stats = manager.write_frame(&zone_colors, &layout);
     assert_eq!(stats.devices_written, 1);
     assert_eq!(stats.total_leds, 6);
     assert!(stats.errors.is_empty());
@@ -3679,7 +4049,7 @@ async fn write_frame_applies_zone_led_mapping_before_segment_copy() {
     );
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device_with_segment(
         "mock:mapped-zone",
         "slow",
@@ -3695,7 +4065,7 @@ async fn write_frame_applies_zone_led_mapping_before_segment_copy() {
         colors: vec![[10, 0, 0], [20, 0, 0], [30, 0, 0]],
     }];
 
-    let stats = manager.write_frame(&zone_colors, &layout).await;
+    let stats = manager.write_frame(&zone_colors, &layout);
     assert_eq!(stats.devices_written, 1);
     assert_eq!(stats.total_leds, 3);
     assert!(stats.errors.is_empty());
@@ -3727,7 +4097,7 @@ async fn write_frame_treats_identity_zone_led_mapping_as_direct_order() {
     );
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device_with_segment(
         "mock:identity-mapped-zone",
         "slow",
@@ -3743,7 +4113,7 @@ async fn write_frame_treats_identity_zone_led_mapping_as_direct_order() {
         colors: vec![[10, 0, 0], [20, 0, 0], [30, 0, 0]],
     }];
 
-    let stats = manager.write_frame(&zone_colors, &layout).await;
+    let stats = manager.write_frame(&zone_colors, &layout);
     assert_eq!(stats.devices_written, 1);
     assert_eq!(stats.total_leds, 3);
     assert!(stats.errors.is_empty());
@@ -3775,7 +4145,7 @@ async fn write_frame_uses_attachment_led_range_within_mapped_device() {
     );
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device_with_segment(
         "usb:prismrgb-prism-s",
         "slow",
@@ -3798,7 +4168,7 @@ async fn write_frame_uses_attachment_led_range_within_mapped_device() {
         colors: vec![[0, 0, 255]; 160],
     }];
 
-    let stats = manager.write_frame(&zone_colors, &layout).await;
+    let stats = manager.write_frame(&zone_colors, &layout);
     assert_eq!(stats.devices_written, 1);
     assert_eq!(stats.total_leds, 280);
     assert!(stats.errors.is_empty());
@@ -3824,7 +4194,7 @@ async fn write_frame_uses_sampled_led_count_when_attachment_metadata_is_stale() 
     );
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device("usb:corsair-aio", "slow", device_id);
 
     let mut zone = make_zone("zone_aio", "usb:corsair-aio", 24);
@@ -3842,7 +4212,7 @@ async fn write_frame_uses_sampled_led_count_when_attachment_metadata_is_stale() 
         colors: vec![[12, 34, 56]; 24],
     }];
 
-    let stats = manager.write_frame(&zone_colors, &layout).await;
+    let stats = manager.write_frame(&zone_colors, &layout);
     assert_eq!(stats.devices_written, 1);
     assert_eq!(stats.total_leds, 24);
     assert!(stats.errors.is_empty());
@@ -3880,7 +4250,7 @@ async fn write_frame_uses_absolute_attachment_coordinates_for_segmented_logical_
     );
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device_with_segment(
         "attachment:gpu",
         "slow",
@@ -3903,8 +4273,8 @@ async fn write_frame_uses_absolute_attachment_coordinates_for_segmented_logical_
         colors: vec![[0, 0, 255]; 108],
     }];
 
-    manager.write_frame(&zone_colors, &layout).await;
-    manager.write_frame(&zone_colors, &layout).await;
+    manager.write_frame(&zone_colors, &layout);
+    manager.write_frame(&zone_colors, &layout);
 
     let logs = buffer.contents();
     assert_eq!(
@@ -3948,7 +4318,7 @@ async fn write_frame_uses_mapped_segment_when_attachment_length_already_matches(
     );
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device_with_segment(
         "attachment-usb-16d0-1294-a04328385154315431202020ff01332e-gpu-strimer-120-0",
         "slow",
@@ -3976,8 +4346,8 @@ async fn write_frame_uses_mapped_segment_when_attachment_length_already_matches(
         colors: vec![[0, 0, 255]; 108],
     }];
 
-    manager.write_frame(&zone_colors, &layout).await;
-    manager.write_frame(&zone_colors, &layout).await;
+    manager.write_frame(&zone_colors, &layout);
+    manager.write_frame(&zone_colors, &layout);
 
     let logs = buffer.contents();
     assert_eq!(
@@ -4011,11 +4381,11 @@ async fn write_frame_unknown_zone_id_warns_but_continues() {
         id: Some(device_id),
     };
 
-    let mut backend = MockDeviceBackend::new().with_device(&mock_config);
+    let backend = MockDeviceBackend::new().with_device(&mock_config);
     backend.connect(&device_id).await.expect("connect");
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device("mock:strip", "mock", device_id);
 
     let layout = make_layout(vec![make_zone("zone_0", "mock:strip", 5)]);
@@ -4032,7 +4402,7 @@ async fn write_frame_unknown_zone_id_warns_but_continues() {
         },
     ];
 
-    let stats = manager.write_frame(&zone_colors, &layout).await;
+    let stats = manager.write_frame(&zone_colors, &layout);
     // Only zone_0 is written; nonexistent_zone is skipped.
     assert_eq!(stats.devices_written, 1);
     assert_eq!(stats.total_leds, 5);
@@ -4053,7 +4423,7 @@ async fn write_frame_returns_immediately_with_slow_backend() {
     );
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device("slow:strip", "slow", device_id);
 
     let layout = make_layout(vec![make_zone("zone_0", "slow:strip", 10)]);
@@ -4063,7 +4433,7 @@ async fn write_frame_returns_immediately_with_slow_backend() {
     }];
 
     let started = Instant::now();
-    let stats = manager.write_frame(&zone_colors, &layout).await;
+    let stats = manager.write_frame(&zone_colors, &layout);
     let elapsed = started.elapsed();
 
     assert_eq!(stats.devices_written, 1);
@@ -4115,7 +4485,7 @@ async fn shared_backend_output_queues_serialize_without_starving_peers() {
     );
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager
         .connect_device("shared_slow", left_id, "shared:left")
         .await
@@ -4146,7 +4516,7 @@ async fn shared_backend_output_queues_serialize_without_starving_peers() {
                 colors: vec![[0, step, 0]; 4],
             },
         ];
-        manager.write_frame(&zone_colors, &layout).await;
+        manager.write_frame(&zone_colors, &layout);
         step = step.wrapping_add(1).max(1);
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
@@ -4188,7 +4558,7 @@ async fn device_output_statistics_tracks_payload_bytes_on_success() {
     );
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device("slow:bytes", "slow", device_id);
 
     let layout = make_layout(vec![make_zone("zone_0", "slow:bytes", 4)]);
@@ -4201,9 +4571,9 @@ async fn device_output_statistics_tracks_payload_bytes_on_success() {
         colors: vec![[30, 20, 10]; 4],
     }];
 
-    manager.write_frame(&first, &layout).await;
+    manager.write_frame(&first, &layout);
     tokio::time::sleep(Duration::from_millis(30)).await;
-    manager.write_frame(&second, &layout).await;
+    manager.write_frame(&second, &layout);
     tokio::time::sleep(Duration::from_millis(30)).await;
 
     let stats = manager.device_output_statistics();
@@ -4233,7 +4603,7 @@ async fn device_output_statistics_tracks_async_write_errors() {
         FailOnceRecordingBackend::new(device_id, Arc::clone(&writes), Arc::clone(&attempts));
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device("fail_once:errors", "fail_once", device_id);
 
     let layout = make_layout(vec![make_zone("zone_0", "fail_once:errors", 4)]);
@@ -4242,7 +4612,7 @@ async fn device_output_statistics_tracks_async_write_errors() {
         colors: vec![[90, 45, 180]; 4],
     }];
 
-    manager.write_frame(&frame, &layout).await;
+    manager.write_frame(&frame, &layout);
     tokio::time::sleep(Duration::from_millis(30)).await;
 
     let stats = manager.device_output_statistics();
@@ -4258,9 +4628,10 @@ async fn device_output_statistics_tracks_async_write_errors() {
     assert_eq!(stats[0].last_transport_started_sequence, 1);
     assert_eq!(stats[0].last_transport_completed_sequence, 0);
     assert_eq!(stats[0].last_transport_failed_sequence, 1);
+    let expected_error = format!("write error on {device_id}: transient write failure");
     assert_eq!(
         stats[0].last_error.as_deref(),
-        Some("transient write failure")
+        Some(expected_error.as_str())
     );
 }
 
@@ -4278,7 +4649,7 @@ async fn write_frame_drops_stale_intermediate_payloads() {
     );
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device("slow:strip", "slow", device_id);
 
     let layout = make_layout(vec![make_zone("zone_0", "slow:strip", 4)]);
@@ -4296,10 +4667,10 @@ async fn write_frame_drops_stale_intermediate_payloads() {
         colors: vec![[0, 0, 255]; 4],
     }];
 
-    manager.write_frame(&first, &layout).await;
+    manager.write_frame(&first, &layout);
     tokio::time::sleep(Duration::from_millis(30)).await;
-    manager.write_frame(&second, &layout).await;
-    manager.write_frame(&third, &layout).await;
+    manager.write_frame(&second, &layout);
+    manager.write_frame(&third, &layout);
 
     tokio::time::sleep(Duration::from_millis(420)).await;
 
@@ -4354,7 +4725,7 @@ async fn write_frame_suppresses_identical_payloads_after_successful_send() {
     );
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device("slow:strip", "slow", device_id);
 
     let layout = make_layout(vec![make_zone("zone_0", "slow:strip", 4)]);
@@ -4363,9 +4734,9 @@ async fn write_frame_suppresses_identical_payloads_after_successful_send() {
         colors: vec![[12, 34, 56]; 4],
     }];
 
-    manager.write_frame(&frame, &layout).await;
+    manager.write_frame(&frame, &layout);
     tokio::time::sleep(Duration::from_millis(30)).await;
-    manager.write_frame(&frame, &layout).await;
+    manager.write_frame(&frame, &layout);
     tokio::time::sleep(Duration::from_millis(30)).await;
 
     assert_eq!(write_count.load(Ordering::Relaxed), 1);
@@ -4399,7 +4770,7 @@ async fn output_queue_reasserts_cached_payload_after_max_frame_silence() {
     .with_max_frame_silence(max_frame_silence);
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager
         .connect_device("slow", device_id, "slow:reassert")
         .await
@@ -4410,7 +4781,7 @@ async fn output_queue_reasserts_cached_payload_after_max_frame_silence() {
         zone_id: "zone_0".into(),
         colors: vec![[12, 34, 56]; 4],
     }];
-    manager.write_frame(&frame, &layout).await;
+    manager.write_frame(&frame, &layout);
 
     tokio::time::timeout(Duration::from_secs(1), async {
         while manager.device_output_statistics()[0].frames_sent < 2 {
@@ -4454,7 +4825,7 @@ async fn cached_payload_reassertion_uses_normal_failure_and_ack_telemetry() {
             .with_max_frame_silence(Duration::from_millis(40));
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager
         .connect_device("fail_once", device_id, "fail_once:reassert")
         .await
@@ -4465,7 +4836,7 @@ async fn cached_payload_reassertion_uses_normal_failure_and_ack_telemetry() {
         zone_id: "zone_0".into(),
         colors: vec![[90, 45, 180]; 4],
     }];
-    manager.write_frame(&frame, &layout).await;
+    manager.write_frame(&frame, &layout);
 
     tokio::time::timeout(Duration::from_secs(1), async {
         loop {
@@ -4508,7 +4879,7 @@ async fn write_frame_retries_identical_payload_after_async_write_error() {
         FailOnceRecordingBackend::new(device_id, Arc::clone(&writes), Arc::clone(&attempts));
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device("fail_once:strip", "fail_once", device_id);
 
     let layout = make_layout(vec![make_zone("zone_0", "fail_once:strip", 4)]);
@@ -4517,9 +4888,9 @@ async fn write_frame_retries_identical_payload_after_async_write_error() {
         colors: vec![[90, 45, 180]; 4],
     }];
 
-    manager.write_frame(&frame, &layout).await;
+    manager.write_frame(&frame, &layout);
     tokio::time::sleep(Duration::from_millis(30)).await;
-    manager.write_frame(&frame, &layout).await;
+    manager.write_frame(&frame, &layout);
     tokio::time::sleep(Duration::from_millis(30)).await;
 
     let expected_colors = vec![expected_led_color([90, 45, 180]); 4];
@@ -4551,7 +4922,7 @@ async fn reuse_routed_frame_outputs_keeps_identical_successful_payload_quiet() {
     );
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device("slow:strip", "slow", device_id);
 
     let layout = make_layout(vec![make_zone("zone_0", "slow:strip", 4)]);
@@ -4560,7 +4931,7 @@ async fn reuse_routed_frame_outputs_keeps_identical_successful_payload_quiet() {
         colors: vec![[12, 34, 56]; 4],
     }];
 
-    manager.write_frame(&frame, &layout).await;
+    manager.write_frame(&frame, &layout);
     tokio::time::sleep(Duration::from_millis(30)).await;
 
     assert!(manager.can_reuse_routed_frame_outputs(&layout));
@@ -4592,7 +4963,7 @@ async fn reuse_routed_frame_outputs_retries_latest_payload_after_async_write_err
         FailOnceRecordingBackend::new(device_id, Arc::clone(&writes), Arc::clone(&attempts));
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device("fail_once:strip", "fail_once", device_id);
 
     let layout = make_layout(vec![make_zone("zone_0", "fail_once:strip", 4)]);
@@ -4601,7 +4972,7 @@ async fn reuse_routed_frame_outputs_retries_latest_payload_after_async_write_err
         colors: vec![[90, 45, 180]; 4],
     }];
 
-    manager.write_frame(&frame, &layout).await;
+    manager.write_frame(&frame, &layout);
     tokio::time::sleep(Duration::from_millis(30)).await;
 
     assert!(manager.can_reuse_routed_frame_outputs(&layout));
@@ -4642,7 +5013,7 @@ async fn write_frame_uses_interval_pacing_for_cached_target_fps() {
     .with_write_times(Arc::clone(&write_times));
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager
         .connect_device("slow", device_id, "slow:paced")
         .await
@@ -4658,9 +5029,9 @@ async fn write_frame_uses_interval_pacing_for_cached_target_fps() {
         colors: vec![[0, 0, 255]; 4],
     }];
 
-    manager.write_frame(&first, &layout).await;
+    manager.write_frame(&first, &layout);
     tokio::time::sleep(Duration::from_millis(20)).await;
-    manager.write_frame(&second, &layout).await;
+    manager.write_frame(&second, &layout);
 
     tokio::time::sleep(Duration::from_millis(220)).await;
 
@@ -4704,7 +5075,7 @@ async fn write_frame_sends_latest_pending_payload_at_paced_deadline() {
     .with_target_fps(5);
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager
         .connect_device("slow", device_id, "slow:latest")
         .await
@@ -4724,7 +5095,7 @@ async fn write_frame_sends_latest_pending_payload_at_paced_deadline() {
         colors: vec![[0, 0, 255]; 4],
     }];
 
-    manager.write_frame(&red, &layout).await;
+    manager.write_frame(&red, &layout);
     tokio::time::timeout(Duration::from_secs(1), async {
         while write_count.load(Ordering::Relaxed) < 1 {
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -4733,9 +5104,9 @@ async fn write_frame_sends_latest_pending_payload_at_paced_deadline() {
     .await
     .expect("first paced write should complete");
 
-    manager.write_frame(&green, &layout).await;
+    manager.write_frame(&green, &layout);
     tokio::time::sleep(Duration::from_millis(80)).await;
-    manager.write_frame(&blue, &layout).await;
+    manager.write_frame(&blue, &layout);
 
     tokio::time::sleep(Duration::from_millis(260)).await;
 
@@ -4768,7 +5139,7 @@ async fn paced_output_queue_sends_fast_frame_sink_while_updates_keep_arriving() 
     let backend = FastFrameSinkBackend::new(device_id, Arc::clone(&writes), 20);
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager
         .connect_device("fast_sink", device_id, "fast_sink:strip")
         .await
@@ -4782,7 +5153,7 @@ async fn paced_output_queue_sends_fast_frame_sink_while_updates_keep_arriving() 
             zone_id: "zone_0".into(),
             colors: vec![[step, 0, 255_u8.saturating_sub(step)]; 4],
         }];
-        manager.write_frame(&frame, &layout).await;
+        manager.write_frame(&frame, &layout);
         step = step.wrapping_add(1).max(1);
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
@@ -4818,7 +5189,7 @@ async fn output_queue_does_not_count_suppressed_lane_outcomes_as_sent() {
     let backend = FastFrameSinkBackend::suppressing(device_id, Arc::clone(&attempts));
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager
         .connect_device("fast_sink", device_id, "fast_sink:suppressed")
         .await
@@ -4830,7 +5201,7 @@ async fn output_queue_does_not_count_suppressed_lane_outcomes_as_sent() {
         colors: vec![[128, 64, 32]; 4],
     }];
 
-    manager.write_frame(&frame, &layout).await;
+    manager.write_frame(&frame, &layout);
     tokio::time::sleep(Duration::from_millis(40)).await;
 
     assert_eq!(attempts.load(Ordering::Relaxed), 1);
@@ -4857,7 +5228,7 @@ async fn output_queue_reports_transport_start_before_terminal_acknowledgement() 
         FastFrameSinkBackend::blocking(device_id, Arc::clone(&writes), Arc::clone(&block_release));
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager
         .connect_device("fast_sink", device_id, "fast_sink:observed")
         .await
@@ -4868,7 +5239,7 @@ async fn output_queue_reports_transport_start_before_terminal_acknowledgement() 
         zone_id: "zone_0".into(),
         colors: vec![[128, 64, 32]; 4],
     }];
-    manager.write_frame(&frame, &layout).await;
+    manager.write_frame(&frame, &layout);
 
     tokio::time::timeout(Duration::from_secs(1), async {
         while manager.debug_snapshot().queues[0].transport_started == 0 {
@@ -4916,14 +5287,14 @@ async fn direct_backend_reports_transport_start_while_write_is_blocked() {
     );
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.map_device("slow:observed", "slow", device_id);
     let layout = make_layout(vec![make_zone("zone_0", "slow:observed", 4)]);
     let frame = vec![ZoneColors {
         zone_id: "zone_0".into(),
         colors: vec![[128, 64, 32]; 4],
     }];
-    manager.write_frame(&frame, &layout).await;
+    manager.write_frame(&frame, &layout);
 
     tokio::time::timeout(Duration::from_secs(1), async {
         while manager.debug_snapshot().queues[0].transport_started == 0 {
@@ -4961,7 +5332,7 @@ async fn output_queue_recovers_finished_worker_and_requeues_latest_frame() {
     );
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager
         .connect_device("fast_sink", device_id, "fast_sink:recover")
         .await
@@ -4973,7 +5344,7 @@ async fn output_queue_recovers_finished_worker_and_requeues_latest_frame() {
         colors: vec![[128, 64, 32]; 4],
     }];
 
-    manager.write_frame(&frame, &layout).await;
+    manager.write_frame(&frame, &layout);
     tokio::time::timeout(Duration::from_secs(1), async {
         while !manager.debug_snapshot().queues[0].worker_finished {
             tokio::time::sleep(Duration::from_millis(5)).await;
@@ -4993,7 +5364,7 @@ async fn output_queue_recovers_finished_worker_and_requeues_latest_frame() {
         zone_id: "zone_0".into(),
         colors: vec![[32, 64, 128]; 4],
     }];
-    manager.write_frame(&latest_frame, &layout).await;
+    manager.write_frame(&latest_frame, &layout);
     tokio::time::timeout(Duration::from_secs(1), async {
         while writes.lock().await.is_empty() {
             tokio::time::sleep(Duration::from_millis(5)).await;
@@ -5035,7 +5406,7 @@ async fn output_queue_rebinds_to_frame_sink_registered_after_queue_creation() {
     .with_target_fps(30);
 
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
     manager.set_cached_target_fps("slow", device_id, 30);
     manager.map_device("slow:strip", "slow", device_id);
 
@@ -5044,7 +5415,7 @@ async fn output_queue_rebinds_to_frame_sink_registered_after_queue_creation() {
         zone_id: "zone_0".into(),
         colors: vec![[255, 0, 0]; 4],
     }];
-    manager.write_frame(&first, &layout).await;
+    manager.write_frame(&first, &layout);
     tokio::time::sleep(Duration::from_millis(60)).await;
     assert!(
         backend_write_count.load(Ordering::Relaxed) > 0,
@@ -5066,7 +5437,7 @@ async fn output_queue_rebinds_to_frame_sink_registered_after_queue_creation() {
         zone_id: "zone_0".into(),
         colors: vec![[0, 255, 0]; 4],
     }];
-    manager.write_frame(&second, &layout).await;
+    manager.write_frame(&second, &layout);
     tokio::time::sleep(Duration::from_millis(80)).await;
 
     assert!(

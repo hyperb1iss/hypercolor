@@ -20,7 +20,6 @@ use hypercolor_leptos_ext::ws::topic::{
 };
 use hypercolor_leptos_ext::ws::{
     DEFAULT_PREVIEW_MAX_DECODED_PUBLICATION_BYTES, INTERACTIVE_PREVIEW_ID_MAX_BYTES,
-    PreviewTransportCapability,
 };
 use hypercolor_types::canvas::SurfaceDescriptor;
 use hypercolor_types::sensor::SystemSnapshot;
@@ -515,11 +514,7 @@ define_client_messages! {
     /// can only ever target a subscription the same request establishes,
     /// and the topic that owns the config validates it through the
     /// registry vtable.
-    Subscribe {
-        topics: Vec<TopicSubscription>,
-        #[serde(default)]
-        preview_transport: Option<String>,
-    },
+    Subscribe { topics: Vec<TopicSubscription> },
     /// Unsubscribe from one or more topics.
     Unsubscribe { topics: Vec<TopicSelector> },
     /// REST-equivalent command execution over WS.
@@ -937,10 +932,7 @@ define_server_messages! {
     /// Subscribe acknowledgment: the connection's whole live subscription
     /// set, so a client always learns the state it ended up in rather
     /// than only the delta it asked for.
-    Subscribed {
-        topics: Vec<ActiveSubscription>,
-        preview_transport: String,
-    },
+    Subscribed { topics: Vec<ActiveSubscription> },
     /// Unsubscribe acknowledgment, carrying what remains.
     Unsubscribed { topics: Vec<ActiveSubscription> },
     /// Addressed input injection acknowledgment.
@@ -984,9 +976,7 @@ define_server_messages! {
         key: Option<String>,
         recommendation: String,
         #[serde(skip_serializing_if = "Option::is_none")]
-        suggested_fps: Option<u32>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        suggested_interval_ms: Option<u32>,
+        suggested_fps: Option<f64>,
     },
     /// Protocol-level request error.
     Error {
@@ -1084,7 +1074,6 @@ pub(super) struct HelloFps {
     pub(super) target: u32,
     pub(super) capacity: f64,
     pub(super) delivered: f64,
-    pub(super) actual: f64,
 }
 
 #[derive(Debug, Serialize)]
@@ -1124,7 +1113,6 @@ pub(super) struct MetricsFps {
     pub(super) ceiling: u32,
     pub(super) capacity: f64,
     pub(super) delivered: f64,
-    pub(super) actual: f64,
     pub(super) dropped: u32,
 }
 
@@ -1204,8 +1192,6 @@ pub(super) struct MetricsPacing {
     pub(super) gpu_sample_queue_saturated: u32,
     pub(super) gpu_sample_wait_blocked: u32,
     pub(super) gpu_sample_cpu_fallback: u32,
-    pub(super) cpu_sampling_late_readback: u32,
-    pub(super) led_sampling_readback: u32,
     pub(super) preview_surface: u32,
     pub(super) scene_canvas_forced_surface: u32,
     pub(super) gpu_readback_failed_frames: u32,
@@ -1329,8 +1315,6 @@ pub(super) struct MetricsTimeline {
     pub(super) gpu_sample_queue_saturated: bool,
     pub(super) gpu_sample_wait_blocked: bool,
     pub(super) gpu_sample_cpu_fallback: bool,
-    pub(super) cpu_sampling_late_readback: bool,
-    pub(super) led_sampling_readback: bool,
     pub(super) preview_surface: bool,
     pub(super) scene_canvas_forced_surface: bool,
     pub(super) cpu_readback_skipped: bool,
@@ -1386,23 +1370,17 @@ pub(super) struct MetricsCopies {
 
 #[derive(Debug, Serialize)]
 pub(super) struct MetricsRenderSurfaces {
-    pub(super) slot_count: u32,
-    pub(super) free_slots: u32,
-    pub(super) published_slots: u32,
-    pub(super) dequeued_slots: u32,
     pub(super) canvas_receivers: u32,
     /// Monotonic counter: how many times the render-group scene surface pool
     /// hit its growth cap and had to reuse a still-shared slot, forcing
     /// a fresh `Canvas::new` on every frame. A rising value means the
     /// cap is too low for current fan-out.
-    #[serde(rename = "preview_pool_saturation_reallocs")]
     pub(super) scene_pool_saturation_reallocs: u64,
     /// Same counter summed across per-group direct-canvas pools.
     pub(super) direct_pool_saturation_reallocs: u64,
     /// Current slot count above the scene surface pool's initial size.
     /// Benign when stable — the pool converged on its working set. A
     /// climbing value over time could indicate a pinned-Arc leak.
-    #[serde(rename = "preview_pool_grown_slots")]
     pub(super) scene_pool_grown_slots: u32,
     /// Same gauge summed across per-group direct-canvas pools.
     pub(super) direct_pool_grown_slots: u32,
@@ -1679,9 +1657,6 @@ pub(crate) fn ws_capabilities() -> Vec<String> {
     capabilities.push("interactive_previews".to_owned());
     capabilities.push("wide_preview_frames".to_owned());
     capabilities.push("preview_chunking".to_owned());
-    let preview_transport = PreviewTransportCapability::default();
-    capabilities.push(preview_transport.encode());
-    capabilities.push(preview_transport.legacy_v1().encode());
     capabilities
 }
 

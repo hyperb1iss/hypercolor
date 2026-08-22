@@ -252,11 +252,6 @@ fn empty_display_group_does_not_reuse_previous_face_surface() {
         first_frame.surface_for_test().get_pixel(0, 0),
         Rgba::new(0, 255, 0, 255)
     );
-
-    group.effect_id = None;
-    group.controls.clear();
-    group.control_bindings.clear();
-    group.preset_id = None;
     group.layers.clear();
 
     let cleared = render_scene_for_test(

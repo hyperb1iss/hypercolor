@@ -10,8 +10,9 @@
 
 use anyhow::{Result, bail};
 use hypercolor_types::canvas::{Canvas, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, Rgba};
+use hypercolor_types::control::{ControlDeltaBatch, ControlValue};
 use hypercolor_types::display::DisplayDescriptor;
-use hypercolor_types::effect::{ControlKind, ControlValue, EffectMetadata, EffectSource};
+use hypercolor_types::effect::{ControlKind, EffectMetadata, EffectSource};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -21,9 +22,9 @@ use super::ServoSessionHandle;
 use super::SessionConfig;
 use super::worker_client::{ServoFramePayload, ServoProducerRole};
 use crate::effect::lightscript::LightscriptRuntime;
+use crate::effect::traits::{ControlError, EffectRenderer, FrameInput, prepare_target_canvas};
 #[cfg(feature = "servo-gpu-import")]
 use crate::effect::traits::{EffectRenderOutput, ImportedEffectFrame};
-use crate::effect::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
 #[cfg(test)]
 use crate::engine::FpsTier;
 use frame_queue::{AnimationCadence, QueuedFrameInput, animation_cadence};
@@ -245,8 +246,12 @@ impl EffectRenderer for ServoRenderer {
         Ok(())
     }
 
-    fn set_control(&mut self, name: &str, value: &ControlValue) {
-        self.controls.insert(name.to_owned(), value.clone());
+    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> Result<(), ControlError> {
+        for (control_id, value) in batch.changes {
+            self.controls
+                .insert(control_id.as_str().to_owned(), value.clone());
+        }
+        Ok(())
     }
 
     fn set_display_descriptor(&mut self, descriptor: Option<DisplayDescriptor>) {

@@ -15,16 +15,72 @@
 
 use std::collections::HashMap;
 
-use hypercolor_types::device::DeviceId;
+use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceTopologyHint};
 use hypercolor_types::effect::{ControlValue, EffectMetadata};
 use hypercolor_types::event::ZoneChangeKind;
 use hypercolor_types::scene::{DisplayFaceBlendMode, DisplayFaceTarget, SceneId, Zone, ZoneId};
-use hypercolor_types::spatial::SpatialLayout;
+use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 
-use crate::api::AppState;
+use crate::domain::DomainError;
 use crate::domain::commit::SceneCommit;
-use crate::domain::scene::{commit_retrying, commit_scene, zone_changed_event};
-use crate::domain::{DomainError, MutationContext};
+use crate::domain::context::SceneContext;
+
+/// Native display surface geometry resolved from one tracked device.
+#[derive(Debug, Clone, Copy)]
+pub struct DisplaySurfaceInfo {
+    pub width: u32,
+    pub height: u32,
+    pub circular: bool,
+}
+
+/// Resolve native display geometry from segment topology or capabilities.
+#[must_use]
+pub fn display_surface_info(info: &DeviceInfo) -> Option<DisplaySurfaceInfo> {
+    for segment in &info.segments {
+        if let DeviceTopologyHint::Display {
+            width,
+            height,
+            circular,
+        } = &segment.topology
+        {
+            return Some(DisplaySurfaceInfo {
+                width: *width,
+                height: *height,
+                circular: *circular,
+            });
+        }
+    }
+
+    info.capabilities
+        .display_resolution
+        .filter(|_| info.capabilities.has_display)
+        .map(|(width, height)| DisplaySurfaceInfo {
+            width,
+            height,
+            circular: false,
+        })
+}
+
+/// Build a native-resolution canvas for one display face.
+#[must_use]
+pub fn display_face_layout(
+    device_id: DeviceId,
+    device_name: &str,
+    surface: DisplaySurfaceInfo,
+) -> SpatialLayout {
+    SpatialLayout {
+        id: format!("display-face:{device_id}"),
+        name: format!("{device_name} Display Face"),
+        description: Some(format!("Native-resolution face canvas for {device_name}")),
+        canvas_width: surface.width,
+        canvas_height: surface.height,
+        zones: Vec::new(),
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        spaces: None,
+        version: 1,
+    }
+}
 
 // ── Commands ─────────────────────────────────────────────────────────────
 
@@ -102,13 +158,10 @@ pub struct DisplayZoneWritten {
 /// and [`DomainError::Conflict`] when a concurrent scene
 /// mutation lands first.
 pub async fn set_display_face(
-    state: &AppState,
+    ctx: &SceneContext,
     command: SetDisplayFace,
-    meta: MutationContext,
 ) -> Result<DisplayZoneWritten, DomainError> {
-    let _ = meta;
-
-    let mut mutation = state.begin_scene_mutation().await;
+    let mut mutation = ctx.begin_mutation().await;
     let scene_id = mutation.active_scene_for_runtime_mutation("assigning a display face")?;
     let change = if scene_display_zone(&mutation, command.device_id).is_some() {
         ZoneChangeKind::Updated
@@ -122,23 +175,10 @@ pub async fn set_display_face(
         &command.effect,
         command.controls,
         command.layout,
+        command.target,
     )?;
-    // The upsert seeds the target as Replace; the caller's composition
-    // lands on top so the face layers over the live effect rather than
-    // blacking it out.
-    let zone = mutation
-        .patch_display_target(
-            zone.id,
-            Some(command.target.blend_mode),
-            Some(command.target.opacity),
-        )
-        .ok_or_else(|| {
-            DomainError::Internal(anyhow::anyhow!("Failed to update display face composition"))
-        })?;
-
-    mutation.record(zone_changed_event(scene_id, &zone, change));
-    let commit = commit_scene(state, mutation).await?;
-    crate::api::save_runtime_session_snapshot(state).await;
+    let commit = ctx.commit(mutation).await?;
+    ctx.save_runtime_session().await;
 
     Ok(DisplayZoneWritten {
         scene_id,
@@ -155,13 +195,10 @@ pub async fn set_display_face(
 ///
 /// As [`set_display_face`].
 pub async fn clear_display_face(
-    state: &AppState,
+    ctx: &SceneContext,
     command: ClearDisplayFace,
-    meta: MutationContext,
 ) -> Result<DisplayZoneWritten, DomainError> {
-    let _ = meta;
-
-    let mut mutation = state.begin_scene_mutation().await;
+    let mut mutation = ctx.begin_mutation().await;
     let scene_id = mutation.active_scene_for_runtime_mutation("removing a display face")?;
     let change = if scene_display_zone(&mutation, command.device_id).is_some() {
         ZoneChangeKind::Updated
@@ -175,9 +212,8 @@ pub async fn clear_display_face(
         command.layout,
     )?;
 
-    mutation.record(zone_changed_event(scene_id, &zone, change));
-    let commit = commit_scene(state, mutation).await?;
-    crate::api::save_runtime_session_snapshot(state).await;
+    let commit = ctx.commit(mutation).await?;
+    ctx.save_runtime_session().await;
 
     Ok(DisplayZoneWritten {
         scene_id,
@@ -196,13 +232,10 @@ pub async fn clear_display_face(
 ///
 /// As [`set_display_face`].
 pub async fn patch_display_composition(
-    state: &AppState,
+    ctx: &SceneContext,
     command: PatchDisplayComposition,
-    meta: MutationContext,
 ) -> Result<Option<DisplayZoneWritten>, DomainError> {
-    let _ = meta;
-
-    let mut mutation = state.begin_scene_mutation().await;
+    let mut mutation = ctx.begin_mutation().await;
     let scene_id =
         mutation.active_scene_for_runtime_mutation("updating display face composition")?;
     let Some(zone) =
@@ -211,9 +244,8 @@ pub async fn patch_display_composition(
         return Ok(None);
     };
 
-    mutation.record(zone_changed_event(scene_id, &zone, ZoneChangeKind::Updated));
-    let commit = commit_scene(state, mutation).await?;
-    crate::api::save_runtime_session_snapshot(state).await;
+    let commit = ctx.commit(mutation).await?;
+    ctx.save_runtime_session().await;
 
     Ok(Some(DisplayZoneWritten {
         scene_id,
@@ -231,25 +263,17 @@ pub async fn patch_display_composition(
 ///
 /// As [`set_display_face`].
 pub async fn patch_display_face_controls(
-    state: &AppState,
+    ctx: &SceneContext,
     command: PatchDisplayFaceControls,
-    meta: MutationContext,
 ) -> Result<Option<DisplayZoneWritten>, DomainError> {
-    let _ = meta;
-
-    let mut mutation = state.begin_scene_mutation().await;
+    let mut mutation = ctx.begin_mutation().await;
     let scene_id = mutation.active_scene_for_runtime_mutation("updating display face controls")?;
     let Some(zone) = mutation.patch_zone_controls(command.zone_id, command.controls) else {
         return Ok(None);
     };
 
-    mutation.record(zone_changed_event(
-        scene_id,
-        &zone,
-        ZoneChangeKind::ControlsPatched,
-    ));
-    let commit = commit_scene(state, mutation).await?;
-    crate::api::save_runtime_session_snapshot(state).await;
+    let commit = ctx.commit(mutation).await?;
+    ctx.save_runtime_session().await;
 
     Ok(Some(DisplayZoneWritten {
         scene_id,
@@ -272,29 +296,30 @@ pub async fn patch_display_face_controls(
 /// [`DomainError::Conflict`] when a concurrent scene mutation
 /// lands first.
 pub async fn sync_display_surfaces(
-    state: &AppState,
+    ctx: &SceneContext,
     displays: Vec<(DeviceId, String, SpatialLayout)>,
 ) -> Result<bool, DomainError> {
-    let outcome = commit_retrying(state, |mutation| {
-        let Some(active) = mutation.scenes().active_scene() else {
-            return Ok(None);
-        };
-        if active.blocks_runtime_mutation() {
-            return Ok(None);
-        }
+    let outcome = ctx
+        .commit_retrying(|mutation| {
+            let Some(active) = mutation.scenes().active_scene() else {
+                return Ok(None);
+            };
+            if active.blocks_runtime_mutation() {
+                return Ok(None);
+            }
 
-        let mut changed = false;
-        for (device_id, device_name, layout) in &displays {
-            match mutation.ensure_display_surface(*device_id, device_name, layout.clone()) {
-                Ok(moved) => changed |= moved,
-                Err(error) => {
-                    tracing::warn!(%error, %device_id, "Failed to sync display screen surface");
+            let mut changed = false;
+            for (device_id, device_name, layout) in &displays {
+                match mutation.ensure_display_surface(*device_id, device_name, layout.clone()) {
+                    Ok(moved) => changed |= moved,
+                    Err(error) => {
+                        tracing::warn!(%error, %device_id, "Failed to sync display screen surface");
+                    }
                 }
             }
-        }
-        Ok(changed.then_some(()))
-    })
-    .await?;
+            Ok(changed.then_some(()))
+        })
+        .await?;
 
     if let Some(((), commit)) = outcome.as_ref() {
         commit.log_if_retrying("Failed to persist display surfaces");
@@ -309,17 +334,18 @@ pub async fn sync_display_surfaces(
 ///
 /// [`DomainError::Conflict`] when a concurrent scene mutation lands first.
 pub async fn hydrate_existing_display_surfaces(
-    state: &AppState,
+    ctx: &SceneContext,
     displays: Vec<(DeviceId, String, SpatialLayout)>,
 ) -> Result<bool, DomainError> {
-    let outcome = commit_retrying(state, |mutation| {
-        let Some(scene_id) = mutation.scenes().active_scene_id().copied() else {
-            return Ok(None);
-        };
-        let changed = mutation.hydrate_existing_display_surfaces(scene_id, &displays)?;
-        Ok(changed.then_some(()))
-    })
-    .await?;
+    let outcome = ctx
+        .commit_retrying(|mutation| {
+            let Some(scene_id) = mutation.scenes().active_scene_id().copied() else {
+                return Ok(None);
+            };
+            let changed = mutation.hydrate_existing_display_surfaces(scene_id, &displays)?;
+            Ok(changed.then_some(()))
+        })
+        .await?;
 
     if let Some(((), commit)) = outcome.as_ref() {
         commit.log_if_retrying("Failed to persist display surface geometry");
@@ -340,33 +366,19 @@ pub async fn hydrate_existing_display_surfaces(
 /// [`DomainError::Conflict`] when a concurrent scene mutation
 /// lands first.
 pub async fn prune_display_zones_for_device(
-    state: &AppState,
+    ctx: &SceneContext,
     device_id: DeviceId,
 ) -> Result<PrunedDisplayZones, DomainError> {
-    let outcome = commit_retrying(state, |mutation| {
-        let removed_zones = mutation.remove_display_zones_for_device(device_id);
-        let removed_default = mutation.remove_default_display_zone(device_id);
-        if removed_zones.is_empty() && removed_default.is_none() {
-            return Ok(None);
-        }
-        let active_scene_id = mutation
-            .scenes()
-            .active_scene()
-            .map_or(SceneId::DEFAULT, |scene| scene.id);
-
-        for (scene_id, zone) in &removed_zones {
-            mutation.record(zone_changed_event(*scene_id, zone, ZoneChangeKind::Removed));
-        }
-        if let Some(zone) = removed_default.as_ref() {
-            mutation.record(zone_changed_event(
-                active_scene_id,
-                zone,
-                ZoneChangeKind::Removed,
-            ));
-        }
-        Ok(Some((removed_zones, removed_default)))
-    })
-    .await?;
+    let outcome = ctx
+        .commit_retrying(|mutation| {
+            let removed_zones = mutation.remove_display_zones_for_device(device_id);
+            let removed_default = mutation.remove_default_display_zone(device_id);
+            if removed_zones.is_empty() && removed_default.is_none() {
+                return Ok(None);
+            }
+            Ok(Some((removed_zones, removed_default)))
+        })
+        .await?;
 
     let Some(((removed_zones, removed_default), commit)) = outcome else {
         return Ok(PrunedDisplayZones::empty());
@@ -412,32 +424,33 @@ impl PrunedDisplayZones {
 /// [`DomainError::Conflict`] when a concurrent scene mutation
 /// lands first.
 pub async fn set_default_display_overlay(
-    state: &AppState,
+    ctx: &SceneContext,
     device_id: DeviceId,
     zone: Zone,
 ) -> Result<Option<Zone>, DomainError> {
     let mut already_installed = None;
-    let outcome = commit_retrying(state, |mutation| {
-        already_installed = None;
-        if !mutation.set_default_display_zone(zone.clone()) {
-            // The preference already resolves to exactly this overlay.
-            // Re-installing it would commit, and a commit invalidates
-            // every in-flight candidate — which is how a read path ends
-            // up failing a user's write.
-            already_installed = mutation
-                .scenes()
-                .default_display_group_for(device_id)
-                .cloned();
-            return Ok(None);
-        }
-        Ok(Some(
-            mutation
-                .scenes()
-                .default_display_group_for(device_id)
-                .cloned(),
-        ))
-    })
-    .await?;
+    let outcome = ctx
+        .commit_retrying(|mutation| {
+            already_installed = None;
+            if !mutation.set_default_display_zone(zone.clone()) {
+                // The preference already resolves to exactly this overlay.
+                // Re-installing it would commit, and a commit invalidates
+                // every in-flight candidate — which is how a read path ends
+                // up failing a user's write.
+                already_installed = mutation
+                    .scenes()
+                    .default_display_group_for(device_id)
+                    .cloned();
+                return Ok(None);
+            }
+            Ok(Some(
+                mutation
+                    .scenes()
+                    .default_display_group_for(device_id)
+                    .cloned(),
+            ))
+        })
+        .await?;
 
     Ok(outcome.map_or(already_installed, |(installed, _commit)| installed))
 }
@@ -449,13 +462,12 @@ pub async fn set_default_display_overlay(
 /// [`DomainError::Conflict`] when a concurrent scene mutation
 /// lands first.
 pub async fn remove_default_display_overlay(
-    state: &AppState,
+    ctx: &SceneContext,
     device_id: DeviceId,
 ) -> Result<Option<Zone>, DomainError> {
-    let outcome = commit_retrying(state, |mutation| {
-        Ok(mutation.remove_default_display_zone(device_id))
-    })
-    .await?;
+    let outcome = ctx
+        .commit_retrying(|mutation| Ok(mutation.remove_default_display_zone(device_id)))
+        .await?;
 
     Ok(outcome.map(|(removed, _commit)| removed))
 }
@@ -468,6 +480,6 @@ fn scene_display_zone(
     mutation
         .scenes()
         .active_scene()?
-        .display_group_for(device_id)
+        .display_zone_for(device_id)
         .cloned()
 }

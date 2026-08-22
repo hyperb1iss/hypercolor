@@ -4,12 +4,14 @@ use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 
 use thiserror::Error;
-use tokio::sync::{Mutex, OwnedMutexGuard, RwLock, oneshot};
+use tokio::sync::{Mutex, OwnedMutexGuard, oneshot};
 
-use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::{SpatialEngine, SpatialPlanError};
 use hypercolor_types::scene::{SceneId, UnassignedBehavior, Zone};
 use hypercolor_types::spatial::SpatialLayout;
+
+use crate::domain::scene::SceneService;
+use crate::domain::spatial::SpatialService;
 
 #[derive(Debug, Clone, Error, PartialEq, Eq)]
 pub enum LayoutTransactionRejection {
@@ -163,8 +165,8 @@ impl PrepareLayoutTransaction {
     #[doc(hidden)]
     pub async fn accept_and_publish_for_test<F, Fut>(
         self,
-        spatial_engine: &Arc<RwLock<SpatialEngine>>,
-        scene_manager: &Arc<RwLock<SceneManager>>,
+        spatial_engine: &SpatialService,
+        scene_manager: &SceneService,
         before_publication: F,
     ) -> Result<(), LayoutTransactionRejection>
     where
@@ -303,12 +305,18 @@ struct SceneTransactionQueueState {
     closed: bool,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct SceneTransactionQueue {
     inner: Arc<StdMutex<SceneTransactionQueueState>>,
     scene_activation_lock: Arc<Mutex<()>>,
     layout_update_lock: Arc<Mutex<()>>,
     next_layout_token: Arc<AtomicU64>,
+}
+
+impl Default for SceneTransactionQueue {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 pub struct SceneActivationGuard {
@@ -338,6 +346,16 @@ impl Drop for SceneTransactionConsumer {
 }
 
 impl SceneTransactionQueue {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::default(),
+            scene_activation_lock: Arc::default(),
+            layout_update_lock: Arc::default(),
+            next_layout_token: Arc::default(),
+        }
+    }
+
     pub fn push(&self, transaction: SceneTransaction) -> Result<(), LayoutTransactionRejection> {
         let mut state = self
             .inner
@@ -488,8 +506,8 @@ impl LayoutTransactionReceipt {
 }
 
 pub(crate) async fn publish_prepared_layout_activation<F>(
-    spatial_engine: &Arc<RwLock<SpatialEngine>>,
-    scene_manager: &Arc<RwLock<SceneManager>>,
+    spatial_engine: &SpatialService,
+    scene_manager: &SceneService,
     candidate_spatial_engine: SpatialEngine,
     expected_layout: &SpatialLayout,
     expected_active_scene_id: Option<SceneId>,
@@ -499,33 +517,26 @@ pub(crate) async fn publish_prepared_layout_activation<F>(
 where
     F: FnOnce(SpatialEngine),
 {
-    // FRAME-BOUNDARY WRITER (Spec 76 §2.3, §6.1). This runs on the
-    // render thread and must hold the scene lock and the spatial lock
-    // together, so the renderer never observes a layout and a zone set
-    // that disagree. `commit_scene` takes neither the spatial lock nor
-    // an `AppState` the render thread could reach, so it cannot serve
-    // this swap; §6.1 re-points commit at this transaction instead. The
-    // source-is-current check below is this writer's own
-    // compare-and-swap, and it refuses whenever a commit has moved the
-    // active scene, its resolved zones, or the authoritative layout.
-    let mut manager = scene_manager.write().await;
-    let mut authoritative_spatial_engine = spatial_engine.write().await;
-    let source_is_current = manager.active_scene_id().copied() == expected_active_scene_id
-        && manager.active_render_groups_revision() == expected_active_render_groups_revision
-        && authoritative_spatial_engine.layout().as_ref() == expected_layout;
-    if !source_is_current {
-        return Err(LayoutTransactionRejection::Superseded);
-    }
-
-    manager.sync_primary_group_layout(candidate_spatial_engine.layout().as_ref());
-    *authoritative_spatial_engine = candidate_spatial_engine.clone();
-    publish_renderer_state(candidate_spatial_engine);
-    Ok(())
+    // The render thread owns the frame-boundary swap, but the scene
+    // sequencer still owns admission. Holding the scene lock across the
+    // compare-and-swap, authored layout update, and admission makes a
+    // layout publication one ordinary scene revision rather than a
+    // second concurrency domain.
+    scene_manager
+        .publish_layout_activation(
+            spatial_engine,
+            candidate_spatial_engine,
+            expected_layout,
+            expected_active_scene_id,
+            expected_active_render_groups_revision,
+            publish_renderer_state,
+        )
+        .await
 }
 
 pub async fn apply_prepared_layout_update_under_guard(
-    spatial_engine: Arc<RwLock<SpatialEngine>>,
-    scene_manager: Arc<RwLock<SceneManager>>,
+    spatial_engine: SpatialService,
+    scene_manager: SceneService,
     scene_transactions: SceneTransactionQueue,
     guard: &LayoutUpdateGuard,
     prepared: PreparedLayoutUpdate,
@@ -542,8 +553,8 @@ pub async fn apply_prepared_layout_update_under_guard(
 }
 
 pub(crate) async fn apply_prepared_layout_update_under_guard_with_persistence<F, Fut>(
-    spatial_engine: Arc<RwLock<SpatialEngine>>,
-    scene_manager: Arc<RwLock<SceneManager>>,
+    spatial_engine: SpatialService,
+    scene_manager: SceneService,
     scene_transactions: SceneTransactionQueue,
     guard: &LayoutUpdateGuard,
     prepared: PreparedLayoutUpdate,
@@ -565,8 +576,8 @@ where
             active_render_groups_revision,
             unassigned_behavior,
         ) = {
-            let manager = scene_manager.read().await;
-            let authoritative_spatial_engine = spatial_engine.read().await;
+            let manager = scene_manager.snapshot().await;
+            let authoritative_spatial_engine = spatial_engine.snapshot();
             let (active_render_groups, active_render_groups_revision) =
                 manager.active_render_groups_for_primary_layout(prepared_engine.layout().as_ref());
             (
@@ -641,16 +652,16 @@ where
 }
 
 pub async fn apply_layout_update(
-    spatial_engine: &Arc<RwLock<SpatialEngine>>,
-    scene_manager: &Arc<RwLock<SceneManager>>,
+    spatial_engine: &SpatialService,
+    scene_manager: &SceneService,
     scene_transactions: &SceneTransactionQueue,
     layout: SpatialLayout,
 ) -> Result<(), LayoutUpdateError> {
     let guard = scene_transactions.acquire_layout_update_guard().await;
     let prepared = PreparedLayoutUpdate::try_new(layout)?;
     apply_prepared_layout_update_under_guard(
-        Arc::clone(spatial_engine),
-        Arc::clone(scene_manager),
+        spatial_engine.clone(),
+        scene_manager.clone(),
         scene_transactions.clone(),
         &guard,
         prepared,
