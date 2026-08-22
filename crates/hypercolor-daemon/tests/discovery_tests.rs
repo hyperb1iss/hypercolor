@@ -41,6 +41,7 @@ use hypercolor_types::device::{
     DeviceTopologyHint, DriverTransportKind, SegmentInfo,
 };
 use hypercolor_types::event::ZoneColors;
+use hypercolor_types::scene::SceneId;
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection,
@@ -60,7 +61,7 @@ async fn sync_active_layout_for_renderable_devices(
 ) {
     runtime
         .layout
-        .test_fixture()
+        .test_workflows()
         .sync_active_layout_for_renderable_devices(runtime.clone(), limit_to_devices.cloned())
         .await;
 }
@@ -71,7 +72,7 @@ async fn sync_active_layout_connectivity(
 ) {
     runtime
         .layout
-        .test_fixture()
+        .test_workflows()
         .sync_connectivity(runtime.clone(), limit_to_devices.cloned())
         .await;
 }
@@ -500,13 +501,33 @@ fn make_runtime(
     layouts_path: std::path::PathBuf,
     runtime_state_path: std::path::PathBuf,
 ) -> TestDiscoveryRuntime {
-    make_runtime_with_registry(
+    make_runtime_with_layout(
+        device_registry,
+        lifecycle_manager,
+        layouts_path,
+        runtime_state_path,
+        empty_layout(),
+        HashSet::new(),
+    )
+}
+
+fn make_runtime_with_layout(
+    device_registry: DeviceRegistry,
+    lifecycle_manager: Arc<Mutex<DeviceLifecycleManager>>,
+    layouts_path: std::path::PathBuf,
+    runtime_state_path: std::path::PathBuf,
+    active_layout: SpatialLayout,
+    excluded_device_ids: HashSet<String>,
+) -> TestDiscoveryRuntime {
+    make_runtime_with_registry_and_layout(
         device_registry,
         lifecycle_manager,
         layouts_path,
         runtime_state_path,
         None,
         None,
+        active_layout,
+        excluded_device_ids,
     )
 }
 
@@ -518,12 +539,34 @@ fn make_runtime_with_registry(
     driver_registry: Option<DriverModuleRegistry>,
     config_manager: Option<Arc<ConfigManager>>,
 ) -> TestDiscoveryRuntime {
+    make_runtime_with_registry_and_layout(
+        device_registry,
+        lifecycle_manager,
+        layouts_path,
+        runtime_state_path,
+        driver_registry,
+        config_manager,
+        empty_layout(),
+        HashSet::new(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn make_runtime_with_registry_and_layout(
+    device_registry: DeviceRegistry,
+    lifecycle_manager: Arc<Mutex<DeviceLifecycleManager>>,
+    layouts_path: std::path::PathBuf,
+    runtime_state_path: std::path::PathBuf,
+    driver_registry: Option<DriverModuleRegistry>,
+    config_manager: Option<Arc<ConfigManager>>,
+    active_layout: SpatialLayout,
+    excluded_device_ids: HashSet<String>,
+) -> TestDiscoveryRuntime {
     let backend_manager = Arc::new(Mutex::new(BackendManager::new()));
     let reconnect_tasks = Arc::new(StdMutex::new(HashMap::new()));
     let event_bus = Arc::new(HypercolorBus::new());
-    let spatial_engine = SpatialService::new(SpatialEngine::new(empty_layout()));
+    let spatial_engine = SpatialService::new(SpatialEngine::new(active_layout.clone()));
     let layouts = HashMap::new();
-    let layout_auto_exclusions = HashMap::new();
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let attachment_registry = Arc::new(RwLock::new(ComponentRegistry::new()));
     let attachment_profiles = Arc::new(RwLock::new(ComponentProfileStore::new(
@@ -546,8 +589,21 @@ fn make_runtime_with_registry(
             .expect("test driver inventory"),
     );
     let scene_transactions = SceneTransactionQueue::default();
-    let scene_manager =
-        SceneService::in_memory(SceneManager::with_default(), Arc::clone(&event_bus));
+    let scene_manager_inner = SceneManager::with_default_layout(active_layout);
+    let primary_zone_id = scene_manager_inner
+        .active_scene()
+        .and_then(hypercolor_types::scene::Scene::primary_zone)
+        .map(|zone| zone.id)
+        .expect("default scene should have a primary zone");
+    let layout_auto_exclusions = if excluded_device_ids.is_empty() {
+        HashMap::new()
+    } else {
+        HashMap::from([(
+            LayoutAutoExclusionKey::zone(SceneId::DEFAULT, primary_zone_id),
+            excluded_device_ids,
+        )])
+    };
+    let scene_manager = SceneService::in_memory(scene_manager_inner, Arc::clone(&event_bus));
     let driver_registry = Arc::new(driver_registry.unwrap_or_else(|| {
         network::build_builtin_driver_module_registry(
             &HypercolorConfig::default(),
@@ -596,6 +652,28 @@ fn make_runtime_with_registry(
         driver_host,
         driver_registry,
     }
+}
+
+fn install_active_layout(
+    runtime: &mut TestDiscoveryRuntime,
+    active_layout: SpatialLayout,
+    state_dir: &std::path::Path,
+) {
+    let spatial = SpatialService::new(SpatialEngine::new(active_layout.clone()));
+    let scenes = SceneService::in_memory(
+        SceneManager::with_default_layout(active_layout),
+        Arc::clone(&runtime.event_bus),
+    );
+    runtime.runtime.layout = LayoutContext::new_test_context(
+        HashMap::new(),
+        state_dir.join("layouts.json"),
+        HashMap::new(),
+        state_dir.join("layout-auto-exclusions.json"),
+        spatial,
+        scenes,
+        SceneTransactionQueue::default(),
+        state_dir.join("runtime-state.json"),
+    );
 }
 
 fn discovery_config(generation: u64, mdns_enabled: bool) -> HypercolorConfig {
@@ -913,31 +991,20 @@ async fn sync_active_layout_for_renderable_devices_skips_excluded_devices() {
     };
 
     let temp_dir = tempfile::tempdir().expect("tempdir should be created");
-    let runtime = make_runtime(
+    let layouts_path = temp_dir.path().join("layouts.json");
+    let runtime = make_runtime_with_layout(
         device_registry,
         lifecycle_manager,
-        temp_dir.path().join("layouts.json"),
+        layouts_path.clone(),
         temp_dir.path().join("runtime-state.json"),
+        empty_layout(),
+        HashSet::from([layout_device_id.clone()]),
     );
 
     {
         let mut manager = runtime.backend_manager.lock().await;
         manager.map_device(layout_device_id.clone(), "usb", device_id);
     }
-    {
-        let (scene_id, zone_id) = runtime.layout.test_fixture().active_primary_ids().await;
-        let mut exclusions = runtime
-            .layout
-            .test_fixture()
-            .auto_exclusions()
-            .write()
-            .await;
-        exclusions.insert(
-            LayoutAutoExclusionKey::zone(scene_id, zone_id),
-            HashSet::from([layout_device_id]),
-        );
-    }
-
     sync_active_layout_for_renderable_devices(&runtime, None).await;
 
     let layout = runtime.layout.current();
@@ -946,7 +1013,8 @@ async fn sync_active_layout_for_renderable_devices_skips_excluded_devices() {
         "excluded devices must not be reconciled back into the active layout"
     );
 
-    let persisted_layouts = runtime.layout.test_fixture().catalog().read().await;
+    let persisted_layouts = hypercolor_daemon::layout_store::load(&layouts_path)
+        .expect("persisted layouts should remain readable");
     assert!(
         persisted_layouts.is_empty(),
         "skipping excluded devices should not persist any synthetic layout changes"
@@ -980,10 +1048,11 @@ async fn sync_active_layout_for_renderable_devices_does_not_auto_adopt_new_devic
     };
 
     let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let layouts_path = temp_dir.path().join("layouts.json");
     let runtime = make_runtime(
         device_registry,
         lifecycle_manager,
-        temp_dir.path().join("layouts.json"),
+        layouts_path.clone(),
         temp_dir.path().join("runtime-state.json"),
     );
 
@@ -1000,7 +1069,8 @@ async fn sync_active_layout_for_renderable_devices_does_not_auto_adopt_new_devic
         "newly discovered devices must not be auto-adopted into the active layout"
     );
 
-    let persisted_layouts = runtime.layout.test_fixture().catalog().read().await;
+    let persisted_layouts = hypercolor_daemon::layout_store::load(&layouts_path)
+        .expect("persisted layouts should remain readable");
     assert!(
         persisted_layouts.is_empty(),
         "discovery should not persist layout changes for unmapped devices"
@@ -1063,11 +1133,15 @@ async fn sync_active_layout_connectivity_primes_backend_from_registry_metadata()
 
     let lifecycle_manager = Arc::new(Mutex::new(DeviceLifecycleManager::new()));
     let temp_dir = tempfile::tempdir().expect("tempdir should be created");
-    let runtime = make_runtime(
+    let layout_device_id =
+        DeviceLifecycleManager::canonical_layout_device_id(&info, Some(&fingerprint));
+    let runtime = make_runtime_with_layout(
         device_registry,
         Arc::clone(&lifecycle_manager),
         temp_dir.path().join("layouts.json"),
         temp_dir.path().join("runtime-state.json"),
+        layout_with_device(&layout_device_id),
+        HashSet::new(),
     );
 
     let adopt_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -1082,13 +1156,6 @@ async fn sync_active_layout_connectivity_primes_backend_from_registry_metadata()
             connect_count: Arc::clone(&connect_count),
         }));
     }
-
-    let layout_device_id =
-        DeviceLifecycleManager::canonical_layout_device_id(&info, Some(&fingerprint));
-    runtime
-        .layout
-        .test_fixture()
-        .replace_current(layout_with_device(&layout_device_id));
 
     sync_active_layout_connectivity(&runtime, None).await;
 
@@ -1120,11 +1187,15 @@ async fn sync_active_layout_connectivity_disconnects_devices_removed_from_layout
 
     let lifecycle_manager = Arc::new(Mutex::new(DeviceLifecycleManager::new()));
     let temp_dir = tempfile::tempdir().expect("tempdir should be created");
-    let runtime = make_runtime(
+    let layout_device_id =
+        DeviceLifecycleManager::canonical_layout_device_id(&info, Some(&fingerprint));
+    let mut runtime = make_runtime_with_layout(
         device_registry,
         Arc::clone(&lifecycle_manager),
         temp_dir.path().join("layouts.json"),
         temp_dir.path().join("runtime-state.json"),
+        layout_with_device(&layout_device_id),
+        HashSet::new(),
     );
 
     let connect_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -1138,13 +1209,6 @@ async fn sync_active_layout_connectivity_disconnects_devices_removed_from_layout
         }));
     }
 
-    let layout_device_id =
-        DeviceLifecycleManager::canonical_layout_device_id(&info, Some(&fingerprint));
-    runtime
-        .layout
-        .test_fixture()
-        .replace_current(layout_with_device(&layout_device_id));
-
     sync_active_layout_connectivity(&runtime, None).await;
     assert_eq!(
         connect_count.load(std::sync::atomic::Ordering::Relaxed),
@@ -1156,10 +1220,7 @@ async fn sync_active_layout_connectivity_disconnects_devices_removed_from_layout
         Some(DeviceState::Connected)
     );
 
-    runtime
-        .layout
-        .test_fixture()
-        .replace_current(empty_layout());
+    install_active_layout(&mut runtime, empty_layout(), temp_dir.path());
 
     sync_active_layout_connectivity(&runtime, None).await;
     assert_eq!(
@@ -1185,11 +1246,16 @@ async fn sync_active_layout_connectivity_cleans_logical_routes_when_disconnect_f
 
     let lifecycle_manager = Arc::new(Mutex::new(DeviceLifecycleManager::new()));
     let temp_dir = tempfile::tempdir().expect("tempdir should be created");
-    let runtime = make_runtime(
+    let physical_layout_id =
+        DeviceLifecycleManager::canonical_layout_device_id(&info, Some(&fingerprint));
+    let segment_layout_id = format!("{physical_layout_id}:segment");
+    let mut runtime = make_runtime_with_layout(
         device_registry,
         Arc::clone(&lifecycle_manager),
         temp_dir.path().join("layouts.json"),
         temp_dir.path().join("runtime-state.json"),
+        layout_with_device(&segment_layout_id),
+        HashSet::new(),
     );
 
     let connect_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -1203,9 +1269,6 @@ async fn sync_active_layout_connectivity_cleans_logical_routes_when_disconnect_f
         }));
     }
 
-    let physical_layout_id =
-        DeviceLifecycleManager::canonical_layout_device_id(&info, Some(&fingerprint));
-    let segment_layout_id = format!("{physical_layout_id}:segment");
     {
         let mut logical_devices = runtime.logical_devices.write().await;
         logical_devices.insert(
@@ -1221,11 +1284,6 @@ async fn sync_active_layout_connectivity_cleans_logical_routes_when_disconnect_f
             },
         );
     }
-    runtime
-        .layout
-        .test_fixture()
-        .replace_current(layout_with_device(&segment_layout_id));
-
     sync_active_layout_connectivity(&runtime, None).await;
 
     assert_eq!(
@@ -1247,10 +1305,7 @@ async fn sync_active_layout_connectivity_cleans_logical_routes_when_disconnect_f
         assert_eq!(manager.debug_snapshot().queue_count, 1);
     }
 
-    runtime
-        .layout
-        .test_fixture()
-        .replace_current(empty_layout());
+    install_active_layout(&mut runtime, empty_layout(), temp_dir.path());
 
     sync_active_layout_connectivity(&runtime, None).await;
 
@@ -1283,11 +1338,15 @@ async fn sync_active_layout_connectivity_only_applies_host_attachment_profiles_f
 
     let lifecycle_manager = Arc::new(Mutex::new(DeviceLifecycleManager::new()));
     let temp_dir = tempfile::tempdir().expect("tempdir should be created");
-    let runtime = make_runtime(
+    let layout_device_id =
+        DeviceLifecycleManager::canonical_layout_device_id(&info, Some(&fingerprint));
+    let runtime = make_runtime_with_layout(
         device_registry,
         Arc::clone(&lifecycle_manager),
         temp_dir.path().join("layouts.json"),
         temp_dir.path().join("runtime-state.json"),
+        layout_with_device(&layout_device_id),
+        HashSet::new(),
     );
 
     let connect_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -1300,13 +1359,6 @@ async fn sync_active_layout_connectivity_only_applies_host_attachment_profiles_f
             disconnect_count: Arc::clone(&disconnect_count),
         }));
     }
-
-    let layout_device_id =
-        DeviceLifecycleManager::canonical_layout_device_id(&info, Some(&fingerprint));
-    runtime
-        .layout
-        .test_fixture()
-        .replace_current(layout_with_device(&layout_device_id));
 
     sync_active_layout_connectivity(&runtime, None).await;
 

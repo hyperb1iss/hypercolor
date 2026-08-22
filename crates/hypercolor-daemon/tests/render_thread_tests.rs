@@ -1262,7 +1262,7 @@ async fn publish_layout(state: &RenderThreadState, layout: SpatialLayout) {
         state_dir.join("runtime-state.json"),
     );
     context
-        .test_fixture()
+        .test_workflows()
         .publish(layout)
         .await
         .expect("layout authority should publish the update");

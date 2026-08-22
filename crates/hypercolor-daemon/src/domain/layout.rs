@@ -21,8 +21,9 @@ use hypercolor_types::canvas::SurfaceDescriptor;
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::scene::{SceneId, Zone, ZoneId};
 use hypercolor_types::spatial::{Output, SamplingMode, SpatialLayout};
+use tokio::sync::watch;
 #[cfg(feature = "persistence-test-hooks")]
-use tokio::sync::{Notify, RwLock, Semaphore, watch};
+use tokio::sync::{Notify, RwLock, Semaphore};
 
 use crate::discovery::DiscoveryRuntime;
 use crate::domain::context::RuntimeSessionProjection;
@@ -102,6 +103,12 @@ pub struct LayoutTestFixture<'a> {
     context: &'a LayoutContext,
 }
 
+/// Narrow test composition facade for exercising complete layout workflows.
+#[doc(hidden)]
+pub struct LayoutTestWorkflows<'a> {
+    context: &'a LayoutContext,
+}
+
 #[cfg(feature = "persistence-test-hooks")]
 impl<'a> LayoutTestFixture<'a> {
     #[must_use]
@@ -132,17 +139,6 @@ impl<'a> LayoutTestFixture<'a> {
         self.context.publication.active_primary_ids().await
     }
 
-    pub async fn publish(&self, layout: SpatialLayout) -> Result<(), String> {
-        let guard = self.context.acquire_update_guard().await;
-        let prepared = crate::scene_transactions::PreparedLayoutUpdate::try_new(layout)
-            .map_err(|error| error.to_string())?;
-        self.context
-            .publication
-            .apply_prepared_under_guard(&guard, prepared)
-            .await
-            .map_err(|error| error.to_string())
-    }
-
     pub fn append_auto_zones(
         &self,
         layout: &mut SpatialLayout,
@@ -159,6 +155,19 @@ impl<'a> LayoutTestFixture<'a> {
         device_info: &hypercolor_types::device::DeviceInfo,
     ) -> usize {
         auto_layout::reconcile_auto_layout_zones_for_device(layout, layout_device_id, device_info)
+    }
+}
+
+impl LayoutTestWorkflows<'_> {
+    pub async fn publish(&self, layout: SpatialLayout) -> Result<(), String> {
+        let guard = self.context.acquire_update_guard().await;
+        let prepared = crate::scene_transactions::PreparedLayoutUpdate::try_new(layout)
+            .map_err(|error| error.to_string())?;
+        self.context
+            .publication
+            .apply_prepared_under_guard(&guard, prepared)
+            .await
+            .map_err(|error| error.to_string())
     }
 
     pub async fn sync_active_layout_for_renderable_devices(
@@ -366,7 +375,6 @@ impl LayoutContext {
         }
     }
 
-    #[cfg(feature = "persistence-test-hooks")]
     #[allow(
         clippy::too_many_arguments,
         reason = "the fixture mirrors the production composition boundary"
@@ -396,6 +404,13 @@ impl LayoutContext {
             runtime_state_path,
             projection,
         )
+    }
+
+    /// Create a narrow facade that drives the production layout workflows.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn test_workflows(&self) -> LayoutTestWorkflows<'_> {
+        LayoutTestWorkflows { context: self }
     }
 
     pub(crate) async fn restore_startup_layout(
