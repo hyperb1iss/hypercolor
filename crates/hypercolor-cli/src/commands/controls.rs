@@ -453,43 +453,16 @@ fn typed_control_value(kind: &str, value: &str) -> Result<ControlValue> {
                 Rgba::from_hex(value).with_context(|| format!("invalid rgba color: {value}"))?;
             Ok(ControlValue::ColorRgba(color))
         }
-        "json" => json_to_control_value(value),
+        "json" => parse_tagged_control_value(value),
         _ => bail!("unknown control value kind: {kind}"),
     }
 }
 
-fn json_to_control_value(value: &str) -> Result<ControlValue> {
-    let parsed: Value = serde_json::from_str(value).context("invalid json control value")?;
-    json_value_to_control_value(parsed)
-}
-
-fn json_value_to_control_value(value: Value) -> Result<ControlValue> {
-    match value {
-        Value::Null => Ok(ControlValue::Null),
-        Value::Bool(value) => Ok(ControlValue::Bool(value)),
-        Value::Number(value) => {
-            if let Some(integer) = value.as_i64() {
-                Ok(ControlValue::Int(integer))
-            } else if let Some(float) = value.as_f64() {
-                Ok(ControlValue::Float(float))
-            } else {
-                bail!("unsupported JSON number: {value}")
-            }
-        }
-        Value::String(value) => Ok(ControlValue::Text(value)),
-        Value::Array(values) => Ok(ControlValue::List(
-            values
-                .into_iter()
-                .map(json_value_to_control_value)
-                .collect::<Result<Vec<_>>>()?,
-        )),
-        Value::Object(values) => Ok(ControlValue::Map(
-            values
-                .into_iter()
-                .map(|(key, value)| Ok((key, json_value_to_control_value(value)?)))
-                .collect::<Result<BTreeMap<_, _>>>()?,
-        )),
-    }
+fn parse_tagged_control_value(value: &str) -> Result<ControlValue> {
+    let parsed = serde_json::from_str::<ControlValue>(value)
+        .context("invalid canonical control value JSON")?;
+    parsed.validate()?;
+    Ok(parsed)
 }
 
 fn split_list(value: &str) -> Vec<String> {
@@ -536,12 +509,10 @@ fn action_availability_label(surface: &Value, action_id: &str) -> String {
 }
 
 fn value_summary(value: &Value) -> String {
-    let kind = value.get("kind").and_then(Value::as_str);
-    if kind == Some("secret_ref") {
-        return "configured".to_string();
-    }
-    if kind.is_some_and(|kind| !known_control_value_kind(kind)) {
-        return "unsupported value".to_string();
+    match serde_json::from_value::<ControlValue>(value.clone()) {
+        Ok(ControlValue::SecretRef(_)) => return "configured".to_string(),
+        Ok(ControlValue::Unknown) | Err(_) => return "unsupported value".to_string(),
+        Ok(_) => {}
     }
 
     match value.get("value") {
@@ -556,27 +527,6 @@ fn value_summary(value: &Value) -> String {
         Some(Value::Object(_)) => "{...}".to_string(),
         Some(Value::Null) | None => "-".to_string(),
     }
-}
-
-fn known_control_value_kind(kind: &str) -> bool {
-    matches!(
-        kind,
-        "null"
-            | "bool"
-            | "integer"
-            | "float"
-            | "string"
-            | "secret_ref"
-            | "color_rgb"
-            | "color_rgba"
-            | "ip_address"
-            | "mac_address"
-            | "duration_ms"
-            | "enum"
-            | "flags"
-            | "list"
-            | "object"
-    )
 }
 
 fn array_len(value: &Value, field: &str) -> usize {
@@ -607,7 +557,24 @@ fn is_driver_device_surface(target: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::value_summary;
+    use hypercolor_types::control::ControlValue;
+
+    use super::{parse_tagged_control_value, value_summary};
+
+    #[test]
+    fn json_kind_requires_the_canonical_tagged_shape() {
+        let value = parse_tagged_control_value(r#"{"kind":"enum","value":"e131"}"#)
+            .expect("canonical enum should parse");
+        assert_eq!(value, ControlValue::Enum("e131".to_owned()));
+
+        let error = parse_tagged_control_value(r#"{"enum":"e131"}"#)
+            .expect_err("retired external tag should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("invalid canonical control value JSON")
+        );
+    }
 
     #[test]
     fn value_summary_hides_secret_refs() {
