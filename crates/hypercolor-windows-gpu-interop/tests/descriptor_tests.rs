@@ -33,3 +33,13 @@ fn descriptor_accepts_800_by_600_bgra() {
         wgpu::TextureFormat::Bgra8Unorm
     );
 }
+
+#[test]
+fn descriptor_rejects_foreign_frame_format() {
+    assert_eq!(
+        WindowsD3d11SharedTextureImportDescriptor::new(800, 600, ImportedFrameFormat::Rgba16Float,),
+        Err(WindowsGpuInteropError::UnsupportedFrameFormat {
+            format: ImportedFrameFormat::Rgba16Float,
+        })
+    );
+}

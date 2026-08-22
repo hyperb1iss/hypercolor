@@ -5659,6 +5659,7 @@ dependencies = [
  "euclid",
  "gleam",
  "glow",
+ "hypercolor-gpu-frame",
  "hypercolor-windows-capture",
  "image",
  "pollster",

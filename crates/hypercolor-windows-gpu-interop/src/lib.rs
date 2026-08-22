@@ -2,6 +2,11 @@
 
 //! Windows GPU interop helpers for Servo effect frames.
 
+pub use hypercolor_gpu_frame::{
+    FrameOrigin, GpuFrameImportError, GpuFrameImportFallbackReason, ImportedEffectFrame,
+    ImportedFrameAllocationId, ImportedFrameFormat, ImportedFrameLease, ImportedFrameTimings,
+};
+
 /// Operation label used when creating the ANGLE client-buffer surface fails.
 pub const WINDOWS_ANGLE_CLIENT_BUFFER_SURFACE_OPERATION: &str =
     "create ANGLE client-buffer surface";

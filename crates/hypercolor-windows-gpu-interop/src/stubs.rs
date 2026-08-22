@@ -1,6 +1,7 @@
-use std::sync::Arc;
-
+use hypercolor_gpu_frame::{GpuFrameImportError, GpuFrameImportFallbackReason};
 use thiserror::Error;
+
+use crate::ImportedFrameFormat;
 
 const BYTES_PER_PIXEL: u32 = 4;
 
@@ -35,25 +36,29 @@ pub enum WindowsGpuInteropError {
         /// Requested frame height.
         height: u32,
     },
+
+    /// The neutral frame format is not supported by the Windows import path.
+    #[error("unsupported Windows import frame format {format:?}")]
+    UnsupportedFrameFormat {
+        /// Requested frame format.
+        format: ImportedFrameFormat,
+    },
 }
 
-/// Pixel format shared by the D3D11 texture and imported wgpu texture.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum ImportedFrameFormat {
-    /// 8-bit normalized RGBA.
-    Rgba8Unorm,
-    /// 8-bit normalized BGRA.
-    Bgra8Unorm,
-}
-
-impl ImportedFrameFormat {
-    /// Returns the matching wgpu texture format.
-    #[must_use]
-    pub const fn wgpu_format(self) -> wgpu::TextureFormat {
+impl GpuFrameImportError for WindowsGpuInteropError {
+    fn fallback_reason(&self) -> GpuFrameImportFallbackReason {
         match self {
-            Self::Rgba8Unorm => wgpu::TextureFormat::Rgba8Unorm,
-            Self::Bgra8Unorm => wgpu::TextureFormat::Bgra8Unorm,
+            Self::UnsupportedPlatform | Self::UnsupportedFrameFormat { .. } => {
+                GpuFrameImportFallbackReason::Other
+            }
+            Self::MissingWgpuVulkanDevice => GpuFrameImportFallbackReason::MissingWgpuVulkanDevice,
+            Self::MissingVulkanExternalMemoryWin32 => {
+                GpuFrameImportFallbackReason::MissingVulkanExternalMemoryWin32
+            }
+            Self::MissingWindowsAngleContext => {
+                GpuFrameImportFallbackReason::MissingWindowsAngleContext
+            }
+            Self::InvalidDimensions { .. } => GpuFrameImportFallbackReason::InvalidDimensions,
         }
     }
 }
@@ -78,6 +83,11 @@ impl WindowsD3d11SharedTextureImportDescriptor {
             || height > i32::MAX as u32
         {
             Err(WindowsGpuInteropError::InvalidDimensions { width, height })
+        } else if !matches!(
+            format,
+            ImportedFrameFormat::Rgba8Unorm | ImportedFrameFormat::Bgra8Unorm
+        ) {
+            Err(WindowsGpuInteropError::UnsupportedFrameFormat { format })
         } else {
             Ok(Self {
                 width,
@@ -86,36 +96,6 @@ impl WindowsD3d11SharedTextureImportDescriptor {
             })
         }
     }
-}
-
-/// GPU-resident Servo effect frame imported into Hypercolor's wgpu device.
-#[derive(Debug, Clone)]
-pub struct ImportedEffectFrame {
-    /// Frame width in pixels.
-    pub width: u32,
-    /// Frame height in pixels.
-    pub height: u32,
-    /// Frame pixel format.
-    pub format: ImportedFrameFormat,
-    /// Monotonic storage identity for cache comparisons.
-    pub storage_id: u64,
-    /// Imported wgpu texture.
-    pub texture: Arc<wgpu::Texture>,
-    /// Default view over `texture`.
-    pub view: Arc<wgpu::TextureView>,
-    /// Import timing counters for observability.
-    pub timings: ImportedFrameTimings,
-}
-
-/// Timing counters captured while importing a D3D11 shared texture.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct ImportedFrameTimings {
-    /// Time spent wrapping the D3D11 shared handle as a wgpu texture.
-    pub wrap_us: u64,
-    /// Time spent waiting for producer-side synchronization.
-    pub sync_us: u64,
-    /// Total import time, including wgpu wrapping.
-    pub total_us: u64,
 }
 
 /// Reusable importer for wrapping D3D11 shared textures as wgpu textures.

@@ -4,8 +4,9 @@ use std::sync::Arc;
 
 use gleam::gl;
 use hypercolor_windows_gpu_interop::{
-    ImportedFrameFormat, WindowsAngleRenderingContext, WindowsD3d11SharedTextureImportDescriptor,
-    WindowsD3d11SharedTextureImporter, WindowsDxgiAdapterIdentity, WindowsServoFrameOrigin,
+    FrameOrigin, ImportedFrameFormat, WindowsAngleRenderingContext,
+    WindowsD3d11SharedTextureImportDescriptor, WindowsD3d11SharedTextureImporter,
+    WindowsDxgiAdapterIdentity,
 };
 use paint_api::rendering_context::RenderingContext;
 
@@ -50,16 +51,13 @@ fn angle_context_renders_into_importable_d3d11_ring() -> Result<(), String> {
     assert_eq!(first_native_frame.width, WIDTH);
     assert_eq!(first_native_frame.height, HEIGHT);
     assert_eq!(first_native_frame.format, ImportedFrameFormat::Bgra8Unorm);
-    assert_eq!(
-        first_native_frame.origin,
-        WindowsServoFrameOrigin::BottomLeft
-    );
+    assert_eq!(first_native_frame.origin, FrameOrigin::BottomLeft);
     assert_eq!(first_native_frame.content_generation, 1);
 
     let first_imported = importer
         .import_servo_native_frame(&wgpu.device, first_native_frame)
         .map_err(|error| error.to_string())?;
-    assert_eq!(first_imported.storage_id, 1);
+    assert_eq!(first_imported.content_generation, 1);
     let first_pixels = read_texture_pixels(
         &wgpu.device,
         &wgpu.queue,
@@ -93,7 +91,7 @@ fn angle_context_renders_into_importable_d3d11_ring() -> Result<(), String> {
     let second_imported = importer
         .import_servo_native_frame(&wgpu.device, second_native_frame)
         .map_err(|error| error.to_string())?;
-    assert_eq!(second_imported.storage_id, 2);
+    assert_eq!(second_imported.content_generation, 2);
     let second_pixels = read_texture_pixels(
         &wgpu.device,
         &wgpu.queue,
@@ -110,7 +108,7 @@ fn angle_context_renders_into_importable_d3d11_ring() -> Result<(), String> {
     let third_imported = importer
         .import_servo_native_frame(&wgpu.device, third_native_frame)
         .map_err(|error| error.to_string())?;
-    assert_eq!(third_imported.storage_id, 3);
+    assert_eq!(third_imported.content_generation, 3);
     let third_pixels = read_texture_pixels(
         &wgpu.device,
         &wgpu.queue,
@@ -130,7 +128,7 @@ fn angle_context_renders_into_importable_d3d11_ring() -> Result<(), String> {
     let wrapped_imported = importer
         .import_servo_native_frame(&wgpu.device, wrapped_native_frame)
         .map_err(|error| error.to_string())?;
-    assert_eq!(wrapped_imported.storage_id, 5);
+    assert_eq!(wrapped_imported.content_generation, 5);
     if wrapped_native_frame.shared_handle == first_native_frame.shared_handle {
         assert!(Arc::ptr_eq(
             &wrapped_imported.texture,
