@@ -330,7 +330,11 @@ async fn control_patches_route_to_the_default_layer_when_it_is_live() {
         json_request(
             Method::PATCH,
             format!("/api/v1/displays/{device_id}/face/controls"),
-            serde_json::json!({ "controls": { "accent": "#e135ff" } }),
+            serde_json::json!({
+                "values": {
+                    "accent": { "kind": "text", "value": "#e135ff" }
+                }
+            }),
         ),
     )
     .await;
