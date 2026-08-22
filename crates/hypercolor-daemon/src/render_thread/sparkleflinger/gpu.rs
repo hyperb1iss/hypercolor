@@ -65,10 +65,10 @@ use compositor::{
 };
 #[cfg(test)]
 use display_finalize::DISPLAY_FINALIZE_READBACK_SLOT_COUNT;
+use display_finalize::GpuDisplayFinalizeSurfaceSet;
 pub(crate) use display_finalize::{
     GpuDisplayFinalizeDispatch, GpuDisplayFinalizeFrame, PendingGpuDisplayFinalize,
 };
-use display_finalize::{GpuDisplayFinalizeSurfaceSet, GpuDisplaySourceTexture};
 #[cfg(all(target_os = "macos", feature = "screen-capture"))]
 use macos_screen::MacosScreenBridge;
 #[cfg(all(target_os = "macos", feature = "screen-capture"))]
@@ -95,7 +95,9 @@ pub(crate) use sampler::{GpuZoneSamplingDispatch, PendingGpuZoneSampling};
 use screen_upload::{
     ScreenPublicationUploadPool, ScreenUploadContentKey, ScreenUploadResidencyPolicy,
 };
-use source::{CachedGpuSourceCopy, CachedSourceUpload, SourceCopyBindGroupCache};
+#[cfg(all(test, feature = "servo-gpu-import", target_os = "linux"))]
+use source::CachedGpuSourceCopy;
+use source::{CachedSourceUpload, SourceCopyBindGroupCache};
 use submission::FrameInFlight;
 pub(crate) use telemetry::{GpuSparkleFlingerTelemetrySnapshot, record_gpu_display_finalize_latch};
 #[cfg(target_os = "windows")]
