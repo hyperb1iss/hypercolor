@@ -78,9 +78,11 @@ pub fn EffectControlsSection(
     let (values, set_values) = signal(controls);
     let layer_id = layer.id.to_string();
 
+    let session_target = Signal::stored(Some(format!("{group_id}:{layer_id}")));
     let patch: ControlPatchFn = Arc::new({
         let group_id = group_id.clone();
-        move |payload: crate::optimistic_controls::ControlValueMap,
+        move |_target: String,
+              payload: crate::optimistic_controls::ControlValueMap,
               _version: Option<u64>|
               -> ControlPatchFuture {
             let group_id = group_id.clone();
@@ -92,6 +94,7 @@ pub fn EffectControlsSection(
         }
     });
     let session = use_control_patch_session(ControlPatchConfig {
+        target: session_target,
         defs,
         set_values,
         initial_version: None,
@@ -101,6 +104,7 @@ pub fn EffectControlsSection(
             toasts::toast_error(&format!("Effect controls failed: {error}"));
         }),
         recover: on_layers_mutated,
+        on_committed: None,
         flush_guard: None,
     });
     let on_change = session.on_change;

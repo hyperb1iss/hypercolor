@@ -31,16 +31,18 @@ use crate::optimistic_controls::{ControlValueMap, OptimisticControlSession};
 pub type ControlPatchFuture =
     Pin<Box<dyn Future<Output = Result<MutationOutcome<Option<u64>>, String>>>>;
 
-/// One control-surface PATCH: `(coalesced_payload, if_match_version)` →
-/// outcome. A versioned route returns `Applied(Some(new_version))` so the
-/// session can chain the next `If-Match` without a refetch; an unversioned
-/// route returns `Applied(None)`. `Stale { current }` triggers the
-/// session's rebase-and-retry path.
+/// One targeted control-surface PATCH. A versioned route returns
+/// `Applied(Some(new_version))` so the session can chain the next
+/// `If-Match` without a refetch; an unversioned route returns
+/// `Applied(None)`. `Stale { current }` triggers one rebase-and-retry.
 pub type ControlPatchFn =
-    Arc<dyn Fn(ControlValueMap, Option<u64>) -> ControlPatchFuture + Send + Sync>;
+    Arc<dyn Fn(String, ControlValueMap, Option<u64>) -> ControlPatchFuture + Send + Sync>;
 
 /// Configuration for [`use_control_patch_session`].
 pub struct ControlPatchConfig {
+    /// Immutable authority key attached to every admitted batch. A target
+    /// change invalidates older queued work before it can reach `patch`.
+    pub target: Signal<Option<String>>,
     /// Control schema used to normalize raw JSON edits into typed
     /// [`ControlValue`](hypercolor_types::control::ControlValue)s for the
     /// optimistic local map.
@@ -62,6 +64,8 @@ pub struct ControlPatchConfig {
     /// Restore authoritative values after any terminal patch failure.
     /// Every queued optimistic batch is cleared before this callback runs.
     pub recover: Callback<()>,
+    /// Runs after the complete ordered queue commits for one target.
+    pub on_committed: Option<Callback<String>>,
     /// Optional pre-flush gate. Returning `false` cancels the flush and
     /// drops the pending batch; the guard performs its own user feedback
     /// (toast, value revert) before returning.
@@ -74,6 +78,8 @@ pub struct ControlPatchSession {
     /// Wire to the control panel's change callback: applies the edit
     /// optimistically, queues it, and schedules a debounced flush.
     pub on_change: Callback<(String, serde_json::Value)>,
+    /// Admit a compound edit atomically under the same target identity.
+    pub on_changes: Callback<Vec<(String, serde_json::Value)>>,
     /// Flush the pending batch immediately, bypassing the debounce.
     pub flush_now: Callback<()>,
     /// Drop any queued-but-unsent edits.
@@ -136,6 +142,7 @@ pub fn merge_retry_batch(failed: ControlValueMap, newer: ControlValueMap) -> Con
 /// overtake one another or discard distinct-key updates.
 pub fn use_control_patch_session(config: ControlPatchConfig) -> ControlPatchSession {
     let ControlPatchConfig {
+        target,
         defs,
         set_values,
         initial_version,
@@ -143,6 +150,7 @@ pub fn use_control_patch_session(config: ControlPatchConfig) -> ControlPatchSess
         patch,
         on_error,
         recover,
+        on_committed,
         flush_guard,
     } = config;
 
@@ -156,17 +164,41 @@ pub fn use_control_patch_session(config: ControlPatchConfig) -> ControlPatchSess
             optimistic.clear_pending();
             return;
         }
-        let Some(batch) = optimistic.start_flush() else {
+        let Some(active_target) = target.get_untracked() else {
+            optimistic.clear_pending();
+            recover.run(());
             return;
+        };
+        let mut batch = match optimistic.start_flush_for(&active_target) {
+            Ok(Some(batch)) => batch,
+            Ok(None) => return,
+            Err(()) => {
+                recover.run(());
+                return;
+            }
         };
         let patch = Arc::clone(&patch);
         spawn_mutation(
             async move {
-                let mut batch = batch;
                 loop {
+                    if target.get_untracked().as_deref() != Some(batch.target.as_str()) {
+                        optimistic.fail_flush();
+                        recover.run(());
+                        return Ok(());
+                    }
                     let mut retried = false;
                     loop {
-                        let outcome = patch(batch.clone(), version.get_untracked()).await?;
+                        let outcome = patch(
+                            batch.target.clone(),
+                            batch.values.clone(),
+                            version.get_untracked(),
+                        )
+                        .await?;
+                        if target.get_untracked().as_deref() != Some(batch.target.as_str()) {
+                            optimistic.fail_flush();
+                            recover.run(());
+                            return Ok(());
+                        }
                         match reconcile_outcome(&outcome, retried) {
                             ReconcileAction::Adopt { new_version } => {
                                 if let Some(next) = new_version {
@@ -176,8 +208,10 @@ pub fn use_control_patch_session(config: ControlPatchConfig) -> ControlPatchSess
                             }
                             ReconcileAction::RetryOnce { current } => {
                                 version.set(Some(current));
-                                batch =
-                                    merge_retry_batch(batch, optimistic.take_pending_for_retry());
+                                batch.values = merge_retry_batch(
+                                    batch.values,
+                                    optimistic.take_pending_for_retry(&batch.target),
+                                );
                                 retried = true;
                             }
                             ReconcileAction::GiveUp { current } => {
@@ -196,6 +230,9 @@ pub fn use_control_patch_session(config: ControlPatchConfig) -> ControlPatchSess
                         return Ok(());
                     }
                     let Some(next) = optimistic.complete_flush() else {
+                        if let Some(on_committed) = on_committed {
+                            on_committed.run(batch.target);
+                        }
                         return Ok(());
                     };
                     batch = next;
@@ -211,8 +248,19 @@ pub fn use_control_patch_session(config: ControlPatchConfig) -> ControlPatchSess
     };
 
     let debounced_flush = use_debounce_fn(flush_core.clone(), debounce_ms);
+    let debounced_single_flush = debounced_flush.clone();
     let on_change = Callback::new(move |(name, raw): (String, serde_json::Value)| {
-        optimistic.admit_raw_update_to(set_values, &defs.get_untracked(), &name, &raw);
+        let Some(target) = target.get_untracked() else {
+            return;
+        };
+        optimistic.admit_raw_update_to(target, set_values, &defs.get_untracked(), &name, &raw);
+        debounced_single_flush();
+    });
+    let on_changes = Callback::new(move |updates: Vec<(String, serde_json::Value)>| {
+        let Some(target) = target.get_untracked() else {
+            return;
+        };
+        optimistic.admit_raw_updates_to(target, set_values, &defs.get_untracked(), &updates);
         debounced_flush();
     });
     let flush_now = Callback::new(move |()| flush_core());
@@ -220,6 +268,7 @@ pub fn use_control_patch_session(config: ControlPatchConfig) -> ControlPatchSess
 
     ControlPatchSession {
         on_change,
+        on_changes,
         flush_now,
         clear_pending,
         version,

@@ -9,8 +9,8 @@ use crate::control_value_json::json_to_control_value;
 pub type ControlValueMap = HashMap<String, ControlValue>;
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct EffectControlBatch {
-    pub(crate) effect_id: String,
+pub(crate) struct ControlMutationBatch {
+    pub(crate) target: String,
     pub(crate) values: ControlValueMap,
 }
 
@@ -21,43 +21,70 @@ pub(crate) struct OptimisticControlSession {
 
 #[derive(Default)]
 struct ControlMutationQueue {
-    pending: ControlValueMap,
+    pending: Option<ControlMutationBatch>,
     in_flight: bool,
 }
 
 impl ControlMutationQueue {
-    fn insert(&mut self, name: String, value: ControlValue) {
-        self.pending.insert(name, value);
+    fn insert(&mut self, target: String, name: String, value: ControlValue) {
+        self.merge(target, ControlValueMap::from([(name, value)]));
     }
 
-    fn start_flush(&mut self) -> Option<ControlValueMap> {
-        if self.in_flight || self.pending.is_empty() {
-            return None;
+    fn merge(&mut self, target: String, values: ControlValueMap) {
+        if values.is_empty() {
+            return;
+        }
+        match self.pending.as_mut() {
+            Some(batch) if batch.target == target => {
+                merge_control_values(&mut batch.values, &values);
+            }
+            _ => {
+                self.pending = Some(ControlMutationBatch { target, values });
+            }
+        }
+    }
+
+    fn start_flush_for(&mut self, active_target: &str) -> Result<Option<ControlMutationBatch>, ()> {
+        if self.in_flight {
+            return Ok(None);
+        }
+        let Some(batch) = self.pending.take() else {
+            return Ok(None);
+        };
+        if batch.target != active_target {
+            return Err(());
         }
         self.in_flight = true;
-        Some(std::mem::take(&mut self.pending))
+        Ok(Some(batch))
     }
 
-    fn complete_flush(&mut self) -> Option<ControlValueMap> {
-        if self.pending.is_empty() {
+    fn complete_flush(&mut self) -> Option<ControlMutationBatch> {
+        if self.pending.is_none() {
             self.in_flight = false;
             None
         } else {
-            Some(std::mem::take(&mut self.pending))
+            self.pending.take()
         }
     }
 
-    fn take_pending_for_retry(&mut self) -> ControlValueMap {
-        std::mem::take(&mut self.pending)
+    fn take_pending_for_retry(&mut self, target: &str) -> ControlValueMap {
+        match self.pending.take() {
+            Some(batch) if batch.target == target => batch.values,
+            Some(batch) => {
+                self.pending = Some(batch);
+                ControlValueMap::new()
+            }
+            None => ControlValueMap::new(),
+        }
     }
 
     fn fail_flush(&mut self) {
-        self.pending.clear();
+        self.pending = None;
         self.in_flight = false;
     }
 
     fn clear_pending(&mut self) {
-        self.pending.clear();
+        self.pending = None;
     }
 }
 
@@ -70,6 +97,7 @@ impl OptimisticControlSession {
 
     pub(crate) fn admit_raw_update_to(
         self,
+        target: String,
         set_values: WriteSignal<ControlValueMap>,
         controls: &[ControlDefinition],
         name: &str,
@@ -82,25 +110,42 @@ impl OptimisticControlSession {
             values.insert(name.to_owned(), value.clone());
         });
         self.queue.update_value(|queue| {
-            queue.insert(name.to_owned(), value);
+            queue.insert(target, name.to_owned(), value);
         });
     }
 
-    pub(crate) fn start_flush(self) -> Option<ControlValueMap> {
-        self.queue
-            .try_update_value(ControlMutationQueue::start_flush)
-            .flatten()
+    pub(crate) fn admit_raw_updates_to(
+        self,
+        target: String,
+        set_values: WriteSignal<ControlValueMap>,
+        controls: &[ControlDefinition],
+        updates: &[(String, serde_json::Value)],
+    ) {
+        let admitted = normalize_raw_control_updates(controls, updates);
+        set_values.update(|values| merge_control_values(values, &admitted));
+        self.queue.update_value(|queue| {
+            queue.merge(target, admitted);
+        });
     }
 
-    pub(crate) fn complete_flush(self) -> Option<ControlValueMap> {
+    pub(crate) fn start_flush_for(
+        self,
+        active_target: &str,
+    ) -> Result<Option<ControlMutationBatch>, ()> {
+        self.queue
+            .try_update_value(|queue| queue.start_flush_for(active_target))
+            .unwrap_or(Ok(None))
+    }
+
+    pub(crate) fn complete_flush(self) -> Option<ControlMutationBatch> {
         self.queue
             .try_update_value(ControlMutationQueue::complete_flush)
             .flatten()
     }
 
-    pub(crate) fn take_pending_for_retry(self) -> ControlValueMap {
+    pub(crate) fn take_pending_for_retry(self, target: &str) -> ControlValueMap {
         self.queue
-            .try_update_value(ControlMutationQueue::take_pending_for_retry)
+            .try_update_value(|queue| queue.take_pending_for_retry(target))
             .unwrap_or_default()
     }
 
@@ -120,107 +165,6 @@ impl OptimisticControlSession {
 impl Default for OptimisticControlSession {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-#[derive(Default)]
-struct EffectControlMutationQueue {
-    pending: Option<EffectControlBatch>,
-    in_flight: bool,
-}
-
-impl EffectControlMutationQueue {
-    fn merge(&mut self, effect_id: String, values: ControlValueMap) {
-        if values.is_empty() {
-            return;
-        }
-        match self.pending.as_mut() {
-            Some(batch) if batch.effect_id == effect_id => {
-                merge_control_values(&mut batch.values, &values);
-            }
-            _ => {
-                self.pending = Some(EffectControlBatch { effect_id, values });
-            }
-        }
-    }
-
-    fn start_flush_for(
-        &mut self,
-        active_effect_id: &str,
-    ) -> Result<Option<EffectControlBatch>, ()> {
-        if self.in_flight {
-            return Ok(None);
-        }
-        let Some(batch) = self.pending.take() else {
-            return Ok(None);
-        };
-        if batch.effect_id != active_effect_id {
-            return Err(());
-        }
-        self.in_flight = true;
-        Ok(Some(batch))
-    }
-
-    fn complete_flush(&mut self) -> Option<EffectControlBatch> {
-        if self.pending.is_none() {
-            self.in_flight = false;
-            None
-        } else {
-            self.pending.take()
-        }
-    }
-
-    fn fail_flush(&mut self) {
-        self.pending = None;
-        self.in_flight = false;
-    }
-}
-
-#[derive(Clone, Copy)]
-pub(crate) struct OptimisticEffectControlSession {
-    queue: StoredValue<EffectControlMutationQueue>,
-}
-
-impl OptimisticEffectControlSession {
-    pub(crate) fn new() -> Self {
-        Self {
-            queue: StoredValue::new(EffectControlMutationQueue::default()),
-        }
-    }
-
-    pub(crate) fn admit_raw_updates_to(
-        self,
-        effect_id: String,
-        set_values: WriteSignal<ControlValueMap>,
-        controls: &[ControlDefinition],
-        updates: &[(String, serde_json::Value)],
-    ) {
-        let admitted = normalize_raw_control_updates(controls, updates);
-        set_values.update(|values| merge_control_values(values, &admitted));
-        self.queue.update_value(|queue| {
-            queue.merge(effect_id, admitted);
-        });
-    }
-
-    pub(crate) fn start_flush_for(
-        self,
-        active_effect_id: &str,
-    ) -> Result<Option<EffectControlBatch>, ()> {
-        self.queue
-            .try_update_value(|queue| queue.start_flush_for(active_effect_id))
-            .unwrap_or(Ok(None))
-    }
-
-    pub(crate) fn complete_flush(self) -> Option<EffectControlBatch> {
-        self.queue
-            .try_update_value(EffectControlMutationQueue::complete_flush)
-            .flatten()
-    }
-
-    pub(crate) fn fail_flush(self) {
-        let _ = self
-            .queue
-            .try_update_value(EffectControlMutationQueue::fail_flush);
     }
 }
 
@@ -270,55 +214,98 @@ pub fn merge_control_values(values: &mut ControlValueMap, next_values: &ControlV
 mod tests {
     use hypercolor_types::control::ControlValue;
 
-    use super::{ControlMutationQueue, ControlValueMap, EffectControlMutationQueue};
+    use super::{ControlMutationQueue, ControlValueMap};
 
     #[test]
     fn in_flight_flush_drains_distinct_newer_keys_in_a_second_batch() {
         let mut queue = ControlMutationQueue::default();
-        queue.insert("speed".to_owned(), ControlValue::Float(0.5));
+        queue.insert(
+            "effect-a".to_owned(),
+            "speed".to_owned(),
+            ControlValue::Float(0.5),
+        );
 
-        let first = queue.start_flush().expect("first batch should start");
-        queue.insert("hue".to_owned(), ControlValue::Int(120));
-        assert!(queue.start_flush().is_none(), "only one batch may run");
+        let first = queue
+            .start_flush_for("effect-a")
+            .expect("target should match")
+            .expect("first batch should start");
+        queue.insert(
+            "effect-a".to_owned(),
+            "hue".to_owned(),
+            ControlValue::Int(120),
+        );
+        assert_eq!(
+            queue.start_flush_for("effect-a"),
+            Ok(None),
+            "only one batch may run"
+        );
 
         let second = queue
             .complete_flush()
             .expect("edits queued in flight must drain next");
-        assert_eq!(first.get("speed"), Some(&ControlValue::Float(0.5)));
-        assert_eq!(second.get("hue"), Some(&ControlValue::Int(120)));
+        assert_eq!(first.target, "effect-a");
+        assert_eq!(first.values.get("speed"), Some(&ControlValue::Float(0.5)));
+        assert_eq!(second.target, "effect-a");
+        assert_eq!(second.values.get("hue"), Some(&ControlValue::Int(120)));
         assert!(queue.complete_flush().is_none());
     }
 
     #[test]
     fn in_flight_edits_still_coalesce_last_write_per_key() {
         let mut queue = ControlMutationQueue::default();
-        queue.insert("speed".to_owned(), ControlValue::Float(0.25));
-        let _ = queue.start_flush().expect("first batch should start");
+        queue.insert(
+            "effect-a".to_owned(),
+            "speed".to_owned(),
+            ControlValue::Float(0.25),
+        );
+        let _ = queue
+            .start_flush_for("effect-a")
+            .expect("target should match")
+            .expect("first batch should start");
 
-        queue.insert("speed".to_owned(), ControlValue::Float(0.5));
-        queue.insert("speed".to_owned(), ControlValue::Float(0.75));
+        queue.insert(
+            "effect-a".to_owned(),
+            "speed".to_owned(),
+            ControlValue::Float(0.5),
+        );
+        queue.insert(
+            "effect-a".to_owned(),
+            "speed".to_owned(),
+            ControlValue::Float(0.75),
+        );
 
         let second = queue.complete_flush().expect("newest edit should drain");
-        assert_eq!(second.len(), 1);
-        assert_eq!(second.get("speed"), Some(&ControlValue::Float(0.75)));
+        assert_eq!(second.values.len(), 1);
+        assert_eq!(second.values.get("speed"), Some(&ControlValue::Float(0.75)));
     }
 
     #[test]
     fn failed_flush_discards_every_unconfirmed_optimistic_batch() {
         let mut queue = ControlMutationQueue::default();
-        queue.insert("speed".to_owned(), ControlValue::Float(0.25));
-        let _ = queue.start_flush().expect("first batch should start");
-        queue.insert("hue".to_owned(), ControlValue::Int(120));
+        queue.insert(
+            "effect-a".to_owned(),
+            "speed".to_owned(),
+            ControlValue::Float(0.25),
+        );
+        let _ = queue
+            .start_flush_for("effect-a")
+            .expect("target should match")
+            .expect("first batch should start");
+        queue.insert(
+            "effect-a".to_owned(),
+            "hue".to_owned(),
+            ControlValue::Int(120),
+        );
 
         queue.fail_flush();
 
-        assert!(queue.start_flush().is_none());
-        assert!(queue.pending.is_empty());
+        assert_eq!(queue.start_flush_for("effect-a"), Ok(None));
+        assert!(queue.pending.is_none());
     }
 
     #[test]
     fn queued_effect_batch_cannot_flush_under_a_different_effect() {
-        let mut queue = EffectControlMutationQueue::default();
+        let mut queue = ControlMutationQueue::default();
         queue.merge(
             "effect-a".to_owned(),
             ControlValueMap::from([("speed".to_owned(), ControlValue::Float(0.25))]),
@@ -339,7 +326,7 @@ mod tests {
 
     #[test]
     fn owned_effect_batch_preserves_distinct_key_single_flight_ordering() {
-        let mut queue = EffectControlMutationQueue::default();
+        let mut queue = ControlMutationQueue::default();
         queue.merge(
             "effect-a".to_owned(),
             ControlValueMap::from([("speed".to_owned(), ControlValue::Float(0.25))]),
@@ -356,9 +343,9 @@ mod tests {
         let second = queue
             .complete_flush()
             .expect("newer distinct key should drain next");
-        assert_eq!(first.effect_id, "effect-a");
+        assert_eq!(first.target, "effect-a");
         assert_eq!(first.values.get("speed"), Some(&ControlValue::Float(0.25)));
-        assert_eq!(second.effect_id, "effect-a");
+        assert_eq!(second.target, "effect-a");
         assert_eq!(second.values.get("hue"), Some(&ControlValue::Int(120)));
         assert!(queue.complete_flush().is_none());
     }

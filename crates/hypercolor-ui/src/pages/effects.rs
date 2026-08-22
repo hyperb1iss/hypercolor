@@ -1,8 +1,9 @@
 //! Effects browse page — grid of effect cards with filtering and detail panel.
 
+use std::sync::Arc;
+
 use leptos::prelude::*;
 use leptos_icons::Icon;
-use leptos_use::use_debounce_fn;
 
 use crate::api;
 use crate::app::{EffectsContext, WsContext};
@@ -19,8 +20,10 @@ use crate::components::resize_handle::ResizeHandle;
 use crate::components::section_label::{LabelSize, LabelTone, label_class};
 use crate::components::silk_select::SilkSelect;
 use crate::components::status_banner::{StatusBanner, StatusBannerTone};
+use crate::control_session::{
+    ControlPatchConfig, ControlPatchFn, ControlPatchFuture, use_control_patch_session,
+};
 use crate::icons::*;
-use crate::optimistic_controls::OptimisticEffectControlSession;
 use crate::toasts;
 use crate::zones::{ZoneEffectState, ZonesContext};
 use hypercolor_types::control::ControlValue;
@@ -180,76 +183,50 @@ pub fn EffectsPage() -> impl IntoView {
         MIN_CONTROLS_WIDTH,
         MAX_CONTROLS_WIDTH,
     ));
-    let control_session = OptimisticEffectControlSession::new();
     let preferences_store = use_context::<crate::preferences::PreferencesStore>();
-    let flush_control_updates = use_debounce_fn(
-        move || {
-            let Some(active_effect_id) = fx.active_effect_id.get_untracked() else {
-                control_session.fail_flush();
-                fx.refresh_active_effect();
-                return;
-            };
-            let mut batch = match control_session.start_flush_for(&active_effect_id) {
-                Ok(Some(batch)) => batch,
-                Ok(None) => return,
-                Err(()) => {
-                    fx.refresh_active_effect();
-                    return;
-                }
-            };
-            leptos::task::spawn_local(async move {
-                loop {
-                    if fx.active_effect_id.get_untracked().as_deref()
-                        != Some(batch.effect_id.as_str())
-                    {
-                        control_session.fail_flush();
-                        fx.refresh_active_effect();
-                        return;
-                    }
-
-                    match api::update_effect_controls(&batch.effect_id, &batch.values).await {
-                        Ok(()) => {
-                            if fx.active_effect_id.get_untracked().as_deref()
-                                != Some(batch.effect_id.as_str())
-                            {
-                                control_session.fail_flush();
-                                fx.refresh_active_effect();
-                                return;
-                            }
-                            let Some(next) = control_session.complete_flush() else {
-                                if let Some(store) = preferences_store
-                                    && let Err(error) = store.save(
-                                        batch.effect_id,
-                                        crate::preferences::EffectPreferences {
-                                            preset_id: fx.active_preset_id.get_untracked(),
-                                            control_values: fx
-                                                .active_control_values
-                                                .get_untracked(),
-                                        },
-                                    )
-                                {
-                                    toasts::toast_error(&format!(
-                                        "Controls applied, but preferences were not saved: {error}"
-                                    ));
-                                }
-                                return;
-                            };
-                            batch = next;
-                        }
-                        Err(error) => {
-                            control_session.fail_flush();
-                            fx.refresh_active_effect();
-                            toasts::toast_error(&format!(
-                                "Failed to update effect controls: {error}"
-                            ));
-                            return;
-                        }
-                    }
-                }
-            });
+    let patch: ControlPatchFn = Arc::new(
+        move |effect_id: String,
+              payload: crate::optimistic_controls::ControlValueMap,
+              _version: Option<u64>|
+              -> ControlPatchFuture {
+            Box::pin(async move {
+                api::update_effect_controls(&effect_id, &payload).await?;
+                Ok(api::MutationOutcome::Applied(None))
+            })
         },
-        75.0,
     );
+    let on_committed = preferences_store.map(|store| {
+        Callback::new(move |effect_id: String| {
+            if fx.active_effect_id.get_untracked().as_deref() != Some(effect_id.as_str()) {
+                return;
+            }
+            if let Err(error) = store.save(
+                effect_id,
+                crate::preferences::EffectPreferences {
+                    preset_id: fx.active_preset_id.get_untracked(),
+                    control_values: fx.active_control_values.get_untracked(),
+                },
+            ) {
+                toasts::toast_error(&format!(
+                    "Controls applied, but preferences were not saved: {error}"
+                ));
+            }
+        })
+    });
+    let control_session = use_control_patch_session(ControlPatchConfig {
+        target: Signal::derive(move || fx.active_effect_id.get()),
+        defs: Signal::derive(move || fx.active_controls.get()),
+        set_values: fx.set_active_control_values,
+        initial_version: None,
+        debounce_ms: 75.0,
+        patch,
+        on_error: Callback::new(|error: String| {
+            toasts::toast_error(&format!("Failed to update effect controls: {error}"));
+        }),
+        recover: Callback::new(move |()| fx.refresh_active_effect()),
+        on_committed,
+        flush_guard: None,
+    });
 
     // Persist filter changes to localStorage
     Effect::new(move |_| {
@@ -489,11 +466,10 @@ pub fn EffectsPage() -> impl IntoView {
 
     // Control change handler
     let on_control_change = Callback::new(move |(name, value): (String, serde_json::Value)| {
-        let Some(active_effect_id) = fx.active_effect_id.get() else {
+        if fx.active_effect_id.get().is_none() {
             return;
-        };
+        }
 
-        let controls_snapshot = fx.active_controls.get();
         let current_values = fx.active_control_values.get();
         let updates = expand_control_updates(
             fx.active_effect_name.get().as_deref(),
@@ -502,14 +478,7 @@ pub fn EffectsPage() -> impl IntoView {
             &value,
         );
 
-        control_session.admit_raw_updates_to(
-            active_effect_id,
-            fx.set_active_control_values,
-            &controls_snapshot,
-            &updates,
-        );
-
-        flush_control_updates();
+        control_session.on_changes.run(updates);
     });
 
     // Resize callbacks for detail and controls panels
