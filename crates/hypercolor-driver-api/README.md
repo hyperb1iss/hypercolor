@@ -12,7 +12,7 @@ different schema version is rejected by the registry.
 ## Position in the Workspace
 
 - Depends on: `hypercolor-types`, `serde`, `serde_json`, `tracing`, `anyhow`,
-  `async-trait`, `utoipa`, `tokio`, `mdns-sd`, `aes-gcm`, `rand`
+  `async-trait`, `tokio`, `mdns-sd`, `aes-gcm`, `rand`
 - Consumed by: every network driver crate (`hypercolor-driver-hue`,
   `hypercolor-driver-nanoleaf`, `hypercolor-driver-wled`, `hypercolor-driver-govee`),
   HAL catalog wrappers in `hypercolor-driver-builtin`, `hypercolor-network`, and

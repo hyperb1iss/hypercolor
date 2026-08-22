@@ -19,7 +19,6 @@ tracing = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 async-trait = { workspace = true }
-utoipa = { workspace = true }
 tokio = { workspace = true }
 mdns-sd = { workspace = true }
 aes-gcm = { workspace = true }
