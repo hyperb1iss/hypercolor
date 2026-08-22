@@ -5,28 +5,6 @@ use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use anyhow::{Context, Result};
-#[cfg(test)]
-use hypercolor_core::bus::DisplayYuv420Frame;
-#[cfg(any(
-    target_os = "windows",
-    all(target_os = "macos", feature = "screen-capture")
-))]
-use hypercolor_core::input::screen::ScreenNativeExecutionTarget;
-#[cfg(target_os = "windows")]
-use hypercolor_core::input::screen::{ScreenBranchPayload, ScreenBranchPublication};
-use hypercolor_core::spatial::PreparedZonePlan;
-use hypercolor_core::types::canvas::{
-    BYTES_PER_PIXEL, Canvas, PublishedSurface, SurfaceStateCounts,
-};
-#[cfg(all(target_os = "macos", feature = "screen-capture"))]
-use hypercolor_macos_gpu_interop::probe_macos_metal4_capabilities;
-#[cfg(all(target_os = "macos", feature = "screen-capture"))]
-use hypercolor_types::event::ZoneColors;
-use hypercolor_types::scene::ZoneId;
-#[cfg(target_os = "windows")]
-use hypercolor_windows_capture::GpuSurfacePublication;
-
 use super::{
     ComposedFrameSet, CompositionPlan, DisplayFinalizeCacheKey, MediaTextureSourceKey,
     SparkleFlingerSurfacePoolCounts,
@@ -34,8 +12,6 @@ use super::{
 use crate::render_thread::gpu_device::{
     GpuBackendPreference, GpuRenderDevice, texture_format_name,
 };
-#[cfg(target_os = "windows")]
-use crate::render_thread::producer_queue::WindowsScreenTextureLease;
 use crate::render_thread::producer_queue::{
     GpuTextureFrame, GpuTextureFrameLease, GpuTextureFrameOrigin, ProducerFrame,
 };
@@ -46,6 +22,23 @@ use crate::render_thread::sparkleflinger::gpu_sampling::GpuSampleSource;
 use crate::render_thread::sparkleflinger::gpu_sampling::{
     GpuSamplingPlan, GpuSamplingPreparation, GpuSpatialSampler,
 };
+use anyhow::{Context, Result};
+#[cfg(test)]
+use hypercolor_core::bus::DisplayYuv420Frame;
+#[cfg(any(
+    target_os = "windows",
+    all(target_os = "macos", feature = "screen-capture")
+))]
+use hypercolor_core::input::screen::ScreenNativeExecutionTarget;
+use hypercolor_core::spatial::PreparedZonePlan;
+use hypercolor_core::types::canvas::{
+    BYTES_PER_PIXEL, Canvas, PublishedSurface, SurfaceStateCounts,
+};
+#[cfg(all(target_os = "macos", feature = "screen-capture"))]
+use hypercolor_macos_gpu_interop::probe_macos_metal4_capabilities;
+#[cfg(all(target_os = "macos", feature = "screen-capture"))]
+use hypercolor_types::event::ZoneColors;
+use hypercolor_types::scene::ZoneId;
 
 mod canvas;
 mod compositor;
@@ -54,6 +47,11 @@ mod frame_set;
 #[cfg(all(target_os = "macos", feature = "screen-capture"))]
 mod macos_screen;
 mod media_upload;
+#[cfg(any(
+    target_os = "windows",
+    all(target_os = "macos", feature = "screen-capture")
+))]
+mod native_screen;
 mod pipeline;
 mod preview;
 mod probe;
@@ -119,12 +117,13 @@ use source::{
 use submission::{FrameInFlight, StashedFrame};
 use telemetry::record_gpu_media_texture_upload;
 pub(crate) use telemetry::{GpuSparkleFlingerTelemetrySnapshot, record_gpu_display_finalize_latch};
-#[cfg(target_os = "windows")]
+#[cfg(all(test, target_os = "windows"))]
 use windows_screen::{
-    NativeScreenCopyFailurePolicy, PreparedWindowsScreenTarget, WindowsScreenBridge,
-    create_screen_bridge, create_screen_target, native_screen_copy_failure_policy,
+    NativeScreenCopyFailurePolicy, native_screen_copy_failure_policy,
     screen_storage_requires_cache_turnover, validate_windows_plan_generation,
 };
+#[cfg(target_os = "windows")]
+use windows_screen::{WindowsScreenBridge, create_screen_bridge};
 #[cfg(target_os = "windows")]
 pub(crate) use windows_screen::{
     is_retryable_native_screen_copy_error, native_screen_copy_error_invalidates_frame,
@@ -666,139 +665,6 @@ impl GpuSparkleFlinger {
     #[cfg(test)]
     pub(super) fn backend_name(&self) -> &str {
         &self.probe.backend
-    }
-
-    #[cfg(any(
-        target_os = "windows",
-        all(target_os = "macos", feature = "screen-capture")
-    ))]
-    pub(crate) fn screen_native_execution_target(
-        &mut self,
-    ) -> Option<&ScreenNativeExecutionTarget> {
-        if !self.canvas_gpu_admitted {
-            return None;
-        }
-        #[cfg(all(target_os = "macos", feature = "screen-capture"))]
-        self.retry_macos_screen_execution();
-        self.screen_target.as_ref()
-    }
-
-    #[cfg(any(
-        target_os = "windows",
-        all(target_os = "macos", feature = "screen-capture")
-    ))]
-    pub(crate) fn release_native_screen_caches(&mut self) {
-        if let Some(surfaces) = &mut self.surfaces {
-            surfaces
-                .compose_source_bind_groups
-                .release_native_screen_entries();
-            surfaces
-                .source_copy_bind_groups
-                .release_native_screen_entries();
-        }
-        for surfaces in self.compositor_surface_cache.values_mut().flatten() {
-            surfaces
-                .compose_source_bind_groups
-                .release_native_screen_entries();
-            surfaces
-                .source_copy_bind_groups
-                .release_native_screen_entries();
-        }
-        #[cfg(all(target_os = "macos", feature = "screen-capture"))]
-        {
-            if let Some(bridge) = &self.screen_bridge {
-                bridge.clear_capture_caches();
-            }
-        }
-        #[cfg(target_os = "windows")]
-        {
-            self.screen_storage_id = None;
-        }
-        #[cfg(all(target_os = "macos", feature = "screen-capture"))]
-        self.release_completed_native_screen_leases();
-    }
-
-    #[cfg(target_os = "windows")]
-    fn reprepare_native_screen_target(&mut self) {
-        self.release_native_screen_caches();
-        self.screen_target = self
-            .screen_bridge
-            .as_ref()
-            .and_then(|bridge| create_screen_target(bridge, self.probe.max_texture_dimension_2d));
-    }
-
-    #[cfg(target_os = "windows")]
-    pub(crate) fn copy_screen_publication(
-        &mut self,
-        publication: &Arc<ScreenBranchPublication>,
-    ) -> Result<Option<GpuTextureFrame>> {
-        let Some(bridge) = self.screen_bridge.clone() else {
-            return Ok(None);
-        };
-        let ScreenBranchPayload::GpuSurface(payload) = publication.payload() else {
-            return Ok(None);
-        };
-        let Some(native) = payload.surface().owner::<GpuSurfacePublication>() else {
-            self.reprepare_native_screen_target();
-            anyhow::bail!("native screen publication has an unknown platform owner");
-        };
-        let Some(prepared) = payload
-            .surface()
-            .retained_owner::<PreparedWindowsScreenTarget>()
-        else {
-            self.reprepare_native_screen_target();
-            anyhow::bail!("native screen publication has no prepared renderer target");
-        };
-        let Some(target_lifetime) = payload.surface().resource_lifetime().cloned() else {
-            self.reprepare_native_screen_target();
-            anyhow::bail!("native screen publication has no renderer allocation lifetime");
-        };
-        let Some(capture_lifetime) = payload.surface().capture_resource_lifetime().cloned() else {
-            self.reprepare_native_screen_target();
-            anyhow::bail!("native screen publication has no capture allocation lifetime");
-        };
-        let copy = match bridge.interop.copy_publication(&prepared.interop, &native) {
-            Ok(copy) => copy,
-            Err(error) => {
-                return match native_screen_copy_failure_policy(&error) {
-                    NativeScreenCopyFailurePolicy::Retain => {
-                        Err(error).context("native screen publication is not ready")
-                    }
-                    NativeScreenCopyFailurePolicy::Reprepare => {
-                        self.reprepare_native_screen_target();
-                        Err(error).context("failed to copy the native screen publication")
-                    }
-                    NativeScreenCopyFailurePolicy::InvalidateFrameAndReprepare => {
-                        self.reprepare_native_screen_target();
-                        Err(error).context("native screen target contents became uncertain")
-                    }
-                };
-            }
-        };
-        if screen_storage_requires_cache_turnover(self.screen_storage_id, prepared.storage_id) {
-            self.release_native_screen_caches();
-            self.screen_storage_id = Some(prepared.storage_id);
-        }
-        let width = copy.width;
-        let height = copy.height;
-        let content_generation = copy.content_generation;
-        let texture = copy.texture.as_ref().clone();
-        let view = copy.view.as_ref().clone();
-        Ok(Some(GpuTextureFrame {
-            width,
-            height,
-            storage_id: prepared.storage_id,
-            content_generation,
-            origin: GpuTextureFrameOrigin::ProducerTexture,
-            texture,
-            view,
-            immutable_lease: None,
-            windows_screen_lease: Some(WindowsScreenTextureLease::new(
-                copy,
-                target_lifetime,
-                capture_lifetime,
-            )),
-        }))
     }
 
     pub(crate) fn can_sample_zone_plan(&mut self, prepared_zones: &[PreparedZonePlan]) -> bool {
