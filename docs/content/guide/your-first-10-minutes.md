@@ -26,9 +26,9 @@ hypercolor status
 
 You should see daemon version, uptime, and a device count. If you get a connection error, check that port 9420 is not in use by another process.
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 If you have OpenRGB, Aura Sync, or another RGB manager running, it may be holding your USB devices. Stop those tools first; two apps cannot share the same HID device.
-{% end %}
+{% </callout> %}
 
 ---
 
@@ -38,7 +38,7 @@ If you have OpenRGB, Aura Sync, or another RGB manager running, it may be holdin
 
 Open a browser to `http://localhost:9420`, or use the desktop app. The Devices panel lists every device Hypercolor has discovered. Each entry shows the device name, driver, LED count, and connection status.
 
-{{ img(path="img/ui/ui-devices.webp", alt="Device discovery in the Hypercolor web UI") }}
+{{< img path="img/ui/ui-devices.webp" alt="Device discovery in the Hypercolor web UI" />}}
 
 If the list is empty, run a scan:
 
@@ -101,7 +101,7 @@ hypercolor effects activate borealis
 
 Effect names are fuzzy-matched. The daemon applies the effect across all connected devices immediately.
 
-{{ img(path="img/ui/effects.webp", alt="Effects panel showing Borealis running across connected devices") }}
+{{< img path="img/ui/effects.webp" alt="Effects panel showing Borealis running across connected devices" />}}
 
 You can pass initial controls at activation time:
 
@@ -127,11 +127,11 @@ To stop the effect entirely:
 hypercolor effects stop
 ```
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 Effect switches are immediate today. The `--transition` flag is reserved for
 future crossfades, and nonzero values are rejected until that renderer path
 lands.
-{% end %}
+{% </callout> %}
 
 ---
 

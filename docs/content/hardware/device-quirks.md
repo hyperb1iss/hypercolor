@@ -32,11 +32,11 @@ The Nollie 8 v2 and PrismRGB Prism 8 share PID `0x1F01` but enumerate on differe
 Both are handled by a single `nollie` driver entry. The 0.75 brightness scale is applied
 automatically; you do not need to configure anything.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 In the driver database this device is named "Nollie 8 v2 / PrismRGB Prism 8", so the
 device list may show it under the Nollie name even though the box says PrismRGB. This is
 expected: the underlying silicon is the same hardware regardless of the badge.
-{% end %}
+{% </callout> %}
 
 ---
 
@@ -58,13 +58,13 @@ installed, check which firmware version is on the hub. The hub's firmware versio
 visible in Lian Li's L-Connect software on Windows, or sometimes printed on a label
 inside the hub housing.
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 Both firmware versions share the same PID (`0xA101`). Hypercolor keeps two database
 entries for that PID and picks the right one by matching the hub's reported firmware
 version (`1.7` selects the HID path, `1.0` selects the vendor path), not a manual
 setting. If the device does not appear, verify that `udev/99-hypercolor.rules` is
 installed and that you restarted the daemon after plugging in the hub.
-{% end %}
+{% </callout> %}
 
 The Uni Hub AL V2 (PID `0xA104`) is a separate device and always uses the HID transport;
 the firmware split applies only to the original AL.
@@ -96,11 +96,11 @@ protocol. Check the [compatibility matrix](@/hardware/compatibility.md) for the 
 entry of your specific model. The Harpoon, Ironclaw, and Dark Core RGB Pro SE all have
 supported wired-mode entries in the Bragi peripheral list.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 Child routing (the dongle forwarding Hypercolor color packets to the wireless peripheral)
 is the feature that is not yet implemented, not the Bragi protocol itself. Wired Bragi
 devices work fully. This is a protocol engineering gap, not a hardware limitation.
-{% end %}
+{% </callout> %}
 
 ---
 

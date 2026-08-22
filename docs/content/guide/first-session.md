@@ -102,9 +102,9 @@ just udev-install
 
 Re-plug the device or log out and back in after installing the rules. For more detail, see [Debugging](@/contributing/debugging.md).
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 If a USB device appears in `lsusb` but not in `hypercolor devices list`, check whether another RGB manager such as OpenRGB, Aura Sync, or the openrazer daemon is running. These tools grab the HID device file and Hypercolor cannot take over until they release it.
-{% end %}
+{% </callout> %}
 
 **Identify a specific device** by making it flash a test pattern. This is useful when you have multiple devices and want to confirm which physical unit has which ID:
 
@@ -114,7 +114,7 @@ hypercolor devices identify <device-name-or-id>
 
 The device pulses for five seconds by default. Pass `--duration 10` for a longer window.
 
-{{ img(path="img/ui/ui-devices.webp", alt="Device discovery in the Hypercolor web UI") }}
+{{< img path="img/ui/ui-devices.webp" alt="Device discovery in the Hypercolor web UI" />}}
 
 ## 4. Browse the effect library
 
@@ -245,7 +245,7 @@ curl -s http://localhost:9420/api/v1/scene \
 
 The web UI's controls panel lets you adjust these with sliders, which is easier for exploration. The REST PATCH and `effects patch` are the right paths for scripting or keyboard macros.
 
-{{ img(path="img/ui/ui-effect-controls.webp", alt="Effect control panel in the Hypercolor Studio") }}
+{{< img path="img/ui/ui-effect-controls.webp" alt="Effect control panel in the Hypercolor Studio" />}}
 
 ## 7. Build a spatial layout
 
@@ -298,9 +298,9 @@ Delete a layout you no longer need:
 hypercolor layouts delete "Old Layout"
 ```
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 The Studio workspace offers a full visual zone editor for spatial layouts. Open `http://localhost:9420`, click the Studio tab, and use the zone canvas to drag device zones into position. See [Studio overview](@/studio/overview.md) and [Layouts](@/studio/layouts.md) for the full walkthrough.
-{% end %}
+{% </callout> %}
 
 ## 8. Set up audio-reactive effects
 
@@ -419,17 +419,17 @@ hypercolor scenes delete "Old Scene" --yes
 
 For live and snapshot mutation modes, boot restore, and external automation, see [Scenes and snapshots](@/guide/profiles-and-scenes.md).
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 Studio is the visual authoring surface for scenes. The Studio workspace lets you build multi-zone scenes with per-zone effects, inspect the composition in a live canvas preview, and manage scene groups without writing JSON. See [Studio scenes](@/studio/scenes.md) and [Studio zones](@/studio/zones.md).
-{% end %}
+{% </callout> %}
 
-{{ img(path="img/ui/ui-scenes.webp", alt="The scene switcher in the Hypercolor web UI") }}
+{{< img path="img/ui/ui-scenes.webp" alt="The scene switcher in the Hypercolor web UI" />}}
 
 ## 11. Tour the web UI
 
 Open `http://localhost:9420` in a browser. The daemon serves the embedded Leptos web UI directly, with no separate server process required.
 
-{{ img(path="img/ui/dashboard.webp", alt="Hypercolor dashboard with effects browser, canvas preview, and device status panel") }}
+{{< img path="img/ui/dashboard.webp" alt="Hypercolor dashboard with effects browser, canvas preview, and device status panel" />}}
 
 The UI is organized into panels:
 
@@ -448,7 +448,7 @@ Studio is the advanced authoring workspace inside the web UI. It goes beyond app
 
 Open Studio from the top navigation, or navigate directly to `http://localhost:9420` and click the Studio tab.
 
-{{ img(path="img/ui/studio.webp", alt="Hypercolor Studio zone canvas with live preview and effect layers") }}
+{{< img path="img/ui/studio.webp" alt="Hypercolor Studio zone canvas with live preview and effect layers" />}}
 
 What Studio adds on top of the basic effects browser:
 

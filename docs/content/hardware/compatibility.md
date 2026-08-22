@@ -501,7 +501,7 @@ Devices present in the database but not yet researched. These are opportunities 
 
 ## Per-Vendor Details
 
-### Ableton {#ableton}
+### Ableton {% raw %}{#ableton}{% endraw %}
 
 [ableton.com](https://ableton.com) · VID 0x2982 · Driver `push2`
 
@@ -515,7 +515,7 @@ Devices present in the database but not yet researched. These are opportunities 
 
 _Source: [`data/drivers/vendors/ableton.toml`](../../../data/drivers/vendors/ableton.toml)_
 
-### Alienware {#alienware}
+### Alienware {% raw %}{#alienware}{% endraw %}
 
 VID 0x187C, 0x04CA, 0x0424
 
@@ -531,7 +531,7 @@ VID 0x187C, 0x04CA, 0x0424
 
 _Source: [`data/drivers/vendors/alienware.toml`](../../../data/drivers/vendors/alienware.toml)_
 
-### Aqua Computer {#aquacomputer}
+### Aqua Computer {% raw %}{#aquacomputer}{% endraw %}
 
 [aquacomputer.de](https://aquacomputer.de) · VID 0x0C70
 
@@ -548,7 +548,7 @@ _Source: [`data/drivers/vendors/alienware.toml`](../../../data/drivers/vendors/a
 
 _Source: [`data/drivers/vendors/aquacomputer.toml`](../../../data/drivers/vendors/aquacomputer.toml)_
 
-### ASRock {#asrock}
+### ASRock {% raw %}{#asrock}{% endraw %}
 
 [asrock.com](https://asrock.com) · VID 0x26CE
 
@@ -565,7 +565,7 @@ _Source: [`data/drivers/vendors/aquacomputer.toml`](../../../data/drivers/vendor
 
 _Source: [`data/drivers/vendors/asrock.toml`](../../../data/drivers/vendors/asrock.toml)_
 
-### ASUS {#asus}
+### ASUS {% raw %}{#asus}{% endraw %}
 
 [asus.com](https://asus.com) · VID 0x0B05 · Driver `asus`
 
@@ -608,7 +608,7 @@ _Source: [`data/drivers/vendors/asrock.toml`](../../../data/drivers/vendors/asro
 
 _Source: [`data/drivers/vendors/asus.toml`](../../../data/drivers/vendors/asus.toml)_
 
-### Cooler Master {#coolermaster}
+### Cooler Master {% raw %}{#coolermaster}{% endraw %}
 
 [coolermaster.com](https://coolermaster.com) · VID 0x2516
 
@@ -646,7 +646,7 @@ _Source: [`data/drivers/vendors/asus.toml`](../../../data/drivers/vendors/asus.t
 
 _Source: [`data/drivers/vendors/coolermaster.toml`](../../../data/drivers/vendors/coolermaster.toml)_
 
-### Corsair {#corsair}
+### Corsair {% raw %}{#corsair}{% endraw %}
 
 VID 0x1B1C · Driver `corsair`
 
@@ -747,7 +747,7 @@ VID 0x1B1C · Driver `corsair`
 
 _Source: [`data/drivers/vendors/corsair.toml`](../../../data/drivers/vendors/corsair.toml)_
 
-### Dygma {#dygma}
+### Dygma {% raw %}{#dygma}{% endraw %}
 
 [dygma.com](https://dygma.com) · VID 0x35EF · Driver `dygma`
 
@@ -762,7 +762,7 @@ _Source: [`data/drivers/vendors/corsair.toml`](../../../data/drivers/vendors/cor
 
 _Source: [`data/drivers/vendors/dygma.toml`](../../../data/drivers/vendors/dygma.toml)_
 
-### EVGA {#evga}
+### EVGA {% raw %}{#evga}{% endraw %}
 
 [evga.com](https://www.evga.com) · VID 0x3842
 
@@ -782,7 +782,7 @@ _Source: [`data/drivers/vendors/dygma.toml`](../../../data/drivers/vendors/dygma
 
 _Source: [`data/drivers/vendors/evga.toml`](../../../data/drivers/vendors/evga.toml)_
 
-### Fnatic {#fnatic}
+### Fnatic {% raw %}{#fnatic}{% endraw %}
 
 [fnatic.com](https://fnatic.com) · VID 0x2F0E
 
@@ -798,7 +798,7 @@ _Source: [`data/drivers/vendors/evga.toml`](../../../data/drivers/vendors/evga.t
 
 _Source: [`data/drivers/vendors/fnatic.toml`](../../../data/drivers/vendors/fnatic.toml)_
 
-### Gigabyte {#gigabyte}
+### Gigabyte {% raw %}{#gigabyte}{% endraw %}
 
 VID 0x048D, 0x1044, 0x0414
 
@@ -824,7 +824,7 @@ VID 0x048D, 0x1044, 0x0414
 
 _Source: [`data/drivers/vendors/gigabyte.toml`](../../../data/drivers/vendors/gigabyte.toml)_
 
-### Glorious {#glorious}
+### Glorious {% raw %}{#glorious}{% endraw %}
 
 [gloriousgaming.com](https://gloriousgaming.com) · VID 0x258A, 0x320F · Driver `qmk`
 
@@ -847,7 +847,7 @@ _Source: [`data/drivers/vendors/gigabyte.toml`](../../../data/drivers/vendors/gi
 
 _Source: [`data/drivers/vendors/glorious.toml`](../../../data/drivers/vendors/glorious.toml)_
 
-### Govee {#govee}
+### Govee {% raw %}{#govee}{% endraw %}
 
 [govee.com](https://govee.com) · Driver `govee`
 
@@ -866,7 +866,7 @@ _Source: [`data/drivers/vendors/glorious.toml`](../../../data/drivers/vendors/gl
 
 _Source: [`data/drivers/vendors/govee.toml`](../../../data/drivers/vendors/govee.toml)_
 
-### HyperX {#hyperx}
+### HyperX {% raw %}{#hyperx}{% endraw %}
 
 [hyperx.com](https://hyperx.com) · VID 0x0951, 0x03F0
 
@@ -897,7 +897,7 @@ _Source: [`data/drivers/vendors/govee.toml`](../../../data/drivers/vendors/govee
 
 _Source: [`data/drivers/vendors/hyperx.toml`](../../../data/drivers/vendors/hyperx.toml)_
 
-### HYTE {#hyte}
+### HYTE {% raw %}{#hyte}{% endraw %}
 
 [hyte.com](https://hyte.com) · VID 0x3402
 
@@ -912,7 +912,7 @@ _Source: [`data/drivers/vendors/hyperx.toml`](../../../data/drivers/vendors/hype
 
 _Source: [`data/drivers/vendors/hyte.toml`](../../../data/drivers/vendors/hyte.toml)_
 
-### Lian Li {#lianli}
+### Lian Li {% raw %}{#lianli}{% endraw %}
 
 [lian-li.com](https://lian-li.com) · VID 0x0CF2, 0x0416 · Driver `lianli`
 
@@ -941,7 +941,7 @@ _Source: [`data/drivers/vendors/hyte.toml`](../../../data/drivers/vendors/hyte.t
 
 _Source: [`data/drivers/vendors/lianli.toml`](../../../data/drivers/vendors/lianli.toml)_
 
-### Logitech {#logitech}
+### Logitech {% raw %}{#logitech}{% endraw %}
 
 [logitechg.com](https://logitechg.com) · VID 0x046D
 
@@ -965,7 +965,7 @@ _Source: [`data/drivers/vendors/lianli.toml`](../../../data/drivers/vendors/lian
 
 _Source: [`data/drivers/vendors/logitech.toml`](../../../data/drivers/vendors/logitech.toml)_
 
-### Mountain {#mountain}
+### Mountain {% raw %}{#mountain}{% endraw %}
 
 [mountain.gg](https://mountain.gg) · VID 0x3282
 
@@ -982,7 +982,7 @@ _Source: [`data/drivers/vendors/logitech.toml`](../../../data/drivers/vendors/lo
 
 _Source: [`data/drivers/vendors/mountain.toml`](../../../data/drivers/vendors/mountain.toml)_
 
-### MSI {#msi}
+### MSI {% raw %}{#msi}{% endraw %}
 
 VID 0x1462, 0x0DB0, 0x1770
 
@@ -1011,7 +1011,7 @@ VID 0x1462, 0x0DB0, 0x1770
 
 _Source: [`data/drivers/vendors/msi.toml`](../../../data/drivers/vendors/msi.toml)_
 
-### Nanoleaf {#nanoleaf}
+### Nanoleaf {% raw %}{#nanoleaf}{% endraw %}
 
 [nanoleaf.me](https://nanoleaf.me) · Driver `nanoleaf`
 
@@ -1025,7 +1025,7 @@ _Source: [`data/drivers/vendors/msi.toml`](../../../data/drivers/vendors/msi.tom
 
 _Source: [`data/drivers/vendors/nanoleaf.toml`](../../../data/drivers/vendors/nanoleaf.toml)_
 
-### Nollie {#nollie}
+### Nollie {% raw %}{#nollie}{% endraw %}
 
 [nolliergb.cn](https://nolliergb.cn) · VID 0x16D1, 0x16D2, 0x16D3, 0x16D5, 0x3061 · Driver `nollie`
 
@@ -1057,7 +1057,7 @@ _Source: [`data/drivers/vendors/nanoleaf.toml`](../../../data/drivers/vendors/na
 
 _Source: [`data/drivers/vendors/nollie.toml`](../../../data/drivers/vendors/nollie.toml)_
 
-### NZXT {#nzxt}
+### NZXT {% raw %}{#nzxt}{% endraw %}
 
 [nzxt.com](https://nzxt.com) · VID 0x1E71
 
@@ -1092,7 +1092,7 @@ _Source: [`data/drivers/vendors/nollie.toml`](../../../data/drivers/vendors/noll
 
 _Source: [`data/drivers/vendors/nzxt.toml`](../../../data/drivers/vendors/nzxt.toml)_
 
-### Philips {#philips}
+### Philips {% raw %}{#philips}{% endraw %}
 
 [meethue.com](https://meethue.com) · Driver `hue`
 
@@ -1106,7 +1106,7 @@ _Source: [`data/drivers/vendors/nzxt.toml`](../../../data/drivers/vendors/nzxt.t
 
 _Source: [`data/drivers/vendors/philips.toml`](../../../data/drivers/vendors/philips.toml)_
 
-### PrismRGB {#prismrgb}
+### PrismRGB {% raw %}{#prismrgb}{% endraw %}
 
 [prismrgb.com](https://prismrgb.com) · VID 0x16D0, 0x16D5 · Driver `nollie, prismrgb`
 
@@ -1122,7 +1122,7 @@ _Source: [`data/drivers/vendors/philips.toml`](../../../data/drivers/vendors/phi
 
 _Source: [`data/drivers/vendors/prismrgb.toml`](../../../data/drivers/vendors/prismrgb.toml)_
 
-### QMK {#qmk}
+### QMK {% raw %}{#qmk}{% endraw %}
 
 [qmk.fm](https://qmk.fm) · VID 0x3434, 0x3297, 0xFEED, 0x6964, 0x4B42, 0xCA04, 0x320F, 0x0C45, 0x1A86 · Driver `qmk`
 
@@ -1145,7 +1145,7 @@ _Source: [`data/drivers/vendors/prismrgb.toml`](../../../data/drivers/vendors/pr
 
 _Source: [`data/drivers/vendors/qmk.toml`](../../../data/drivers/vendors/qmk.toml)_
 
-### Razer {#razer}
+### Razer {% raw %}{#razer}{% endraw %}
 
 [razer.com](https://razer.com) · VID 0x1532 · Driver `razer`
 
@@ -1271,7 +1271,7 @@ _Source: [`data/drivers/vendors/qmk.toml`](../../../data/drivers/vendors/qmk.tom
 
 _Source: [`data/drivers/vendors/razer.toml`](../../../data/drivers/vendors/razer.toml)_
 
-### Roccat {#roccat}
+### Roccat {% raw %}{#roccat}{% endraw %}
 
 [roccat.com](https://roccat.com) · VID 0x1E7D
 
@@ -1300,7 +1300,7 @@ _Source: [`data/drivers/vendors/razer.toml`](../../../data/drivers/vendors/razer
 
 _Source: [`data/drivers/vendors/roccat.toml`](../../../data/drivers/vendors/roccat.toml)_
 
-### Sony {#sony}
+### Sony {% raw %}{#sony}{% endraw %}
 
 [playstation.com](https://playstation.com) · VID 0x054C
 
@@ -1316,7 +1316,7 @@ _Source: [`data/drivers/vendors/roccat.toml`](../../../data/drivers/vendors/rocc
 
 _Source: [`data/drivers/vendors/sony.toml`](../../../data/drivers/vendors/sony.toml)_
 
-### SteelSeries {#steelseries}
+### SteelSeries {% raw %}{#steelseries}{% endraw %}
 
 [steelseries.com](https://steelseries.com) · VID 0x1038
 
@@ -1337,7 +1337,7 @@ _Source: [`data/drivers/vendors/sony.toml`](../../../data/drivers/vendors/sony.t
 
 _Source: [`data/drivers/vendors/steelseries.toml`](../../../data/drivers/vendors/steelseries.toml)_
 
-### Thermaltake {#thermaltake}
+### Thermaltake {% raw %}{#thermaltake}{% endraw %}
 
 VID 0x264A
 
@@ -1362,7 +1362,7 @@ VID 0x264A
 
 _Source: [`data/drivers/vendors/thermaltake.toml`](../../../data/drivers/vendors/thermaltake.toml)_
 
-### WLED {#wled}
+### WLED {% raw %}{#wled}{% endraw %}
 
 [kno.wled.ge](https://kno.wled.ge) · Driver `wled`
 
@@ -1376,7 +1376,7 @@ _Source: [`data/drivers/vendors/thermaltake.toml`](../../../data/drivers/vendors
 
 _Source: [`data/drivers/vendors/wled.toml`](../../../data/drivers/vendors/wled.toml)_
 
-### Wooting {#wooting}
+### Wooting {% raw %}{#wooting}{% endraw %}
 
 [wooting.io](https://wooting.io) · VID 0x03EB, 0x31E3
 

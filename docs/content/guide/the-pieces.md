@@ -33,7 +33,7 @@ The app supervises the daemon: it spawns and watches `hypercolor-daemon` as a ch
 
 The window hosts the web UI at `http://127.0.0.1:9420` (or whatever `HYPERCOLOR_URL` points to). It is a Tauri webview loading the same page any browser would show at that address. New links open in your system browser rather than inside the app window.
 
-{{ img(path="img/ui/dashboard.webp", alt="The Hypercolor dashboard") }}
+{{< img path="img/ui/dashboard.webp" alt="The Hypercolor dashboard" />}}
 
 The app's tray icon reflects daemon state: active, paused, or disconnected. The tray menu gives you quick access to effects, scenes, pause/resume, brightness presets, and server switching without opening the full window.
 
@@ -51,7 +51,7 @@ Autostart is registered via the Tauri autostart plugin with `--minimized`; on ma
 
 The Leptos web UI is served directly by the daemon at `:9420`. There is no separate web server. Once the daemon (or app) is running, opening `http://localhost:9420` in any browser gives you the full Studio interface: the effect library, layout editor, scene manager, audio visualizer, and settings.
 
-{{ img(path="img/ui/dashboard.webp", alt="Hypercolor dashboard in the web browser") }}
+{{< img path="img/ui/dashboard.webp" alt="Hypercolor dashboard in the web browser" />}}
 
 The web UI uses a binary WebSocket connection to `:9420/api/v1/ws` for real-time canvas previews, spectrum data, and event delivery. If the WebSocket channel fails to connect, the preview panel will appear dark while the API remains functional.
 
@@ -59,7 +59,7 @@ The web UI uses a binary WebSocket connection to `:9420/api/v1/ws` for real-time
 
 The Ratatui terminal UI gives you a live instrument panel without leaving the shell: effects, device status, canvas preview, and a spectrum visualizer, all rendered in your terminal.
 
-{{ img(path="img/tui/tui-dashboard.png", alt="TUI dashboard view") }}
+{{< img path="img/tui/tui-dashboard.png" alt="TUI dashboard view" />}}
 
 Launch it through the CLI:
 
@@ -125,9 +125,9 @@ ws://127.0.0.1:9420/api/v1/ws   WebSocket (events, frames, spectrum)
 
 The daemon also optionally exposes an MCP server at `/mcp` for AI agent integration, but this is disabled by default (`[mcp] enabled = false` in `hypercolor.toml`). See the [MCP server](@/api/mcp.md) reference to enable it.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 The only port a normal install uses is **9420**. Port 9430 is the Leptos hot-reload dev server (`just ui-dev`) and is only relevant if you are developing the web UI. Do not point users at :9430 in a packaged install.
-{% end %}
+{% </callout> %}
 
 ## Choosing what to open
 

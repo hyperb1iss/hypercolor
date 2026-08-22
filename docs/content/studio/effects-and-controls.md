@@ -9,7 +9,7 @@ To light a zone, add an effect layer to it and tune that effect from the layer's
 
 This page covers picking an effect for a zone, the live control panel, media playback settings, and the extra controls that appear when an effect reacts to your screen.
 
-{{ img(path="img/ui/studio.webp", alt="Studio with an effect layer selected and its control panel open") }}
+{{< img path="img/ui/studio.webp" alt="Studio with an effect layer selected and its control panel open" />}}
 
 ## Pick an effect for a zone
 
@@ -20,9 +20,9 @@ Effects live inside layers, and layers live inside zones. To add one, open the z
 
 Search filters as you type. Click an effect to add it as a layer in the selected zone.
 
-{% callout(type="info", title="Light vs screen surfaces") %}
+{% <callout type="info" title="Light vs screen surfaces"> %}
 On a screen surface the **Effect** tab relabels to **Face** and shows display-category effects (clocks, faces, ambient screen art) instead of LED effects. The picker only ever offers what makes sense for the surface you are composing.
-{% end %}
+{% </callout> %}
 
 The catalog spans the native built-in effects compiled into the daemon plus the SDK HTML effects. The exact count grows with every release, so browse the full library with parameters and previews in the [Effects](@/effects/_index.md) section.
 
@@ -48,9 +48,9 @@ Every edit follows the same path:
 
 The 120 ms debounce is a Studio product contract. It is fast enough to feel live while still collapsing a rapid drag into one clean write.
 
-{% callout(type="tip", title="Why the layer never flickers") %}
+{% <callout type="tip" title="Why the layer never flickers"> %}
 Effect-control edits go through a partial, *debounced* patch that updates only the changed control values. They never rewrite the whole layer or restructure the stack, so dragging a slider does not tear the layer row down and rebuild it between frames. The effect keeps rendering the entire time.
-{% end %}
+{% </callout> %}
 
 ### Concurrent edits stay consistent
 
@@ -61,7 +61,7 @@ requests are in flight, and newer values always win.
 
 This is the same shared control-patch session that powers display-face controls and the standalone effect panel, so the behavior is identical everywhere you tune live controls.
 
-{{ img(path="img/ui/ui-effect-controls.webp", alt="Effect control panel in the Hypercolor Studio") }}
+{{< img path="img/ui/ui-effect-controls.webp" alt="Effect control panel in the Hypercolor Studio" />}}
 
 ## Media playback controls
 
@@ -83,7 +83,7 @@ These knobs are deliberately global. One screen-capture pipeline feeds every scr
 
 The section only appears for effects that actually consume screen input, so a non-reactive effect never shows capture controls it cannot use. For setting up screen capture as an input source and the ambilight workflow, see [audio setup](@/guide/audio-setup.md) for the parallel reactive-input model and the [Effects](@/effects/_index.md) section for screen-reactive effects to try.
 
-{{ img(path="img/ui/ui-screen-controls.webp", alt="Screen-reactive capture controls in the Hypercolor Studio") }}
+{{< img path="img/ui/ui-screen-controls.webp" alt="Screen-reactive capture controls in the Hypercolor Studio" />}}
 
 ## Where to go next
 

@@ -9,7 +9,7 @@ server so AI agents can drive your lighting through structured tool calls instea
 of raw REST. It runs inside the daemon and speaks the MCP **Streamable HTTP**
 transport, mounted at `/mcp` on the same `:9420` port as everything else.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 This page is the compact API-reference entry point for the MCP surface. The
 full, worked documentation (client setup, every tool schema, the resource
 shapes, and the prompt templates) lives in the **Agents** section. Start there:
@@ -19,7 +19,7 @@ shapes, and the prompt templates) lives in the **Agents** section. Start there:
 - [Tools reference](@/agents/tools-reference.md): all 17 tools, full JSON schema
 - [Resources reference](@/agents/resources-reference.md): the 5 `hypercolor://` resources
 - [Prompt templates](@/agents/prompt-templates.md): the 3 shipped prompts
-  {% end %}
+  {% </callout> %}
 
 ## The transport at a glance
 
@@ -40,12 +40,12 @@ The server advertises tools, resources, and prompts in its capabilities and ship
 `instructions` that tell agents to read `hypercolor://state` or call `get_status`
 before making changes.
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 **MCP is off by default.** Until you set `enabled = true` in the `[mcp]` config
 block, the daemon never mounts the `/mcp` route and the endpoint returns 404. The
 [MCP setup](@/agents/mcp-setup.md) page leads with enabling it, then walks the
 per-client config. Enable it there first.
-{% end %}
+{% </callout> %}
 
 ## Enable the server
 
@@ -88,14 +88,14 @@ them live on the [MCP setup](@/agents/mcp-setup.md) page.
 
 The three MCP primitives map cleanly onto Hypercolor's engine.
 
-{% mermaid() %}
+{% <mermaid> %}
 graph TD
 A[MCP client] -->|tools| T[17 tools: set_effect, get_status, ...]
 A -->|resources| R[5 resources: hypercolor://state, devices, ...]
 A -->|prompts| P[3 prompts: mood_lighting, troubleshoot, setup_automation]
 T --> E[Daemon engine + event bus]
 R --> E
-{% end %}
+{% </mermaid> %}
 
 **Tools** are actions and reads. Eight are listed as `read_only` (`list_effects`,
 `get_devices`, `get_status`, `list_scenes`, `get_audio_state`, `get_sensor_data`,
@@ -113,11 +113,11 @@ per render frame) so it is a summary surface, not a spectrum stream.
 
 ### Tool catalog
 
-{% api_endpoint(method="POST", path="/mcp") %}
+{% <api_endpoint method="POST" path="/mcp"> %}
 Tool calls and all other MCP traffic flow through this single endpoint. The table
 below is a map; the [tools reference](@/agents/tools-reference.md) carries the full
 input schemas, defaults, enums, and a worked call plus response for each tool.
-{% end %}
+{% </api_endpoint> %}
 
 | Tool               | Read-only | Destructive | Idempotent |
 | ------------------ | --------- | ----------- | ---------- |

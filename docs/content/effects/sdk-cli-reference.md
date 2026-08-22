@@ -7,9 +7,9 @@ template = "page.html"
 
 The authoring CLI ships inside `hypercolor` and runs from a scaffolded effect workspace. It compiles your TypeScript and GLSL into self-contained HTML artifacts, validates them, and installs them so the daemon can pick them up. This page is the exhaustive reference for every command, flag, exit code, and environment variable.
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 This is the **authoring** CLI: `hypercolor` resolved from your effect workspace, used to build and ship effects. It is a different binary from the **system** CLI (`hypercolor`, installed alongside the daemon) that talks to the running daemon to list devices, apply effects, and manage scenes. The system CLI lives in [its own reference](@/api/cli.md). When this page says `bunx hypercolor build`, it means the workspace tool, never the daemon client.
-{% end %}
+{% </callout> %}
 
 ## Invocation
 
@@ -47,12 +47,12 @@ Commands:
 
 ## Command map
 
-{% mermaid() %}
+{% <mermaid> %}
 graph TD
     ADD["add: scaffold an effect"] --> BUILD["build: compile to HTML"]
     BUILD --> VALIDATE["validate: check artifacts"]
     VALIDATE --> INSTALL["install: ship to the daemon or user dir"]
-{% end %}
+{% </mermaid> %}
 
 The everyday loop is `add` to create an effect, `build` to compile it, `validate` to confirm the artifact is well-formed, then `install` to deliver it. The deprecated `dev` command is documented at the end so you know why it no longer works.
 
@@ -104,9 +104,9 @@ On success each artifact prints a line: a `✓` for canvas and shader effects, a
 💎 now-playing → dist/now-playing.html (58.1 KB)
 ```
 
-{% callout(type="danger") %}
+{% <callout type="danger"> %}
 **The build enforces correctness: these fail the build, they do not warn.** If your source reads audio (`audio(`, `ctx.audio`, `getAudioData(`, or `engine.audio`) but the effect didn't set `audio: true` in its options, the build throws an audio-validation error. Every shader control except `asset` must have a matching `uniform i<Key>` in the GLSL, or the build reports missing control uniforms. And a module that never calls `canvas()`, `effect()`, or `face()` fails metadata extraction with "no effect definitions were registered." Treat a clean build as a real gate, not a formality.
-{% end %}
+{% </callout> %}
 
 ## `validate`
 
@@ -190,9 +190,9 @@ hypercolor effects rescan
 
 The `--daemon` path POSTs each validated artifact as a multipart form (field `file`) to `/api/v1/effects/install` on the daemon base URL:
 
-{% api_endpoint(method="POST", path="/api/v1/effects/install") %}
+{% <api_endpoint method="POST" path="/api/v1/effects/install"> %}
 Upload a built HTML effect to the running daemon. Multipart form, field `file`, content type `text/html`. Returns the standard `{ data, meta }` envelope where `data` carries `{ name, path, controls, presets }`: the installed effect name, its on-disk path, and the count of controls and presets the daemon extracted.
-{% end %}
+{% </api_endpoint> %}
 
 On a successful daemon install the CLI prints the installed name and control count:
 
@@ -202,9 +202,9 @@ On a successful daemon install the CLI prints the installed name and control cou
 
 If the daemon rejects the artifact, the CLI surfaces the daemon's error details when present, otherwise the HTTP status.
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 The scaffold defines `ship` and `ship:daemon` package scripts so you rarely type the install flags by hand. `bun run ship` is the local install, `bun run ship:daemon` is the daemon upload. Use the daemon path while iterating against a live app, and the local path when you want the effect to survive a daemon restart.
-{% end %}
+{% </callout> %}
 
 ## `add`
 
@@ -285,9 +285,9 @@ Options:
                           Defaults to the published caret range.
 ```
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 New workspaces depend on the published `hypercolor` package by default. To author against a local engine checkout, pass `--sdk-spec file:../hypercolor/sdk/packages/core` or set the `HYPERCOLOR_SDK_PACKAGE_SPEC` environment variable. Bun's `link:` is not a drop-in for a relative path here; use `file:`.
-{% end %}
+{% </callout> %}
 
 The scaffolder runs interactively when the workspace name or template is missing, otherwise it builds the workspace directly. It initializes git and runs `bun install` by default; `--no-git` and `--no-install` opt out. When finished it prints the next command: `bun run build` for code templates, `bun run validate` for the raw `html` template.
 

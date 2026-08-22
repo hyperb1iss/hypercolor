@@ -256,11 +256,11 @@ if let Some(api_key) = account_api_key(host).await? {
 
 The cloud call is best-effort: a failure logs a warning and does not fail the scan.
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 mDNS frequently fails on managed networks with multicast filtering, across VLANs, or when
 `systemd-resolved` is running as a stub. Always provide a `known_ips` config field as an
 escape hatch so users can add IPs manually. WLED, Hue, and Nanoleaf all follow this pattern.
-{% end %}
+{% </callout> %}
 
 ---
 
@@ -515,11 +515,11 @@ At minimum, cover:
 just test-crate hypercolor-driver-acme
 ```
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 `cargo check --workspace` does not cover `hypercolor-ui`, but it does cover your new driver
 crate as long as you add it to the workspace `Cargo.toml`. Run `just verify` (fmt + lint +
 test) before opening a PR.
-{% end %}
+{% </callout> %}
 
 ---
 

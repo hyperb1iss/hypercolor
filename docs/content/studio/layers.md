@@ -9,13 +9,13 @@ Layers are how a single zone shows more than one thing at once. Each zone owns a
 
 You edit the stack in the **Layer Stack** panel. It opens from the Stage by clicking the now-playing chip, which slides the composition panel over the canvas. Studio, the Media page, and any future surface all mount the exact same editor, so the controls never drift between places.
 
-{{ img(path="img/ui/studio.webp", alt="Studio composition workspace with the layer stack panel") }}
+{{< img path="img/ui/studio.webp" alt="Studio composition workspace with the layer stack panel" />}}
 
 This page covers adding layers, the 11 blend modes, opacity, the transform and color adjustments, reordering, the runtime health pill, and the add-to scopes that let one layer land on several zones at once.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 A **scene** is your whole-rig configuration and a **zone** is a flexible partition of that rig. The layer stack belongs to one zone. Switching zones in the left rail swaps which stack you are editing. See [Zones](@/studio/zones.md) for the zone model.
-{% end %}
+{% </callout> %}
 
 ## The layer stack at a glance
 
@@ -37,7 +37,7 @@ Each layer is a card. From top to bottom a card carries:
 
 Click **Add layer** to open the picker. It has two tabs, **Effect** and **Media**, plus an optional **Add to** scope selector.
 
-{{ img(path="img/ui/effects.webp", alt="Studio effects gallery, the kind of catalog the Effect tab draws from") }}
+{{< img path="img/ui/effects.webp" alt="Studio effects gallery, the kind of catalog the Effect tab draws from" />}}
 
 ### Effect and face layers
 
@@ -49,9 +49,9 @@ When the selected surface is a **Screen** (a display-face zone), the tab relabel
 
 The **Media** tab shows your uploaded assets as a grid. Search filters by filename or MIME type. Click a tile and it is added immediately as a media layer, with no separate confirm step. If the grid is empty, upload from the Media library first; the picker refreshes its asset list every time you open it, so a file you just uploaded shows up without reloading the page.
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 A new **Effect** layer added onto a non-empty stack defaults to the **Screen** blend mode, so it lights up over what is already there instead of hiding it. The very first layer, and every media layer, starts on **Alpha**.
-{% end %}
+{% </callout> %}
 
 ## Blend modes
 
@@ -133,9 +133,9 @@ By default a new layer lands on the one zone you are editing. In a **multi-zone*
 
 The scope selector only appears when there is genuinely more than one place to send a layer. In a single-zone scene it stays hidden, and a scope that would target nothing (for example **All screens** in a scene with no screens) is dropped from the list.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 When you add a layer to multiple zones at once, the change is guarded against conflicts only for the zone currently on screen; the other zones receive the layer unconditionally. If a bulk add partially fails, the toast tells you how many zones got the layer and how many did not.
-{% end %}
+{% </callout> %}
 
 A **Selected surfaces** scope, adding to an arbitrary multi-select of zones, is planned but not yet shipped. It rides a surface multi-select that is still on the roadmap.
 

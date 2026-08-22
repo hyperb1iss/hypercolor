@@ -7,9 +7,9 @@ template = "page.html"
 
 The Hypercolor MCP server exposes **17 tools**, the verbs an agent uses to read and reshape the lighting state. This page is the authoritative reference: every tool's arguments, defaults, enums, annotations, and a worked call. All facts here are pulled from the daemon source in `crates/hypercolor-daemon/src/mcp/tools/`, not paraphrased.
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 The MCP server is **off by default**. Until you enable it in config, `http://127.0.0.1:9420/mcp` returns 404. Turn it on first in [MCP setup](@/agents/mcp-setup.md), then come back here.
-{% end %}
+{% </callout> %}
 
 If you have not met the three-primitive model yet, start at the [Agents & MCP overview](@/agents/_index.md). Tools are one of the three primitives; the others are [resources](@/agents/resources-reference.md) (browsable state) and [prompt templates](@/agents/prompt-templates.md) (guided flows).
 
@@ -28,9 +28,9 @@ Of the 17 tools, **8 are read-only**: `get_status`, `list_effects`, `get_devices
 
 Five of the nine mutating tools are destructive: `set_effect`, `set_color`, `clear_zone`, `activate_scene`, and `set_display_face` each discard state the caller did not supply and cannot recover. The other four are not: `set_brightness` and `set_output_power` are reversible value writes, `adjust_controls` patches named values and bindings, and `create_scene` only adds.
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 Read-then-act is the through-line. The server's own instructions tell every client to call `get_status` or read `hypercolor://state` before making changes, and to call `list_effects` before applying visuals. Follow that order and your calls land predictably.
-{% end %}
+{% </callout> %}
 
 ## Errors and the call envelope
 
@@ -61,9 +61,9 @@ The code maps from the daemon's `ToolError` type:
 | `-32000` | State conflict (the current state rejects the mutation) |
 | `-32603` | Internal execution error                                |
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 Tool output schemas are intentionally broad right now. The shapes shown below are what the live handlers actually return, read straight from the source, not from the declared output schema, which is a placeholder that will tighten as the surface stabilizes.
-{% end %}
+{% </callout> %}
 
 Named resources use one deterministic selector policy: exact serialized ID, exact case-insensitive name, then a unique case-insensitive name substring. No match and ambiguous substrings return structured candidate details. Candidates are sorted by lowercase name, original name, then ID. Unnamed layers resolve by ID only. The color parser is separate and still accepts CSS forms and natural-language color descriptions.
 
@@ -127,7 +127,7 @@ Browse the effect catalog with optional filters. Read-only, idempotent. Returns 
 
 The response carries `effects`, `total`, `has_more`, `limit`, and `offset`. The catalog is large and growing, so always page rather than hardcoding a count; browse [the effects gallery](@/effects/_index.md) for the visual side.
 
-{{ img(path="img/ui/effects.webp", alt="Effect gallery in the Hypercolor UI") }}
+{{< img path="img/ui/effects.webp" alt="Effect gallery in the Hypercolor UI" />}}
 
 ### set_color
 
@@ -172,7 +172,7 @@ Enumerate known RGB devices with connection status, driver origin, presentation,
 
 The response carries a `devices` array plus a `summary` with `total`, `connected`, and `total_leds`.
 
-{{ img(path="img/ui/ui-devices.webp", alt="Connected devices in the Hypercolor UI") }}
+{{< img path="img/ui/ui-devices.webp" alt="Connected devices in the Hypercolor UI" />}}
 
 ### set_brightness
 
@@ -206,7 +206,7 @@ Activate a scene by exact ID, exact case-insensitive name, or unique case-insens
 
 No match or an ambiguous substring returns the structured selector error described above. A scene that exceeds current media limits returns a structured conflict without changing the active scene.
 
-{{ img(path="img/ui/ui-scenes.webp", alt="Scenes in the Hypercolor UI") }}
+{{< img path="img/ui/ui-scenes.webp" alt="Scenes in the Hypercolor UI" />}}
 
 ### list_scenes
 

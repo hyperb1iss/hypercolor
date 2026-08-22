@@ -80,6 +80,12 @@
       </a>
     </div>
   </section>
+
+  {% if section.content %}
+    <article class="doc">
+      {{ section.content | safe }}
+    </article>
+  {% endif %}
 </main>
 {% endblock content %}
 

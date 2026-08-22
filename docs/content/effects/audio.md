@@ -9,7 +9,7 @@ Hypercolor's audio pipeline runs FFT, beat detection, spectral analysis, mel-ban
 
 There are two `AudioData` shapes, and they do not share field names. TypeScript canvas and shader effects see the camelCase SDK surface documented on this page. Native Rust effects see a smaller snake_case struct. The split is the most common thing docs get wrong, so it has its own section near the bottom: [Rust vs TypeScript field names](#rust-vs-typescript-field-names).
 
-{{ img(path="img/effects/audio-pulse.webp", alt="Audio-pulse effect reacting to music") }}
+{{< img path="img/effects/audio-pulse.webp" alt="Audio-pulse effect reacting to music" />}}
 
 ## Getting audio data
 
@@ -32,9 +32,9 @@ export default canvas(
 
 The pull is per frame: call `audio()` inside the draw function every frame, not once at module load. Outside the daemon (a bare browser, or the build's metadata pass) it returns a silent default rather than throwing, so effects render in preview without audio wired up.
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 `{ audio: true }` is not cosmetic. The build scans your source for `audio(`, `ctx.audio`, `getAudioData(`, or `engine.audio`, and if it finds any of them without `audio: true` in the options it fails the build with `Audio reactivity validation failed for <entry>: effect uses audio helpers but is missing audio: true`. Set the flag whenever you read audio.
-{% end %}
+{% </callout> %}
 
 Shader effects get audio through auto-registered uniforms when `audio: true` is set:
 
@@ -271,9 +271,9 @@ The Rust struct also exposes `bass()`, `mid()`, and `treble()` as methods that a
 
 The TypeScript surface is much larger: `bassEnv`, `harmonicHue`, `chordMood`, `dominantPitch`, `spread`, `rolloff`, `roughness`, `momentum`, `swell`, and the envelope fields are canvas-only conveniences derived on top of the same analysis. Native Rust effects compiled into `core/src/effect/builtin/` consume the smaller snake_case struct directly through `FrameInput.audio` and register via `core/src/effect/builtin/mod.rs`. The `audio_pulse` builtin is the canonical reference for reading the native surface.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 Pitch-class index `0` is C and runs chromatically to `11` (B) on both sides. The chromagram is normalized so the loudest bin is `1.0`.
-{% end %}
+{% </callout> %}
 
 ## Designing audio reactivity
 

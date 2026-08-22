@@ -9,11 +9,11 @@ systemd user service or launchd agent, udev rules, desktop autostart, and a few
 data directories. A clean uninstall needs to reach all of them. This page walks
 through the process for each install method and platform.
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 If you want to keep your lighting setup and reinstall a newer version, run the
 installer again: it is idempotent and will overwrite the binaries and service
 unit without touching your configuration.
-{% end %}
+{% </callout> %}
 
 ---
 

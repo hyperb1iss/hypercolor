@@ -6,13 +6,13 @@ weight = 190
 
 The catalog is whatever the daemon currently has loaded. Browse it live with `hypercolor effects list`, `GET /api/v1/effects`, the web UI effects browser, or the MCP `list_effects` tool. Every surface reads the same registry, so the list reflects exactly what is installed right now: built-in effects, SDK effects, and anything you have shipped yourself.
 
-{{ img(path="img/ui/effects.webp", alt="The Hypercolor effects browser") }}
+{{< img path="img/ui/effects.webp" alt="The Hypercolor effects browser" />}}
 
 Two effect families ship out of the box. Eleven native effects are compiled into the daemon (`crates/hypercolor-core/src/effect/builtin/`), and forty-six SDK effects build from `sdk/src/effects/` into self-contained HTML, alongside seven display faces from `sdk/src/faces/`. Those numbers move as the library grows, so the catalog is the source of truth, not a count pinned in a doc. Query the daemon to see what you actually have.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 Effect counts drift as the library grows and as you install your own work. Never hardcode a total; ask the daemon. `hypercolor effects list -o json` returns the full set with a `pagination` block, and the web UI shows the live count beside the search box.
-{% end %}
+{% </callout> %}
 
 ## Browse from the CLI
 
@@ -52,9 +52,9 @@ After installing a new effect into the daemon's library directory, run `hypercol
 
 `GET /api/v1/effects` returns the catalog as a list of effect summaries wrapped in the standard `{ data, meta }` envelope.
 
-{% api_endpoint(method="GET", path="/api/v1/effects") %}
+{% <api_endpoint method="GET" path="/api/v1/effects"> %}
 List the effect catalog. Optional query parameters mirror the CLI filters: `search`, `category`, `engine`, and `audio=true`. The response carries `items` (an array of effect summaries) and a `pagination` block.
-{% end %}
+{% </api_endpoint> %}
 
 Each entry in `items` is an effect summary with this shape:
 
@@ -95,9 +95,9 @@ Effects carry a category for discovery and filtering. The canonical taxonomy liv
 | `utility` | Functional: solid color, off, system monitor |
 | `display` | Full-fidelity HTML display faces for LCD surfaces |
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 The MCP `list_effects` tool exposes its own filter enum (`ambient`, `reactive`, `audio`, `gaming`, `productivity`, `utility`, `interactive`, `generative`) which does not map one-to-one onto `EffectCategory`. When you filter from an agent, use the MCP enum; when you filter over REST or the CLI, use the canonical category names in the table above.
-{% end %}
+{% </callout> %}
 
 ## Browse from an MCP agent
 
@@ -120,25 +120,25 @@ The companion `set_effect` tool takes a `query` that accepts an exact name, a pa
 
 The web UI renders each effect as a live, animated tile, which is the best way to actually choose one. The cards below are static captures of a selection of shipped effects; the running UI shows every effect in your library, animated, with search and category filters above the grid.
 
-{{ img(path="img/effects/arc-storm.webp", alt="Arc Storm") }} {{ img(path="img/effects/audio-pulse.webp", alt="Audio Pulse") }} {{ img(path="img/effects/borealis.webp", alt="Borealis") }}
+{{< img path="img/effects/arc-storm.webp" alt="Arc Storm" />}} {{< img path="img/effects/audio-pulse.webp" alt="Audio Pulse" />}} {{< img path="img/effects/borealis.webp" alt="Borealis" />}}
 
-{{ img(path="img/effects/bubble-garden.webp", alt="Bubble Garden") }} {{ img(path="img/effects/cyber-descent.webp", alt="Cyber Descent") }} {{ img(path="img/effects/cymatics.webp", alt="Cymatics") }}
+{{< img path="img/effects/bubble-garden.webp" alt="Bubble Garden" />}} {{< img path="img/effects/cyber-descent.webp" alt="Cyber Descent" />}} {{< img path="img/effects/cymatics.webp" alt="Cymatics" />}}
 
-{{ img(path="img/effects/ember-glow.webp", alt="Ember Glow") }} {{ img(path="img/effects/fiberflies.webp", alt="Fiberflies") }} {{ img(path="img/effects/frequency-cascade.webp", alt="Frequency Cascade") }}
+{{< img path="img/effects/ember-glow.webp" alt="Ember Glow" />}} {{< img path="img/effects/fiberflies.webp" alt="Fiberflies" />}} {{< img path="img/effects/frequency-cascade.webp" alt="Frequency Cascade" />}}
 
-{{ img(path="img/effects/frost-crystal.webp", alt="Frost Crystal") }} {{ img(path="img/effects/hyperspace.webp", alt="Hyperspace") }} {{ img(path="img/effects/ink-tide.webp", alt="Ink Tide") }}
+{{< img path="img/effects/frost-crystal.webp" alt="Frost Crystal" />}} {{< img path="img/effects/hyperspace.webp" alt="Hyperspace" />}} {{< img path="img/effects/ink-tide.webp" alt="Ink Tide" />}}
 
-{{ img(path="img/effects/iris.webp", alt="Iris") }} {{ img(path="img/effects/lava-lamp.webp", alt="Lava Lamp") }} {{ img(path="img/effects/meteor-storm.webp", alt="Meteor Storm") }}
+{{< img path="img/effects/iris.webp" alt="Iris" />}} {{< img path="img/effects/lava-lamp.webp" alt="Lava Lamp" />}} {{< img path="img/effects/meteor-storm.webp" alt="Meteor Storm" />}}
 
-{{ img(path="img/effects/nebula-drift.webp", alt="Nebula Drift") }} {{ img(path="img/effects/neon-city.webp", alt="Neon City") }} {{ img(path="img/effects/plasma-engine.webp", alt="Plasma Engine") }}
+{{< img path="img/effects/nebula-drift.webp" alt="Nebula Drift" />}} {{< img path="img/effects/neon-city.webp" alt="Neon City" />}} {{< img path="img/effects/plasma-engine.webp" alt="Plasma Engine" />}}
 
-{{ img(path="img/effects/spectral-fire.webp", alt="Spectral Fire") }} {{ img(path="img/effects/synth-horizon.webp", alt="Synth Horizon") }} {{ img(path="img/effects/voronoi-glass.webp", alt="Voronoi Glass") }}
+{{< img path="img/effects/spectral-fire.webp" alt="Spectral Fire" />}} {{< img path="img/effects/synth-horizon.webp" alt="Synth Horizon" />}} {{< img path="img/effects/voronoi-glass.webp" alt="Voronoi Glass" />}}
 
-{{ img(path="img/effects/vortex.webp", alt="Vortex") }} {{ img(path="img/effects/voidweaver.webp", alt="Voidweaver") }} {{ img(path="img/effects/digital-rain.webp", alt="Digital Rain") }}
+{{< img path="img/effects/vortex.webp" alt="Vortex" />}} {{< img path="img/effects/voidweaver.webp" alt="Voidweaver" />}} {{< img path="img/effects/digital-rain.webp" alt="Digital Rain" />}}
 
 ## Where effects come from
 
-{% mermaid() %}
+{% <mermaid> %}
 graph LR
   N[Native Rust<br/>builtin/] --> R[Effect registry]
   S[SDK effects<br/>sdk/src/effects] --> R
@@ -147,7 +147,7 @@ graph LR
   R --> REST[GET /api/v1/effects]
   R --> UI[Web UI browser]
   R --> MCP[list_effects tool]
-{% end %}
+{% </mermaid> %}
 
 The eleven native effects are part of the daemon binary. The SDK effects build from TypeScript and GLSL sources into HTML artifacts. Effects you author land in the daemon's library directory and join the same registry after a rescan. Every browsing surface reads that one registry, so the catalog stays consistent no matter how you query it.
 

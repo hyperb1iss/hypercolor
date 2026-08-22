@@ -8,9 +8,9 @@ Studio is a two-column Leptos workspace built from shared app-wide state plus a 
 
 If you want the runtime wire protocol and the daemon REST surface behind these contracts, read the [zone API and concurrency](@/studio/zone-api-and-concurrency.md) page next. For the user-facing tour, start at the [Studio overview](@/studio/overview.md).
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 This is a developer reference. The canonical wire type is `hypercolor_types::api::scene::SceneDocument`. The UI currently projects that document into a compatibility view model for existing components, so local adapter names are not additional REST contracts.
-{% end %}
+{% </callout> %}
 
 ## The state map
 
@@ -87,7 +87,7 @@ Two details are easy to get wrong. The hidden-output state is keyed `(scene_id, 
 
 Surface selection is the spine of the page. `selected_surface_id` lives in `StudioContext`, the zone tree writes it, and three effects in `StudioPage` react to it.
 
-{% mermaid() %}
+{% <mermaid> %}
 flowchart TD
     A[active_scene memo] --> B[Selection-guard effect]
     B --> C[selected_surface_id]
@@ -97,7 +97,7 @@ flowchart TD
     D --> G[EffectsContext.apply_target + focused_zone]
     E --> H[LayerPanel in the slide-over]
     F --> I[Stage canvas]
-{% end %}
+{% </mermaid> %}
 
 The selection-guard effect keeps `selected_surface_id` pointing at a still-present surface. When the live scene changes it defaults to the first non-Display zone, so Studio always opens on a Light:
 
@@ -154,9 +154,9 @@ The provider is the seam. Studio's Stage wraps the editor in `ZoneLayoutProvider
 
 The provider reloads the canvas on a **zone signature**, not on every scene refetch. The signature is the zone id plus its sorted output-id set, so a placement-only change (including this canvas's own saved edits) leaves the signature unchanged. That is what stops an unrelated scene refetch from clobbering in-flight canvas edits.
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 The drag and resize hot path is deliberately non-reactive. A single requestAnimationFrame scheduler paints positions directly to cached DOM elements, and the layout signal is written once on `mouseup`. Live drag preview goes to the daemon over the outbound WebSocket as JSON messages typed `zone_layout_preview` and `zone_layout_preview_clear` (sent by `send_zone_layout_preview` / `send_zone_layout_preview_clear` in `ws/preview.rs`), throttled to `PREVIEW_PUSH_INTERVAL_MS = 75.0`. It is not a REST route and does not touch the global `SpatialEngine`. See [zone API and concurrency](@/studio/zone-api-and-concurrency.md) for the full hot path.
-{% end %}
+{% </callout> %}
 
 ## Optimistic concurrency
 
@@ -203,7 +203,7 @@ pub fn zone_crud_ready(&self) -> bool {
 
 `+ New zone` and the zone rows need all three, because a user who can create a zone but cannot render it or move outputs into it would have an unusable zone. The unassigned-lights policy editor gates separately on `scene-unassigned-behavior-write`.
 
-{{ img(path="img/ui/studio.webp", alt="The Hypercolor Studio workspace") }}
+{{< img path="img/ui/studio.webp" alt="The Hypercolor Studio workspace" />}}
 
 ## Where to read next
 

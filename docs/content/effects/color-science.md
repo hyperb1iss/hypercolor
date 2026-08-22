@@ -41,9 +41,9 @@ The safe vivid range is **180-330°** (cyan through magenta). This blue-anchored
 
 The danger zone is **30-90°** (orange through yellow-green). Mixing red and green at similar intensities produces colors that read as washed-out, greenish, or disproportionately bright.
 
-{% callout(type="tip", title="The yellow problem") %}
+{% <callout type="tip" title="The yellow problem"> %}
 Yellow (R=255, G=255, B=0) is the most deceptive hue on LEDs. On screen it looks rich. On hardware, red and green at full power produces an extremely bright, slightly greenish wash that barely reads as yellow. Reduce green to about 60-70% of red for a warmer, more convincing yellow.
-{% end %}
+{% </callout> %}
 
 ## Saturation: go hard or go home
 
@@ -94,9 +94,9 @@ For any RGB color, compute `min(R,G,B) / max(R,G,B)`. Keep this below **0.3** fo
 
 **Never run all three channels above 200/255 simultaneously unless you want white.** For any vivid color, at least one channel should be at or near 0.
 
-{% callout(type="warning", title="The HSL trap") %}
+{% <callout type="warning" title="The HSL trap"> %}
 HSL is intuitive for design tools but dangerous for LED work. An HSL lightness of 70% looks fine on screen but produces a washed-out mess on hardware. Prefer HSV or OKLCH for LED color calculations.
-{% end %}
+{% </callout> %}
 
 ## Gamma correction
 
@@ -238,9 +238,9 @@ That blend is not a naive sRGB lerp. The compositor decodes each pixel from sRGB
 | Screen           | Soft additive that never exceeds full white               |
 | Multiply         | Darken overlaps                                            |
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 Author each layer as a self-contained image. If you want glow where two layers overlap, set the upper layer to **Add** or **Screen** rather than baking the combination into a single effect. The compositor does the linear-light math for you, and the result stays correct as zone opacity changes.
-{% end %}
+{% </callout> %}
 
 Native Rust effects receive color controls already converted to linear RGBA (0.0-1.0), not sRGB. The UI picker is sRGB and the daemon converts before delivery, so convert back to sRGB bytes only when you write the final canvas. See the native effect authoring path for the full color-type vocabulary and transfer functions.
 

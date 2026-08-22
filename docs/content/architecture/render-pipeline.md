@@ -6,7 +6,7 @@ weight = 10
 
 Every frame Hypercolor renders flows through the same pipeline on a dedicated OS thread. Understanding the pipeline is the foundation for writing performant effects, tuning layouts, and contributing to the engine.
 
-{{ img(path="img/ui/dashboard.webp", alt="The Hypercolor dashboard") }}
+{{< img path="img/ui/dashboard.webp" alt="The Hypercolor dashboard" />}}
 
 ## Pipeline overview
 

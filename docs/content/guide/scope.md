@@ -45,9 +45,9 @@ ASUS Aura DRAM DIMMs are already supported: the `asus_aura_smbus_dram` driver sh
 
 GPU RGB via SMBus is researched for several families (ASUS Aura GPU via ENE SMBus, EVGA Pascal/Turing/Ampere, Gigabyte GPU across four generations, and MSI Lovelace), with ASRock AMD GPUs further back at the Known stage. None have a shipping driver. The SMBus transport exists in the codebase; the per-vendor protocol implementations do not. Your GPU will not appear in `hypercolor devices list`.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 SMBus access has its own plumbing per platform. On Linux, SMBus devices need the `i2c-dev` kernel module and i2c group membership, which the install hooks set up. On Windows, the installer's hardware setup (PawnIO plus the HypercolorSmBus broker) provides it. macOS has no SMBus path, and GPU SMBus probing is Linux-only today. Watch the compatibility matrix for status changes.
-{% end %}
+{% </callout> %}
 
 ### Blocked devices: Dygma Defy
 

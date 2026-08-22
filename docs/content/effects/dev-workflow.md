@@ -25,9 +25,9 @@ bunx hypercolor install dist/*.html
 bunx hypercolor install dist/*.html --daemon
 ```
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 This is the **authoring** CLI: `bunx hypercolor`, run inside a workspace, resolved through the `hypercolor` dependency. It builds and installs artifacts. Do not confuse it with the **system** CLI (`hypercolor`, installed alongside the daemon) that talks to the running daemon to list, activate, and patch effects. Both are covered below.
-{% end %}
+{% </callout> %}
 
 ## The real iteration loop
 
@@ -68,9 +68,9 @@ bunx hypercolor build --all --minify
 
 The full flag set on `build`: `--all` (auto-discover `effects/<id>/main.ts`), `--watch`, `--minify`, `--out <dir>` (default `dist`), `--entry-root <dir>` (repeatable, default `effects`), `--workspace-root <dir>`, and `--sdk-alias-path <path>`.
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 A successful build prints one line per artifact, for example `✓ aurora → dist/aurora.html (38.2 KB)`. Faces print a 💎 instead of a checkmark. If nothing prints, the build found no entrypoints; check that your effect lives at `effects/<id>/main.ts` or that you passed an explicit path.
-{% end %}
+{% </callout> %}
 
 ## Validating artifacts
 
@@ -128,7 +128,7 @@ bunx hypercolor install dist/aurora.html --daemon --daemon-url http://some-host:
 
 Reach for the daemon path when the daemon is already running and you want the effect live without restarting anything.
 
-{% mermaid() %}
+{% <mermaid> %}
 graph LR
   A[edit source] --> B[bun run build]
   B --> C{daemon running?}
@@ -137,7 +137,7 @@ graph LR
   E --> F[hypercolor effects rescan]
   D --> G[preview on hardware]
   F --> G
-{% end %}
+{% </mermaid> %}
 
 ## The face dev loop
 
@@ -179,9 +179,9 @@ hypercolor effects activate aurora
 hypercolor effects patch --param speed=7
 ```
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 Live control values use the `--param name=value` form (for example `--param speed=7`), not bare `--speed` flags. The control name is the lowercased label you declared in the effect. Check the [CLI reference](@/api/cli.md) for the authoritative flag set.
-{% end %}
+{% </callout> %}
 
 The system CLI also splits three distinct top-level commands that are easy to confuse: `server` configures and talks to the daemon as an HTTP server, `servers` manages multiple known daemon connections, and `service` controls the OS-level background service (install, start, stop). They are not interchangeable. The [CLI reference](@/api/cli.md) covers the full surface, and the daemon's REST contract is enumerated in the [REST API reference](@/api/rest.md).
 
@@ -202,12 +202,12 @@ just face-build silkcircuit-hud   # build one face by id
 just face-dev system-pulse   # the face authoring loop described above
 ```
 
-{% callout(type="danger") %}
+{% <callout type="danger"> %}
 `effects/hypercolor/` is generated, gitignored build output. Never hand-edit it and never commit it. The source lives in `sdk/src/effects/` and `sdk/src/faces/`; regenerate with the recipes above.
-{% end %}
+{% </callout> %}
 
 Everything else in this guide works identically inside and outside the monorepo, because both routes call the same `build` / `validate` / `install` core.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 Scaffolded workspaces pull `hypercolor` from npm by default. When developing against a local engine checkout, the workspace uses a `file:` spec instead (set via `--sdk-spec` or `HYPERCOLOR_SDK_PACKAGE_SPEC`); Bun's `link:` is not a drop-in substitute. See the setup guide in this section for the pinning rules.
-{% end %}
+{% </callout> %}

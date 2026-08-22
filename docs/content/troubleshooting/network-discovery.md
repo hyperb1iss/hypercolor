@@ -6,7 +6,7 @@ weight = 30
 
 Network devices (Hue, Nanoleaf, WLED, Govee) rely on mDNS multicast for automatic discovery. Three network configurations reliably break that: **AP/client isolation**, **VLAN segmentation**, and **multicast firewall rules**. This page walks through diagnosing which one you have and how to work around it using per-driver static IP lists.
 
-{{ img(path="img/ui/ui-devices.webp", alt="Device discovery in the Hypercolor web UI") }}
+{{< img path="img/ui/ui-devices.webp" alt="Device discovery in the Hypercolor web UI" />}}
 
 ## How discovery works
 
@@ -171,9 +171,9 @@ This does not affect the known-IP probe path: direct IP probes run regardless of
 
 ## Still not found?
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 After adding static IPs, run `hypercolor devices discover --timeout 15` or higher. Some devices (especially Govee on cold probes) take longer than the 10-second default.
-{% end %}
+{% </callout> %}
 
 If a device appears in the scan result but immediately disappears, it likely requires pairing before it will accept connections. Run:
 

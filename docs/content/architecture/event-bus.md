@@ -86,9 +86,9 @@ loop {
 }
 ```
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 Never subscribe to `frame` or `spectrum` data via the broadcast channel; those paths do not exist. Both are watch senders. Using broadcast for these data shapes would queue every frame for every slow subscriber; watch gives latest-value semantics with zero queue buildup.
-{% end %}
+{% </callout> %}
 
 ## Canvas streams
 

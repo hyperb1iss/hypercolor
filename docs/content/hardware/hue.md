@@ -4,9 +4,9 @@ description = "Connect a Hue Bridge to Hypercolor: N-UPnP and mDNS discovery, li
 weight = 50
 +++
 
-{{ img(path="img/vendors/philipshue.svg", alt="Philips Hue logo") }}
+{{< img path="img/vendors/philipshue.svg" alt="Philips Hue logo" />}}
 
-{{ img(path="img/ui/ui-devices.webp", alt="Device discovery in the Hypercolor web UI") }}
+{{< img path="img/ui/ui-devices.webp" alt="Device discovery in the Hypercolor web UI" />}}
 
 Hypercolor controls Philips Hue lights through the **Entertainment API**, the same
 low-latency streaming path used by Hue Sync. Once paired, a DTLS session streams
@@ -52,12 +52,12 @@ known_ips = ["192.168.1.42"]
 
 Pairing is a **time-limited handshake** with the bridge link button.
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 You have **30 seconds** from the moment you start the pairing request to press the
 link button on the bridge. If you miss the window, the bridge returns error type 101
 ("link button not pressed"). That is not a hard failure; it just means the button
 was not pressed in time. Run the command, walk to the bridge, press the button.
-{% end %}
+{% </callout> %}
 
 ### Via the CLI
 
@@ -109,13 +109,13 @@ Hypercolor looks up each light's gamut type (A, B, or C) from CLIP v2 and clamps
 the chromaticity to that gamut so out-of-gamut values degrade gracefully rather
 than clipping hard.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 The DTLS connection uses `insecure_skip_verify`. Hue bridges ship self-signed
 certificates tied to the bridge serial, so there is no public CA to validate
 against, and the Entertainment API mandates a pure PSK handshake anyway.
 Authentication is enforced by the pre-shared key, not the certificate chain. This
 is by design, not a security gap.
-{% end %}
+{% </callout> %}
 
 The streaming session enforces a cap of **20 channels** per packet. Standard
 entertainment areas have far fewer, so this limit is rarely reached in practice.

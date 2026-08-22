@@ -116,9 +116,9 @@ Replace the device value with the exact source name you found above. If you want
 | `noise_gate` | `0.02` | RMS level below which the pipeline emits silence. Raises to avoid flicker in quiet rooms. |
 | `beat_sensitivity` | `0.6` | Onset threshold multiplier. Lower = more sensitive to subtle transients. |
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 Internally the `device` key maps onto an audio source type: `"default"` selects the system monitor, `"microphone"` selects the default input device, and any other string becomes `AudioSourceType::Named(...)`, resolved against the platform's device list at startup and on every live reconfiguration.
-{% end %}
+{% </callout> %}
 
 ---
 
@@ -144,7 +144,7 @@ hypercolor tui
 
 The bottom chrome of the TUI dashboard shows a real-time audio strip: a mini spectrum bar chart on the top row and a stats line below it with a level percentage, beat-confidence dots, and estimated BPM. If the bars are moving while music plays, the pipeline is alive.
 
-{{ img(path="img/tui/tui-dashboard.png", alt="TUI dashboard showing the spectrum strip at the bottom") }}
+{{< img path="img/tui/tui-dashboard.png" alt="TUI dashboard showing the spectrum strip at the bottom" />}}
 
 If the strip shows "No audio", the daemon is not receiving samples. Work through the checklist below.
 

@@ -8,7 +8,7 @@ On Linux, USB-connected devices need a one-time permissions step (udev rules) be
 
 This page covers the setup, explains how Hypercolor reaches different device types, and walks through the most common failure modes.
 
-{{ img(path="img/ui/ui-devices.webp", alt="Device discovery in the Hypercolor web UI") }}
+{{< img path="img/ui/ui-devices.webp" alt="Device discovery in the Hypercolor web UI" />}}
 
 ## Install udev rules
 
@@ -29,17 +29,17 @@ sudo udevadm trigger --action=add --subsystem-match=tty
 sudo udevadm trigger --action=add --subsystem-match=i2c-dev
 ```
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 **AppImage and Flatpak installs do not apply udev rules automatically.** You must run the copy command manually after installing through either of those distribution methods.
-{% end %}
+{% </callout> %}
 
 ## Replug or reboot after install
 
 `udevadm trigger` replays the rule against devices that are already connected, but the logind ACL (`TAG+="uaccess"`) can occasionally miss its replay for nodes that were opened before the rule was installed. If a device still fails after `just udev-install`, unplug it and plug it back in. A full reboot is the reliable fallback.
 
-{% callout(type="danger") %}
+{% <callout type="danger"> %}
 **Device not found after udev install? Replug first.** If Hypercolor still cannot open the device after running `just udev-install`, unplug it and replug it before investigating further. The ACL that logind sets on `/dev/hidraw*` and `/dev/bus/usb/*` is applied at plug-in time, not at rule-reload time. A replug forces a fresh assignment.
-{% end %}
+{% </callout> %}
 
 ## How the rules work
 

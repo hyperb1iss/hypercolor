@@ -10,11 +10,11 @@ time by [utoipa](https://github.com/juhaku/utoipa) from the same Rust types the
 handlers serialize, so it never drifts from the wire. This page covers where to
 reach it, how to export it for codegen, and the boundary of what it covers.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 The OpenAPI document and Swagger UI are always mounted. They are not gated
 behind the MCP feature flag or an API key on loopback, so if the daemon is up
 on `:9420`, the spec is reachable.
-{% end %}
+{% </callout> %}
 
 ## Where to reach it
 
@@ -39,13 +39,13 @@ Or pull the raw document straight from the running daemon:
 curl -s http://localhost:9420/api/v1/openapi.json | jq '.info'
 ```
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 Loopback clients are exempt from API-key auth, so the local `curl` above works
 with no token. Over the network, send `Authorization: Bearer <token>` when a read
 key is configured. The daemon uses a dual-key model (a control key,
 `HYPERCOLOR_API_KEY`, and a read-only key, `HYPERCOLOR_READ_API_KEY`) with
 loopback always exempt.
-{% end %}
+{% </callout> %}
 
 ## Export the spec without a running daemon
 
@@ -68,7 +68,7 @@ Each domain registers its Axum handlers and operation contract together under
 `crates/hypercolor-daemon/src/api/routes/`. The top-level router merges those
 domain registrations and nests the result at `/api/v1`.
 
-{% mermaid() %}
+{% <mermaid> %}
 graph TD
     A["Domain route modules"] --> B["documented_route"]
     C["Axum method router"] --> B
@@ -79,7 +79,7 @@ graph TD
     E --> H["OpenAPI document"]
     H --> I["/api/v1/openapi.json"]
     H --> J["hypercolor-openapi binary"]
-{% end %}
+{% </mermaid> %}
 
 `documented_route` gives Axum and utoipa the same path and method registration.
 `OperationDoc` supplies the operation id, resource tag, summary, typed request,
@@ -106,12 +106,12 @@ surprise. When the OpenAPI document references a schema like `CaptureMonitor`,
 `EffectSummary`, or `CreateZoneRequest`, it is referencing those shared
 definitions.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 Diagnostic telemetry (system status internals and metrics payloads) deliberately
 stays daemon-local and is not part of `hypercolor-types::api`. Those shapes move
 fast with performance work, and clients consume tolerant subsets of them by
 design. Treat the OpenAPI schemas for status as descriptive, not a frozen contract.
-{% end %}
+{% </callout> %}
 
 ## Coverage and limits
 

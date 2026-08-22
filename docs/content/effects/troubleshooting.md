@@ -9,9 +9,9 @@ When `bunx hypercolor build` fails, it fails loudly, with one of a small set of 
 
 These checks live in two places: the metadata-extraction worker (`sdk/packages/core/src/tooling/metadata-worker.ts`), which runs each effect module in isolation to read its registered definition, and the HTML validator (`sdk/packages/core/src/tooling/validate.ts`), which inspects the compiled artifact. The build runs the first; `bunx hypercolor validate` runs the second.
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 Pass `--json` to either command for machine-readable output, and `--strict` to `validate` to make warnings exit non-zero. Without `--strict`, `validate` exits `1` only on hard errors; warnings still print.
-{% end %}
+{% </callout> %}
 
 ## "no effect definitions were registered"
 
@@ -64,9 +64,9 @@ canvas('Pulse', { sensitivity: [0, 1, 0.6] }, { audio: true }, (ctx, controls) =
 })
 ```
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 The scan is textual. A commented-out `audio()` call or a string literal containing `engine.audio` will trip it. Remove the dead reference rather than adding `audio: true` to an effect that does not actually use audio, otherwise you advertise reactivity the effect does not deliver.
-{% end %}
+{% </callout> %}
 
 For the full audio surface and the per-frame pull model, see [Audio API](@/effects/audio.md).
 
@@ -162,13 +162,13 @@ If the build and validate both pass but your effect is not in the daemon's catal
 
 If you used the local path and nothing shows up, the daemon has not rescanned. Run `hypercolor effects rescan`, or use `--daemon` to push directly. The system CLI is documented at [CLI reference](@/api/cli.md).
 
-{% callout(type="success") %}
+{% <callout type="success"> %}
 A clean `build` plus `validate` is the contract. If both pass, every check on this page passed, the artifact is self-contained, and the effect will load. The only remaining failure surface is delivery, which the install paths above cover.
-{% end %}
+{% </callout> %}
 
 ## Quick reference
 
-{% mermaid() %}
+{% <mermaid> %}
 graph TD
   A[bunx hypercolor build] -->|no canvas/effect/face call| B[no effect definitions registered]
   A -->|reads audio without flag| C[missing audio: true]
@@ -178,6 +178,6 @@ graph TD
   E -->|ok| G[bunx hypercolor install]
   G -->|local path| H[hypercolor effects rescan]
   G -->|--daemon| I[appears immediately]
-{% end %}
+{% </mermaid> %}
 
 For the authoring CLI flags behind these commands, see [SDK CLI reference](@/effects/sdk-cli-reference.md).

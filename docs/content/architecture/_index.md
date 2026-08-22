@@ -22,7 +22,7 @@ This section goes deep on how that works: the crate boundaries that keep the sys
 
 The project is split into focused crates with strict one-way dependency boundaries. The shared vocabulary lives at the bottom; application binaries sit at the top and never import each other.
 
-{% mermaid() %}
+{% <mermaid> %}
 graph TD
     T[hypercolor-types] --> HAL[hypercolor-hal]
     T --> CORE[hypercolor-core]
@@ -45,7 +45,7 @@ graph TD
     APP[hypercolor-app] --> D & TRAY
     T --> UI["hypercolor-ui (excluded from workspace)"]
     LE[hypercolor-leptos-ext] --> UI & D & TUI
-{% end %}
+{% </mermaid> %}
 
 **Golden rule:** `hypercolor-hal` must never depend on `hypercolor-core`; that would be circular. Network drivers depend on `driver-api`, not on `core` directly.
 
@@ -67,9 +67,9 @@ graph TD
 | `hypercolor-leptos-ext` | Leptos 0.8 extension helpers for the web UI and TUI |
 | `hypercolor-ui` | Leptos 0.8 CSR web app compiled to WASM via Trunk; excluded from the workspace |
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 `hypercolor-ui` targets `wasm32-unknown-unknown` and is excluded from the Cargo workspace. `cargo check --workspace` does not cover it. Build the UI separately with `just ui-dev` or `just ui-build`.
-{% end %}
+{% </callout> %}
 
 ---
 

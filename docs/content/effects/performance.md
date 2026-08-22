@@ -9,7 +9,7 @@ Write your effect so it looks right at 10 FPS and at 60 FPS, and the engine hand
 
 If you are chasing low FPS as a *user* rather than tuning an effect you are writing, read [Low FPS and stuttering](@/troubleshooting/performance.md) instead. For the full render-loop architecture, see [Render pipeline](@/architecture/render-pipeline.md).
 
-{{ img(path="img/ui/effects.webp", alt="Effect gallery in the web UI") }}
+{{< img path="img/ui/effects.webp" alt="Effect gallery in the web UI" />}}
 
 ## The frame budget is a moving target
 
@@ -25,9 +25,9 @@ The daemon never renders at a fixed frame rate. `FpsController` (`crates/hyperco
 
 That budget covers the *whole* frame, not just your effect. A TypeScript canvas or GLSL effect renders inside a Servo session and lands its surface on the compositor; the SparkleFlinger compositor latches the newest surface per producer and blends one canonical RGBA canvas. The spatial sampler then maps that canvas to LED positions and the backend manager queues the device writes. Your effect shares the budget with all of it, so "I have 16 ms at 60 FPS" is the ceiling, not the allowance.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 The controller is a pure timing state machine. It owns no threads and does no I/O. The render loop drives it with `begin_frame` and `end_frame` each iteration, and it reports back through `FrameStats` (frame time, headroom, whether the budget was exceeded, the EWMA-smoothed frame time, and the consecutive-miss count).
-{% end %}
+{% </callout> %}
 
 ## How tiers shift
 
@@ -37,7 +37,7 @@ Downshift fires after **2 consecutive budget misses** (`downshift_miss_threshold
 
 Upshift requires **5 seconds of sustained headroom** (`upshift_sustain_secs`), and only while the EWMA-smoothed frame time stays under **70% of the current tier's budget** (`upshift_headroom_ratio`). The smoothing uses a slow EWMA (`ewma_alpha = 0.05`), so history dominates and one fast frame never triggers a climb. Any budget miss resets the upshift eligibility clock to zero.
 
-{% mermaid() %}
+{% <mermaid> %}
 graph LR
   M[Minimal 10] -->|sustained headroom| L[Low 20]
   L -->|sustained headroom| Me[Medium 30]
@@ -47,13 +47,13 @@ graph LR
   H -->|2 misses| Me
   Me -->|2 misses| L
   L -->|2 misses| M
-{% end %}
+{% </mermaid> %}
 
 The practical consequence for an author: a single heavy effect that overruns the budget twice will pull the *entire rig* down a tier, not just itself. Profile against the budget of the tier you expect to run at, with headroom to spare, so you are not the reason everything downshifts.
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 Performance baselines are product contracts. The tier ceiling, canvas resolution, and FPS caps are intended performance, not suggestions. Fix a slow effect by making the per-frame work cheaper, never by lowering a baseline or capping the tier to make telemetry look calm. If an effect genuinely cannot hold a tier, that is a profiling problem to solve, not a ceiling to drop.
-{% end %}
+{% </callout> %}
 
 ## Animate off time, never frame counts
 
@@ -83,9 +83,9 @@ Practical canvas guidance:
 - **Cost scales with area, not width.** Halving both dimensions quarters the per-pixel work. If your effect is per-pixel heavy (large blur kernels, multi-octave noise, many overdraws), the canvas size matters more than any micro-optimization inside the loop.
 - **Avoid per-frame allocation.** Allocating buffers, gradients, or typed arrays every frame thrashes the allocator inside the budget. Build them once and reuse. In a native Rust renderer this is the difference between a stateless draw fn and a stateful one that owns its scratch buffers.
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 The canvas never auto-clears in the TypeScript SDK. `clearCanvas()` is intentionally a no-op, so the draw function owns clearing. Use an opaque `fillRect` for clean frames and a semi-transparent `fillRect` for trails. Trail-by-fade (a per-frame `rgba(0,0,0,alpha)` overlay) is cheaper than tracking and redrawing every historical position, and it reads better on LEDs.
-{% end %}
+{% </callout> %}
 
 ## Servo memory and the HTML path
 
@@ -95,9 +95,9 @@ TypeScript canvas, GLSL, and display-face effects all render through Servo. Serv
 - **Lean on built-in helpers instead of heavy libraries.** The SDK ships math, motion, layout, and palette helpers (see the [SDK API reference](@/effects/sdk-api-reference.md)). Reaching for a large external animation or color library to do what a built-in already does pays for it in bundle size and per-frame cost.
 - **GLSL moves per-pixel work to the GPU, but it is still WebGL2 in Servo**, not a native pipeline. A fragment shader is the right tool for dense per-pixel math; it is not free, and an expensive shader still has to land its surface inside the frame budget. See [GLSL shader effects](@/effects/glsl-effects.md).
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 There is no runnable native GPU effect lane today. The renderer factory has no working shader path: `EffectSource::Shader` returns `shader effect '...' is not runnable yet`, requesting `gpu` acceleration errors outright, and `auto` falls back to CPU with `gpu effect renderer acceleration is not available yet`. Every effect runs either as a Servo HTML surface or as a compiled-in native Rust renderer. The wgpu lane is future work; do not design an effect that assumes it. See [Renderer internals](@/architecture/renderer-internals.md).
-{% end %}
+{% </callout> %}
 
 ## Audio without the strobe tax
 
@@ -121,9 +121,9 @@ The trait surface, lifecycle, and registration are covered in [Native Rust effec
 
 The daemon publishes timing on the event bus and exposes it over the API. The diagnose tooling surfaces the active tier, the EWMA-smoothed frame time, headroom, and the consecutive-miss count straight from `FrameStats`, which is the fastest way to confirm whether your effect is the one forcing a downshift.
 
-{% api_endpoint(method="GET", path="/api/v1/system") %}
+{% <api_endpoint method="GET" path="/api/v1/system"> %}
 Returns daemon status including the active render tier and frame timing. Watch the tier while your effect runs: if applying it pulls the tier down and it stays down, your effect is overrunning the budget. Compare against a known-cheap built-in like `solid_color` to isolate the cost.
-{% end %}
+{% </api_endpoint> %}
 
 The WebSocket metrics channel streams the same timing live, which is what the web UI dashboard reads. For the full REST surface and the metrics envelope, see the [REST API reference](@/api/rest.md); for the binary frame and metrics channels, see the [WebSocket protocol](@/api/websocket.md).
 

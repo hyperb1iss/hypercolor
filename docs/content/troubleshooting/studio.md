@@ -10,7 +10,7 @@ returns HTTP 412 when that revision is stale. Control values follow a different
 rule: they never use `If-Match` and instead address a real layer id from the
 live document.
 
-{{ img(path="img/ui/studio.webp", alt="Studio workspace with zone tree and layout canvas") }}
+{{< img path="img/ui/studio.webp" alt="Studio workspace with zone tree and layout canvas" />}}
 
 ## Save rejected: "Scene changed elsewhere, reloaded, try again"
 

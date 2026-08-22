@@ -9,9 +9,9 @@ The Hypercolor MCP server ships **three prompt templates**: `mood_lighting`, `tr
 
 Most clients surface prompts as slash commands. In Claude Code, `mood_lighting` shows up as `/mood_lighting`; pick it, fill in the arguments, and the assistant replays the template's message sequence with your values substituted in. Everything on this page is pulled from `crates/hypercolor-daemon/src/mcp/prompts.rs`, not paraphrased.
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 The MCP server is **off by default**. Until you enable it in config, no prompt resolves and `http://127.0.0.1:9420/mcp` returns 404. Turn it on first in [MCP setup](@/agents/mcp-setup.md), then come back here.
-{% end %}
+{% </callout> %}
 
 ## How prompts work 🔮
 
@@ -38,9 +38,9 @@ Configure lighting to match a mood, vibe, or activity. The template walks the as
 
 The rendered flow opens with your mood, then has the assistant read three resources in sequence: `hypercolor://state`, `hypercolor://effects`, and `hypercolor://devices`. The `audio_reactive` argument constrains selection: `yes` considers only reactive effects, `no` excludes them, and `auto` includes one only when it is the strongest match. With the live state, catalog, and hardware in context, the assistant chooses one deterministic best match and calls `set_effect` exactly once. It then uses the returned zone and layer identities with `adjust_controls` for final tuning.
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 This is the prompt to reach for when a user says something like "make it feel calm in here" or "party mode." Because it reads the effect catalog and device inventory before choosing, it picks an installed effect that fits the rig. The applied change runs through one `set_effect` call, followed by `adjust_controls` against the returned layer when tuning is needed.
-{% end %}
+{% </callout> %}
 
 A typical run, with arguments `mood = "deep focus coding"` and `audio_reactive = "no"`, chooses one non-reactive ambient effect, applies it once, and lowers the returned layer's `speed` through `adjust_controls`.
 
@@ -54,9 +54,9 @@ Guided troubleshooting for device connectivity, rendering, or performance proble
 
 The flow opens with your issue description, has the assistant read `hypercolor://state` and `hypercolor://devices`, then instructs it to run the zero-argument `diagnose` tool for the canonical safe diagnostic report. From its checks, summary, snapshot, and the resource context, the assistant identifies the root cause and gives concrete remediation steps. It uses only registered Hypercolor tools for actions they support and states plainly when remediation belongs outside Hypercolor.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 The `diagnose` tool returns the same safe diagnostic payload as the default REST diagnostic pass: `checks`, `summary`, and `snapshot`. The `troubleshoot` prompt is the conversational front end to that report. For symptom-first human troubleshooting outside an agent, see the [troubleshooting section](@/troubleshooting/_index.md), and for the deeper device and audio walkthroughs, [devices not found](@/troubleshooting/devices-not-found.md) and [audio not reacting](@/troubleshooting/audio-not-reacting.md).
-{% end %}
+{% </callout> %}
 
 ## setup_automation
 
@@ -68,9 +68,9 @@ Prepare reusable scenes for an external automation system. The template helps th
 
 The flow reads `hypercolor://scenes`, `hypercolor://state`, and `hypercolor://effects`. When a new reusable scene is needed, it calls `create_scene`, activates the scene, chooses one catalog effect, and calls `set_effect` once. It uses the returned zone and layer identities with `adjust_controls` for final tuning.
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 Hypercolor does not schedule or trigger scenes. The `create_scene` tool accepts a name plus optional description, enabled state, and mutation mode. It creates an empty reusable scene and does not capture the current output. The external system owns trigger conditions and calls `activate_scene` when they match. See [create_scene in the tools reference](@/agents/tools-reference.md) for the full argument list.
-{% end %}
+{% </callout> %}
 
 Remember that scenes are whole-rig configurations. Zones are the flexible canvas partitions inside a scene, and scheduling belongs to the external automation system.
 
@@ -80,6 +80,6 @@ Prompts are a convenience layer, not a separate API. Everything a prompt does, a
 
 If you are wiring an assistant up for the first time, the natural path is to enable the server in [MCP setup](@/agents/mcp-setup.md), skim the [tools reference](@/agents/tools-reference.md) to learn the verbs, and let the prompts orchestrate the common cases. For hand-built CLI and MCP playbooks that go beyond the three shipped prompts, the agent-scripting pages in this section walk through complete automation against the daemon.
 
-{% callout(type="success") %}
+{% <callout type="success"> %}
 All three prompts open by reading state. That is the single most useful habit to copy when you write your own flows: orient from `hypercolor://state` before you act, and your tool calls land predictably.
-{% end %}
+{% </callout> %}

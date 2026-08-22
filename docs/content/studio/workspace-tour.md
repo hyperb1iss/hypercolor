@@ -7,7 +7,7 @@ template = "page.html"
 
 Studio is a two-column workspace. The zone tree lives on the left, the Stage fills the center, and the composition panel slides in over the Stage when you summon it. There is no permanent layer rail and no Preview/Layout toggle. This page walks every surface in order, so you know exactly what each control does before you start composing.
 
-{{ img(path="img/ui/studio.webp", alt="The Studio workspace: zone tree on the left, live Stage in the center") }}
+{{< img path="img/ui/studio.webp" alt="The Studio workspace: zone tree on the left, live Stage in the center" />}}
 
 If you want the conceptual model first (what a scene, zone, layer, and layout are), read the [Studio overview](@/studio/overview.md). This page is the literal UI tour.
 
@@ -25,9 +25,9 @@ The active scene is shared app-wide. Studio reads it from the same source the da
 
 The search box in the header toolbar filters the zone tree. Type any part of a device name and the tree keeps only the matching device rows; an empty box leaves every row visible. The match is a case-insensitive substring on the device name, applied to both assigned and unassigned rows.
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 The selected LED zone in Studio is also the app-wide effect apply-target. A quick-apply from the dashboard, sidebar, or command palette lands in the zone you are composing. Selecting a Screen or the Unassigned entry is not an apply target, so the target falls back to the default zone.
-{% end %}
+{% </callout> %}
 
 ## The zone tree (left column)
 
@@ -86,9 +86,9 @@ When a zone is genuinely multi-zone, a zone-assignment panel docks below the can
 
 For a display-face screen, the Stage shows that device's live face. The header carries a Preview label and an external-link button that opens the face in a full-screen preview tab. A caption below the preview reports the screen's resolution as `width×height`.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 Two screens of the same resolution are not yet fully distinguishable in the preview, because the preview frame stream does not carry a device id. The Stage accepts a frame only when its resolution matches the selected screen, which rejects in-flight frames from a previously selected screen. Daemon-side frame tagging is the planned fix.
-{% end %}
+{% </callout> %}
 
 ### Unassigned: the policy panel
 

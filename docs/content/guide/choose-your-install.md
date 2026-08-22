@@ -6,13 +6,13 @@ weight = 20
 
 Not every install path is right for every person. This page routes you to the correct one before you spend time on the wrong steps.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 Linux, Windows, and macOS are all supported install platforms. Linux
 additionally gets udev, systemd, and session integration (idle dim, lock and
 suspend behavior). macOS supports screen capture and native host input, but it
 has no SMBus motherboard/DRAM RGB path. Session integration is Linux-only
 today.
-{% end %}
+{% </callout> %}
 
 ## Decide in 30 seconds
 
@@ -28,7 +28,7 @@ If you are not sure whether you are a developer, you are not a developer. Start 
 
 ---
 
-## Prebuilt one-liner (Linux) {#prebuilt-linux}
+## Prebuilt one-liner (Linux) {% raw %}{#prebuilt-linux}{% endraw %}
 
 The fastest path on Linux. Downloads the latest release binaries from GitHub,
 installs them to `~/.local/bin`, sets up the systemd user service, and prompts
@@ -76,7 +76,7 @@ After the installer finishes, see [First launch](@/guide/first-launch.md) to ope
 
 ---
 
-## Windows installer {#windows-installer}
+## Windows installer {% raw %}{#windows-installer}{% endraw %}
 
 Download the installer from the [download page](@/download.md) and run it. The
 install is per-machine and asks for administrator elevation (UAC). The same
@@ -90,7 +90,7 @@ USB-HID lighting (Razer, Corsair, Lian Li, and others) and network devices (Hue,
 
 ---
 
-## macOS {#macos-dmg}
+## macOS {% raw %}{#macos-dmg}{% endraw %}
 
 ### DMG
 
@@ -99,11 +99,11 @@ When a release includes an accepted macOS build, download
 the [download page](@/download.md), drag the app into `/Applications`, and
 launch. Minimum macOS 15.2 (Sequoia).
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 Public CI does not publish unsigned macOS packages. macOS artifacts are
 promoted manually only after Developer ID signing, notarization, and the signed
 physical acceptance checkpoint pass.
-{% end %}
+{% </callout> %}
 
 The native ScreenCaptureKit, host-input, HDR, and multi-owner implementations
 are present, but they are not release-qualified until the signed macOS physical
@@ -118,7 +118,7 @@ covers Apple Silicon HDR, Intel SDR, and Tahoe paired-reference diagnostics.
 Until those signed receipts pass, use the packaged app sidecar for protected
 macOS sources and treat the other topologies as experimental.
 
-### Homebrew {#homebrew}
+### Homebrew {% raw %}{#homebrew}{% endraw %}
 
 The tap carries both a cask and a formula. Maintainers update both manually
 after the matching signed artifacts pass acceptance:
@@ -139,7 +139,7 @@ system screen picker require the app UI.
 
 ---
 
-## AUR (Arch Linux) {#aur}
+## AUR (Arch Linux) {% raw %}{#aur}{% endraw %}
 
 The `hypercolor-bin` package is live on the AUR and updates automatically on every tagged release:
 
@@ -151,7 +151,7 @@ The AUR package installs the prebuilt binaries, sets up the systemd user service
 
 ---
 
-## Build from source {#build-from-source}
+## Build from source {% raw %}{#build-from-source}{% endraw %}
 
 Building from source is the right path for contributors, packagers, and people who need a custom build (e.g., with Servo HTML effect rendering enabled). It is not necessary for end users.
 
@@ -174,9 +174,9 @@ just install
 
 Full system dependency lists and optional flags (`--minimal`, `--no-system`, `--with-servo`) are in the [Installation reference](@/guide/installation.md).
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 The `just setup` and `just install` path uses the same install layout as the prebuilt one-liner. Both land in `~/.local` with the same systemd unit and udev rules; the only difference is that source builds compile everything on your machine.
-{% end %}
+{% </callout> %}
 
 ---
 

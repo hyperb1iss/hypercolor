@@ -10,7 +10,7 @@ Hypercolor is an open-source RGB lighting orchestration engine for Linux, Window
 
 Effects are HTML Canvas pages rendered by an embedded Servo browser. Audio FFT, screen capture, and keyboard input feed the render every frame. A spatial sampler maps canvas pixels onto your physical LED positions. The result: one effect paints your whole rig, synchronized, regardless of how many devices or protocols are involved.
 
-{{ img(path="img/ui/dashboard.webp", alt="Hypercolor dashboard showing the Neon City effect active across multiple devices") }}
+{{< img path="img/ui/dashboard.webp" alt="Hypercolor dashboard showing the Neon City effect active across multiple devices" />}}
 
 ## ⚡ Where to start
 
@@ -76,7 +76,7 @@ This section takes you from zero to a fully configured rig.
 
 ## How the engine works
 
-{% mermaid() %}
+{% <mermaid> %}
 graph LR
 subgraph Input
 A[Audio FFT]
@@ -101,7 +101,7 @@ end
     D --> E --> SF --> F
     F --> G & H & I
 
-{% end %}
+{% </mermaid> %}
 
 Effects render into a virtual RGBA canvas (640×480 by default, tunable). **SparkleFlinger**, the render-thread compositor, latches the newest surface from each active layer at the frame boundary and blends them into one canonical frame per tick. The spatial engine samples that frame at each LED's physical position using normalized `[0.0, 1.0]` coordinates, so effects stay resolution-independent regardless of canvas size. Device output is queued asynchronously so a slow device never stalls the render loop.
 
@@ -113,9 +113,9 @@ Hypercolor currently ships working drivers for 179 devices across 12 driver fami
 
 If you own hardware that is not yet supported, see [contributing a driver](@/contributing/adding-a-driver.md).
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 **Remove conflicting RGB software before starting.** openrazer daemon, OpenRGB, Aura Sync, and iCUE all grab USB HID devices exclusively. If one of them is running when Hypercolor starts, your devices will appear in `lsusb` but not in `hypercolor devices list`. Stop them first, or run `hypercolor diagnose` to identify the conflict.
-{% end %}
+{% </callout> %}
 
 ## Effects
 
@@ -123,19 +123,19 @@ Hypercolor renders effects through an embedded Servo browser (HTML Canvas and We
 
 The TypeScript SDK is published to npm as [`hypercolor`](https://www.npmjs.com/package/hypercolor). Scaffold a workspace with `bun create hypercolor`; see [effects setup](@/effects/setup.md).
 
-{{ img(path="img/ui/effects.webp", alt="The Hypercolor effects browser") }}
+{{< img path="img/ui/effects.webp" alt="The Hypercolor effects browser" />}}
 
 ## Interfaces
 
 **Web UI**: served by the daemon at `http://localhost:9420` with no separate process needed. Browse effects, adjust controls live, manage devices, and design spatial layouts from any browser.
 
-{{ img(path="img/ui/studio.webp", alt="Web UI showing the Studio zone editor") }}
+{{< img path="img/ui/studio.webp" alt="Web UI showing the Studio zone editor" />}}
 
 **Studio**: the zone editor inside the web UI. Divide your canvas into zones, each running an independent effect with its own controls and priority. See the [Studio section](@/studio/_index.md) for the full walkthrough.
 
 **TUI**: a Ratatui terminal dashboard with true-color LED preview, audio visualization, and fullscreen effect rendering.
 
-{{ img(path="img/tui/tui-dashboard.png", alt="TUI dashboard with live preview and device table") }}
+{{< img path="img/tui/tui-dashboard.png" alt="TUI dashboard with live preview and device table" />}}
 
 **CLI**: the `hypercolor` binary talks to the daemon over HTTP. Every action you can take in the UI is available via the CLI. See the [CLI reference](@/api/cli.md).
 

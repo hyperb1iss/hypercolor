@@ -18,7 +18,7 @@ Scaffolded workspaces pull it from the registry by default; pass
 `--sdk-spec file:...` to the scaffolder to resolve against a local checkout
 instead. See [Setup](@/effects/setup.md) for how that wires up.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 The narrative guides cover the common surface in depth:
 [TypeScript canvas effects](@/effects/typescript-effects.md),
 [Controls](@/effects/controls.md), [Palettes](@/effects/palettes.md),
@@ -26,7 +26,7 @@ The narrative guides cover the common surface in depth:
 [Display faces](@/effects/display-faces.md). This page is the flat index: reach
 for it when you want every signature in one place, including the math, layout,
 motion, and gauge helper families the guides do not enumerate.
-{% end %}
+{% </callout> %}
 
 ## Declarative API
 
@@ -87,11 +87,11 @@ interface CanvasFnOptions {
 }
 ```
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 `audio: true` is not cosmetic. If your source touches `audio(`, `ctx.audio`,
 `getAudioData(`, or `engine.audio` without it, the build **fails** with an audio
 reactivity validation error. Same contract for `effect()` shaders.
-{% end %}
+{% </callout> %}
 
 ### effect
 
@@ -255,13 +255,13 @@ major), `brightness` (spectral centroid), `spectralFlux`, `onset`, `onsetPulse`,
 `bassEnv` / `midEnv` / `trebleEnv`, `swell`, `momentum`. See
 [Audio](@/effects/audio.md) for the full table and idioms.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 The TypeScript field names here (camelCase, `tempo`, `frequency`) differ from the
 **Rust** `AudioData` used by native effects (snake_case, `bpm`, `spectrum`).
 Shaders also see only a subset: no `chromagram`, `melBands`, or `dominantPitch`
 uniforms. See [Native Rust effects](@/effects/native-rust-effects.md) for the
 Rust-side names.
-{% end %}
+{% </callout> %}
 
 ### Audio helpers
 
@@ -314,12 +314,12 @@ availability, empty keyboard, idle mouse). The snapshot carries:
   `fresh`, and `degraded`.
 - `dropped`: count of input events dropped this frame due to overflow.
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 `InputData.available` is **deprecated**. It now means exactly
 `routed && healthy`, and the alias will be removed in SDK 0.4.0. Read the
 explicit lifecycle fields (`declared`, `routed`, `healthy`, `fresh`,
 `degraded`) instead.
-{% end %}
+{% </callout> %}
 
 Events carry a monotonic capture timestamp (`atMs`), a strictly increasing
 `seq`, the producing `source` device, an optional backend-neutral
@@ -543,11 +543,11 @@ type EasingFn
 type SpringOptions
 ```
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 FPS is adaptive across five tiers. Always drive motion off a time or delta
 (`time_secs`, `performance.now()` deltas, `dt`), never off frame counts, so the
 animation is correct at 15, 30, and 60 FPS alike.
-{% end %}
+{% </callout> %}
 
 ## Gauges
 

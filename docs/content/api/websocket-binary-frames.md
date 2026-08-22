@@ -21,12 +21,12 @@ For the JSON control channel, the subprotocol token (`hypercolor-v1`), and how y
 subscribe to the topics that produce these frames, see the
 [WebSocket protocol reference](@/api/websocket.md).
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 All multi-byte integers and floats are **little-endian**. Floats are IEEE-754
 `f32`. Direct frames derive payload length from their header and WebSocket message
 boundary. Publications larger than one message use the `0x0F` chunk envelope,
 which carries explicit total length, offset, and chunk-count fields.
-{% end %}
+{% </callout> %}
 
 ## Two framing conventions ⚡
 
@@ -44,12 +44,12 @@ reassembly metadata before one slice of a larger encoded preview, and the
 cancellation frame (`0x10`) retires a publication a client may still be
 reassembling. Both validate the schema byte before touching the body.
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 Direct streaming frames do **not** carry a schema byte. Preview transport control
 frames do. A decoder that blindly skips two bytes on a spectrum frame will read
 its `timestamp_ms` one byte short. Branch on the first byte first, then apply the
 right convention.
-{% end %}
+{% </callout> %}
 
 ## Tag byte map
 
@@ -89,11 +89,11 @@ Byte(s)  Field
 Each zone then carries a `u16 LE` UTF-8 id length, the id bytes, a `u16 LE`
 LED count, and `led_count * 3` RGB bytes.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 `0x04` is intentionally unused in the current tag set. Treat any unknown tag as a
 frame you should skip rather than reject the connection; the tag space is
 designed to grow.
-{% end %}
+{% </callout> %}
 
 ## Passive preview frame (`0x03`, `0x05`, `0x06`)
 
@@ -130,13 +130,13 @@ top-left origin, and its length is fully determined by `width`, `height`, and th
 per-pixel byte count. For `Jpeg` there is no fixed length; the payload is a
 complete JPEG image that runs from offset 14 to the end of the direct publication.
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 Native Rust clients holding the message as `bytes::Bytes` can decode with
 `PreviewFrame::decode_bytes`, which slices the payload as a refcounted view instead
 of copying it. Browser clients decode straight from a `js_sys::ArrayBuffer` via
 `PreviewFrameView::decode_array_buffer` and read pixels with `rgba_at` or pull the
 whole frame with one boundary crossing through `to_rgba_vec`.
-{% end %}
+{% </callout> %}
 
 The default render canvas is 640×480 but is configurable, so never hardcode
 dimensions, so always read `width` and `height` from the header. The canvas can resize
@@ -199,12 +199,12 @@ they appear in their canonical form. The `format` byte and the payload follow th
 exact same rules as the preview frame above. The browser decoder is
 `ZonePreviewFrameView::decode_array_buffer`.
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 Note the field order difference from the basic preview frame: in a zone preview the
 `frame_number` and `timestamp_ms` come **before** the two UUIDs, and `width`/`height`
 land at offsets 41 and 43, not 9 and 11. The two layouts are not interchangeable;
 branch on the tag and apply the matching offsets.
-{% end %}
+{% </callout> %}
 
 For the REST and concurrency side of zones (the routes, `If-Match` revisions, and
 `ZoneOutcome::Stale`) see the Studio zone documentation. This page covers only the
@@ -372,11 +372,11 @@ truncates anything longer. The `level`, `bass`, `mid`, and `treble` values are t
 normalized energies that audio-reactive effects key off. `beat` is a hard 0/1 flag
 and `beat_confidence` is its `f32` certainty.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 BPM is deliberately **not** in the binary spectrum frame. Clients that need tempo
 read it from the JSON metrics channel instead. The binary frame stays lean so it can
 stream at audio rate without dragging slow-moving fields along on every packet.
-{% end %}
+{% </callout> %}
 
 ## Decode errors
 

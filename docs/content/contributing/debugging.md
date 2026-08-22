@@ -104,10 +104,10 @@ curl -s -X POST http://localhost:9420/api/v1/diagnose \
 The check detail reports process and report counts plus explicit and non-explicit bytes. It is
 useful for tracking long-session Servo memory growth without exposing a parallel endpoint.
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 Servo memory reporting is disabled on Windows because the embedded reporter can abort the daemon
 process. The `memory` check returns a warning there, and on builds without the `servo` feature.
-{% end %}
+{% </callout> %}
 
 ## REST and WebSocket inspection
 
@@ -199,10 +199,10 @@ the device database yet.
    RUST_LOG=hypercolor_core::input=debug just daemon
    ```
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 For audio-reactive effects, you want a "monitor" source that captures your system audio output.
 On PulseAudio and PipeWire these are named like `alsa_output.*.monitor`.
-{% end %}
+{% </callout> %}
 
 ## Effect debugging
 
@@ -301,19 +301,19 @@ curl -s http://localhost:9420/api/v1/system | jq '.data.status.effect_health | w
 
 ### Servo CSS and layout constraints
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 CSS grid does not work in Servo: children render stacked full-width instead of in a grid. Use
 flexbox for display-face layouts. This is a known Servo limitation, not a Hypercolor bug.
-{% end %}
+{% </callout> %}
 
 WebGL2 works via the Servo canvas but not all extensions available in Chrome are present. If a
 GLSL effect works in a browser but not in Hypercolor, check for extension dependencies.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 There is no native GPU/wgpu shader lane. `EffectSource::Shader` is reserved for future work and
 is not currently executed. GLSL effects run as WebGL2 inside Servo. Do not expect a native
 compiled shader path to be available.
-{% end %}
+{% </callout> %}
 
 ### Servo OOM or crash
 

@@ -9,11 +9,11 @@ A GLSL effect runs a WebGL2 fragment shader for every canvas pixel on every fram
 
 That last point is the one thing to internalize before writing a line of GLSL: **there is no native GPU shader lane.** A `.glsl` effect is not compiled to SPIR-V, handed to wgpu, or run as a Rust renderer. It becomes a WebGL2 program inside a Servo session. The phrase "native shader" in older notes is wrong, and the runtime proves it.
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 GLSL effects render as WebGL2 in Servo, not on a native GPU pipeline. The daemon's renderer factory has no runnable shader path: `EffectSource::Shader` returns `shader effect '...' is not runnable yet`, requesting `gpu` acceleration errors outright, and `auto` falls back to CPU with `gpu effect renderer acceleration is not available yet`. SDK GLSL effects sidestep all of that by shipping as `EffectSource::Html`. The wgpu lane is future work. See [Renderer internals](@/architecture/renderer-internals.md).
-{% end %}
+{% </callout> %}
 
-{{ img(path="img/ui/effects.webp", alt="Effect gallery in the web UI") }}
+{{< img path="img/ui/effects.webp" alt="Effect gallery in the web UI" />}}
 
 ## The `effect()` signature
 
@@ -50,9 +50,9 @@ effect(name, shader, controls, options?)
 
 Shader source is imported as a string. Scaffolded workspaces declare `.glsl` as a text import in `bunfig.toml`, so `import shader from './fragment.glsl'` works in `bun run build` with no extra wiring.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 Scaffolded workspaces pull `hypercolor` from npm by default; engine-development workspaces pin it with a `file:` spec instead. The import line stays `hypercolor` either way. See [Setup & workspace](@/effects/setup.md) for how the spec resolves.
-{% end %}
+{% </callout> %}
 
 ## Built-in uniforms
 
@@ -158,9 +158,9 @@ float mood = iAudioChordMood;
 vec3 warm = mix(vec3(0.2, 0.4, 0.8), vec3(1.0, 0.6, 0.2), clamp(mood * 0.5 + 0.5, 0.0, 1.0));
 ```
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 Drive beats through motion, not raw brightness. Mapping the binary `iAudioBeat` straight onto luminance strobes the LEDs. Reach for `iAudioBeatPulse` (a decaying envelope) and gate it by `iAudioBeatConfidence` so non-rhythmic music doesn't twitch the whole rig.
-{% end %}
+{% </callout> %}
 
 ## A minimal shader effect
 

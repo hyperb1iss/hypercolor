@@ -12,13 +12,13 @@ LED color, audio spectrum, and canvas previews. The web UI, the TUI, and any
 custom client all speak this one protocol, so you never poll and never juggle a
 second HTTP connection.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 The wire contract here is generated from the daemon source on `main`. The JSON
 message shapes come from `crates/hypercolor-daemon/src/api/ws/protocol.rs`; the
 binary frame layouts are owned by `hypercolor-leptos-ext::ws` and round-trip
 tested against the daemon encoders in `daemon/src/api/ws/tests.rs`. When the code
 and this page disagree, the code wins; file an issue.
-{% end %}
+{% </callout> %}
 
 ## Connect
 
@@ -43,13 +43,13 @@ Native clients that control the request headers should instead send
 [auth and security](@/api/auth-and-security.md) for the dual-key model.
 Loopback clients on the default unsecured daemon need no key at all.
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 Browser origin is enforced on the upgrade. Requests with no `Origin` header
 (native and CLI clients) and loopback origins are always allowed. A non-loopback
 browser origin is rejected unless it appears in the daemon's `web.cors_origins`
 allowlist and auth is enabled. A blocked upgrade returns `403 Forbidden` before
 the socket opens.
-{% end %}
+{% </callout> %}
 
 ### Quick test
 
@@ -92,7 +92,7 @@ The daemon never pushes data for a subscription you do not hold, with one
 exception: the `events` topic is active on every connection from the moment it
 opens.
 
-{% mermaid() %}
+{% <mermaid> %}
 sequenceDiagram
   participant C as Client
   participant D as Daemon
@@ -108,7 +108,7 @@ sequenceDiagram
   end
   C->>D: unsubscribe { topics: [frames] }
   D-->>C: unsubscribed (remaining subscriptions)
-{% end %}
+{% </mermaid> %}
 
 ## The hello handshake
 
@@ -217,14 +217,14 @@ subscription per connection.
 | `interactive_preview` | preview id | Binary | An interactive scene preview lane the subscription itself opens. Control-tier only. |
 | `input_events` | — | JSON | Timed keyboard and pointer events from the input pipeline. Control-tier only. |
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 `screen_canvas`, `screen_zones`, `interactive_preview`, and `input_events`
 expose live screen-capture pixels, host input activity, or a render lane of
 their own, so they require a control-tier subscription. On a secured daemon,
 subscribing without a control key returns an `error` with code `forbidden` and
 `required_tier: "control"`. On the default unsecured loopback daemon there is no
 key to provide and the subscription succeeds.
-{% end %}
+{% </callout> %}
 
 ## Client messages
 
@@ -524,12 +524,12 @@ device output, and WebSocket statistics. A representative subset:
 }
 ```
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 Treat `metrics.data` as an open, additive object: read the fields you need by
 name and ignore the rest. The daemon adds counters over time (Servo render
 stages, GPU import slots, SparkleFlinger finalize stats), so a client that
 hard-asserts on the full key set will break on upgrade.
-{% end %}
+{% </callout> %}
 
 ### device_metrics
 
@@ -745,13 +745,13 @@ integers are little-endian.
 | `0x11` | extended screen zones | 41 bytes |
 | `0x12` | wide display preview | 19 bytes + device id |
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 `0x04` is intentionally unused in the current topic set. The passive
 preview-canvas tags (`0x03`/`0x05`/`0x06`) share one header layout,
 distinguished only by the leading tag. Display preview left that family when it
 became keyed: its frames carry the device id, so they use the same
 identity-prefixed layout as interactive previews.
-{% end %}
+{% </callout> %}
 
 ### frames (0x01)
 

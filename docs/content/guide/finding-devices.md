@@ -6,7 +6,7 @@ weight = 110
 
 Hypercolor discovers USB devices automatically the moment the daemon starts. Network devices (WLED, Philips Hue, Nanoleaf, Govee) are found over the local network, and the ones that require credentials need one additional `devices pair` step. This page covers all three paths plus the udev permission fix that solves the most common "device missing" problem on Linux.
 
-{{ img(path="img/ui/ui-devices.webp", alt="Device discovery in the Hypercolor web UI") }}
+{{< img path="img/ui/ui-devices.webp" alt="Device discovery in the Hypercolor web UI" />}}
 
 ## Check what Hypercolor already found
 
@@ -74,9 +74,9 @@ sudo udevadm trigger
 
 Then re-plug or reboot.
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 If another RGB manager (OpenRGB, openrazer daemon, Aura Sync, iCUE) is running and holding the same HID device, Hypercolor cannot connect to it even with correct udev rules. Stop the other tool before starting Hypercolor, or check whether the other tool's kernel module grabbed the device at boot.
-{% end %}
+{% </callout> %}
 
 ## Network devices
 
@@ -117,9 +117,9 @@ hypercolor devices pair "Hue Bridge" --no-activate
 
 On success you will see a `paired` or `already_paired` status message. The credentials are persisted; you do not need to pair again unless you factory-reset the device.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 `devices pair` is the only supported way to store network credentials. The command POSTs to `/devices/{id}/pair` on the daemon and saves tokens through the device registry. There is no config-file credential field to fill in manually.
-{% end %}
+{% </callout> %}
 
 ## Inspect a device
 

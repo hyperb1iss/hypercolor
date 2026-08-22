@@ -7,9 +7,9 @@ template = "page.html"
 
 The Hypercolor daemon ships a built-in [Model Context Protocol](https://modelcontextprotocol.io/) server that exposes 17 tools, 5 resources, and 3 prompts over Streamable HTTP. This page gets it running and wired into your assistant. There is one thing to do before anything else: turn it on.
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 The MCP server is **off by default**. Until you enable it in config, `http://127.0.0.1:9420/mcp` returns 404 and no client can connect. Enabling it is step one below.
-{% end %}
+{% </callout> %}
 
 ## Step 1: Enable the server 🔮
 
@@ -46,9 +46,9 @@ The transport is **Streamable HTTP** (an `rmcp` `StreamableHttpService`). There 
 
 Before configuring a client, confirm the daemon is running and the route is mounted.
 
-{% api_endpoint(method="GET", path="/health") %}
+{% <api_endpoint method="GET" path="/health"> %}
 Returns the daemon's health snapshot. A 200 here proves the daemon is up. Note that `/health` is a top-level route, not under `/api/v1`.
-{% end %}
+{% </api_endpoint> %}
 
 ```bash
 curl -s http://127.0.0.1:9420/health
@@ -126,9 +126,9 @@ Any MCP client that can speak Streamable HTTP connects with just the URL. Two da
 - If your client cannot consume SSE streams, set `json_response = true` in the `[mcp]` config so responses come back as single-shot JSON.
 - The default base path is `/mcp`. If you changed `base_path`, append your value to the daemon address instead.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 The server advertises three capabilities to every client on connect: tools, resources, and prompts. It also ships operating instructions that tell the agent to read `get_status` or the `hypercolor://state` resource first, browse the catalog with `list_effects` before applying visuals, and prefer structured arguments over guessing. A well-behaved client surfaces all three primitives automatically.
-{% end %}
+{% </callout> %}
 
 ## Authentication
 
@@ -145,9 +145,9 @@ Tokens come from two environment variables read by the daemon at startup:
 - `HYPERCOLOR_API_KEY`: the control tier, allowed to mutate state.
 - `HYPERCOLOR_READ_API_KEY`: the optional read-only tier.
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 The `?token=` query-string fallback is accepted only on the `/api/v1/ws` WebSocket route, never on `/mcp`. Remote MCP clients must use the `Authorization: Bearer` header. Reaching a non-loopback daemon also requires that the client's address pass the daemon's network-access policy, so an exposed rig needs both a valid key and an allowed origin.
-{% end %}
+{% </callout> %}
 
 ## Remote rigs
 

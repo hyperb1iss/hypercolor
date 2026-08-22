@@ -29,11 +29,11 @@ or `TransportError::IoError`, and the device stays in a disconnected state. The 
 layer maps any underlying error message containing "permission" to `PermissionDenied`;
 everything else becomes `IoError`.
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 The udev rules in `99-hypercolor.rules` grant your user *permission* to open the device
 node. They do not prevent another process from opening the same node first. Access control
 and exclusivity are separate concerns.
-{% end %}
+{% </callout> %}
 
 ## Software known to conflict
 
@@ -275,12 +275,12 @@ hypercolor devices discover
 
 Or via the web UI: open the Devices panel and click Scan.
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 If you want to keep OpenRGB available for hardware Hypercolor does not natively support,
 configure it as a bridge rather than a parallel controller. The OpenRGB fallback driver
 lets Hypercolor route output through a running OpenRGB SDK server on port 6742, with
 explicit ownership partitioning. See [OpenRGB fallback](@/hardware/openrgb-fallback.md).
-{% end %}
+{% </callout> %}
 
 ## SMBus and I2C conflicts ⚡
 
@@ -290,11 +290,11 @@ SMBus transactions to a controller at a time. Two applications writing to the sa
 address simultaneously corrupt device state: flickering, wrong colors, or the controller
 locking up.
 
-{% callout(type="danger") %}
+{% <callout type="danger"> %}
 Running Hypercolor and OpenRGB (or Aura Sync) simultaneously against the same SMBus
 controllers can corrupt device state. On some ASUS DRAM controllers this requires a
 physical power cycle to recover.
-{% end %}
+{% </callout> %}
 
 Check what is accessing your i2c nodes:
 

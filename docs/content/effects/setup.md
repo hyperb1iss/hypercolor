@@ -7,14 +7,14 @@ template = "page.html"
 
 Every Hypercolor effect lives in a Bun workspace that depends on [`hypercolor`](https://www.npmjs.com/package/hypercolor). This page gets that workspace running: install Bun, scaffold a project, and let `bun install` pull the SDK from npm. Once it finishes, you're ready to author.
 
-{{ img(path="img/ui/effects.webp", alt="The Hypercolor effects browser, the surface your built effects land in") }}
+{{< img path="img/ui/effects.webp" alt="The Hypercolor effects browser, the surface your built effects land in" />}}
 <!-- No setup-specific UI shot exists; the effects browser shows what authored effects become once shipped. -->
 
 The endpoint of this page is a workspace where `bun install` has succeeded and `hypercolor` resolves. If that is true, you can author. The next page, [Creating effects](@/effects/creating-effects.md), writes the first one.
 
-{% callout(type="info", title="Versioning") %}
+{% <callout type="info" title="Versioning"> %}
 The SDK API tracks the engine and may change between minor versions (currently the 0.3 line). If you are hacking on the engine itself, you can point a workspace at a local checkout instead of npm; see [Developing against a local engine checkout](#developing-against-a-local-engine-checkout).
-{% end %}
+{% </callout> %}
 
 ## Install Bun
 
@@ -152,9 +152,9 @@ The scaffolder substitutes whatever you pass to `--sdk-spec` into the workspace 
 
 That relative path is resolved from the workspace root, so it assumes your workspace is a sibling of the `hypercolor/` clone (for example `~/dev/my-effects` next to `~/dev/hypercolor`). If your layout differs, adjust the relative path or use an absolute one.
 
-{% callout(type="warning", title="Use file:, not link:") %}
+{% <callout type="warning" title="Use file:, not link:"> %}
 Bun's `link:` spec is not a drop-in relative path the way yarn's is. It requires a prior `bun link` registration of the package and resolves through Bun's global link store, so a copied `link:` spec breaks `bun install` with no obvious cause. Stick with `file:` for local checkouts.
-{% end %}
+{% </callout> %}
 
 ### Inside the Hypercolor monorepo
 

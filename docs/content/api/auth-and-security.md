@@ -18,13 +18,13 @@ If you only ever drive Hypercolor from the same machine, you can stop reading
 after the loopback section. Everything else matters the moment you bind the
 daemon to a LAN address or put it behind a reverse proxy.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 Ordinary API authentication is **opt-in**. With no API-key environment
 variables set, loopback lighting control remains credentialless and remote
 clients are governed by the network allowlist (default: local-only). Protected
 capture and input surfaces remain unavailable until a control credential or
 trusted in-process capability is present.
-{% end %}
+{% </callout> %}
 
 ## The model at a glance
 
@@ -32,7 +32,7 @@ A request flows through these checks in order. The first one that fails returns
 immediately with a `{ error, meta }` envelope (see
 [Envelope & errors](@/api/rest-envelope-and-errors.md)).
 
-{% mermaid() %}
+{% <mermaid> %}
 graph TD
   A[Incoming request] --> B{Allowed by network policy?}
   B -- no --> R1[403 forbidden]
@@ -55,7 +55,7 @@ graph TD
   J -- yes --> K{Authenticated control authority?}
   K -- no --> R6[403 forbidden]
   K -- yes --> P
-{% end %}
+{% </mermaid> %}
 
 ## Dual-key authentication
 
@@ -166,11 +166,11 @@ bundled web UI (same-origin) and non-browser clients (CLI, SDK, which omit the
 header) are unaffected; only a browser explicitly marking the request
 cross-site is denied.
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 The CSRF guard fires for **any** mutating loopback request marked cross-site,
 even when no API key is configured. A page on another origin cannot `POST` to
 your local daemon to install an effect or change a scene.
-{% end %}
+{% </callout> %}
 
 ## Network access policy
 
@@ -211,14 +211,14 @@ client_scope = "local_subnets"
 allowed_clients = ["192.168.1.0/24"]
 ```
 
-{% callout(type="danger") %}
+{% <callout type="danger"> %}
 `access_mode = "lan_trusted"` allows **unauthenticated** remote access by
 design: any client on the trusted subnets can control your lights without a
 key. For a network-reachable daemon you usually want `lan_protected` (remote
 allowed, but a key is required) plus `HYPERCOLOR_API_KEY`. Only set
 `allow_unauthenticated_remote_access = true` if you genuinely want keyless LAN
 control and understand the exposure.
-{% end %}
+{% </callout> %}
 
 ### Fail-closed startup binds
 

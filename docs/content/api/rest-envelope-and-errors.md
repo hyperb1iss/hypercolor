@@ -85,11 +85,11 @@ Branch on `code`, render `message`, and read `details` when you need the
 specifics. Never parse `message` to decide control flow; it is prose and can
 change.
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 The discriminator is the top-level key. If the body has a `data` field you have a
 success; if it has an `error` field you have a failure. You do not need to inspect
 the HTTP status first, though the status will always agree with the `code`.
-{% end %}
+{% </callout> %}
 
 ## The meta block
 
@@ -102,11 +102,11 @@ varies in shape.
 | `request_id` | `"req_0190d4c8-7e21-7c3a-9f0b-3a2e8c1d4f56"` | A per-request correlation ID, always prefixed `req_` followed by a UUID v7. It is not a bare UUID. UUID v7 is time-ordered, so request IDs sort chronologically. Log it and quote it in bug reports to trace a single request through the daemon. |
 | `timestamp` | `"2026-06-24T18:03:11.482Z"` | ISO 8601 UTC with millisecond precision and a trailing `Z`. This is the response generation time, not the request arrival time. |
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 `api_version` is the literal string `"1.0"`. It is not `"v1"`, not `"1"`, and not
 the URL segment. Do not assert equality against the path version. The two evolve
 independently.
-{% end %}
+{% </callout> %}
 
 ## Error codes and HTTP status
 
@@ -130,25 +130,25 @@ daemon's only error rendering; this is the complete mapping.
 | `internal_error` | `500 Internal Server Error` | An unexpected daemon-side failure. The `message` is intentionally generic; the `request_id` is your key to the daemon logs. |
 | `device_unavailable` | `503 Service Unavailable` | The device exists but cannot serve the request right now. |
 
-{% callout(type="danger") %}
+{% <callout type="danger"> %}
 `validation_error` maps to **422**, not 400. A well-formed request that fails a
 semantic check (a speed outside its bounds, a zone that cannot accept an output)
 is a 422. 400 (`malformed_request`) is reserved for requests the daemon could not
 parse at all. Clients that treat every client-side error as 400 will mis-handle
 validation failures.
-{% end %}
+{% </callout> %}
 
 ### Status flow
 
 The same `DomainError` variant drives both the body and the response status.
 There is no path where they disagree.
 
-{% mermaid() %}
+{% <mermaid> %}
 graph LR
   H[Handler] -->|DomainError::validation| C[DomainError::Validation]
   C -->|serialize| B["body.error.code = validation_error"]
   C -->|status map| S["HTTP 422"]
-{% end %}
+{% </mermaid> %}
 
 ## Rate-limit responses
 
@@ -190,11 +190,11 @@ Prefer `Retry-After` (or the equal `details.retry_after`) for backoff timing.
 Throttling is a property of specific operation classes, so a 429 on one endpoint
 does not mean every endpoint is throttled.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 Rate limiting follows the scale-not-nerf rule: it protects shared hardware paths
 like device discovery, not ordinary reads. Loopback clients (a local CLI, TUI, or
 the web UI) generally never see a 429 in normal use.
-{% end %}
+{% </callout> %}
 
 ## Handling errors in a client
 

@@ -8,11 +8,11 @@ Devices land in zones through the Studio zone tree. Each device shows up as a ca
 
 The unit that actually moves between zones is an **output**, not a whole device. An output is one device output or addressable segment. A single-segment strip has one output; a multi-channel controller contributes several. A device output lives in exactly one zone's layout at a time, so adding a device to a new zone *moves* its outputs there rather than copying them.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 New to the Scene → Zone → Layout model? Read [Zones](@/studio/zones.md) first. Scenes are whole-rig configs; zones are flexible partitions of a scene's canvas. There is no "rooms" concept here.
-{% end %}
+{% </callout> %}
 
-{{ img(path="img/ui/studio.webp", alt="The Studio workspace, with the zone tree on the left listing zones and their devices") }}
+{{< img path="img/ui/studio.webp" alt="The Studio workspace, with the zone tree on the left listing zones and their devices" />}}
 
 ## The device card
 
@@ -25,7 +25,7 @@ Every physical device under a zone renders as a card in the zone tree. The card 
 
 Clicking the card body selects that device's zone and highlights its outputs on the Stage canvas. Hovering previews those outputs.
 
-{{ img(path="img/ui/ui-devices.webp", alt="Device discovery in the Hypercolor web UI") }}
+{{< img path="img/ui/ui-devices.webp" alt="Device discovery in the Hypercolor web UI" />}}
 
 ### Channels and outputs
 
@@ -49,9 +49,9 @@ Picking a device brings every output it has into this zone:
 
 In a **single-zone scene**, devices that sit in no zone fold under the sole LED zone as one-tap **Available** rows. Each Available card carries a green **add** (`+`) action that drops the device straight into the zone, no picker needed.
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 Can't find a device in the picker? It may already be entirely in this zone, or it may not be connected yet. Check [Finding devices](@/guide/finding-devices.md) to confirm the daemon sees it.
-{% end %}
+{% </callout> %}
 
 ## Hide, identify, remove
 
@@ -87,9 +87,9 @@ To reassign:
 
 Each output chip names its device, and a multi-channel device also names the segment (for example `Lian Li · Front fans`). Like the device picker, chips never show a raw id.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 Every assignment carries the active scene's revision as a precondition. If another client or the CLI changed the scene while you were working, the move is rejected cleanly, the scene reloads, and a toast asks you to try again. Your edit is never silently clobbered. See [Zone API and concurrency](@/studio/zone-api-and-concurrency.md) for the mechanics.
-{% end %}
+{% </callout> %}
 
 ## Where devices go from here
 

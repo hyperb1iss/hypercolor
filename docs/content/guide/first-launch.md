@@ -128,14 +128,14 @@ broker service (`HypercolorSmBus`), and five kernel modules
 Installation requires a UAC elevation prompt (PowerShell running
 `install-windows-hardware-support.ps1`).
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 If another RGB tool is running (SignalRGB, Corsair iCUE, ASUS Armoury Crate, MSI Center,
 Gigabyte RGB Fusion, Razer Synapse, and others), it may already hold the SMBus or the HID
 device open.
 The wizard detects and lists conflicting services so you can close them before clicking
 "Install support." Two RGB managers fighting for the same bus produces unpredictable
 behavior.
-{% end %}
+{% </callout> %}
 
 ### Start at sign in
 

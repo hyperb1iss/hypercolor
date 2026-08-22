@@ -44,10 +44,10 @@ wire format.
 3. Write a spec in `docs/specs/` before implementing. The spec is the review artifact; the
    Rust code follows it.
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 Do not start implementing from a partial spec. An 80% correct spec produces subtle
 encoding bugs that are hard to bisect later because everything compiles clean.
-{% end %}
+{% </callout> %}
 
 The `.agents/skills/protocol-research/` skill documents the full research methodology,
 including USB capture workflow, checksum identification, and timing measurement.
@@ -608,12 +608,12 @@ just test-crate hypercolor-hal      # HAL tests only
 just lint                           # Clippy with -D warnings
 ```
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 `unsafe_code` is `forbid` in every driver crate (the only workspace exceptions are the
 audited platform-interop crates, which deny undocumented unsafe blocks). If a driver
 situation seems to require `unsafe`, it almost certainly does not: `zerocopy` provides
 everything needed for safe type-punning of wire-format buffers.
-{% end %}
+{% </callout> %}
 
 `just verify` must pass clean before submitting. A failing `just lint` is a blocker.
 
