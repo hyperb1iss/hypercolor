@@ -277,6 +277,7 @@ fn layout_mutation_capabilities_have_named_visibility_boundaries() {
     for gated_capability in [
         "#[cfg(feature = \"persistence-test-hooks\")]\n#[doc(hidden)]\npub struct LayoutTestWorkflows",
         "#[cfg(feature = \"persistence-test-hooks\")]\nimpl LayoutTestWorkflows",
+        "#[cfg(feature = \"persistence-test-hooks\")]\n    #[allow(\n        clippy::too_many_arguments,\n        reason = \"the fixture mirrors the production composition boundary\"\n    )]\n    pub fn new_test_context(",
         "#[cfg(feature = \"persistence-test-hooks\")]\n    #[doc(hidden)]\n    #[must_use]\n    pub const fn test_workflows(",
         "#[cfg(feature = \"persistence-test-hooks\")]\n    #[doc(hidden)]\n    #[must_use]\n    pub fn layout_publication_test_executor(",
     ] {

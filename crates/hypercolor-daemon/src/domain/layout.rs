@@ -20,6 +20,7 @@ use hypercolor_types::canvas::SurfaceDescriptor;
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::scene::{SceneId, Zone, ZoneId};
 use hypercolor_types::spatial::{Output, SamplingMode, SpatialLayout};
+#[cfg(feature = "persistence-test-hooks")]
 use tokio::sync::watch;
 #[cfg(feature = "persistence-test-hooks")]
 use tokio::sync::{Notify, RwLock, Semaphore};
@@ -399,6 +400,7 @@ impl LayoutContext {
         }
     }
 
+    #[cfg(feature = "persistence-test-hooks")]
     #[allow(
         clippy::too_many_arguments,
         reason = "the fixture mirrors the production composition boundary"
