@@ -17,6 +17,3 @@ pub mod prelude;
 
 #[cfg(feature = "axum")]
 pub mod axum;
-
-#[cfg(feature = "leptos")]
-pub mod leptos;

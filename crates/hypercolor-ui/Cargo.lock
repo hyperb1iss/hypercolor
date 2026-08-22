@@ -785,8 +785,6 @@ dependencies = [
  "bytes",
  "gloo-events",
  "js-sys",
- "leptos",
- "leptos-use",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
