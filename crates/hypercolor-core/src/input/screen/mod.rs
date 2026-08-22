@@ -15,6 +15,8 @@
 //! The capture backend feeds raw pixel buffers. Everything downstream is
 //! backend-agnostic and testable with synthetic data.
 
+#[cfg(any(target_os = "windows", test))]
+mod adapter;
 mod admission;
 mod cadence;
 mod compute;

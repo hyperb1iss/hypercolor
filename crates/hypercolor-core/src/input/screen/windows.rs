@@ -76,6 +76,8 @@ use crate::input::{
 };
 use hypercolor_worker_retention::{retain_worker, spawn_worker};
 
+use super::adapter::{CapturePublication as AdapterCapturePublication, CapturePublicationEpoch};
+
 /// How long a worker waits on DXGI before checking its command channel.
 ///
 /// Bounded well under a second so a stop or deactivate lands promptly even
@@ -272,6 +274,18 @@ struct ActiveCaptureEpoch {
     source_generation: u64,
     activity_generation: u64,
     duplication_generation: u64,
+}
+
+type CapturePublication<T> = AdapterCapturePublication<ActiveCaptureEpoch, T>;
+
+impl CapturePublicationEpoch for ActiveCaptureEpoch {
+    fn source_generation(&self) -> u64 {
+        self.source_generation
+    }
+
+    fn activity_generation(&self) -> u64 {
+        self.activity_generation
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -503,62 +517,6 @@ impl ExactPublicationShared {
             .and_then(NonZeroU64::new)
             .ok_or_else(|| anyhow!("Windows GPU descriptor identity exhausted"))?;
         Ok(GpuSurfaceDescriptorId::new(id))
-    }
-}
-
-struct CapturePublication<T> {
-    source_generation: u64,
-    activity_generation: u64,
-    active: Option<ActiveCaptureEpoch>,
-    latest: Option<T>,
-}
-
-impl<T> Default for CapturePublication<T> {
-    fn default() -> Self {
-        Self {
-            source_generation: 0,
-            activity_generation: 0,
-            active: None,
-            latest: None,
-        }
-    }
-}
-
-impl<T> CapturePublication<T> {
-    fn activate(&mut self, active: ActiveCaptureEpoch) -> bool {
-        if active.source_generation != self.source_generation
-            || active.activity_generation != self.activity_generation
-        {
-            return false;
-        }
-        if self.active.as_ref() != Some(&active) {
-            self.latest = None;
-            self.active = Some(active);
-        }
-        true
-    }
-
-    fn fence_source(&mut self, source_generation: u64) {
-        self.source_generation = source_generation;
-        self.clear();
-    }
-
-    fn fence_activity(&mut self, activity_generation: u64) {
-        self.activity_generation = activity_generation;
-        self.clear();
-    }
-
-    fn clear(&mut self) {
-        self.active = None;
-        self.latest = None;
-    }
-
-    fn publish(&mut self, active: &ActiveCaptureEpoch, value: T) -> bool {
-        if self.active.as_ref() != Some(active) {
-            return false;
-        }
-        self.latest = Some(value);
-        true
     }
 }
 
