@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import timedelta
 from pathlib import Path
 from typing import cast
 
@@ -837,7 +838,7 @@ async def test_get_device_controls_quotes_generated_path_parameters(
             content=_envelope(
                 _control_surface(
                     "device:keyboard/main",
-                    {"brightness": {"kind": "integer", "value": 88}},
+                    {"brightness": {"kind": "int", "value": 88}},
                 )
             ),
         )
@@ -847,7 +848,7 @@ async def test_get_device_controls_quotes_generated_path_parameters(
 
     assert route.called
     assert surface.surface_id == "device:keyboard/main"
-    assert surface.values["brightness"] == {"kind": "integer", "value": 88}
+    assert surface.values["brightness"] == {"kind": "int", "value": 88}
 
 
 @respx.mock
@@ -866,7 +867,7 @@ async def test_set_control_values_converts_python_values(client: HypercolorClien
                     "accepted": [],
                     "rejected": [],
                     "impacts": [],
-                    "values": {"brightness": {"kind": "integer", "value": 88}},
+                    "values": {"brightness": {"kind": "int", "value": 88}},
                 }
             ),
         )
@@ -885,7 +886,7 @@ async def test_set_control_values_converts_python_values(client: HypercolorClien
         }
     }
     assert result.revision == 5
-    assert result.values["brightness"] == {"kind": "integer", "value": 88}
+    assert result.values["brightness"] == {"kind": "int", "value": 88}
 
 
 @respx.mock
@@ -902,7 +903,7 @@ async def test_invoke_control_action_converts_input(client: HypercolorClient) ->
                     "action_id": "identify",
                     "status": "completed",
                     "revision": 5,
-                    "result": {"kind": "string", "value": "Identifying keyboard"},
+                    "result": {"kind": "text", "value": "Identifying keyboard"},
                 }
             ),
         )
@@ -911,18 +912,33 @@ async def test_invoke_control_action_converts_input(client: HypercolorClient) ->
     result = await client.invoke_control_action(
         "device:keyboard",
         "identify",
-        {"duration_ms": 750, "color": {"kind": "color_rgb", "value": [128, 255, 234]}},
+        {
+            "duration": timedelta(milliseconds=750),
+            "attempt": 2,
+            "label": "keyboard",
+            "options": {"force": True},
+            "color": {"kind": "color_rgb", "value": [128, 255, 234]},
+        },
     )
 
     assert route.called
     assert json.loads(route.calls[0].request.content) == {
         "input": {
-            "duration_ms": {"kind": "integer", "value": 750},
-            "color": {"kind": "color_rgb", "value": [128, 255, 234]},
+            "duration": {"kind": "duration", "value": 750},
+            "attempt": {"kind": "int", "value": 2},
+            "label": {"kind": "text", "value": "keyboard"},
+            "options": {
+                "kind": "map",
+                "value": {"force": {"kind": "bool", "value": True}},
+            },
+            "color": {
+                "kind": "color_rgb",
+                "value": {"r": 128, "g": 255, "b": 234},
+            },
         }
     }
     assert result.status == "completed"
-    assert result.result == {"kind": "string", "value": "Identifying keyboard"}
+    assert result.result == {"kind": "text", "value": "Identifying keyboard"}
 
 
 @respx.mock

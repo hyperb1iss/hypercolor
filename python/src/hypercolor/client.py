@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from datetime import timedelta
 from typing import Any, Self, TypeVar
 from urllib.parse import quote
 
@@ -618,7 +619,9 @@ class HypercolorClient:
         """Invoke a control-surface action."""
         body = InvokeControlActionRequest()
         if input is not None:
-            body["input"] = {str(key): _control_api_value(value) for key, value in input.items()}
+            body["input"] = {
+                str(key): _canonical_control_value(value) for key, value in input.items()
+            }
         return await self._generated_model(
             generated_invoke_control_surface_action._get_kwargs(
                 surface_id,
@@ -1392,43 +1395,28 @@ def _patch_controls_request(values: Mapping[str, Any]) -> PatchControlsRequest:
     return PatchControlsRequest.from_dict(body)
 
 
-def _control_api_value(value: Any) -> dict[str, Any]:
-    if isinstance(value, Mapping):
-        if "kind" in value:
-            result = {str(key): item for key, item in value.items()}
-        else:
-            result = {
-                "kind": "object",
-                "value": {str(key): _control_api_value(item) for key, item in value.items()},
-            }
-    elif isinstance(value, list):
-        result = {"kind": "list", "value": [_control_api_value(item) for item in value]}
-    elif value is None:
-        result = {"kind": "null"}
-    elif isinstance(value, bool):
-        result = {"kind": "bool", "value": value}
-    elif isinstance(value, int):
-        result = {"kind": "integer", "value": value}
-    elif isinstance(value, float):
-        result = {"kind": "float", "value": value}
-    else:
-        result = {"kind": "string", "value": str(value)}
-    return result
-
-
 def _canonical_control_value(value: Any) -> dict[str, Any]:
     if isinstance(value, Mapping):
         if "kind" in value:
-            result = {str(key): item for key, item in value.items()}
-        elif {"x", "y", "width", "height"} <= set(value):
-            result = {"kind": "rect", "value": {str(key): item for key, item in value.items()}}
-        else:
-            result = {
-                "kind": "map",
-                "value": {str(key): _canonical_control_value(item) for key, item in value.items()},
-            }
-    elif value is None:
+            return _canonical_tagged_control_value(value)
+        if {"x", "y", "width", "height"} <= set(value):
+            return {"kind": "rect", "value": {str(key): item for key, item in value.items()}}
+        return {
+            "kind": "map",
+            "value": {str(key): _canonical_control_value(item) for key, item in value.items()},
+        }
+    return _canonical_non_mapping_control_value(value)
+
+
+def _canonical_non_mapping_control_value(value: Any) -> dict[str, Any]:
+    if value is None:
         result = {"kind": "null"}
+    elif isinstance(value, timedelta):
+        microseconds = (value.days * 24 * 60 * 60 + value.seconds) * 1_000_000 + value.microseconds
+        if microseconds < 0 or microseconds % 1_000 != 0:
+            message = "control durations must be non-negative whole milliseconds"
+            raise ValueError(message)
+        result = {"kind": "duration", "value": microseconds // 1_000}
     elif isinstance(value, bool):
         result = {"kind": "bool", "value": value}
     elif isinstance(value, int):
@@ -1459,6 +1447,28 @@ def _canonical_control_value(value: Any) -> dict[str, Any]:
     else:
         message = "unsupported control value"
         raise ValueError(message)
+    return result
+
+
+def _canonical_tagged_control_value(value: Mapping[Any, Any]) -> dict[str, Any]:
+    kind = value.get("kind")
+    if not isinstance(kind, str):
+        message = "control value kind must be text"
+        raise TypeError(message)
+    if kind in {"boolean", "duration_ms", "integer", "object", "string"}:
+        message = f"retired control value kind: {kind}"
+        raise ValueError(message)
+
+    result = {str(key): item for key, item in value.items()}
+    if kind in {"color_rgb", "color_rgba", "color_linear"}:
+        channels = {
+            "color_rgb": ("r", "g", "b"),
+            "color_rgba": ("r", "g", "b", "a"),
+            "color_linear": ("r", "g", "b", "a"),
+        }[kind]
+        payload = value.get("value")
+        if isinstance(payload, list) and len(payload) == len(channels):
+            result["value"] = dict(zip(channels, payload, strict=True))
     return result
 
 
