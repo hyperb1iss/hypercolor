@@ -95,10 +95,6 @@ fn prepared_effect_pool_commit_round(change_controls: bool) -> Stats {
         id: ZoneId::new(),
         name: "Allocation Group".to_owned(),
         description: None,
-        effect_id: Some(effect_id),
-        controls: controls.clone(),
-        control_bindings: HashMap::new(),
-        preset_id: None,
         layers: vec![SceneLayer::from_effect(
             SceneLayerId::new(),
             effect_id,
@@ -120,11 +116,11 @@ fn prepared_effect_pool_commit_round(change_controls: bool) -> Stats {
         .expect("live effect pool should prepare");
     if change_controls {
         let updated = ControlValue::Color([0.0, 0.0, 1.0, 1.0]);
-        group.controls.insert("color".to_owned(), updated.clone());
         let LayerSource::Effect { controls, .. } = &mut group.layers[0].source else {
             panic!("fixture should store an effect layer");
         };
         controls.insert("color".to_owned(), updated);
+        group.controls_version += 1;
     }
     let prepared = pool
         .prepare_reconcile(std::slice::from_ref(&group), &registry, &HashMap::new())
