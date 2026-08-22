@@ -3,7 +3,6 @@
 use std::collections::HashMap;
 use std::future::Future;
 
-use gloo_net::http::Method;
 use hypercolor_types::api::scene::{
     ApplyEffectResponse, ClearSceneRequest, ReplaceLayerRequest, SceneDocument, ZoneResource,
 };
@@ -11,8 +10,9 @@ use hypercolor_types::control::ControlValue;
 use hypercolor_types::effect::ControlDefinition;
 use hypercolor_types::layer::LayerSource;
 use hypercolor_types::scene::ZoneRole;
-use web_sys::{File, FormData};
+use web_sys::File;
 
+use super::http_transport::HttpMethod;
 use super::{ApiError, ApiResult, client};
 use crate::control_surface_api::path_segment;
 
@@ -144,7 +144,7 @@ pub async fn apply_effect_preset(
     };
     apply_effect_preset_with(effect_id, expected_revision, move |revision| async move {
         client::send_json_versioned::<_, ApplyEffectResponse>(
-            Method::POST,
+            HttpMethod::Post,
             &path,
             Some(&body),
             Some(revision),
@@ -252,7 +252,7 @@ pub async fn reset_effect_controls(
         .map(|control| (control.control_id().to_owned(), control.default_value))
         .collect();
     let outcome = client::send_json_versioned::<_, ZoneResource>(
-        Method::PUT,
+        HttpMethod::Put,
         &format!("/api/v1/scene/zones/{}/layers/{}", zone.id, layer.id),
         Some(&ReplaceLayerRequest {
             source: LayerSource::Effect {
@@ -352,22 +352,12 @@ fn effect_target_from_zone(effect_id: &str, zone: &ZoneResource) -> ApiResult<Ef
 }
 
 pub async fn upload_effect(file: File) -> ApiResult<InstalledEffectResponse> {
-    let form_data = FormData::new().map_err(|error| ApiError::Serialize(format!("{error:?}")))?;
-    form_data
-        .append_with_blob_and_filename("file", &file, &file.name())
-        .map_err(|error| ApiError::Serialize(format!("{error:?}")))?;
+    let part = client::multipart_file_part("file", &file).await?;
+    let response = client::send_multipart("/api/v1/effects/install", vec![part]).await?;
 
-    let request = client::request(Method::POST, "/api/v1/effects/install")?;
-    let response = request
-        .body(form_data)
-        .map_err(|error| ApiError::Serialize(error.to_string()))?
-        .send()
-        .await
-        .map_err(|error| ApiError::Network(error.to_string()))?;
-
-    if !(200..300).contains(&response.status()) {
-        let status = response.status();
-        let payload = response.json::<serde_json::Value>().await.ok();
+    if !(200..300).contains(&response.status) {
+        let status = response.status;
+        let payload = serde_json::from_slice::<serde_json::Value>(&response.body).ok();
         let detail_errors = payload
             .as_ref()
             .and_then(|value| value["error"]["details"]["errors"].as_array())
@@ -390,11 +380,7 @@ pub async fn upload_effect(file: File) -> ApiResult<InstalledEffectResponse> {
         return Err(ApiError::http(status, message));
     }
 
-    response
-        .json::<hypercolor_types::api::ApiResponse<InstalledEffectResponse>>()
-        .await
-        .map(|payload| payload.data)
-        .map_err(|error| ApiError::Parse(error.to_string()))
+    client::parse_envelope(&response)
 }
 
 #[cfg(test)]

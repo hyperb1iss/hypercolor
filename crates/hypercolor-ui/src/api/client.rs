@@ -5,19 +5,66 @@
 //! status-code checks, envelope unwrapping, and response deserialization so
 //! domain modules only specify the URL, request body type, and response type.
 
-use std::{cell::RefCell, fmt};
+use std::{cell::RefCell, fmt, rc::Rc};
 
-use gloo_net::http::{Method, RequestBuilder, Response};
+use gloo_net::http::{Method, RequestBuilder};
 use hypercolor_types::api::{ApiErrorBody, ApiResponse, ListResponse};
 #[cfg(any(test, all(debug_assertions, target_arch = "wasm32")))]
 use hypercolor_types::service::ProtectedControlCredential;
+use js_sys::{Array, Uint8Array};
 use serde::{Serialize, de::DeserializeOwned};
+use wasm_bindgen_futures::JsFuture;
+use web_sys::{Blob, BlobPropertyBag, File, FormData};
+
+use super::http_transport::{
+    HttpHeader, HttpMethod, HttpMultipartPart, HttpRequest, HttpRequestBody, HttpResponse,
+    HttpTransport,
+};
 
 #[cfg(target_arch = "wasm32")]
 const API_KEY_STORAGE_KEY: &str = "hypercolor.api_key";
 
 thread_local! {
     static DAEMON_TRANSPORT: RefCell<DaemonTransport> = RefCell::new(DaemonTransport::default());
+    static HTTP_TRANSPORT: RefCell<HttpTransportState> = RefCell::new(HttpTransportState::default());
+}
+
+#[derive(Default)]
+struct HttpTransportState {
+    provider: Option<Rc<dyn HttpTransport>>,
+    used: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HttpTransportInstallError {
+    AlreadyInstalled,
+    AlreadyUsed,
+}
+
+impl fmt::Display for HttpTransportInstallError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::AlreadyInstalled => write!(f, "an HTTP transport is already installed"),
+            Self::AlreadyUsed => write!(f, "the HTTP transport has already been used"),
+        }
+    }
+}
+
+impl std::error::Error for HttpTransportInstallError {}
+
+pub fn install_http_transport(
+    transport: Rc<dyn HttpTransport>,
+) -> Result<(), HttpTransportInstallError> {
+    HTTP_TRANSPORT.with_borrow_mut(|state| {
+        if state.used {
+            return Err(HttpTransportInstallError::AlreadyUsed);
+        }
+        if state.provider.is_some() {
+            return Err(HttpTransportInstallError::AlreadyInstalled);
+        }
+        state.provider = Some(transport);
+        Ok(())
+    })
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -227,18 +274,18 @@ impl<T> MutationOutcome<T> {
     }
 }
 
-async fn ensure_success(resp: Response) -> ApiResult<Response> {
-    let status = resp.status();
+fn ensure_success(resp: HttpResponse) -> ApiResult<HttpResponse> {
+    let status = resp.status;
     if (200..300).contains(&status) {
         Ok(resp)
     } else {
-        Err(http_error(resp).await)
+        Err(http_error(&resp))
     }
 }
 
-async fn http_error(resp: Response) -> ApiError {
-    let status = resp.status();
-    let Ok(body) = resp.json::<serde_json::Value>().await else {
+fn http_error(resp: &HttpResponse) -> ApiError {
+    let status = resp.status;
+    let Ok(body) = serde_json::from_slice::<serde_json::Value>(&resp.body) else {
         return ApiError::Http {
             status,
             code: None,
@@ -344,23 +391,140 @@ pub fn authorization_token() -> Option<String> {
     DAEMON_TRANSPORT.with_borrow(|transport| transport.authorization_token(stored_api_key()))
 }
 
-pub(crate) fn request(method: Method, url: &str) -> ApiResult<RequestBuilder> {
-    if !url.starts_with('/') {
+/// Fence every daemon call to a logical, unambiguous relative path.
+///
+/// A path that is absolute, protocol-relative, or otherwise browser-normalized
+/// must never reach a transport, because the default browser adapter would
+/// attach the local bearer credential to it.
+fn validate_relative_path(path: &str) -> ApiResult<()> {
+    if !path.starts_with('/') || path.starts_with("//") {
         return Err(ApiError::Network(
             "authenticated daemon API URLs must be relative".to_owned(),
         ));
     }
-    let url = daemon_url(url)
-        .ok_or_else(|| ApiError::Network("verified daemon connection is unavailable".to_owned()))?;
-    Ok(with_auth(RequestBuilder::new(&url).method(method)))
+    Ok(())
 }
 
-fn with_auth(request: RequestBuilder) -> RequestBuilder {
-    if let Some(token) = authorization_token() {
-        request.header("Authorization", &format!("Bearer {token}"))
-    } else {
-        request
+async fn dispatch(request: HttpRequest) -> Result<HttpResponse, ApiError> {
+    validate_relative_path(&request.path)?;
+    let transport = HTTP_TRANSPORT.with_borrow_mut(|state| {
+        state.used = true;
+        state
+            .provider
+            .clone()
+            .unwrap_or_else(|| Rc::new(BrowserHttpTransport))
+    });
+    transport
+        .send(request)
+        .await
+        .map_err(|error| ApiError::Network(error.message))
+}
+
+struct BrowserHttpTransport;
+
+impl HttpTransport for BrowserHttpTransport {
+    fn send(&self, request: HttpRequest) -> super::http_transport::HttpTransportFuture<'_> {
+        Box::pin(async move { browser_send(request).await })
     }
+}
+
+async fn browser_send(
+    request: HttpRequest,
+) -> Result<HttpResponse, super::http_transport::HttpTransportError> {
+    let url =
+        daemon_url(&request.path).ok_or_else(|| super::http_transport::HttpTransportError {
+            message: "verified daemon connection is unavailable".to_owned(),
+        })?;
+    let mut builder = RequestBuilder::new(&url).method(browser_method(request.method));
+    if let Some(token) = authorization_token() {
+        builder = builder.header("Authorization", &format!("Bearer {token}"));
+    }
+    for header in request.headers {
+        builder = builder.header(&header.name, &header.value);
+    }
+    let response = match request.body {
+        HttpRequestBody::Empty => builder.send().await,
+        HttpRequestBody::Bytes(body) => {
+            builder
+                .body(Uint8Array::from(body.as_slice()))
+                .map_err(|error| super::http_transport::HttpTransportError {
+                    message: error.to_string(),
+                })?
+                .send()
+                .await
+        }
+        HttpRequestBody::Multipart(parts) => {
+            builder
+                .body(browser_form_data(parts)?)
+                .map_err(|error| super::http_transport::HttpTransportError {
+                    message: error.to_string(),
+                })?
+                .send()
+                .await
+        }
+    }
+    .map_err(|error| super::http_transport::HttpTransportError {
+        message: error.to_string(),
+    })?;
+    let status = response.status();
+    let headers = response
+        .headers()
+        .entries()
+        .map(|(name, value)| HttpHeader { name, value })
+        .collect();
+    let body =
+        response
+            .binary()
+            .await
+            .map_err(|error| super::http_transport::HttpTransportError {
+                message: error.to_string(),
+            })?;
+    Ok(HttpResponse {
+        status,
+        headers,
+        body,
+    })
+}
+
+fn browser_method(method: HttpMethod) -> Method {
+    match method {
+        HttpMethod::Get => Method::GET,
+        HttpMethod::Head => Method::HEAD,
+        HttpMethod::Post => Method::POST,
+        HttpMethod::Put => Method::PUT,
+        HttpMethod::Patch => Method::PATCH,
+        HttpMethod::Delete => Method::DELETE,
+    }
+}
+
+fn browser_form_data(
+    parts: Vec<HttpMultipartPart>,
+) -> Result<FormData, super::http_transport::HttpTransportError> {
+    let form = FormData::new().map_err(|error| super::http_transport::HttpTransportError {
+        message: format!("{error:?}"),
+    })?;
+    for part in parts {
+        let sequence = Array::new();
+        sequence.push(&Uint8Array::from(part.body.as_slice()));
+        let options = BlobPropertyBag::new();
+        if let Some(content_type) = part.content_type.as_deref() {
+            options.set_type(content_type);
+        }
+        let blob =
+            Blob::new_with_u8_array_sequence_and_options(&sequence, &options).map_err(|error| {
+                super::http_transport::HttpTransportError {
+                    message: format!("{error:?}"),
+                }
+            })?;
+        let result = match part.file_name {
+            Some(file_name) => form.append_with_blob_and_filename(&part.name, &blob, &file_name),
+            None => form.append_with_blob(&part.name, &blob),
+        };
+        result.map_err(|error| super::http_transport::HttpTransportError {
+            message: format!("{error:?}"),
+        })?;
+    }
+    Ok(form)
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -407,67 +571,70 @@ fn save_api_key_impl(_api_key: &str) {}
 /// serializes it with a `Content-Type: application/json` header. Performs
 /// no status-code handling; callers classify the response.
 async fn send_request<Req>(
-    method: Method,
+    method: HttpMethod,
     url: &str,
     body: Option<&Req>,
     if_match: Option<u64>,
-) -> ApiResult<Response>
+) -> ApiResult<HttpResponse>
 where
     Req: Serialize + ?Sized,
 {
-    let mut builder = request(method, url)?;
+    let mut headers = Vec::new();
     if let Some(version) = if_match {
-        builder = builder.header("If-Match", &version.to_string());
+        headers.push(HttpHeader {
+            name: "If-Match".to_owned(),
+            value: version.to_string(),
+        });
     }
-    match body {
+    let body = match body {
         Some(body) => {
-            let body_str =
-                serde_json::to_string(body).map_err(|e| ApiError::Serialize(e.to_string()))?;
-            builder
-                .header("Content-Type", "application/json")
-                .body(body_str)
-                .map_err(|e| ApiError::Network(e.to_string()))?
-                .send()
-                .await
-                .map_err(|e| ApiError::Network(e.to_string()))
+            headers.push(HttpHeader {
+                name: "Content-Type".to_owned(),
+                value: "application/json".to_owned(),
+            });
+            HttpRequestBody::Bytes(
+                serde_json::to_vec(body).map_err(|e| ApiError::Serialize(e.to_string()))?,
+            )
         }
-        None => builder
-            .send()
-            .await
-            .map_err(|e| ApiError::Network(e.to_string())),
-    }
+        None => HttpRequestBody::Empty,
+    };
+    dispatch(HttpRequest {
+        method,
+        path: url.to_owned(),
+        headers,
+        body,
+    })
+    .await
 }
 
 /// Unwrap the canonical [`ApiResponse`] from a successful response.
-async fn parse_envelope<Res>(resp: Response) -> ApiResult<Res>
+pub(crate) fn parse_envelope<Res>(resp: &HttpResponse) -> ApiResult<Res>
 where
     Res: DeserializeOwned,
 {
-    let envelope: ApiResponse<Res> = resp
-        .json()
-        .await
-        .map_err(|e| ApiError::Parse(e.to_string()))?;
+    let envelope: ApiResponse<Res> =
+        serde_json::from_slice(&resp.body).map_err(|e| ApiError::Parse(e.to_string()))?;
     Ok(envelope.data)
 }
 
 /// Send a JSON request, require success, parse the envelope.
-async fn send_json<Req, Res>(method: Method, url: &str, body: Option<&Req>) -> ApiResult<Res>
+async fn send_json<Req, Res>(method: HttpMethod, url: &str, body: Option<&Req>) -> ApiResult<Res>
 where
     Req: Serialize + ?Sized,
     Res: DeserializeOwned,
 {
     let resp = send_request(method, url, body, None).await?;
-    let resp = ensure_success(resp).await?;
-    parse_envelope(resp).await
+    let resp = ensure_success(resp)?;
+    parse_envelope(&resp)
 }
 
 /// Send a JSON request, require success, discard the response body.
-async fn send_json_discard<Req>(method: Method, url: &str, body: Option<&Req>) -> ApiResult<()>
+async fn send_json_discard<Req>(method: HttpMethod, url: &str, body: Option<&Req>) -> ApiResult<()>
 where
     Req: Serialize + ?Sized,
 {
     let resp = send_request(method, url, body, None).await?;
-    ensure_success(resp).await?;
+    ensure_success(resp)?;
     Ok(())
 }
 
@@ -480,7 +647,7 @@ where
 /// `if_match` to apply unconditionally (the daemon then skips the
 /// precondition check); a `412` is still classified if one arrives.
 pub async fn send_json_versioned<Req, Res>(
-    method: Method,
+    method: HttpMethod,
     url: &str,
     body: Option<&Req>,
     if_match: Option<u64>,
@@ -490,13 +657,11 @@ where
     Res: DeserializeOwned,
 {
     let resp = send_request(method, url, body, if_match).await?;
-    match resp.status() {
-        200..=299 => Ok(MutationOutcome::Applied(parse_envelope(resp).await?)),
+    match resp.status {
+        200..=299 => Ok(MutationOutcome::Applied(parse_envelope(&resp)?)),
         412 => {
-            let body: serde_json::Value = resp
-                .json()
-                .await
-                .map_err(|e| ApiError::Parse(e.to_string()))?;
+            let body: serde_json::Value =
+                serde_json::from_slice(&resp.body).map_err(|e| ApiError::Parse(e.to_string()))?;
             let current = stale_current_version(&body).ok_or_else(|| {
                 ApiError::Parse(
                     "412 response missing error.details.current version token".to_owned(),
@@ -504,7 +669,7 @@ where
             })?;
             Ok(MutationOutcome::Stale { current })
         }
-        _ => Err(http_error(resp).await),
+        _ => Err(http_error(&resp)),
     }
 }
 
@@ -525,7 +690,7 @@ pub async fn fetch_json<T>(url: &str) -> ApiResult<T>
 where
     T: DeserializeOwned,
 {
-    send_json::<(), T>(Method::GET, url, None).await
+    send_json::<(), T>(HttpMethod::Get, url, None).await
 }
 
 /// Page size requested from every list route. The daemon defaults to 50 and
@@ -570,19 +735,62 @@ pub async fn fetch_json_optional<T>(url: &str) -> ApiResult<Option<T>>
 where
     T: DeserializeOwned,
 {
-    let resp = request(Method::GET, url)?
-        .send()
-        .await
-        .map_err(|e| ApiError::Network(e.to_string()))?;
-    if resp.status() == 404 {
+    let resp = send_request::<()>(HttpMethod::Get, url, None, None).await?;
+    if resp.status == 404 {
         return Ok(None);
     }
-    let resp = ensure_success(resp).await?;
-    let envelope: ApiResponse<T> = resp
-        .json()
+    let resp = ensure_success(resp)?;
+    parse_envelope(&resp).map(Some)
+}
+
+/// Probe one daemon path for its status code, without reading a body.
+pub async fn head_status(url: &str) -> ApiResult<u16> {
+    dispatch(HttpRequest {
+        method: HttpMethod::Head,
+        path: url.to_owned(),
+        headers: Vec::new(),
+        body: HttpRequestBody::Empty,
+    })
+    .await
+    .map(|response| response.status)
+}
+
+/// Read one browser `File` into a transport-neutral multipart part.
+pub async fn multipart_file_part(name: &str, file: &File) -> ApiResult<HttpMultipartPart> {
+    let buffer = JsFuture::from(file.array_buffer())
         .await
-        .map_err(|e| ApiError::Parse(e.to_string()))?;
-    Ok(Some(envelope.data))
+        .map_err(|error| ApiError::Network(format!("{error:?}")))?;
+    let bytes = Uint8Array::new(&buffer);
+    let mut body = vec![0; bytes.length() as usize];
+    bytes.copy_to(&mut body);
+    let content_type = file.type_().trim().to_owned();
+    Ok(HttpMultipartPart {
+        name: name.to_owned(),
+        file_name: Some(file.name()),
+        content_type: (!content_type.is_empty()).then_some(content_type),
+        body,
+    })
+}
+
+pub(crate) async fn send_multipart(
+    url: &str,
+    parts: Vec<HttpMultipartPart>,
+) -> Result<HttpResponse, ApiError> {
+    dispatch(HttpRequest {
+        method: HttpMethod::Post,
+        path: url.to_owned(),
+        headers: Vec::new(),
+        body: HttpRequestBody::Multipart(parts),
+    })
+    .await
+}
+
+pub async fn post_multipart<Res>(url: &str, parts: Vec<HttpMultipartPart>) -> Result<Res, ApiError>
+where
+    Res: DeserializeOwned,
+{
+    let response = ensure_success(send_multipart(url, parts).await?)?;
+    parse_envelope(&response)
 }
 
 // ── Write helpers that return a parsed response ─────────────────────────────
@@ -593,7 +801,7 @@ where
     Req: Serialize + ?Sized,
     Res: DeserializeOwned,
 {
-    send_json(Method::POST, url, Some(body)).await
+    send_json(HttpMethod::Post, url, Some(body)).await
 }
 
 /// PATCH JSON body, parse envelope, return inner data.
@@ -602,7 +810,7 @@ where
     Req: Serialize + ?Sized,
     Res: DeserializeOwned,
 {
-    send_json(Method::PATCH, url, Some(body)).await
+    send_json(HttpMethod::Patch, url, Some(body)).await
 }
 
 /// PUT JSON body, parse envelope, return inner data.
@@ -611,7 +819,7 @@ where
     Req: Serialize + ?Sized,
     Res: DeserializeOwned,
 {
-    send_json(Method::PUT, url, Some(body)).await
+    send_json(HttpMethod::Put, url, Some(body)).await
 }
 
 // ── Write helpers that discard the response body ────────────────────────────
@@ -619,7 +827,7 @@ where
 /// POST with no request body, discard the response. Used for trigger actions
 /// like `apply_effect` or `discover_devices`.
 pub async fn post_empty(url: &str) -> ApiResult<()> {
-    send_json_discard::<()>(Method::POST, url, None).await
+    send_json_discard::<()>(HttpMethod::Post, url, None).await
 }
 
 /// POST JSON body, discard the response. Used for actions that send a payload
@@ -628,7 +836,7 @@ pub async fn post_json_discard<Req>(url: &str, body: &Req) -> ApiResult<()>
 where
     Req: Serialize + ?Sized,
 {
-    send_json_discard(Method::POST, url, Some(body)).await
+    send_json_discard(HttpMethod::Post, url, Some(body)).await
 }
 
 /// PUT JSON body, discard the response. Used for idempotent actions that
@@ -637,7 +845,7 @@ pub async fn put_json_discard<Req>(url: &str, body: &Req) -> ApiResult<()>
 where
     Req: Serialize + ?Sized,
 {
-    send_json_discard(Method::PUT, url, Some(body)).await
+    send_json_discard(HttpMethod::Put, url, Some(body)).await
 }
 
 /// PATCH JSON body, discard the response. Used for partial updates that
@@ -646,7 +854,7 @@ pub async fn patch_json_discard<Req>(url: &str, body: &Req) -> ApiResult<()>
 where
     Req: Serialize + ?Sized,
 {
-    send_json_discard(Method::PATCH, url, Some(body)).await
+    send_json_discard(HttpMethod::Patch, url, Some(body)).await
 }
 
 /// DELETE `url`, parse envelope, return inner data. Used for deletes that
@@ -655,12 +863,12 @@ pub async fn delete_json<Res>(url: &str) -> ApiResult<Res>
 where
     Res: DeserializeOwned,
 {
-    send_json::<(), Res>(Method::DELETE, url, None).await
+    send_json::<(), Res>(HttpMethod::Delete, url, None).await
 }
 
 /// DELETE `url`, discard the response body.
 pub async fn delete_empty(url: &str) -> ApiResult<()> {
-    send_json_discard::<()>(Method::DELETE, url, None).await
+    send_json_discard::<()>(HttpMethod::Delete, url, None).await
 }
 
 #[cfg(test)]
@@ -670,7 +878,7 @@ mod tests {
         begin_native_daemon_verification, clear_verified_daemon_connection, daemon_url,
         extract_error_message, install_verified_daemon_connection,
         parse_dev_control_credential_fragment, reset_daemon_transport_for_test,
-        stale_current_version,
+        stale_current_version, validate_relative_path,
     };
     use hypercolor_types::service::ProtectedControlCredential;
 
@@ -730,13 +938,8 @@ mod tests {
         begin_native_daemon_verification();
         assert_eq!(daemon_url("/api/v1/system"), None);
         install_verified_daemon_connection("http://127.0.0.1:9420", Some("protected"));
-        assert!(
-            super::request(
-                gloo_net::http::Method::GET,
-                "https://attacker.example/steal"
-            )
-            .is_err()
-        );
+        assert!(validate_relative_path("https://attacker.example/steal").is_err());
+        assert!(validate_relative_path("//attacker.example/steal").is_err());
         assert_eq!(authorization_token().as_deref(), Some("protected"));
         assert_eq!(
             daemon_url("/api/v1/system"),

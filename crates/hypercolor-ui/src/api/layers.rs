@@ -2,7 +2,6 @@
 
 use std::collections::BTreeMap;
 
-use gloo_net::http::Method;
 use serde::Deserialize;
 
 use hypercolor_types::api::scene::{
@@ -12,6 +11,7 @@ use hypercolor_types::control::ControlValue;
 use hypercolor_types::layer::{SceneLayer, SceneLayerId};
 
 use super::client::MutationOutcome;
+use super::http_transport::HttpMethod;
 use super::{ApiError, ApiResult, client};
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -58,7 +58,7 @@ pub async fn create_layer(
     expected_revision: Option<u64>,
 ) -> ApiResult<LayerStackOutcome> {
     let outcome = client::send_json_versioned::<_, ZoneResource>(
-        Method::POST,
+        HttpMethod::Post,
         &format!("/api/v1/scene/zones/{zone_id}/layers"),
         Some(request),
         expected_revision,
@@ -74,7 +74,7 @@ pub async fn update_layer(
     expected_revision: Option<u64>,
 ) -> ApiResult<LayerStackOutcome> {
     let outcome = client::send_json_versioned::<_, ZoneResource>(
-        Method::PUT,
+        HttpMethod::Put,
         &format!("/api/v1/scene/zones/{zone_id}/layers/{layer_id}"),
         Some(request),
         expected_revision,
@@ -89,7 +89,7 @@ pub async fn delete_layer(
     expected_revision: Option<u64>,
 ) -> ApiResult<LayerStackOutcome> {
     let outcome = client::send_json_versioned::<(), ZoneResource>(
-        Method::DELETE,
+        HttpMethod::Delete,
         &format!("/api/v1/scene/zones/{zone_id}/layers/{layer_id}"),
         None,
         expected_revision,
@@ -148,7 +148,7 @@ pub async fn reorder_layers(
 ) -> ApiResult<LayerStackOutcome> {
     let request = ReorderLayersRequest { order: layer_ids };
     let outcome = client::send_json_versioned::<_, ZoneResource>(
-        Method::PATCH,
+        HttpMethod::Patch,
         &format!("/api/v1/scene/zones/{zone_id}/layers/order"),
         Some(&request),
         expected_revision,
