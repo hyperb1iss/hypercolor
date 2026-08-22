@@ -32,8 +32,9 @@ T = TypeVar("T", bound="ControlDefinition")
 class ControlDefinition:
     """A single user-facing parameter declared by an effect.
 
-    The UI auto-generates widgets from these definitions. The engine
-    injects current values into the active renderer every frame.
+    The UI generates widgets from these definitions. Admitted control
+    changes enter renderer state at a frame boundary; unchanged values
+    remain in that state without repeated control-plane injection.
 
         Attributes:
             control_type (ControlType): Widget kind for a user-facing effect control.
