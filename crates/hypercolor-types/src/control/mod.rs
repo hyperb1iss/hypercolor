@@ -851,6 +851,7 @@ impl ControlValue {
     /// [`crate::effect::ControlDefinition`].
     pub fn try_from_effect_json(value: &serde_json::Value) -> Result<Self, EffectJsonValueError> {
         if let Some(value) = value.as_i64() {
+            i32::try_from(value).map_err(|_| EffectJsonValueError::IntegerOutOfRange)?;
             return Ok(Self::Int(value));
         }
         if let Some(value) = value.as_f64() {
@@ -896,15 +897,12 @@ impl ControlValue {
                     .ok_or(EffectJsonValueError::UnsupportedShape)
                     .and_then(narrow_effect_f32)
             };
-            return Ok(Self::rect(
-                ViewportRect::new(
-                    component("x")?,
-                    component("y")?,
-                    component("width")?,
-                    component("height")?,
-                )
-                .clamp(),
-            ));
+            return Ok(Self::rect(ViewportRect::new(
+                component("x")?,
+                component("y")?,
+                component("width")?,
+                component("height")?,
+            )));
         }
         Err(EffectJsonValueError::UnsupportedShape)
     }
@@ -914,29 +912,33 @@ impl ControlValue {
     ///
     /// Canonical tags remain authoritative until this final renderer
     /// boundary. Numeric widths are checked against the effect ABI, colors
-    /// preserve alpha, and nested values fail with their exact path.
+    /// preserve their linear channels, and gradient failures retain their
+    /// exact path. Variants outside the effect algebra are rejected.
     pub fn try_to_effect_json(&self) -> Result<serde_json::Value, EffectJsonValueError> {
         Ok(match self {
-            Self::Null | Self::Unknown => serde_json::Value::Null,
+            Self::Null
+            | Self::Unknown
+            | Self::SecretRef(_)
+            | Self::Ip(_)
+            | Self::Mac(_)
+            | Self::Duration(_)
+            | Self::ColorRgb(_)
+            | Self::ColorRgba(_)
+            | Self::Flags(_)
+            | Self::List(_)
+            | Self::Map(_) => return Err(EffectJsonValueError::UnsupportedShape),
             Self::Bool(value) => serde_json::Value::Bool(*value),
             Self::Int(value) => serde_json::Value::from(
                 i32::try_from(*value).map_err(|_| EffectJsonValueError::IntegerOutOfRange)?,
             ),
-            Self::Float(value) => serde_json::Value::from(f64::from(narrow_effect_f32(*value)?)),
+            Self::Float(value) => effect_f32_json(narrow_effect_f32(*value)?),
             Self::Text(value) | Self::Enum(value) => serde_json::Value::String(value.clone()),
-            Self::SecretRef(value) => serde_json::Value::String(value.as_str().to_owned()),
-            Self::Ip(value) => serde_json::Value::String(value.as_str().to_owned()),
-            Self::Mac(value) => serde_json::Value::String(value.as_str().to_owned()),
-            Self::Duration(value) => serde_json::Value::from(
-                i32::try_from(value.as_millis())
-                    .map_err(|_| EffectJsonValueError::IntegerOutOfRange)?,
+            Self::ColorLinear(value) => serde_json::Value::Array(
+                [value.r, value.g, value.b, value.a]
+                    .into_iter()
+                    .map(|component| narrow_effect_f32(f64::from(component)).map(effect_f32_json))
+                    .collect::<Result<Vec<_>, _>>()?,
             ),
-            Self::ColorRgb(value) => serde_json::Value::String(value.to_hex()),
-            Self::ColorRgba(value) => serde_json::Value::String(effect_color_hex(*value)),
-            Self::ColorLinear(value) => {
-                let value = value.to_encoded();
-                serde_json::Value::String(effect_color_hex(value))
-            }
             Self::Gradient(stops) => {
                 validate_gradient(stops).map_err(EffectJsonValueError::invalid_gradient)?;
                 serde_json::Value::Array(
@@ -944,8 +946,9 @@ impl ControlValue {
                         .iter()
                         .enumerate()
                         .map(|(index, stop)| {
-                            let position =
-                                narrow_effect_f32(f64::from(stop.position)).map_err(|error| {
+                            let position = narrow_effect_f32(f64::from(stop.position))
+                                .map(effect_f32_json)
+                                .map_err(|error| {
                                     EffectJsonValueError::nested(format!("[{index}].pos"), error)
                                 })?;
                             let color = stop
@@ -954,7 +957,7 @@ impl ControlValue {
                                 .enumerate()
                                 .map(|(channel, value)| {
                                     narrow_effect_f32(f64::from(*value))
-                                        .map(|value| serde_json::Value::from(f64::from(value)))
+                                        .map(effect_f32_json)
                                         .map_err(|error| {
                                             EffectJsonValueError::nested(
                                                 format!("[{index}].color[{channel}]"),
@@ -972,40 +975,11 @@ impl ControlValue {
                 )
             }
             Self::Rect(value) => serde_json::json!({
-                "x": narrow_effect_f32(f64::from(value.x))?,
-                "y": narrow_effect_f32(f64::from(value.y))?,
-                "width": narrow_effect_f32(f64::from(value.width))?,
-                "height": narrow_effect_f32(f64::from(value.height))?,
+                "x": effect_f32_json(narrow_effect_f32(f64::from(value.x))?),
+                "y": effect_f32_json(narrow_effect_f32(f64::from(value.y))?),
+                "width": effect_f32_json(narrow_effect_f32(f64::from(value.width))?),
+                "height": effect_f32_json(narrow_effect_f32(f64::from(value.height))?),
             }),
-            Self::Flags(values) => serde_json::Value::Array(
-                values
-                    .iter()
-                    .cloned()
-                    .map(serde_json::Value::String)
-                    .collect(),
-            ),
-            Self::List(values) => serde_json::Value::Array(
-                values
-                    .iter()
-                    .enumerate()
-                    .map(|(index, value)| {
-                        value.try_to_effect_json().map_err(|error| {
-                            EffectJsonValueError::nested(format!("[{index}]"), error)
-                        })
-                    })
-                    .collect::<Result<Vec<_>, _>>()?,
-            ),
-            Self::Map(values) => serde_json::Value::Object(
-                values
-                    .iter()
-                    .map(|(key, value)| {
-                        value
-                            .try_to_effect_json()
-                            .map(|value| (key.clone(), value))
-                            .map_err(|error| EffectJsonValueError::nested(format!(".{key}"), error))
-                    })
-                    .collect::<Result<serde_json::Map<_, _>, _>>()?,
-            ),
         })
     }
 
@@ -1142,13 +1116,7 @@ pub fn narrow_effect_f32(value: f64) -> Result<f32, EffectJsonValueError> {
     Ok(value as f32)
 }
 
-fn effect_color_hex(value: Rgba) -> String {
-    if value.a == u8::MAX {
-        format!("#{:02x}{:02x}{:02x}", value.r, value.g, value.b)
-    } else {
-        format!(
-            "#{:02x}{:02x}{:02x}{:02x}",
-            value.r, value.g, value.b, value.a
-        )
-    }
+fn effect_f32_json(value: f32) -> serde_json::Value {
+    let encoded = serde_json::to_string(&value).expect("finite f32 must encode as JSON");
+    serde_json::from_str(&encoded).expect("encoded f32 must decode as JSON")
 }

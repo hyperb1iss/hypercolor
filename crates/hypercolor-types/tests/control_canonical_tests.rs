@@ -116,6 +116,10 @@ fn effect_json_admission_uses_checked_scalar_narrowing() {
         Err(EffectJsonValueError::FloatOutOfRange)
     );
     assert_eq!(
+        ControlValue::try_from_effect_json(&serde_json::json!(i64::from(i32::MAX) + 1)),
+        Err(EffectJsonValueError::IntegerOutOfRange)
+    );
+    assert_eq!(
         ControlValue::try_from_effect_json(&serde_json::json!([
             0.0,
             0.5,
@@ -143,9 +147,9 @@ fn effect_json_admission_rejects_malformed_composites() {
 #[test]
 fn effect_gradient_projection_round_trips_through_admission() {
     let raw = serde_json::json!([
-        {"pos": 0.0, "color": [1.0, 0.0, 0.25, 1.0]},
-        {"pos": 0.5, "color": [0.5, 0.5, 0.5, 0.75]},
-        {"pos": 1.0, "color": [0.0, 0.25, 1.0, 1.0]}
+        {"pos": 0.0, "color": [0.1, 0.2, 0.3, 1.0]},
+        {"pos": 0.5, "color": [0.3, 0.2, 0.1, 0.7]},
+        {"pos": 1.0, "color": [0.2, 0.3, 0.1, 1.0]}
     ]);
 
     let canonical = ControlValue::try_from_effect_json(&raw)
@@ -307,9 +311,15 @@ fn effect_gradient_projection_refuses_invalid_canonical_values() {
 
 #[test]
 fn effect_json_admission_builds_canonical_composites() {
+    let raw_color = serde_json::json!([0.1, 0.2, 0.3, 0.4]);
+    let color = ControlValue::try_from_effect_json(&raw_color)
+        .expect("four-channel color should enter the canonical algebra");
+    assert_eq!(color, ControlValue::linear_color([0.1, 0.2, 0.3, 0.4]));
     assert_eq!(
-        ControlValue::try_from_effect_json(&serde_json::json!([0.1, 0.2, 0.3, 0.4])),
-        Ok(ControlValue::linear_color([0.1, 0.2, 0.3, 0.4]))
+        color
+            .try_to_effect_json()
+            .expect("linear color should project without quantization"),
+        raw_color
     );
     assert_eq!(
         ControlValue::try_from_effect_json(&serde_json::json!({
@@ -328,40 +338,56 @@ fn effect_json_admission_builds_canonical_composites() {
 }
 
 #[test]
-fn effect_json_projection_preserves_alpha_and_nested_values() {
-    let value = ControlValue::Map(BTreeMap::from([
-        (
-            "rgba".to_owned(),
-            ControlValue::ColorRgba(hypercolor_color::Rgba::new(1, 2, 3, 128)),
-        ),
-        (
-            "items".to_owned(),
-            ControlValue::List(vec![
-                ControlValue::Enum("rainbow".to_owned()),
-                ControlValue::Ip(IpText::new("::FFFF:1.2.3.4").expect("valid IP")),
-            ]),
-        ),
-    ]));
-
-    assert_eq!(
-        value
-            .try_to_effect_json()
-            .expect("valid nested value should project"),
-        serde_json::json!({
-            "rgba": "#01020380",
-            "items": ["rainbow", "::FFFF:1.2.3.4"],
-        })
-    );
+fn effect_json_scalar_projection_uses_stable_f32_decimals() {
+    for raw in [
+        serde_json::json!(0.1),
+        serde_json::json!(0.2),
+        serde_json::json!(0.3),
+    ] {
+        let canonical = ControlValue::try_from_effect_json(&raw)
+            .expect("common effect scalar should enter the canonical algebra");
+        assert_eq!(
+            canonical
+                .try_to_effect_json()
+                .expect("common effect scalar should project"),
+            raw
+        );
+    }
 }
 
 #[test]
-fn effect_json_projection_rejects_width_overflow_at_its_nested_path() {
+fn effect_json_projection_rejects_driver_only_variants() {
+    let unsupported = [
+        ControlValue::Null,
+        ControlValue::Unknown,
+        ControlValue::SecretRef(SecretRef::new("credential")),
+        ControlValue::Ip(IpText::new("192.0.2.1").expect("valid IP")),
+        ControlValue::Mac(MacText::new("00:11:22:33:44:55").expect("valid MAC")),
+        ControlValue::Duration(Duration::from_millis(10)),
+        ControlValue::ColorRgb(hypercolor_color::Rgb::new(1, 2, 3)),
+        ControlValue::ColorRgba(hypercolor_color::Rgba::new(1, 2, 3, 4)),
+        ControlValue::Flags(vec!["one".to_owned()]),
+        ControlValue::List(vec![ControlValue::Int(1)]),
+        ControlValue::Map(BTreeMap::from([(
+            "key".to_owned(),
+            ControlValue::Text("value".to_owned()),
+        )])),
+    ];
+
+    for value in unsupported {
+        assert_eq!(
+            value.try_to_effect_json(),
+            Err(EffectJsonValueError::UnsupportedShape),
+            "driver-only value projected to the effect wire: {value:?}"
+        );
+    }
+}
+
+#[test]
+fn effect_json_projection_rejects_width_overflow() {
     assert_eq!(
-        ControlValue::List(vec![ControlValue::Int(i64::from(i32::MAX) + 1)]).try_to_effect_json(),
-        Err(EffectJsonValueError::Nested {
-            path: "[0]".to_owned(),
-            source: Box::new(EffectJsonValueError::IntegerOutOfRange),
-        })
+        ControlValue::Int(i64::from(i32::MAX) + 1).try_to_effect_json(),
+        Err(EffectJsonValueError::IntegerOutOfRange)
     );
     assert_eq!(
         ControlValue::Float(f64::NAN).try_to_effect_json(),
