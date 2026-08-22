@@ -10,7 +10,7 @@ use hypercolor_types::scene::{SceneId, ZoneId};
 use hypercolor_types::spatial::Output;
 use serde::{Deserialize, Serialize};
 
-use crate::persistence::{serialize_json_pretty, write_atomic};
+use crate::persistence::serialize_json_pretty;
 
 /// Discovery auto-sync exclusion scope.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -141,23 +141,6 @@ pub fn load(path: &Path) -> anyhow::Result<LayoutAutoExclusionStore> {
     }
 
     Ok(out)
-}
-
-/// Persist layout auto-exclusions to disk using atomic-replace semantics.
-pub fn save(path: &Path, store: &LayoutAutoExclusionStore) -> anyhow::Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).with_context(|| {
-            format!(
-                "failed to create layout auto-exclusion directory {}",
-                parent.display()
-            )
-        })?;
-    }
-
-    let payload = serialize(store)?;
-    write_atomic(path, &payload).context("failed to persist layout auto-exclusions")?;
-
-    Ok(())
 }
 
 pub(crate) fn serialize(store: &LayoutAutoExclusionStore) -> anyhow::Result<Vec<u8>> {

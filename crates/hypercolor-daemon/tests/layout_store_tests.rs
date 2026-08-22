@@ -57,14 +57,12 @@ fn load_returns_empty_map_when_file_is_missing() {
 }
 
 #[test]
-fn save_and_load_roundtrip_preserves_layouts() {
+fn load_restores_a_serialized_layout_fixture() {
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let path = tempdir.path().join("layouts.json");
     let layout = sample_layout();
-    let mut store = HashMap::new();
-    store.insert(layout.id.clone(), layout.clone());
-
-    layout_store::save(&path, &store).expect("save should succeed");
+    let payload = serde_json::to_vec_pretty(&[&layout]).expect("fixture should serialize");
+    std::fs::write(&path, payload).expect("fixture should write");
     let loaded = layout_store::load(&path).expect("load should succeed");
     let restored = loaded
         .get(&layout.id)

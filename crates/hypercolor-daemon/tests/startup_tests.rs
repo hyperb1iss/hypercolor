@@ -66,6 +66,19 @@ const MINIMAL_TOML: &str = "schema_version = 5\n";
 static DATA_DIR_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 static CONFIG_DIR_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
+fn write_layout_store_fixture(
+    path: &Path,
+    layouts: &std::collections::HashMap<String, SpatialLayout>,
+) {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).expect("layout fixture directory should exist");
+    }
+    let mut entries = layouts.values().collect::<Vec<_>>();
+    entries.sort_by(|left, right| left.id.cmp(&right.id));
+    let payload = serde_json::to_vec_pretty(&entries).expect("layout fixture should serialize");
+    std::fs::write(path, payload).expect("layout fixture should write");
+}
+
 #[derive(Clone)]
 struct StuckHandlerState {
     entered: Arc<tokio::sync::Notify>,
@@ -1410,7 +1423,7 @@ async fn daemon_start_restores_persisted_active_layout_from_disk() {
         version: 1,
     };
     layouts.insert(restored_layout.id.clone(), restored_layout.clone());
-    layout_store::save(&guard.layouts_path(), &layouts).expect("layout store should save");
+    write_layout_store_fixture(&guard.layouts_path(), &layouts);
     runtime_state::save(
         &guard.runtime_state_path(),
         &runtime_state::RuntimeSessionSnapshot {
@@ -1499,7 +1512,7 @@ async fn daemon_initialize_inserts_missing_default_layout_into_store() {
         version: 1,
     };
     layouts.insert(custom_layout.id.clone(), custom_layout);
-    layout_store::save(&guard.layouts_path(), &layouts).expect("layout store should save");
+    write_layout_store_fixture(&guard.layouts_path(), &layouts);
 
     let config = default_config();
     let temp = temp_config_file();
@@ -1707,11 +1720,10 @@ async fn daemon_start_activates_configured_scene_name_without_runtime_snapshot()
         spaces: None,
         version: 1,
     };
-    layout_store::save(
+    write_layout_store_fixture(
         &guard.layouts_path(),
         &std::collections::HashMap::from([(selected_layout.id.clone(), selected_layout.clone())]),
-    )
-    .expect("layout store should save");
+    );
     let mut store = SceneStore::new(guard.scenes_path()).expect("scene store");
     let mut named_scene = hypercolor_core::scene::make_scene("Evening");
     let named_scene_id = named_scene.id;

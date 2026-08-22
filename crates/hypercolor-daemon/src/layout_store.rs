@@ -49,7 +49,7 @@ pub fn ensure_default_layout(
 }
 
 /// Persist spatial layouts to disk using atomic-replace semantics.
-pub fn save(path: &Path, store: &HashMap<String, SpatialLayout>) -> anyhow::Result<()> {
+pub(crate) fn save(path: &Path, store: &HashMap<String, SpatialLayout>) -> anyhow::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).with_context(|| {
             format!(

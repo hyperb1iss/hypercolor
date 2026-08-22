@@ -1,8 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use hypercolor_daemon::layout_auto_exclusions::{
-    LayoutAutoExclusionKey, LayoutAutoExclusionStore, load, reconcile_layout_device_exclusions,
-    save,
+    LayoutAutoExclusionKey, load, reconcile_layout_device_exclusions,
 };
 use hypercolor_types::scene::{SceneId, ZoneId};
 use hypercolor_types::spatial::{
@@ -56,23 +55,32 @@ fn reconcile_layout_device_exclusions_marks_removed_devices_and_clears_readded_d
 }
 
 #[test]
-fn save_and_load_round_trip_layout_auto_exclusions() {
+fn load_restores_scoped_layout_auto_exclusion_fixture() {
     let temp_dir = tempfile::tempdir().expect("tempdir");
     let path = temp_dir.path().join("layout-auto-exclusions.json");
     let scene_id = SceneId::new();
     let zone_id = ZoneId::new();
-    let mut store = LayoutAutoExclusionStore::new();
-    store.insert(
-        LayoutAutoExclusionKey::layout("default"),
-        HashSet::from(["usb:defy".to_owned(), "wled:desk".to_owned()]),
-    );
-    store.insert(
-        LayoutAutoExclusionKey::zone(scene_id, zone_id),
-        HashSet::from(["usb:keyboard".to_owned()]),
-    );
-    store.insert(LayoutAutoExclusionKey::layout("empty"), HashSet::new());
-
-    save(&path, &store).expect("save exclusions");
+    let fixture = serde_json::json!([
+        {
+            "layout_id": "default",
+            "excluded_device_ids": ["usb:defy", "wled:desk"]
+        },
+        {
+            "scope": "zone",
+            "scene_id": scene_id,
+            "zone_id": zone_id,
+            "excluded_device_ids": ["usb:keyboard"]
+        },
+        {
+            "layout_id": "empty",
+            "excluded_device_ids": []
+        }
+    ]);
+    std::fs::write(
+        &path,
+        serde_json::to_vec_pretty(&fixture).expect("fixture should serialize"),
+    )
+    .expect("fixture should write");
     let loaded = load(&path).expect("load exclusions");
 
     let mut expected = HashMap::new();

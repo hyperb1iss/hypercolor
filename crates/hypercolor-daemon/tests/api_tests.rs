@@ -9889,11 +9889,14 @@ fn simulator_target_output(device_id: DeviceId) -> Output {
 #[cfg(feature = "persistence-test-hooks")]
 async fn persist_current_layouts_for_test(state: &Arc<AppState>) {
     let layouts = state.domains.layout.test_fixture().catalog().read().await;
-    hypercolor_daemon::layout_store::save(
+    let mut entries = layouts.values().collect::<Vec<_>>();
+    entries.sort_by(|left, right| left.id.cmp(&right.id));
+    let payload = serde_json::to_vec_pretty(&entries).expect("layout fixture should serialize");
+    std::fs::write(
         state.domains.layout.test_fixture().catalog_path(),
-        &layouts,
+        payload,
     )
-    .expect("test layout store should persist");
+    .expect("layout fixture should write");
 }
 
 fn test_state_with_temp_output_store() -> (Arc<AppState>, tempfile::TempDir) {
