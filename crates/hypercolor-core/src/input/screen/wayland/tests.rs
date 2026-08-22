@@ -79,8 +79,8 @@ fn portal_pending_worker_retirement_does_not_wait_for_picker_exit() {
     });
     assert!(
         input
-            .sessions
-            .install(WaylandCaptureWorker {
+            .adapter
+            .install_worker_for_test(WaylandCaptureWorker {
                 command_tx,
                 start_tx,
                 join_handle: Some(join_handle),
@@ -98,8 +98,8 @@ fn portal_pending_worker_retirement_does_not_wait_for_picker_exit() {
 
     thread::spawn(move || {
         input.shutdown_worker();
-        assert!(input.sessions.active().is_none());
-        assert!(input.sessions.can_install_successor());
+        assert!(input.adapter.active_worker().is_none());
+        assert!(input.adapter.can_install_successor());
         returned_tx.send(()).expect("retirement reports completion");
     });
 

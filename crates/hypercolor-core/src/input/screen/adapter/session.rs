@@ -214,6 +214,15 @@ impl<S: CaptureSession> Default for CaptureSessionSet<S> {
 }
 
 impl<S: CaptureSession> CaptureSessionSet<S> {
+    #[cfg_attr(
+        not(any(
+            target_os = "linux",
+            target_os = "windows",
+            feature = "macos-capture-fixtures",
+            test
+        )),
+        allow(dead_code)
+    )]
     pub(in crate::input::screen) const fn active(&self) -> Option<&S> {
         self.active.as_ref()
     }

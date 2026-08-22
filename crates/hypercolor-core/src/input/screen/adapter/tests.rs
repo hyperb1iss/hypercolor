@@ -5,8 +5,8 @@ use super::{
     CapturePublicationSource, CaptureSession, CaptureSessionAuthority,
     CaptureSessionAuthoritySequencer, CaptureSessionDeadline, CaptureSessionReadiness,
     CaptureSessionSet, CaptureSessionTransaction, CaptureSuccessorPolicy,
-    ReservedCaptureSessionAuthority, VersionedCaptureSettings, begin_capture_exact_retirement,
-    exact_preparation_abort, prepare_backend_worker, reap_capture_exact_runtimes,
+    ReservedCaptureSessionAuthority, ScreenCaptureAdapter, VersionedCaptureSettings,
+    begin_capture_exact_retirement, exact_preparation_abort, reap_capture_exact_runtimes,
 };
 use crate::input::screen::{
     CaptureSourceId, ExactBoxList, PixelExtent, ScreenCaptureDemand, ScreenCommittedState,
@@ -220,6 +220,7 @@ fn readiness_deadline() -> CaptureSessionDeadline {
 #[test]
 fn backend_worker_factory_pairs_authority_and_waits_once() {
     let sequencer = CaptureSessionAuthoritySequencer::default();
+    let adapter = ScreenCaptureAdapter::<FakeCaptureBackend>::default();
     let reservation = sequencer.reserve().expect("backend authority reserves");
     let waits = Arc::new(AtomicUsize::new(0));
     let readiness = FakeReadiness {
@@ -227,9 +228,9 @@ fn backend_worker_factory_pairs_authority_and_waits_once() {
         waits: Arc::clone(&waits),
     };
 
-    let prepared =
-        prepare_backend_worker::<FakeCaptureBackend>((FakeSession::new(1), readiness), reservation)
-            .expect("backend worker prepares");
+    let prepared = adapter
+        .prepare_worker((FakeSession::new(1), readiness), reservation)
+        .expect("backend worker prepares");
 
     assert_eq!(prepared.authority().generation(), 1);
     assert_eq!(waits.load(Ordering::Relaxed), 1);
@@ -238,10 +239,11 @@ fn backend_worker_factory_pairs_authority_and_waits_once() {
 #[test]
 fn backend_worker_factory_burns_failed_spawn_and_cleans_failed_readiness() {
     let sequencer = CaptureSessionAuthoritySequencer::default();
+    let failing_adapter = ScreenCaptureAdapter::<FailingCaptureBackend>::default();
     let failed_spawn = sequencer
         .reserve()
         .expect("failed spawn authority reserves");
-    assert!(prepare_backend_worker::<FailingCaptureBackend>((), failed_spawn).is_err());
+    assert!(failing_adapter.prepare_worker((), failed_spawn).is_err());
     let readiness_reservation = sequencer
         .reserve()
         .expect("readiness authority reserves after failed spawn");
@@ -258,12 +260,11 @@ fn backend_worker_factory_burns_failed_spawn_and_cleans_failed_readiness() {
         waits: Arc::clone(&waits),
     };
 
+    let adapter = ScreenCaptureAdapter::<FakeCaptureBackend>::default();
     assert!(
-        prepare_backend_worker::<FakeCaptureBackend>(
-            (candidate, readiness),
-            readiness_reservation,
-        )
-        .is_err()
+        adapter
+            .prepare_worker((candidate, readiness), readiness_reservation)
+            .is_err()
     );
     assert_eq!(waits.load(Ordering::Relaxed), 1);
     assert_eq!(aborts.load(Ordering::Relaxed), 1);
@@ -372,20 +373,21 @@ fn session_transaction_commits_checkpoint_retirement_authority_and_start_in_orde
 
 #[test]
 fn session_transaction_candidate_endpoint_is_hidden_until_commit() {
-    let mut sessions = CaptureSessionSet::default();
-    let transaction =
-        CaptureSessionTransaction::new(FakeSession::new(1), FakeReadiness::ready(), reservation(1));
-    assert!(sessions.exact_endpoint().is_none());
-    let prepared = transaction
-        .prepare(readiness_deadline())
+    let mut adapter = ScreenCaptureAdapter::<FakeCaptureBackend>::default();
+    assert!(adapter.active_exact_endpoint().is_none());
+    let prepared = adapter
+        .prepare_worker(
+            (FakeSession::new(1), FakeReadiness::ready()),
+            reservation(1),
+        )
         .expect("candidate becomes ready");
-    assert!(sessions.exact_endpoint().is_none());
+    assert!(adapter.active_exact_endpoint().is_none());
 
-    prepared
-        .commit_into(&mut sessions, |_| Some(()), |_, ()| ())
+    adapter
+        .commit_worker(prepared, |_| Some(()), |_, ()| ())
         .unwrap_or_else(|_| panic!("ready candidate commits"));
 
-    assert!(sessions.exact_endpoint().is_some());
+    assert!(adapter.active_exact_endpoint().is_some());
 }
 
 #[test]
@@ -527,16 +529,18 @@ fn successor_overlap_policy_is_statically_enforced() {
 
 #[test]
 fn steady_state_access_does_not_grow_retirement_storage() {
-    let mut sessions = CaptureSessionSet::default();
-    assert!(sessions.install(FakeSession::new(1)).is_ok());
-    let capacity = sessions.retiring_capacity();
+    let mut adapter = ScreenCaptureAdapter::<FakeCaptureBackend>::default();
+    assert!(adapter.install_worker_for_test(FakeSession::new(1)).is_ok());
+    let capacity = adapter.retiring_worker_capacity();
 
     for _ in 0..100 {
-        assert!(sessions.active().is_some());
-        assert_eq!(sessions.retiring_len(), 0);
+        assert!(adapter.active_worker().is_some());
+        assert_eq!(adapter.retiring_worker_count(), 0);
+        assert!(adapter.can_prepare_successor());
+        assert!(!adapter.can_install_successor());
     }
 
-    assert_eq!(sessions.retiring_capacity(), capacity);
+    assert_eq!(adapter.retiring_worker_capacity(), capacity);
 }
 
 impl Default for FakeExactEndpoint {

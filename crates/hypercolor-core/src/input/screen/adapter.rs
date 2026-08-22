@@ -22,7 +22,7 @@ pub(in crate::input::screen) use authority::{
     CaptureSessionAuthority, CaptureSessionAuthorityExhausted, CaptureSessionAuthoritySequencer,
     ReservedCaptureSessionAuthority, StaleCaptureSessionReservation,
 };
-pub(in crate::input::screen) use backend::{CaptureBackend, prepare_backend_worker};
+pub(in crate::input::screen) use backend::{CaptureBackend, ScreenCaptureAdapter};
 pub(in crate::input::screen) use exact::{
     CaptureExactPublicationShared, CaptureOwnedSource, CapturePublicationSource,
 };

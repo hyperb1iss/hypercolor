@@ -19,14 +19,13 @@ use crate::input::{SourceKind, SourceStatusReporter};
 
 use super::status::protected_screen_action_issue;
 use super::{
-    CaptureConfig, CaptureSessionAuthority, CaptureSessionSet, MacosCaptureBackend,
-    MacosCaptureControl, MacosExactPublicationShared, MacosPublication, MacosScreenCaptureInput,
-    MacosScreenRuntimeTelemetry, MacosWorkerSpawn, PixelExtent, PreparedWorker,
-    ScreenByteAdmissionCoordinator, ScreenCaptureDemand, ScreenComputeCapacityPolicy,
-    StagedCaptureWorker, color_space_name, dynamic_range_name, executable_architecture,
-    frame_drop_counters, lock, map_tahoe_capabilities, map_tahoe_selection_capabilities,
-    nonzero_telemetry, pixel_format_name, prepare_backend_worker, production_stream_request,
-    timing_status, transfer_function_name,
+    CaptureConfig, CaptureSessionAuthority, MacosCaptureControl, MacosExactPublicationShared,
+    MacosPublication, MacosScreenCaptureInput, MacosScreenRuntimeTelemetry, MacosWorkerSpawn,
+    PixelExtent, PreparedWorker, ScreenByteAdmissionCoordinator, ScreenCaptureAdapter,
+    ScreenCaptureDemand, ScreenComputeCapacityPolicy, StagedCaptureWorker, color_space_name,
+    dynamic_range_name, executable_architecture, frame_drop_counters, lock, map_tahoe_capabilities,
+    map_tahoe_selection_capabilities, nonzero_telemetry, pixel_format_name,
+    production_stream_request, timing_status, transfer_function_name,
 };
 #[cfg(feature = "macos-capture-fixtures")]
 use super::{CapturePlanePool, InputSource, ScreenCaptureInput};
@@ -115,7 +114,7 @@ impl MacosScreenCaptureInput {
                 compute_capacity_policy,
             )),
             telemetry,
-            sessions: CaptureSessionSet::default(),
+            adapter: ScreenCaptureAdapter::default(),
             worker_generation: 0,
             demand: ScreenCaptureDemand::Inactive,
             running: false,
@@ -366,7 +365,7 @@ impl MacosScreenCaptureInput {
         let authority = reservation.authority();
         let worker_generation = authority.generation();
         let mailbox = self.control.mailbox();
-        let prepared = prepare_backend_worker::<MacosCaptureBackend>(
+        let prepared = self.adapter.prepare_worker(
             MacosWorkerSpawn {
                 prepared,
                 mailbox,
@@ -398,9 +397,10 @@ impl MacosScreenCaptureInput {
         let commit_publication = Arc::clone(&self.publication);
         let exact = Arc::clone(&self.exact);
         let committed_generation = &mut self.worker_generation;
-        let commit = prepared
-            .commit_into(
-                &mut self.sessions,
+        let authority = self
+            .adapter
+            .commit_worker(
+                prepared,
                 |_| Some(lock(&checkpoint_publication).checkpoint()),
                 move |reservation, checkpoint| {
                     *committed_generation = generation;
@@ -429,11 +429,11 @@ impl MacosScreenCaptureInput {
             )
             .unwrap_or_else(|_| unreachable!("macOS capture sessions permit overlap"));
         assert_eq!(
-            commit.authority(),
+            authority,
             CaptureSessionAuthority::new(generation),
             "committed macOS worker retains its reserved authority"
         );
-        self.sessions.reap_finished(|_, result| {
+        self.adapter.reap_finished_workers(|_, result| {
             if let Err(error) = result {
                 tracing::warn!(error = format!("{error:#}"), "retired macOS worker failed");
             }
@@ -441,11 +441,11 @@ impl MacosScreenCaptureInput {
     }
 
     pub(super) fn stop_worker(&mut self) {
-        let Some(authority) = self.sessions.retire_active() else {
+        let Some(authority) = self.adapter.retire_active_worker() else {
             return;
         };
         self.retire_worker_authority(authority);
-        self.sessions.reap_finished(|_, result| {
+        self.adapter.reap_finished_workers(|_, result| {
             if let Err(error) = result {
                 tracing::warn!(error = format!("{error:#}"), "retired macOS worker failed");
             }
@@ -453,12 +453,12 @@ impl MacosScreenCaptureInput {
     }
 
     pub(super) fn observe_worker_exit(&mut self) -> anyhow::Result<()> {
-        self.sessions.reap_finished(|_, result| {
+        self.adapter.reap_finished_workers(|_, result| {
             if let Err(error) = result {
                 tracing::warn!(error = format!("{error:#}"), "retired macOS worker failed");
             }
         });
-        let Some((authority, result)) = self.sessions.take_finished_active() else {
+        let Some((authority, result)) = self.adapter.take_finished_active_worker() else {
             return Ok(());
         };
         self.retire_worker_authority(authority);

@@ -75,9 +75,9 @@ use super::adapter::{
     CaptureBackend, CaptureExactCommand, CaptureExactCommandEndpoint, CaptureExactCommandRejected,
     CaptureExactPublicationShared, CaptureExactRuntimeOwner, CaptureOwnedSource,
     CapturePublication, CapturePublicationFence, CapturePublicationSource, CaptureSession,
-    CaptureSessionAuthority, CaptureSessionSet, CaptureSessionTransaction, CaptureSuccessorPolicy,
-    PreparedCaptureSession, ReservedCaptureSessionAuthority, begin_capture_exact_preparation,
-    begin_capture_exact_retirement, execute_capture_exact_command, prepare_backend_worker,
+    CaptureSessionAuthority, CaptureSessionTransaction, CaptureSuccessorPolicy,
+    PreparedCaptureSession, ReservedCaptureSessionAuthority, ScreenCaptureAdapter,
+    begin_capture_exact_preparation, begin_capture_exact_retirement, execute_capture_exact_command,
 };
 
 #[cfg(target_os = "macos")]
@@ -574,7 +574,7 @@ pub struct MacosScreenCaptureInput {
     publication: Arc<Mutex<MacosPublication>>,
     exact: Arc<MacosExactPublicationShared>,
     telemetry: Arc<MacosScreenRuntimeTelemetry>,
-    sessions: CaptureSessionSet<CaptureWorker>,
+    adapter: ScreenCaptureAdapter<MacosCaptureBackend>,
     worker_generation: u64,
     demand: ScreenCaptureDemand,
     running: bool,

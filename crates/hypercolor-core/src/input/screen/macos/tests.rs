@@ -137,8 +137,8 @@ fn retired_worker_cannot_republish_after_stop_returns() {
     });
     assert!(
         input
-            .sessions
-            .install(CaptureWorker {
+            .adapter
+            .install_worker_for_test(CaptureWorker {
                 authority,
                 stop,
                 start: Arc::new(AtomicBool::new(true)),
