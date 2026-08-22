@@ -173,10 +173,15 @@ impl SceneService {
     pub(crate) fn new(
         manager: SceneManager,
         event_bus: Arc<HypercolorBus>,
-        store: Arc<tokio::sync::RwLock<SceneStore>>,
+        store: SceneStore,
         zone_layout_previews: Arc<ZoneLayoutPreviewStore>,
     ) -> Self {
-        Self::build(manager, event_bus, Some(store), zone_layout_previews)
+        Self::build(
+            manager,
+            event_bus,
+            Some(Arc::new(tokio::sync::RwLock::new(store))),
+            zone_layout_previews,
+        )
     }
 
     fn build(
@@ -392,15 +397,6 @@ impl SceneService {
             preview_zones_to_clear,
         } = mutation;
 
-        let coordinator = if persists_scene_content {
-            match self.0.store.as_ref() {
-                Some(store) => Some(store.read().await.clone()),
-                None => None,
-            }
-        } else {
-            None
-        };
-
         let (ticket, pending) = {
             let mut manager = self.0.manager.write().await;
             let current_revision = self.0.commits.revision();
@@ -417,8 +413,17 @@ impl SceneService {
                 ));
             }
 
-            let pending = if let Some(coordinator) = coordinator.as_ref() {
-                match coordinator.reserve_save(candidate.list().into_iter().cloned()) {
+            let pending = if persists_scene_content {
+                let Some(store) = self.0.store.as_ref() else {
+                    return Err(DomainError::Internal(anyhow::anyhow!(
+                        "durable scene mutation has no owning scene store"
+                    )));
+                };
+                match store
+                    .read()
+                    .await
+                    .reserve_save(candidate.list().into_iter().cloned())
+                {
                     Ok(pending) => Some(pending),
                     Err(error) => {
                         return Err(DomainError::Internal(anyhow::anyhow!(

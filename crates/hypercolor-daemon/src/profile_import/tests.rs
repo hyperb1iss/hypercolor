@@ -1,12 +1,10 @@
-//! Integration tests for the one-time profile-to-scene import.
+//! Tests for the one-time profile-to-scene import.
 
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use hypercolor_core::scene::make_scene;
-use hypercolor_daemon::profile_import::{ProfileImportOutcome, import_profiles};
-use hypercolor_daemon::scene_store::SceneStore;
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::{ControlValue, EffectId};
 use hypercolor_types::layer::LayerSource;
@@ -18,7 +16,65 @@ use tempfile::TempDir;
 use uuid::Uuid;
 
 #[cfg(feature = "persistence-test-hooks")]
-use hypercolor_daemon::persistence::AtomicFileWriter;
+use crate::persistence::AtomicFileWriter;
+use crate::scene_store;
+
+use super::{ProfileImportOutcome, import_profiles};
+
+struct SceneStoreFixture {
+    path: PathBuf,
+    scenes: Vec<hypercolor_types::scene::Scene>,
+}
+
+impl SceneStoreFixture {
+    fn new(path: PathBuf) -> Self {
+        Self {
+            path,
+            scenes: Vec::new(),
+        }
+    }
+
+    fn load(path: &Path) -> anyhow::Result<Self> {
+        let snapshot = scene_store::load(path)?;
+        Ok(Self {
+            path: path.to_path_buf(),
+            scenes: snapshot.list().cloned().collect(),
+        })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn replace_scenes(&mut self, scenes: impl IntoIterator<Item = hypercolor_types::scene::Scene>) {
+        self.scenes = scenes.into_iter().collect();
+    }
+
+    fn write(&self) -> anyhow::Result<()> {
+        let scenes = self
+            .scenes
+            .iter()
+            .cloned()
+            .map(|scene| (scene.id.to_string(), scene))
+            .collect::<HashMap<_, _>>();
+        fs::write(
+            &self.path,
+            serde_json::to_vec_pretty(&json!({
+                "schema_version": 2,
+                "scenes": scenes,
+            }))?,
+        )?;
+        Ok(())
+    }
+
+    fn list(&self) -> impl Iterator<Item = &hypercolor_types::scene::Scene> {
+        self.scenes.iter()
+    }
+
+    fn len(&self) -> usize {
+        self.scenes.len()
+    }
+}
 
 fn sample_layout(id: &str) -> SpatialLayout {
     SpatialLayout {
@@ -121,8 +177,8 @@ fn import_maps_every_profile_field_and_retires_only_after_durable_save() {
     .expect("profiles should serialize");
     fs::write(&profiles_path, &source).expect("profiles should write");
 
-    let mut store = SceneStore::new(scenes_path.clone()).expect("scene store");
-    let outcome = import_profiles(&profiles_path, &mut store, &layouts, &default_layout)
+    let store = SceneStoreFixture::new(scenes_path.clone());
+    let outcome = import_profiles(&profiles_path, store.path(), &layouts, &default_layout)
         .expect("profiles should import");
     let ProfileImportOutcome::Imported { profiles, backup } = outcome else {
         panic!("profile source should import");
@@ -133,7 +189,7 @@ fn import_maps_every_profile_field_and_retires_only_after_durable_save() {
     assert_eq!(fs::read(&backup).expect("backup should read"), source);
     assert!(scenes_path.exists(), "canonical scene store must exist");
 
-    let loaded = SceneStore::load(&scenes_path).expect("scene store should reload");
+    let loaded = SceneStoreFixture::load(&scenes_path).expect("scene store should reload");
     let scene = loaded.list().next().expect("imported scene");
     assert_eq!(scene.name, "Aurora");
     assert_eq!(scene.description.as_deref(), Some("kept verbatim"));
@@ -199,10 +255,15 @@ fn import_accepts_minimal_legacy_profile_and_retires_the_source() {
         &profiles_path,
         [("legacy", json!({ "id": "profile-a", "name": "Desk" }))],
     );
-    let mut store = SceneStore::new(scenes_path).expect("scene store");
+    let mut store = SceneStoreFixture::new(scenes_path);
 
-    let outcome = import_profiles(&profiles_path, &mut store, &HashMap::new(), &default_layout)
-        .expect("minimal legacy profile should import");
+    let outcome = import_profiles(
+        &profiles_path,
+        store.path(),
+        &HashMap::new(),
+        &default_layout,
+    )
+    .expect("minimal legacy profile should import");
 
     let ProfileImportOutcome::Imported { profiles, backup } = outcome else {
         panic!("profile source should import");
@@ -210,6 +271,7 @@ fn import_accepts_minimal_legacy_profile_and_retires_the_source() {
     assert_eq!(profiles, 1);
     assert!(!profiles_path.exists());
     assert!(backup.exists());
+    store = SceneStoreFixture::load(store.path()).expect("scene store should reload");
     let scene = store
         .list()
         .find(|scene| scene.name == "Desk")
@@ -224,9 +286,9 @@ fn import_is_deterministic_and_crash_replay_preserves_destination_name() {
     let scenes_path = tempdir.path().join("scenes.json");
     let profiles_path = tempdir.path().join("profiles.json");
     let default_layout = sample_layout("default");
-    let mut first_store = SceneStore::new(scenes_path.clone()).expect("scene store");
-    first_store.replace_named_scenes([make_scene("Focus"), make_scene("Focus (imported)")]);
-    first_store.save().expect("seed scene store");
+    let mut first_store = SceneStoreFixture::new(scenes_path.clone());
+    first_store.replace_scenes([make_scene("Focus"), make_scene("Focus (imported)")]);
+    first_store.write().expect("seed scene store");
     write_profiles(
         &profiles_path,
         [
@@ -238,12 +300,12 @@ fn import_is_deterministic_and_crash_replay_preserves_destination_name() {
 
     import_profiles(
         &profiles_path,
-        &mut first_store,
+        first_store.path(),
         &HashMap::new(),
         &default_layout,
     )
     .expect("profiles should import");
-    let first_import = SceneStore::load(&scenes_path).expect("scenes should reload");
+    let first_import = SceneStoreFixture::load(&scenes_path).expect("scenes should reload");
     let mut imported = first_import
         .list()
         .filter(|scene| scene.name.starts_with("Focus (imported "))
@@ -295,18 +357,19 @@ fn import_is_deterministic_and_crash_replay_preserves_destination_name() {
         .find(|scene| scene.id == imported_id)
         .expect("imported destination")
         .name = "Pinned imported name".to_owned();
-    let mut replay_store = SceneStore::load(&scenes_path).expect("scene store should reload");
-    replay_store.replace_named_scenes(renamed_scenes);
-    replay_store.save().expect("rename should persist");
+    let mut replay_store =
+        SceneStoreFixture::load(&scenes_path).expect("scene store should reload");
+    replay_store.replace_scenes(renamed_scenes);
+    replay_store.write().expect("rename should persist");
     import_profiles(
         &profiles_path,
-        &mut replay_store,
+        replay_store.path(),
         &HashMap::new(),
         &default_layout,
     )
     .expect("crash replay should import");
 
-    let replayed = SceneStore::load(&scenes_path).expect("scenes should reload");
+    let replayed = SceneStoreFixture::load(&scenes_path).expect("scenes should reload");
     assert_eq!(replayed.len(), 4, "replay must upsert, never duplicate");
     let pinned = replayed
         .list()
@@ -334,16 +397,17 @@ fn import_preserves_legacy_normalization_and_reserves_default_name() {
         .expect("profile displays should be an array")
         .push(duplicate_display);
     write_profiles(&profiles_path, [("legacy", legacy)]);
-    let mut store = SceneStore::new(scenes_path).expect("scene store");
+    let mut store = SceneStoreFixture::new(scenes_path);
 
     import_profiles(
         &profiles_path,
-        &mut store,
+        store.path(),
         &HashMap::from([(legacy_layout.id.clone(), legacy_layout.clone())]),
         &default_layout,
     )
     .expect("legacy-normalized profile should import");
 
+    store = SceneStoreFixture::load(store.path()).expect("scene store should reload");
     let scene = store.list().next().expect("imported scene");
     assert_eq!(scene.name, "Default (imported)");
     assert_eq!(scene.description.as_deref(), Some("normalized description"));
@@ -376,9 +440,9 @@ fn conversion_failure_leaves_profiles_and_canonical_scenes_untouched() {
     let scenes_path = tempdir.path().join("scenes.json");
     let profiles_path = tempdir.path().join("profiles.json");
     let default_layout = sample_layout("default");
-    let mut store = SceneStore::new(scenes_path.clone()).expect("scene store");
-    store.replace_named_scenes([make_scene("Existing")]);
-    store.save().expect("seed scene store");
+    let mut store = SceneStoreFixture::new(scenes_path.clone());
+    store.replace_scenes([make_scene("Existing")]);
+    store.write().expect("seed scene store");
     let scenes_before = fs::read(&scenes_path).expect("scenes should read");
     let invalid = json!({
         "broken": {
@@ -394,8 +458,13 @@ fn conversion_failure_leaves_profiles_and_canonical_scenes_untouched() {
     let source = serde_json::to_vec_pretty(&invalid).expect("profile should serialize");
     fs::write(&profiles_path, &source).expect("profiles should write");
 
-    let error = import_profiles(&profiles_path, &mut store, &HashMap::new(), &default_layout)
-        .expect_err("empty normalized name should fail conversion");
+    let error = import_profiles(
+        &profiles_path,
+        store.path(),
+        &HashMap::new(),
+        &default_layout,
+    )
+    .expect_err("empty normalized name should fail conversion");
 
     assert!(error.to_string().contains("name must not be empty"));
     assert_eq!(
@@ -417,10 +486,15 @@ fn strict_parse_failure_leaves_profiles_untouched() {
     let default_layout = sample_layout("default");
     let source = br#"{"legacy":{"id":"profile-a","name":"A","unknown":true}}"#;
     fs::write(&profiles_path, source).expect("profiles should write");
-    let mut store = SceneStore::new(scenes_path.clone()).expect("scene store");
+    let store = SceneStoreFixture::new(scenes_path.clone());
 
-    import_profiles(&profiles_path, &mut store, &HashMap::new(), &default_layout)
-        .expect_err("unknown legacy fields should fail strict parsing");
+    import_profiles(
+        &profiles_path,
+        store.path(),
+        &HashMap::new(),
+        &default_layout,
+    )
+    .expect_err("unknown legacy fields should fail strict parsing");
 
     assert_eq!(
         fs::read(&profiles_path).expect("profiles should read"),
@@ -439,12 +513,17 @@ fn non_durable_scene_write_leaves_profiles_source_untouched() {
     let default_layout = sample_layout("default");
     write_profiles(&profiles_path, [("legacy", profile("profile-a", "Aurora"))]);
     let source = fs::read(&profiles_path).expect("profiles should read");
-    let mut store = SceneStore::new(scenes_path.clone()).expect("scene store");
+    let store = SceneStoreFixture::new(scenes_path.clone());
     let writer = AtomicFileWriter::new(&scenes_path).expect("atomic writer");
     writer.set_injected_directory_sync_failures(usize::MAX);
 
-    let error = import_profiles(&profiles_path, &mut store, &HashMap::new(), &default_layout)
-        .expect_err("non-durable replacement must fail the import");
+    let error = import_profiles(
+        &profiles_path,
+        store.path(),
+        &HashMap::new(),
+        &default_layout,
+    )
+    .expect_err("non-durable replacement must fail the import");
 
     assert!(error.to_string().contains("not durable"));
     assert_eq!(
@@ -463,12 +542,17 @@ fn failed_scene_replacement_leaves_profiles_source_untouched() {
     let default_layout = sample_layout("default");
     write_profiles(&profiles_path, [("legacy", profile("profile-a", "Aurora"))]);
     let source = fs::read(&profiles_path).expect("profiles should read");
-    let mut store = SceneStore::new(scenes_path.clone()).expect("scene store");
+    let store = SceneStoreFixture::new(scenes_path.clone());
     let writer = AtomicFileWriter::new(&scenes_path).expect("atomic writer");
     writer.set_injected_replace_failures(usize::MAX);
 
-    let error = import_profiles(&profiles_path, &mut store, &HashMap::new(), &default_layout)
-        .expect_err("failed replacement must fail the import");
+    let error = import_profiles(
+        &profiles_path,
+        store.path(),
+        &HashMap::new(),
+        &default_layout,
+    )
+    .expect_err("failed replacement must fail the import");
 
     assert!(error.to_string().contains("did not replace"));
     assert_eq!(

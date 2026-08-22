@@ -2,9 +2,12 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(test)]
+use std::path::PathBuf;
 
 use anyhow::{Context, bail};
+#[cfg(test)]
 use hypercolor_core::scene::SceneManager;
 use hypercolor_types::scene::{Scene, SceneId, SceneKind};
 use serde::{Deserialize, Serialize};
@@ -48,80 +51,55 @@ pub(crate) struct AdmittedSceneStoreSave {
     write: AdmittedAtomicWrite,
 }
 
-/// JSON-backed named-scene store.
-#[derive(Debug, Clone)]
-pub struct SceneStore {
+/// Read-only projection of durable named scenes.
+#[derive(Debug)]
+pub struct SceneStoreSnapshot {
+    scenes: HashMap<SceneId, Scene>,
+}
+
+/// JSON-backed named-scene store owned by startup and then `SceneService`.
+#[derive(Debug)]
+pub(crate) struct SceneStore {
     writer: AtomicFileWriter,
     scenes: HashMap<SceneId, Scene>,
+    normalization_pending: bool,
 }
 
 impl SceneStore {
     /// Create an empty store rooted at `path`.
-    pub fn new(path: PathBuf) -> Result<Self, PersistenceError> {
+    #[cfg(test)]
+    fn new(path: PathBuf) -> Result<Self, PersistenceError> {
         let writer = AtomicFileWriter::new(&path)?;
         Ok(Self {
             writer,
             scenes: HashMap::new(),
+            normalization_pending: false,
         })
     }
 
     /// Load an existing store or create an empty one when absent.
-    pub fn load(path: &Path) -> anyhow::Result<Self> {
+    pub(crate) fn load(path: &Path) -> anyhow::Result<Self> {
         let writer = AtomicFileWriter::new(path)?;
-        if !path.exists() {
-            return Ok(Self {
-                writer,
-                scenes: HashMap::new(),
-            });
-        }
-
-        let raw = fs::read_to_string(path)
-            .with_context(|| format!("failed to read scenes at {}", path.display()))?;
-        let original = serde_json::from_str::<serde_json::Value>(&raw)
-            .with_context(|| format!("failed to parse scenes at {}", path.display()))?;
-        let Some(schema_version) = original
-            .as_object()
-            .and_then(|document| document.get("schema_version"))
-            .and_then(serde_json::Value::as_u64)
-        else {
-            bail!(
-                "scene store uses the retired unversioned schema; this release accepts the v2 \
-                 envelope {SCENE_STORE_V2_SHAPE}. Restore the file with a pre-v2 Hypercolor \
-                 release, export or rewrite its scenes into the zones/layers schema, then \
-                 restart. The original file was not modified"
-            );
-        };
-        if schema_version != u64::from(SCENE_STORE_SCHEMA_VERSION) {
-            bail!(
-                "unsupported scene store schema version {schema_version}; this release accepts \
-                 the v2 envelope {SCENE_STORE_V2_SHAPE}. Export or rewrite the store into the \
-                 zones/layers schema before restarting. The original file was not modified"
-            );
-        }
-        let document = serde_json::from_value::<SceneStoreDocument>(original.clone())
-            .with_context(|| format!("failed to parse scenes at {}", path.display()))?;
-
-        let mut store = Self {
+        let (scenes, normalization_pending) = load_scenes(path)?;
+        Ok(Self {
             writer,
-            scenes: document.scenes,
-        };
-        store
-            .normalize()
-            .with_context(|| format!("failed to validate scenes at {}", path.display()))?;
-        let normalized = serde_json::to_value(SceneStoreDocument::current(store.scenes.clone()))
-            .context("failed to serialize normalized scene store")?;
-        if normalized != original {
-            store
-                .save()
-                .context("failed to persist normalized scene store")?;
-        }
-        Ok(store)
+            scenes,
+            normalization_pending,
+        })
     }
 
-    /// Save the current snapshot to disk.
-    pub fn save(&self) -> anyhow::Result<()> {
+    pub(crate) fn persist_normalization(&mut self) -> anyhow::Result<bool> {
+        if !self.normalization_pending {
+            return Ok(false);
+        }
+        self.save()?;
+        self.normalization_pending = false;
+        Ok(true)
+    }
+
+    fn save(&mut self) -> anyhow::Result<()> {
         let pending = self.reserve_save(self.scenes.values().cloned())?;
-        persist_reserved(pending).map(|_| ())
+        self.save_reserved(pending).map(|_| ())
     }
 
     /// Reserve a named-scene snapshot before releasing its source lock.
@@ -173,26 +151,28 @@ impl SceneStore {
     }
 
     /// Wake a pending retry after a semantic no-op.
-    pub fn kick_persistence(&self) -> Result<(), PersistenceError> {
+    #[cfg(all(test, feature = "persistence-test-hooks"))]
+    fn kick_persistence(&self) {
         self.writer.kick();
-        Ok(())
     }
 
     #[must_use]
-    pub fn len(&self) -> usize {
+    #[cfg(test)]
+    fn len(&self) -> usize {
         self.scenes.len()
     }
 
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    #[cfg(all(test, feature = "persistence-test-hooks"))]
+    fn is_empty(&self) -> bool {
         self.scenes.is_empty()
     }
 
-    pub fn list(&self) -> impl Iterator<Item = &Scene> {
+    pub(crate) fn list(&self) -> impl Iterator<Item = &Scene> {
         self.scenes.values()
     }
 
-    pub fn replace_named_scenes<I>(&mut self, scenes: I)
+    pub(crate) fn replace_named_scenes<I>(&mut self, scenes: I)
     where
         I: IntoIterator<Item = Scene>,
     {
@@ -200,7 +180,10 @@ impl SceneStore {
     }
 
     /// Rewrite path-derived effect IDs during the startup import.
-    pub fn migrate_effect_ids(&mut self, migrations: &EffectIdMigrations) -> anyhow::Result<usize> {
+    pub(crate) fn migrate_effect_ids(
+        &mut self,
+        migrations: &EffectIdMigrations,
+    ) -> anyhow::Result<usize> {
         let mut scenes = self.scenes.clone();
         let migrated = scenes
             .values_mut()
@@ -219,37 +202,97 @@ impl SceneStore {
         }
     }
 
-    pub fn sync_from_manager(&mut self, manager: &SceneManager) {
+    #[cfg(test)]
+    fn sync_from_manager(&mut self, manager: &SceneManager) {
         self.replace_named_scenes(manager.list().into_iter().cloned());
     }
+}
 
-    fn normalize(&mut self) -> anyhow::Result<()> {
-        for (id, scene) in &mut self.scenes {
-            scene.name = scene.name.trim().to_owned();
-            scene.description = scene
-                .description
-                .take()
-                .map(|description| description.trim().to_owned())
-                .filter(|description| !description.is_empty());
-
-            if id.is_default() {
-                bail!("persisted scene store contains the reserved default scene");
-            }
-            if scene.id != *id {
-                bail!(
-                    "persisted scene key {id} does not match scene id {}",
-                    scene.id
-                );
-            }
-            if scene.kind != SceneKind::Named {
-                bail!("persisted scene {id} is not a named scene");
-            }
-            if let Err(errors) = scene.validate() {
-                bail!("persisted scene {id} is invalid: {}", errors.join("; "));
-            }
-        }
-        Ok(())
+impl SceneStoreSnapshot {
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.scenes.len()
     }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.scenes.is_empty()
+    }
+
+    pub fn list(&self) -> impl Iterator<Item = &Scene> {
+        self.scenes.values()
+    }
+}
+
+/// Read and normalize a durable scene snapshot without acquiring write authority.
+pub fn load(path: &Path) -> anyhow::Result<SceneStoreSnapshot> {
+    load_scenes(path).map(|(scenes, _)| SceneStoreSnapshot { scenes })
+}
+
+fn load_scenes(path: &Path) -> anyhow::Result<(HashMap<SceneId, Scene>, bool)> {
+    if !path.exists() {
+        return Ok((HashMap::new(), false));
+    }
+
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("failed to read scenes at {}", path.display()))?;
+    let original = serde_json::from_str::<serde_json::Value>(&raw)
+        .with_context(|| format!("failed to parse scenes at {}", path.display()))?;
+    let Some(schema_version) = original
+        .as_object()
+        .and_then(|document| document.get("schema_version"))
+        .and_then(serde_json::Value::as_u64)
+    else {
+        bail!(
+            "scene store uses the retired unversioned schema; this release accepts the v2 \
+             envelope {SCENE_STORE_V2_SHAPE}. Restore the file with a pre-v2 Hypercolor release, \
+             export or rewrite its scenes into the zones/layers schema, then restart. The \
+             original file was not modified"
+        );
+    };
+    if schema_version != u64::from(SCENE_STORE_SCHEMA_VERSION) {
+        bail!(
+            "unsupported scene store schema version {schema_version}; this release accepts the \
+             v2 envelope {SCENE_STORE_V2_SHAPE}. Export or rewrite the store into the \
+             zones/layers schema before restarting. The original file was not modified"
+        );
+    }
+    let mut scenes = serde_json::from_value::<SceneStoreDocument>(original.clone())
+        .with_context(|| format!("failed to parse scenes at {}", path.display()))?
+        .scenes;
+    normalize_scenes(&mut scenes)
+        .with_context(|| format!("failed to validate scenes at {}", path.display()))?;
+    let normalized = serde_json::to_value(SceneStoreDocument::current(scenes.clone()))
+        .context("failed to serialize normalized scene store")?;
+    Ok((scenes, normalized != original))
+}
+
+fn normalize_scenes(scenes: &mut HashMap<SceneId, Scene>) -> anyhow::Result<()> {
+    for (id, scene) in scenes {
+        scene.name = scene.name.trim().to_owned();
+        scene.description = scene
+            .description
+            .take()
+            .map(|description| description.trim().to_owned())
+            .filter(|description| !description.is_empty());
+
+        if id.is_default() {
+            bail!("persisted scene store contains the reserved default scene");
+        }
+        if scene.id != *id {
+            bail!(
+                "persisted scene key {id} does not match scene id {}",
+                scene.id
+            );
+        }
+        if scene.kind != SceneKind::Named {
+            bail!("persisted scene {id} is not a named scene");
+        }
+        if let Err(errors) = scene.validate() {
+            bail!("persisted scene {id} is invalid: {}", errors.join("; "));
+        }
+    }
+    Ok(())
 }
 
 impl SceneStoreSave {
@@ -276,14 +319,6 @@ where
         .filter(|scene| scene.kind == SceneKind::Named && !scene.id.is_default())
         .map(|scene| (scene.id, scene))
         .collect()
-}
-
-fn persist_reserved(
-    pending: impl Into<AdmittedSceneStoreSave>,
-) -> anyhow::Result<(AtomicWriteOutcome, HashMap<SceneId, Scene>)> {
-    let pending = pending.into();
-    let outcome = pending.write.commit().context("failed to persist scenes")?;
-    Ok((outcome, pending.scenes))
 }
 
 impl From<SceneStoreSave> for AdmittedSceneStoreSave {
@@ -372,6 +407,60 @@ mod tests {
         );
     }
 
+    #[test]
+    fn load_normalizes_in_memory_without_writing_until_startup_admits_it() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let path = tempdir.path().join("scenes.json");
+        let mut scene = make_scene("Focus");
+        scene.name = "  Focus  ".to_owned();
+        scene.description = Some("  Quiet work  ".to_owned());
+        let raw = serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 2,
+            "scenes": { scene.id.to_string(): scene },
+        }))
+        .expect("scene document should serialize");
+        std::fs::write(&path, &raw).expect("scene document should write");
+
+        let mut store = SceneStore::load(&path).expect("scene store should load");
+        let loaded = store.list().next().expect("normalized scene");
+        assert_eq!(loaded.name, "Focus");
+        assert_eq!(loaded.description.as_deref(), Some("Quiet work"));
+        assert_eq!(
+            std::fs::read(&path).expect("scene document should read"),
+            raw,
+            "read admission must never acquire write authority"
+        );
+
+        assert!(
+            store
+                .persist_normalization()
+                .expect("startup should persist normalization")
+        );
+        let persisted = std::fs::read_to_string(path).expect("normalized document should read");
+        assert!(!persisted.contains("  Focus  "));
+        assert!(!persisted.contains("  Quiet work  "));
+    }
+
+    #[test]
+    fn sync_from_manager_filters_default_scene() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let mut manager = SceneManager::with_default();
+        let named_scene = make_scene("Relax");
+        let named_scene_id = named_scene.id;
+        manager.create(named_scene).expect("scene should create");
+        let mut store =
+            SceneStore::new(tempdir.path().join("scenes.json")).expect("scene store should open");
+
+        store.sync_from_manager(&manager);
+
+        assert_eq!(store.len(), 1);
+        assert_eq!(
+            store.list().next().map(|scene| scene.id),
+            Some(named_scene_id)
+        );
+        assert!(store.list().all(|scene| scene.id != SceneId::DEFAULT));
+    }
+
     #[cfg(feature = "persistence-test-hooks")]
     #[test]
     fn failed_delete_keeps_live_state_and_does_not_resurrect() {
@@ -390,9 +479,7 @@ mod tests {
         assert!(store.is_empty(), "live scene state remains authoritative");
 
         writer.set_injected_replace_failures(0);
-        store
-            .kick_persistence()
-            .expect("kick scene persistence retry");
+        store.kick_persistence();
         writer
             .flush(Duration::from_secs(5))
             .expect("scene deletion should converge");

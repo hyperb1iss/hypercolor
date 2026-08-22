@@ -426,13 +426,12 @@ impl AppState {
                 warn!(%error, "Failed to install persisted named scene into default app state");
             }
         }
-        let scene_store = Arc::new(RwLock::new(scene_store));
         let event_bus = Arc::new(HypercolorBus::new());
         let zone_layout_previews = Arc::new(ZoneLayoutPreviewStore::default());
         let scene_manager = SceneService::new(
             scene_manager_inner,
             Arc::clone(&event_bus),
-            Arc::clone(&scene_store),
+            scene_store,
             Arc::clone(&zone_layout_previews),
         );
         let scene_transactions = SceneTransactionQueue::default();

@@ -542,7 +542,7 @@ async fn late_rescan_migrates_every_live_and_durable_reference_before_publicatio
             .flat_map(hypercolor_types::scene::Zone::effect_ids)
             .all(|effect_id| effect_id == fixture.canonical_id)
     );
-    let scenes = crate::scene_store::SceneStore::load(&fixture.state.data_dir.join("scenes.json"))
+    let scenes = crate::scene_store::load(&fixture.state.data_dir.join("scenes.json"))
         .expect("scene store should reload");
     assert!(
         scenes
@@ -676,7 +676,7 @@ async fn skipped_screen_cast_port_never_migrates_scene_persistence() {
             .flat_map(hypercolor_types::scene::Zone::effect_ids)
             .all(|effect_id| effect_id == legacy_id)
     );
-    let durable = crate::scene_store::SceneStore::load(&data_dir.join("scenes.json"))
+    let durable = crate::scene_store::load(&data_dir.join("scenes.json"))
         .expect("scene store should remain readable");
     assert!(
         durable
@@ -1132,7 +1132,7 @@ async fn revision_neutral_snapshot_save_cannot_overtake_identity_publication() {
         .expect("snapshot task should not panic")
         .expect("snapshot should persist after publication");
 
-    let durable = crate::scene_store::SceneStore::load(&state.data_dir.join("scenes.json"))
+    let durable = crate::scene_store::load(&state.data_dir.join("scenes.json"))
         .expect("scene store should load after the race");
     assert!(
         durable
@@ -1188,7 +1188,7 @@ async fn shutdown_snapshot_cannot_overtake_identity_publication() {
             .is_some()
     );
 
-    let durable = crate::scene_store::SceneStore::load(&state.data_dir.join("scenes.json"))
+    let durable = crate::scene_store::load(&state.data_dir.join("scenes.json"))
         .expect("scene store should load after the shutdown race");
     assert!(
         durable
@@ -1244,7 +1244,7 @@ async fn runtime_save_cannot_overtake_identity_publication() {
         .await
         .expect("runtime save task should not panic");
 
-    let durable = crate::scene_store::SceneStore::load(&state.data_dir.join("scenes.json"))
+    let durable = crate::scene_store::load(&state.data_dir.join("scenes.json"))
         .expect("scene store should load after the race");
     assert!(
         durable
@@ -1291,7 +1291,7 @@ async fn migration_generation_preserves_an_admitted_newer_named_scene() {
         tokio::spawn(async move { commit_state.scene_manager.commit_mutation(mutation).await });
 
     barrier.wait_until_entered().await;
-    let before = crate::scene_store::SceneStore::load(&state.data_dir.join("scenes.json"))
+    let before = crate::scene_store::load(&state.data_dir.join("scenes.json"))
         .expect("pre-migration scene store should load");
     assert!(before.list().all(|scene| scene.id != admitted_scene_id));
 
@@ -1322,7 +1322,7 @@ async fn migration_generation_preserves_an_admitted_newer_named_scene() {
                 .flat_map(hypercolor_types::scene::Zone::effect_ids)
                 .all(|effect_id| effect_id == fixture.canonical_id))
     );
-    let durable = crate::scene_store::SceneStore::load(&state.data_dir.join("scenes.json"))
+    let durable = crate::scene_store::load(&state.data_dir.join("scenes.json"))
         .expect("migrated scene store should load");
     let scene = durable
         .list()
@@ -1356,8 +1356,8 @@ async fn transient_store_failure_converges_without_another_rescan() {
     writer
         .flush(std::time::Duration::from_secs(2))
         .expect("the admitted migration should converge after the transient failure");
-    let durable = crate::scene_store::SceneStore::load(&scenes_path)
-        .expect("converged scene store should load");
+    let durable =
+        crate::scene_store::load(&scenes_path).expect("converged scene store should load");
     assert!(
         durable
             .list()

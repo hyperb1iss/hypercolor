@@ -80,6 +80,8 @@ pub use discovery_worker::{
     collect_unmapped_driver_layout_targets, collect_unmapped_prefixed_layout_targets,
 };
 #[cfg(test)]
+#[cfg(test)]
+#[allow(unused_imports)]
 pub(crate) use lifecycle::persist_scene_store_snapshot;
 pub use signals::{SUPERVISED_PARENT_PID_ENV, install_signal_handlers};
 

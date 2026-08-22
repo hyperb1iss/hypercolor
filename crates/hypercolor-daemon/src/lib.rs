@@ -35,7 +35,7 @@ pub use hypercolor_core::persistence;
 pub mod playlist_runtime;
 pub mod preview_runtime;
 pub mod process;
-pub mod profile_import;
+pub(crate) mod profile_import;
 pub mod render_thread;
 pub mod runtime_state;
 pub mod scene_store;

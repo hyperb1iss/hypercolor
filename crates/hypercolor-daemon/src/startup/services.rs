@@ -324,11 +324,9 @@ impl DaemonState {
         // ── Scene Manager / Store ──────────────────────────────────────
         let scenes_path = ConfigManager::data_dir().join("scenes.json");
         let profiles_path = ConfigManager::data_dir().join("profiles.json");
-        let mut scene_store_inner = SceneStore::load(&scenes_path)
-            .with_context(|| format!("failed to load scenes from {}", scenes_path.display()))?;
         match crate::profile_import::import_profiles(
             &profiles_path,
-            &mut scene_store_inner,
+            &scenes_path,
             &persisted_layouts,
             &default_layout,
         )
@@ -338,6 +336,17 @@ impl DaemonState {
             crate::profile_import::ProfileImportOutcome::Imported { profiles, backup } => {
                 info!(profiles, backup = %backup.display(), "Imported legacy profiles as scenes");
             }
+        }
+        let mut scene_store_inner = SceneStore::load(&scenes_path)
+            .with_context(|| format!("failed to load scenes from {}", scenes_path.display()))?;
+        if scene_store_inner
+            .persist_normalization()
+            .context("failed to persist normalized scene store")?
+        {
+            info!(
+                path = %scenes_path.display(),
+                "Persisted normalized scene store"
+            );
         }
         let migrated_scene_effect_ids = scene_store_inner
             .migrate_effect_ids(&effect_id_migrations)
@@ -355,11 +364,10 @@ impl DaemonState {
                 warn!(%error, "Failed to install persisted named scene");
             }
         }
-        let scene_store = Arc::new(RwLock::new(scene_store_inner));
         let scene_manager = crate::domain::scene::SceneService::new(
             scene_manager_inner,
             Arc::clone(&event_bus),
-            Arc::clone(&scene_store),
+            scene_store_inner,
             Arc::clone(&zone_layout_previews),
         );
         info!(path = %scenes_path.display(), "Scene manager created");

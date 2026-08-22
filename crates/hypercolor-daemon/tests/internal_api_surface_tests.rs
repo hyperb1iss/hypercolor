@@ -248,6 +248,9 @@ fn scene_store_writers_share_the_scene_service_authority() {
         "save_reserved",
         "save_reserved_stage_aware",
         "replace_named_scenes",
+        "persist_normalization",
+        "kick_persistence",
+        "sync_from_manager",
     ];
     let bypasses = sources
         .iter()
@@ -255,6 +258,7 @@ fn scene_store_writers_share_the_scene_service_authority() {
             !path.ends_with("domain/scene.rs")
                 && !path.ends_with("profile_import.rs")
                 && !path.ends_with("scene_store.rs")
+                && !path.ends_with("startup/services.rs")
         })
         .flat_map(|(path, source)| {
             raw_writer_members
@@ -293,8 +297,69 @@ fn scene_store_writers_share_the_scene_service_authority() {
 
     let app_state = source("app_state.rs");
     assert!(!app_state.contains("pub scene_store:"));
+    assert!(!app_state.contains("Arc::new(RwLock::new(scene_store))"));
     let startup = source("startup/mod.rs");
     assert!(!startup.contains("pub scene_store:"));
+
+    let scene_store = source("scene_store.rs");
+    assert!(scene_store.contains("pub(crate) struct SceneStore"));
+    assert!(!scene_store.contains("pub struct SceneStore {"));
+    assert!(!scene_store.contains("derive(Debug, Clone)\npub(crate) struct SceneStore"));
+    for public_writer in [
+        "pub fn new(",
+        "pub fn save(",
+        "pub fn reserve_save(",
+        "pub fn save_reserved(",
+        "pub fn replace_named_scenes(",
+        "pub fn migrate_effect_ids(",
+    ] {
+        assert!(
+            !scene_store.contains(public_writer),
+            "SceneStore retained public writer {public_writer}"
+        );
+    }
+
+    let scene_domain = source("domain/scene.rs");
+    assert!(scene_domain.contains("store: SceneStore"));
+    assert!(scene_domain.contains("Some(Arc::new(tokio::sync::RwLock::new(store)))"));
+    assert!(!scene_domain.contains("store.read().await.clone()"));
+
+    let raw_constructors = sources
+        .iter()
+        .filter(|(path, _)| {
+            !path.ends_with("app_state.rs")
+                && !path.ends_with("startup/services.rs")
+                && !path.ends_with("profile_import.rs")
+                && !path.ends_with("scene_store.rs")
+        })
+        .filter(|(_, source)| {
+            source.contains("SceneStore::new(") || source.contains("SceneStore::load(")
+        })
+        .map(|(path, _)| path.display().to_string())
+        .collect::<Vec<_>>();
+    assert!(
+        raw_constructors.is_empty(),
+        "scene-store capability escaped startup ownership:\n{}",
+        raw_constructors.join("\n")
+    );
+
+    let library = source("lib.rs");
+    assert!(library.contains("pub(crate) mod profile_import;"));
+    assert!(!library.contains("pub mod profile_import;"));
+    let profile_import = source("profile_import.rs");
+    assert!(profile_import.contains("pub(crate) fn import_profiles("));
+    assert!(!profile_import.contains("pub fn import_profiles("));
+    let profile_import_callers = sources
+        .iter()
+        .filter(|(path, _)| !path.ends_with("startup/services.rs"))
+        .filter(|(_, source)| source.contains("profile_import::import_profiles("))
+        .map(|(path, _)| path.display().to_string())
+        .collect::<Vec<_>>();
+    assert!(
+        profile_import_callers.is_empty(),
+        "profile import escaped startup ownership:\n{}",
+        profile_import_callers.join("\n")
+    );
 }
 
 #[test]

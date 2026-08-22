@@ -10,7 +10,7 @@ use hypercolor_daemon::api;
 use hypercolor_daemon::app_state::AppState;
 use hypercolor_daemon::display_frames::DisplayFrameSnapshot;
 use hypercolor_daemon::runtime_state;
-use hypercolor_daemon::scene_store::SceneStore;
+use hypercolor_daemon::scene_store;
 use hypercolor_daemon::scene_transactions::{
     SceneTransaction, SceneTransactionQueue, apply_layout_update,
 };
@@ -740,7 +740,7 @@ async fn deleting_simulated_display_prunes_scene_display_groups_and_persists_cle
     );
 
     let scene_store =
-        SceneStore::load(&state.data_dir.join("scenes.json")).expect("scene store should reload");
+        scene_store::load(&state.data_dir.join("scenes.json")).expect("scene store should reload");
     let named_scene = scene_store
         .list()
         .find(|scene| scene.id == named_scene_id)

@@ -28,7 +28,7 @@ use hypercolor_daemon::startup::{
     DaemonState, collect_unmapped_driver_layout_targets, collect_unmapped_prefixed_layout_targets,
     config_sources, default_config, install_signal_handlers, parse_config_toml,
 };
-use hypercolor_daemon::{layout_store, runtime_state, scene_store::SceneStore};
+use hypercolor_daemon::{layout_store, runtime_state};
 use hypercolor_driver_api::{BackendInfo, DeviceBackend, OutputCadence};
 use hypercolor_types::canvas::{DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH};
 use hypercolor_types::config::{
@@ -63,6 +63,30 @@ macro_rules! bail {
 
 /// Minimal TOML content that `ConfigManager` can parse.
 const MINIMAL_TOML: &str = "schema_version = 5\n";
+
+fn write_scene_store(
+    path: &Path,
+    scenes: impl IntoIterator<Item = hypercolor_types::scene::Scene>,
+) {
+    std::fs::create_dir_all(
+        path.parent()
+            .expect("scene store path should have a parent"),
+    )
+    .expect("scene store directory should build");
+    let scenes = scenes
+        .into_iter()
+        .map(|scene| (scene.id.to_string(), scene))
+        .collect::<std::collections::HashMap<_, _>>();
+    std::fs::write(
+        path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 2,
+            "scenes": scenes,
+        }))
+        .expect("scene store should serialize"),
+    )
+    .expect("scene store should write");
+}
 
 static DATA_DIR_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 static CONFIG_DIR_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
@@ -1245,11 +1269,9 @@ async fn daemon_state_scene_manager_starts_with_default_scene() {
 #[tokio::test]
 async fn named_scenes_persist_across_restart() {
     let guard = TestDataDirGuard::new().await;
-    let mut store = SceneStore::new(guard.scenes_path()).expect("scene store");
     let named_scene = hypercolor_core::scene::make_scene("Movie Night");
     let named_scene_id = named_scene.id;
-    store.replace_named_scenes([named_scene]);
-    store.save().expect("scene store should save");
+    write_scene_store(&guard.scenes_path(), [named_scene]);
 
     let config = default_config();
     let temp = temp_config_file();
@@ -1621,11 +1643,9 @@ async fn runtime_state_and_driver_inventory_persist_independently() {
 #[tokio::test]
 async fn daemon_start_restores_named_active_scene_and_default_groups() {
     let guard = TestDataDirGuard::new().await;
-    let mut store = SceneStore::new(guard.scenes_path()).expect("scene store");
     let named_scene = hypercolor_core::scene::make_scene("Focus");
     let named_scene_id = named_scene.id;
-    store.replace_named_scenes([named_scene]);
-    store.save().expect("scene store should save");
+    write_scene_store(&guard.scenes_path(), [named_scene]);
 
     let default_group = Zone {
         id: ZoneId::new(),
@@ -1705,13 +1725,11 @@ async fn daemon_start_activates_configured_scene_name_without_runtime_snapshot()
         &std::collections::HashMap::from([(selected_layout.id.clone(), selected_layout.clone())]),
     )
     .expect("layout store should save");
-    let mut store = SceneStore::new(guard.scenes_path()).expect("scene store");
     let mut named_scene = hypercolor_core::scene::make_scene("Evening");
     let named_scene_id = named_scene.id;
     named_scene.layout_id = Some(LayoutId::new(&selected_layout.id).expect("valid layout id"));
     named_scene.activation_brightness = Some(0.35);
-    store.replace_named_scenes([named_scene]);
-    store.save().expect("scene store should save");
+    write_scene_store(&guard.scenes_path(), [named_scene]);
 
     let mut config = default_config();
     config.daemon.start_scene = "evening".into();
@@ -1741,11 +1759,9 @@ async fn daemon_start_activates_configured_scene_name_without_runtime_snapshot()
 #[tokio::test]
 async fn daemon_start_activates_configured_scene_id() {
     let guard = TestDataDirGuard::new().await;
-    let mut store = SceneStore::new(guard.scenes_path()).expect("scene store");
     let named_scene = hypercolor_core::scene::make_scene("Focus");
     let named_scene_id = named_scene.id;
-    store.replace_named_scenes([named_scene]);
-    store.save().expect("scene store should save");
+    write_scene_store(&guard.scenes_path(), [named_scene]);
 
     let mut config = default_config();
     config.daemon.start_scene = named_scene_id.to_string();

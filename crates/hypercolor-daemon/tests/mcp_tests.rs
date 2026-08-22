@@ -23,7 +23,7 @@ use hypercolor_daemon::mcp::resources::{
 };
 use hypercolor_daemon::mcp::tools::{ToolError, build_tool_definitions, execute_tool_with_state};
 use hypercolor_daemon::runtime_state;
-use hypercolor_daemon::scene_store::SceneStore;
+use hypercolor_daemon::scene_store;
 use hypercolor_types::config::{CURRENT_SCHEMA_VERSION, McpConfig};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
@@ -969,7 +969,7 @@ async fn stateful_scene_tools_persist_named_scenes_and_activation_state() {
     assert_eq!(list_result["scenes"][0]["name"], "Focus");
     assert_eq!(list_result["scenes"][0]["active"], false);
 
-    let store = SceneStore::load(&scenes_path(state.as_ref())).expect("scene store should load");
+    let store = scene_store::load(&scenes_path(state.as_ref())).expect("scene store should load");
     assert_eq!(store.len(), 1);
     let stored_scene = store.list().next().expect("named scene should persist");
     assert!(stored_scene.metadata.is_empty());
