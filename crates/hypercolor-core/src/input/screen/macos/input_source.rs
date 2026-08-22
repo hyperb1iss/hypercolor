@@ -51,16 +51,22 @@ impl InputSource for MacosScreenCaptureInput {
         }
         #[cfg(feature = "macos-capture-fixtures")]
         {
-            let publication = lock(&self.publication);
-            if publication.worker_generation == self.worker_generation {
-                Ok(publication
-                    .latest
-                    .as_deref()
-                    .cloned()
-                    .unwrap_or(InputData::None))
-            } else {
-                Ok(InputData::None)
+            let data = {
+                let publication = lock(&self.publication);
+                if publication.worker_generation == self.worker_generation {
+                    publication
+                        .latest
+                        .as_deref()
+                        .cloned()
+                        .unwrap_or(InputData::None)
+                } else {
+                    InputData::None
+                }
+            };
+            if !matches!(data, InputData::None) {
+                self.refresh_platform_status()?;
             }
+            Ok(data)
         }
         #[cfg(not(feature = "macos-capture-fixtures"))]
         {
@@ -80,10 +86,16 @@ impl InputSource for MacosScreenCaptureInput {
         }
         #[cfg(feature = "macos-capture-fixtures")]
         {
-            let publication = lock(&self.publication);
-            Ok((publication.worker_generation == self.worker_generation)
-                .then(|| publication.latest.clone())
-                .flatten())
+            let data = {
+                let publication = lock(&self.publication);
+                (publication.worker_generation == self.worker_generation)
+                    .then(|| publication.latest.clone())
+                    .flatten()
+            };
+            if data.is_some() {
+                self.refresh_platform_status()?;
+            }
+            Ok(data)
         }
         #[cfg(not(feature = "macos-capture-fixtures"))]
         {
