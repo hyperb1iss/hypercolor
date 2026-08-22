@@ -5,7 +5,8 @@ This describes what the Hypercolor daemon's `/api/v1` surface emits. Under Spec
 deliberate shape change updates this document, the enforcing suite, and every
 in-repo client in the same PR, while an unintended byte shift still fails CI.
 
-The enforcing suite is `crates/hypercolor-daemon/tests/rest_v1_compat_tests.rs`.
+The enforcing suite is
+`crates/hypercolor-daemon/tests/rest_wire_contract_tests.rs`.
 This document and that file are edited together. A row here without a test there
 is a claim, not a fence.
 
@@ -134,7 +135,8 @@ page in production. The API fallback resolves first, so the SPA never sees an
 API path, and `/api/v1/openapi.json` plus the Swagger mount keep their exact
 routes. Pinned by `api_tests.rs::the_spa_fallback_never_answers_for_a_deleted_api_route`
 and `::an_unmatched_api_path_renders_the_canonical_envelope_without_a_ui`; the
-deletion fences in `rest_v1_compat_tests.rs::renamed_routes_leave_nothing_behind`
+deletion fences in `rest_wire_contract_tests.rs` under the two
+`deleted_*_routes_leave_nothing_behind` tests
 assert the envelope rather than the status alone for the same reason.
 
 Paths outside `/api/v1` still belong to the SPA, which is what makes
@@ -357,8 +359,8 @@ through `tower::oneshot`.
 Named so the gaps are explicit rather than assumed covered:
 
 - Per-route payload field lists. This matrix pins envelopes, pagination,
-  error shapes, headers, status codes, and legacy routing. Individual `data`
-  payloads are pinned only where a projection depends on them.
+  error shapes, headers, status codes, and deleted-route behavior. Individual
+  `data` payloads are pinned only where a projection depends on them.
 - Binary and streaming routes beyond noting that they bypass the envelope.
 - The WebSocket protocol. Binary tags and byte layouts are pinned separately by
   Spec 76 wave 0.8.

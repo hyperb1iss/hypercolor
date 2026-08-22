@@ -77,7 +77,7 @@ fn json_request(method: &str, uri: &str, body: &Value) -> Request<Body> {
 ///
 /// `tower::oneshot` cannot reach any code behind the `WebSocketUpgrade`
 /// extractor: without a live hyper connection the extractor rejects with 426
-/// before the handler body runs, so an upgrade-path freeze needs real I/O.
+/// before the handler body runs, so an upgrade-path contract needs real I/O.
 async fn spawn_server(state: &Arc<AppState>) -> std::net::SocketAddr {
     let router = test_app(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -100,7 +100,7 @@ async fn spawn_server(state: &Arc<AppState>) -> std::net::SocketAddr {
 
 /// Assert an object carries exactly these keys, in any order.
 ///
-/// Key-set equality (rather than "contains") is what makes this a freeze: a
+/// Key-set equality (rather than "contains") is what makes this a fence: a
 /// field appearing on a v1 body is as much a break as one disappearing.
 fn assert_keys(value: &Value, expected: &[&str], what: &str) {
     let object = value
@@ -110,13 +110,13 @@ fn assert_keys(value: &Value, expected: &[&str], what: &str) {
     actual.sort_unstable();
     let mut expected = expected.to_vec();
     expected.sort_unstable();
-    assert_eq!(actual, expected, "{what} key set is frozen");
+    assert_eq!(actual, expected, "{what} key set changed");
 }
 
 /// The `meta` block carried by both the success and the error envelope.
 ///
 /// `request_id` and `timestamp` vary per response, so they are pinned by
-/// grammar rather than value; `api_version` is a frozen literal.
+/// grammar rather than value; `api_version` is an exact literal.
 fn assert_meta(meta: &Value) {
     assert_keys(
         meta,
@@ -126,7 +126,7 @@ fn assert_meta(meta: &Value) {
     assert_eq!(
         meta["api_version"],
         json!("1.0"),
-        "meta.api_version is frozen at the string \"1.0\""
+        "meta.api_version must be the string \"1.0\""
     );
 
     let request_id = meta["request_id"]
@@ -134,7 +134,7 @@ fn assert_meta(meta: &Value) {
         .expect("meta.request_id should be a string");
     let uuid = request_id
         .strip_prefix("req_")
-        .expect("meta.request_id should carry the frozen `req_` prefix");
+        .expect("meta.request_id should carry the `req_` prefix");
     Uuid::parse_str(uuid).expect("meta.request_id should suffix a UUID");
 
     assert_iso8601_millis(
@@ -144,7 +144,7 @@ fn assert_meta(meta: &Value) {
     );
 }
 
-/// The frozen timestamp grammar: `YYYY-MM-DDTHH:MM:SS.mmmZ`. Always UTC,
+/// The timestamp grammar: `YYYY-MM-DDTHH:MM:SS.mmmZ`. Always UTC,
 /// always exactly three fractional digits, never an offset form.
 fn assert_iso8601_millis(timestamp: &str) {
     let shaped = timestamp.len() == 24
@@ -262,7 +262,7 @@ async fn register_effect(state: &Arc<AppState>, name: &str) -> EffectMetadata {
 // ── Envelope ─────────────────────────────────────────────────────────────
 
 #[tokio::test]
-async fn success_envelope_is_frozen_on_a_representative_get() {
+async fn success_envelope_matches_the_wire_contract() {
     let (state, _tmp) = isolated_state();
     let app = test_app(&state);
 
@@ -474,7 +474,7 @@ async fn devices_list_pagination_stays_honest() {
     assert_page(&json["data"]["page"], 0, 10, false);
 }
 
-// ── Legacy paths stay routed and legacy-shaped ───────────────────────────
+// ── Deleted routes leave no compatibility surface ────────────────────────
 
 #[tokio::test]
 async fn deleted_scene_singleton_routes_leave_nothing_behind() {
