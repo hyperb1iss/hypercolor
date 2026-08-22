@@ -111,6 +111,40 @@ fn driver_config_view_projects_tagged_control_values_without_flattening_storage(
     assert_eq!(roundtrip, controls);
 }
 
+#[derive(Debug, Deserialize, PartialEq)]
+struct RawDriverConfig {
+    hosts: Vec<IpAddr>,
+    descriptor: serde_json::Value,
+}
+
+#[test]
+fn driver_config_view_keeps_raw_arrays_and_untagged_objects() {
+    let descriptor = serde_json::json!({ "kind": "network", "name": "fixture" });
+    let entry = DriverConfigEntry::enabled(BTreeMap::from([
+        (
+            "hosts".to_owned(),
+            serde_json::json!(["192.168.1.50", "2001:db8::1"]),
+        ),
+        ("descriptor".to_owned(), descriptor.clone()),
+    ]));
+
+    let parsed = DriverConfigView {
+        driver_id: "fixture",
+        entry: &entry,
+    }
+    .parse_settings::<RawDriverConfig>()
+    .expect("raw driver config should bypass canonical projection");
+
+    assert_eq!(
+        parsed.hosts,
+        vec![
+            "192.168.1.50".parse::<IpAddr>().expect("IPv4"),
+            "2001:db8::1".parse::<IpAddr>().expect("IPv6"),
+        ]
+    );
+    assert_eq!(parsed.descriptor, descriptor);
+}
+
 #[test]
 fn output_cadence_tracks_optional_maximum_frame_silence() {
     let cadence = OutputCadence::from_fps(50).with_max_frame_silence(Duration::from_millis(1_250));

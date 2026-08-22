@@ -32,8 +32,19 @@ impl DriverConfigView<'_> {
             .settings
             .iter()
             .map(|(key, value)| {
-                let value = serde_json::from_value::<ControlValue>(value.clone())
-                    .map_or_else(|_| Ok(value.clone()), control_value_to_settings_json)?;
+                let value = if is_serialized_control_value(value) {
+                    let canonical = serde_json::from_value::<ControlValue>(value.clone()).map_err(
+                        |error| DriverError::Configuration {
+                            message: format!(
+                                "invalid control value for driver '{}' setting '{key}': {error}",
+                                self.driver_id
+                            ),
+                        },
+                    )?;
+                    control_value_to_settings_json(canonical)?
+                } else {
+                    value.clone()
+                };
                 Ok((key.clone(), value))
             })
             .collect::<Result<serde_json::Map<_, _>, DriverError>>()?;
@@ -42,6 +53,16 @@ impl DriverConfigView<'_> {
             message: format!("invalid config for driver '{}': {error}", self.driver_id),
         })
     }
+}
+
+fn is_serialized_control_value(value: &serde_json::Value) -> bool {
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    object.get("kind").is_some_and(serde_json::Value::is_string)
+        && object
+            .keys()
+            .all(|key| matches!(key.as_str(), "kind" | "value"))
 }
 
 fn control_value_to_settings_json(value: ControlValue) -> Result<serde_json::Value, DriverError> {
