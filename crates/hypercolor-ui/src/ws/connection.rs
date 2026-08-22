@@ -1,7 +1,7 @@
 //! WebSocket connection lifecycle, reconnect logic, and exponential backoff.
 
-use std::cell::RefCell;
-use std::collections::HashMap;
+use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -13,18 +13,13 @@ use hypercolor_leptos_ext::events::{
     EventHandle, document as browser_document, document_event_target, on, window as browser_window,
 };
 use hypercolor_leptos_ext::prelude::{
-    TimeoutHandle as BrowserTimeoutHandle, current_page_location, now_ms, random_unit,
-    set_timeout as browser_set_timeout,
-};
-use hypercolor_leptos_ext::ws::transport::{
-    WebSocketEventHandlers, arraybuffer_websocket, message_array_buffer, send_websocket_json,
+    TimeoutHandle as BrowserTimeoutHandle, now_ms, random_unit, set_timeout as browser_set_timeout,
 };
 use hypercolor_leptos_ext::ws::{
     ExponentialBackoff, HYPERCOLOR_WS_PROTOCOL, PreviewTransportCapability,
 };
 use leptos::prelude::*;
 use wasm_bindgen::{JsCast, JsValue};
-use web_sys::MessageEvent;
 
 use super::input::InputInjectEdge;
 use super::interactive_preview::{
@@ -47,8 +42,11 @@ use super::preview::{
     send_screen_canvas_unsubscribe, send_screen_zones_subscribe, send_screen_zones_unsubscribe,
     send_web_viewport_canvas_unsubscribe, should_stream_preview,
 };
+use super::transport::{
+    WebSocketConnectRequest, WebSocketConnection, WebSocketEvent, WebSocketMessage,
+    connect as connect_websocket, send_json,
+};
 use crate::api::DeviceMetricsSnapshot;
-use crate::api::client;
 
 const BACKPRESSURE_RECOVERY_MS: f64 = 2_000.0;
 const INITIAL_SUBSCRIPTION_TIMEOUT: Duration = Duration::from_secs(5);
@@ -255,9 +253,9 @@ impl WsManager {
         let requested_web_viewport_preview = StoredValue::new(None::<PreviewSubscriptionRequest>);
 
         // Shared WebSocket handle for preview subscription effect.
-        let ws_handle: StoredValue<Option<web_sys::WebSocket>> = StoredValue::new(None);
-        let socket_callbacks: StoredValue<Option<WebSocketEventHandlers>, LocalStorage> =
+        let ws_handle: StoredValue<Option<Rc<dyn WebSocketConnection>>, LocalStorage> =
             StoredValue::new_local(None);
+        let socket_generation = StoredValue::new(0_u64);
         let visibility_change_callback: StoredValue<Option<EventHandle>, LocalStorage> =
             StoredValue::new_local(None);
         let tauri_visibility_change_callback: StoredValue<Option<EventHandle>, LocalStorage> =
@@ -284,7 +282,7 @@ impl WsManager {
             clear_timeout(reconnect_timeout);
             clear_timeout(initial_subscription_timeout);
             awaiting_initial_subscription.set_value(false);
-            dispose_existing_socket(ws_handle, socket_callbacks);
+            dispose_existing_socket(ws_handle, socket_generation);
             set_connection_state.set(ConnectionState::Connecting);
             set_backpressure_notice.set(None);
             set_interactive_preview_available.set(false);
@@ -309,283 +307,321 @@ impl WsManager {
             set_preview_fps.set(0.0);
             set_sensors.set(None);
 
-            let Some(url) = build_ws_url() else {
-                set_connection_state.set(ConnectionState::Disconnected);
-                return;
+            let generation = socket_generation.get_value().wrapping_add(1);
+            socket_generation.set_value(generation);
+            let preview_decoder = Rc::new(RefCell::new(PreviewBinaryDecoder::default()));
+            let preview_expiry_timeout = Rc::new(RefCell::new(None::<BrowserTimeoutHandle>));
+            let event_preview_decoder = Rc::clone(&preview_decoder);
+            let event_preview_expiry_timeout = Rc::clone(&preview_expiry_timeout);
+            let process_event: Rc<dyn Fn(WebSocketEvent)> = Rc::new(move |event| {
+                if socket_generation.get_value() != generation {
+                    return;
+                }
+
+                match event {
+                    WebSocketEvent::Opened => {
+                        awaiting_initial_subscription.set_value(true);
+                        let timeout =
+                            browser_set_timeout(INITIAL_SUBSCRIPTION_TIMEOUT, move || {
+                                if socket_generation.get_value() == generation
+                                    && awaiting_initial_subscription.get_value()
+                                {
+                                    awaiting_initial_subscription.set_value(false);
+                                    set_connection_state.set(ConnectionState::Error);
+                                    schedule_reconnect(
+                                        reconnect_attempts,
+                                        reconnect_timeout,
+                                        connect,
+                                    );
+                                    if let Some(connection) = ws_handle.get_value() {
+                                        let _ = connection.close();
+                                    }
+                                }
+                            });
+                        initial_subscription_timeout.set_value(Some(timeout));
+
+                        let subscribe_msg = serde_json::json!({
+                            "type": "subscribe",
+                            "preview_transport": PreviewTransportCapability::default().encode(),
+                            "topics": [
+                                { "topic": "events" },
+                                { "topic": "metrics", "config": { "interval_ms": 500 } },
+                                { "topic": "sensors" }
+                            ]
+                        });
+                        if let Some(connection) = ws_handle.get_value() {
+                            let _ = send_json(connection.as_ref(), &subscribe_msg);
+                        }
+                    }
+                    WebSocketEvent::Closed { .. } => {
+                        socket_generation.set_value(generation.wrapping_add(1));
+                        clear_preview_decoder(
+                            &event_preview_decoder,
+                            &event_preview_expiry_timeout,
+                        );
+                        clear_timeout(initial_subscription_timeout);
+                        awaiting_initial_subscription.set_value(false);
+                        set_connection_state.set(ConnectionState::Disconnected);
+                        ws_handle.set_value(None);
+                        clear_preview_subscription(
+                            requested_preview,
+                            &set_preview_target_fps,
+                            &set_preview_fps,
+                            &set_canvas_frame,
+                        );
+                        clear_screen_preview_subscription(
+                            requested_screen_preview,
+                            &set_screen_canvas_frame,
+                        );
+                        clear_web_viewport_preview_subscription(
+                            requested_web_viewport_preview,
+                            &set_web_viewport_canvas_frame,
+                        );
+                        screen_zones_requested.set_value(false);
+                        set_screen_zones_frame.set(None);
+                        set_display_preview_frames.update(HashMap::clear);
+                        set_interactive_preview_available.set(false);
+                        set_interactive_preview_frames.set(HashMap::new());
+                        interactive_preview_tracker
+                            .update_value(InteractivePreviewLifecycleTracker::clear);
+                        set_interactive_preview_lifecycles.set(HashMap::new());
+                        set_sensors.set(None);
+                        set_layer_health.update(reset_layer_health_cache);
+                        output_power_reconciler.update_value(|reconciler| {
+                            reconciler.begin();
+                        });
+                        schedule_reconnect(reconnect_attempts, reconnect_timeout, connect);
+                    }
+                    WebSocketEvent::Error { .. } => {
+                        clear_preview_decoder(
+                            &event_preview_decoder,
+                            &event_preview_expiry_timeout,
+                        );
+                        clear_timeout(initial_subscription_timeout);
+                        awaiting_initial_subscription.set_value(false);
+                        set_connection_state.set(ConnectionState::Error);
+                        schedule_reconnect(reconnect_attempts, reconnect_timeout, connect);
+                    }
+                    WebSocketEvent::Message(WebSocketMessage::Binary(bytes)) => {
+                        let buffer = js_sys::Uint8Array::from(bytes.as_slice()).buffer();
+                        let message = event_preview_decoder
+                            .borrow_mut()
+                            .decode_at(buffer, preview_now_ms());
+                        schedule_preview_expiry(
+                            &event_preview_decoder,
+                            &event_preview_expiry_timeout,
+                        );
+                        if let Some(message) = message {
+                            match message {
+                                PreviewBinaryMessage::Zone(_) => {}
+                                PreviewBinaryMessage::Interactive(preview_id, frame) => {
+                                    if interactive_preview_lifecycles.with_untracked(|lifecycles| {
+                                        matches!(
+                                            lifecycles.get(&preview_id),
+                                            Some(InteractivePreviewLifecycle::Opened { .. })
+                                        )
+                                    }) {
+                                        set_interactive_preview_frames.update(|frames| {
+                                            frames.insert(preview_id, frame);
+                                        });
+                                    }
+                                }
+                                PreviewBinaryMessage::Display(device_id, frame) => {
+                                    set_display_preview_frames.update(|frames| {
+                                        frames.insert(device_id, frame);
+                                    });
+                                }
+                                PreviewBinaryMessage::ScreenZones(zones) => {
+                                    set_screen_zones_frame.set(Some(zones));
+                                }
+                                PreviewBinaryMessage::Frame(channel, frame) => match channel {
+                                    PreviewFrameChannel::Canvas => {
+                                        let current_frame_number = frame.frame_number;
+                                        let current_timestamp_ms = frame.timestamp_ms;
+                                        set_canvas_frame.set(Some(frame));
+
+                                        if let (
+                                            Some(previous_frame_number),
+                                            Some(previous_timestamp_ms),
+                                        ) = (
+                                            last_frame_number.get_value(),
+                                            last_frame_timestamp.get_value(),
+                                        ) {
+                                            let frame_delta = current_frame_number
+                                                .saturating_sub(previous_frame_number);
+                                            let elapsed_ms = current_timestamp_ms
+                                                .saturating_sub(previous_timestamp_ms);
+
+                                            if frame_delta > 0 && elapsed_ms > 0 {
+                                                let target_fps = preview_target_fps.get_untracked();
+                                                let mut instant_fps = f64::from(frame_delta)
+                                                    * 1000.0
+                                                    / f64::from(elapsed_ms);
+                                                if target_fps > 0 {
+                                                    instant_fps = instant_fps
+                                                        .clamp(0.0, f64::from(target_fps));
+                                                } else {
+                                                    instant_fps = instant_fps.clamp(0.0, 120.0);
+                                                }
+
+                                                let previous = smoothed_fps.get_value();
+                                                let next = if previous <= 0.0 {
+                                                    instant_fps
+                                                } else {
+                                                    previous * 0.82 + instant_fps * 0.18
+                                                };
+                                                smoothed_fps.set_value(next);
+                                                let quantized_fps = quantize_preview_fps(next);
+                                                if preview_fps.get_untracked() != quantized_fps {
+                                                    set_preview_fps.set(quantized_fps);
+                                                }
+                                            }
+                                        }
+
+                                        last_frame_number.set_value(Some(current_frame_number));
+                                        last_frame_timestamp.set_value(Some(current_timestamp_ms));
+                                    }
+                                    PreviewFrameChannel::ScreenCanvas => {
+                                        set_screen_canvas_frame.set(Some(frame));
+                                    }
+                                    PreviewFrameChannel::WebViewportCanvas => {
+                                        set_web_viewport_canvas_frame.set(Some(frame));
+                                    }
+                                },
+                            }
+                        }
+                    }
+                    WebSocketEvent::Message(WebSocketMessage::Text(text)) => {
+                        let Ok(msg) = serde_json::from_str::<serde_json::Value>(&text) else {
+                            return;
+                        };
+                        if awaiting_initial_subscription.get_value() {
+                            match initial_subscription_admission(&msg) {
+                                InitialSubscriptionAdmission::Admitted => {
+                                    awaiting_initial_subscription.set_value(false);
+                                    clear_timeout(initial_subscription_timeout);
+                                    set_connection_state.set(ConnectionState::Connected);
+                                    set_connection_generation.update(|connection_generation| {
+                                        *connection_generation += 1
+                                    });
+                                    reconnect_attempts.set_value(0);
+                                    clear_timeout(reconnect_timeout);
+                                }
+                                InitialSubscriptionAdmission::Rejected => {
+                                    awaiting_initial_subscription.set_value(false);
+                                    clear_timeout(initial_subscription_timeout);
+                                    set_connection_state.set(ConnectionState::Error);
+                                    schedule_reconnect(
+                                        reconnect_attempts,
+                                        reconnect_timeout,
+                                        connect,
+                                    );
+                                    if let Some(connection) = ws_handle.get_value() {
+                                        let _ = connection.close();
+                                    }
+                                    return;
+                                }
+                                InitialSubscriptionAdmission::Pending => {}
+                            }
+                        }
+                        if is_resync_required(&msg) {
+                            schedule_reconnect(reconnect_attempts, reconnect_timeout, connect);
+                            if let Some(connection) = ws_handle.get_value() {
+                                let _ = connection.close();
+                            }
+                            return;
+                        }
+                        if msg.get("type").and_then(serde_json::Value::as_str) == Some("hello") {
+                            event_preview_decoder
+                                .borrow_mut()
+                                .apply_hello_capabilities(&msg);
+                            schedule_preview_expiry(
+                                &event_preview_decoder,
+                                &event_preview_expiry_timeout,
+                            );
+                            set_interactive_preview_available
+                                .set(interactive_preview_supported(&msg));
+                        }
+                        let known = interactive_preview_tracker
+                            .with_value(InteractivePreviewLifecycleTracker::known_preview_ids);
+                        let mut updates = closed_previews(&msg, &known);
+                        updates.extend(server_updates(&msg));
+                        if !updates.is_empty() {
+                            for update in updates {
+                                let preview_id = update.preview_id().to_owned();
+                                interactive_preview_tracker
+                                    .update_value(|tracker| tracker.apply(update));
+                                set_interactive_preview_frames.update(|frames| {
+                                    frames.remove(&preview_id);
+                                });
+                            }
+                            set_interactive_preview_lifecycles.set(
+                                interactive_preview_tracker
+                                    .with_value(InteractivePreviewLifecycleTracker::lifecycles),
+                            );
+                        }
+                        handle_json_message(
+                            &msg,
+                            &set_active_effect,
+                            &set_output_paused,
+                            output_power_reconciler,
+                            metrics,
+                            &set_metrics,
+                            &set_device_metrics,
+                            &set_sensors,
+                            backpressure_notice,
+                            &set_backpressure_notice,
+                            &set_last_device_event,
+                            &set_last_scene_event,
+                            &set_last_effect_error,
+                            &set_last_control_surface_event,
+                            &set_last_extension_event,
+                            &set_last_input_source_status_event,
+                            &set_last_macos_daemon_ownership_event,
+                            &set_layer_health,
+                            &set_audio_level,
+                            &set_engine_preview_target,
+                            &set_preview_target_fps,
+                            &set_preview_transport_cap,
+                            &set_last_backpressure_at_ms,
+                            &set_backpressure_probe_epoch,
+                        );
+                    }
+                }
+            });
+
+            let pending_events = Rc::new(RefCell::new(VecDeque::new()));
+            let connection_ready = Rc::new(Cell::new(false));
+            let event_handler = {
+                let process_event = Rc::clone(&process_event);
+                let pending_events = Rc::clone(&pending_events);
+                let connection_ready = Rc::clone(&connection_ready);
+                Rc::new(move |event| {
+                    if connection_ready.get() {
+                        process_event(event);
+                    } else {
+                        pending_events.borrow_mut().push_back(event);
+                    }
+                })
             };
-            let ws = match arraybuffer_websocket(&url, HYPERCOLOR_WS_PROTOCOL) {
-                Ok(ws) => ws,
+            let request = WebSocketConnectRequest {
+                path: "/api/v1/ws".to_owned(),
+                protocol: HYPERCOLOR_WS_PROTOCOL.to_owned(),
+            };
+            let connection = match connect_websocket(request, event_handler) {
+                Ok(connection) => connection,
                 Err(_) => {
+                    socket_generation.set_value(generation.wrapping_add(1));
                     set_connection_state.set(ConnectionState::Error);
                     schedule_reconnect(reconnect_attempts, reconnect_timeout, connect);
                     return;
                 }
             };
-            ws_handle.set_value(Some(ws.clone()));
-            let preview_decoder = Rc::new(RefCell::new(PreviewBinaryDecoder::default()));
-            let preview_expiry_timeout = Rc::new(RefCell::new(None::<BrowserTimeoutHandle>));
-
-            // onopen — subscribe to events, metrics, and host sensors
-            let ws_clone = ws.clone();
-            let on_open = move |_| {
-                awaiting_initial_subscription.set_value(true);
-                let timeout_ws = ws_clone.clone();
-                let timeout = browser_set_timeout(INITIAL_SUBSCRIPTION_TIMEOUT, move || {
-                    if awaiting_initial_subscription.get_value() {
-                        awaiting_initial_subscription.set_value(false);
-                        set_connection_state.set(ConnectionState::Error);
-                        let _ = timeout_ws.close();
-                    }
-                });
-                initial_subscription_timeout.set_value(Some(timeout));
-
-                let subscribe_msg = serde_json::json!({
-                    "type": "subscribe",
-                    "preview_transport": PreviewTransportCapability::default().encode(),
-                    "topics": [
-                        { "topic": "events" },
-                        { "topic": "metrics", "config": { "interval_ms": 500 } },
-                        { "topic": "sensors" }
-                    ]
-                });
-                let _ = send_websocket_json(&ws_clone, &subscribe_msg);
-            };
-
-            // onclose — schedule reconnect with backoff
-            let close_preview_decoder = Rc::clone(&preview_decoder);
-            let close_preview_expiry_timeout = Rc::clone(&preview_expiry_timeout);
-            let on_close = move |_| {
-                clear_preview_decoder(&close_preview_decoder, &close_preview_expiry_timeout);
-                clear_timeout(initial_subscription_timeout);
-                awaiting_initial_subscription.set_value(false);
-                set_connection_state.set(ConnectionState::Disconnected);
-                ws_handle.set_value(None);
-                clear_preview_subscription(
-                    requested_preview,
-                    &set_preview_target_fps,
-                    &set_preview_fps,
-                    &set_canvas_frame,
-                );
-                clear_screen_preview_subscription(
-                    requested_screen_preview,
-                    &set_screen_canvas_frame,
-                );
-                clear_web_viewport_preview_subscription(
-                    requested_web_viewport_preview,
-                    &set_web_viewport_canvas_frame,
-                );
-                screen_zones_requested.set_value(false);
-                set_screen_zones_frame.set(None);
-                set_display_preview_frames.update(HashMap::clear);
-                set_interactive_preview_available.set(false);
-                set_interactive_preview_frames.set(HashMap::new());
-                interactive_preview_tracker.update_value(InteractivePreviewLifecycleTracker::clear);
-                set_interactive_preview_lifecycles.set(HashMap::new());
-                set_sensors.set(None);
-                set_layer_health.update(reset_layer_health_cache);
-                output_power_reconciler.update_value(|reconciler| {
-                    reconciler.begin();
-                });
-                schedule_reconnect(reconnect_attempts, reconnect_timeout, connect);
-            };
-
-            // onerror (browser fires close after error, so reconnect triggers there)
-            let error_preview_decoder = Rc::clone(&preview_decoder);
-            let error_preview_expiry_timeout = Rc::clone(&preview_expiry_timeout);
-            let on_error = move |_| {
-                clear_preview_decoder(&error_preview_decoder, &error_preview_expiry_timeout);
-                clear_timeout(initial_subscription_timeout);
-                awaiting_initial_subscription.set_value(false);
-                set_connection_state.set(ConnectionState::Error);
-                ws_handle.set_value(None);
-            };
-
-            // onmessage — handle both JSON and binary frames
-            let message_preview_decoder = Rc::clone(&preview_decoder);
-            let message_preview_expiry_timeout = Rc::clone(&preview_expiry_timeout);
-            let message_ws = ws.clone();
-            let on_message = move |event: MessageEvent| {
-                // Binary frame (ArrayBuffer)
-                if let Some(buffer) = message_array_buffer(&event) {
-                    let message = message_preview_decoder
-                        .borrow_mut()
-                        .decode_at(buffer, preview_now_ms());
-                    schedule_preview_expiry(
-                        &message_preview_decoder,
-                        &message_preview_expiry_timeout,
-                    );
-                    if let Some(message) = message {
-                        match message {
-                            PreviewBinaryMessage::Zone(_) => {}
-                            PreviewBinaryMessage::Interactive(preview_id, frame) => {
-                                if interactive_preview_lifecycles.with_untracked(|lifecycles| {
-                                    matches!(
-                                        lifecycles.get(&preview_id),
-                                        Some(InteractivePreviewLifecycle::Opened { .. })
-                                    )
-                                }) {
-                                    set_interactive_preview_frames.update(|frames| {
-                                        frames.insert(preview_id, frame);
-                                    });
-                                }
-                            }
-                            PreviewBinaryMessage::Display(device_id, frame) => {
-                                set_display_preview_frames.update(|frames| {
-                                    frames.insert(device_id, frame);
-                                });
-                            }
-                            PreviewBinaryMessage::ScreenZones(zones) => {
-                                set_screen_zones_frame.set(Some(zones));
-                            }
-                            PreviewBinaryMessage::Frame(channel, frame) => match channel {
-                                PreviewFrameChannel::Canvas => {
-                                    let current_frame_number = frame.frame_number;
-                                    let current_timestamp_ms = frame.timestamp_ms;
-                                    set_canvas_frame.set(Some(frame));
-
-                                    if let (
-                                        Some(previous_frame_number),
-                                        Some(previous_timestamp_ms),
-                                    ) = (
-                                        last_frame_number.get_value(),
-                                        last_frame_timestamp.get_value(),
-                                    ) {
-                                        let frame_delta = current_frame_number
-                                            .saturating_sub(previous_frame_number);
-                                        let elapsed_ms = current_timestamp_ms
-                                            .saturating_sub(previous_timestamp_ms);
-
-                                        if frame_delta > 0 && elapsed_ms > 0 {
-                                            let target_fps = preview_target_fps.get_untracked();
-                                            let mut instant_fps = f64::from(frame_delta) * 1000.0
-                                                / f64::from(elapsed_ms);
-                                            if target_fps > 0 {
-                                                instant_fps =
-                                                    instant_fps.clamp(0.0, f64::from(target_fps));
-                                            } else {
-                                                instant_fps = instant_fps.clamp(0.0, 120.0);
-                                            }
-
-                                            let previous = smoothed_fps.get_value();
-                                            let next = if previous <= 0.0 {
-                                                instant_fps
-                                            } else {
-                                                previous * 0.82 + instant_fps * 0.18
-                                            };
-                                            smoothed_fps.set_value(next);
-                                            let quantized_fps = quantize_preview_fps(next);
-                                            if preview_fps.get_untracked() != quantized_fps {
-                                                set_preview_fps.set(quantized_fps);
-                                            }
-                                        }
-                                    }
-
-                                    last_frame_number.set_value(Some(current_frame_number));
-                                    last_frame_timestamp.set_value(Some(current_timestamp_ms));
-                                }
-                                PreviewFrameChannel::ScreenCanvas => {
-                                    set_screen_canvas_frame.set(Some(frame));
-                                }
-                                PreviewFrameChannel::WebViewportCanvas => {
-                                    set_web_viewport_canvas_frame.set(Some(frame));
-                                }
-                            },
-                        }
-                    }
-                    return;
-                }
-
-                // JSON message (String)
-                if let Some(text) = event.data().as_string()
-                    && let Ok(msg) = serde_json::from_str::<serde_json::Value>(&text)
-                {
-                    if awaiting_initial_subscription.get_value() {
-                        match initial_subscription_admission(&msg) {
-                            InitialSubscriptionAdmission::Admitted => {
-                                awaiting_initial_subscription.set_value(false);
-                                clear_timeout(initial_subscription_timeout);
-                                set_connection_state.set(ConnectionState::Connected);
-                                set_connection_generation.update(|generation| *generation += 1);
-                                reconnect_attempts.set_value(0);
-                                clear_timeout(reconnect_timeout);
-                            }
-                            InitialSubscriptionAdmission::Rejected => {
-                                awaiting_initial_subscription.set_value(false);
-                                clear_timeout(initial_subscription_timeout);
-                                set_connection_state.set(ConnectionState::Error);
-                                let _ = message_ws.close();
-                                return;
-                            }
-                            InitialSubscriptionAdmission::Pending => {}
-                        }
-                    }
-                    if is_resync_required(&msg) {
-                        let _ = message_ws.close();
-                        return;
-                    }
-                    if msg.get("type").and_then(serde_json::Value::as_str) == Some("hello") {
-                        message_preview_decoder
-                            .borrow_mut()
-                            .apply_hello_capabilities(&msg);
-                        schedule_preview_expiry(
-                            &message_preview_decoder,
-                            &message_preview_expiry_timeout,
-                        );
-                        set_interactive_preview_available.set(interactive_preview_supported(&msg));
-                    }
-                    // A subscription acknowledgment reports the whole live
-                    // set, so a preview missing from it has closed. Both
-                    // halves are read before either is applied, because the
-                    // second reads the tracker's own view of what is open.
-                    let known = interactive_preview_tracker
-                        .with_value(InteractivePreviewLifecycleTracker::known_preview_ids);
-                    let mut updates = closed_previews(&msg, &known);
-                    updates.extend(server_updates(&msg));
-                    if !updates.is_empty() {
-                        for update in updates {
-                            let preview_id = update.preview_id().to_owned();
-                            interactive_preview_tracker
-                                .update_value(|tracker| tracker.apply(update));
-                            set_interactive_preview_frames.update(|frames| {
-                                frames.remove(&preview_id);
-                            });
-                        }
-                        set_interactive_preview_lifecycles.set(
-                            interactive_preview_tracker
-                                .with_value(InteractivePreviewLifecycleTracker::lifecycles),
-                        );
-                    }
-                    handle_json_message(
-                        &msg,
-                        &set_active_effect,
-                        &set_output_paused,
-                        output_power_reconciler,
-                        metrics,
-                        &set_metrics,
-                        &set_device_metrics,
-                        &set_sensors,
-                        backpressure_notice,
-                        &set_backpressure_notice,
-                        &set_last_device_event,
-                        &set_last_scene_event,
-                        &set_last_effect_error,
-                        &set_last_control_surface_event,
-                        &set_last_extension_event,
-                        &set_last_input_source_status_event,
-                        &set_last_macos_daemon_ownership_event,
-                        &set_layer_health,
-                        &set_audio_level,
-                        &set_engine_preview_target,
-                        &set_preview_target_fps,
-                        &set_preview_transport_cap,
-                        &set_last_backpressure_at_ms,
-                        &set_backpressure_probe_epoch,
-                    );
-                }
-            };
-            socket_callbacks.set_value(Some(WebSocketEventHandlers::attach(
-                &ws, on_open, on_close, on_error, on_message,
-            )));
+            ws_handle.set_value(Some(connection));
+            connection_ready.set(true);
+            while let Some(event) = pending_events.borrow_mut().pop_front() {
+                process_event(event);
+            }
         });
 
         connect.set_value(Some(connect_fn));
@@ -606,14 +642,14 @@ impl WsManager {
                         &set_preview_fps,
                         &set_canvas_frame,
                     );
-                    send_canvas_unsubscribe(&ws);
+                    send_canvas_unsubscribe(ws.as_ref());
                 }
                 return;
             }
 
             if let Some(ws) = ws_handle.get_value() {
                 request_preview_subscription(
-                    &ws,
+                    ws.as_ref(),
                     requested_preview,
                     set_preview_target_fps,
                     engine_target,
@@ -635,14 +671,14 @@ impl WsManager {
                         requested_screen_preview,
                         &set_screen_canvas_frame,
                     );
-                    send_screen_canvas_unsubscribe(&ws);
+                    send_screen_canvas_unsubscribe(ws.as_ref());
                 }
                 return;
             }
 
             if let Some(ws) = ws_handle.get_value() {
                 request_screen_preview_subscription(
-                    &ws,
+                    ws.as_ref(),
                     requested_screen_preview,
                     engine_target,
                     is_visible,
@@ -663,12 +699,12 @@ impl WsManager {
                 if !screen_zones_requested.get_value()
                     && let Some(ws) = ws_handle.get_value()
                 {
-                    send_screen_zones_subscribe(&ws);
+                    send_screen_zones_subscribe(ws.as_ref());
                     screen_zones_requested.set_value(true);
                 }
             } else if screen_zones_requested.get_value() {
                 if let Some(ws) = ws_handle.get_value() {
-                    send_screen_zones_unsubscribe(&ws);
+                    send_screen_zones_unsubscribe(ws.as_ref());
                 }
                 screen_zones_requested.set_value(false);
                 set_screen_zones_frame.set(None);
@@ -686,14 +722,14 @@ impl WsManager {
                         requested_web_viewport_preview,
                         &set_web_viewport_canvas_frame,
                     );
-                    send_web_viewport_canvas_unsubscribe(&ws);
+                    send_web_viewport_canvas_unsubscribe(ws.as_ref());
                 }
                 return;
             }
 
             if let Some(ws) = ws_handle.get_value() {
                 request_web_viewport_preview_subscription(
-                    &ws,
+                    ws.as_ref(),
                     requested_web_viewport_preview,
                     engine_target,
                     is_visible,
@@ -734,14 +770,14 @@ impl WsManager {
                         "config": { "interval_ms": 500 }
                     }]
                 });
-                let _ = send_websocket_json(&ws, &msg);
+                let _ = send_json(ws.as_ref(), &msg);
                 device_metrics_requested.set_value(true);
             } else if !want && have {
                 let msg = serde_json::json!({
                     "type": "unsubscribe",
                     "topics": [{ "topic": "device_metrics" }]
                 });
-                let _ = send_websocket_json(&ws, &msg);
+                let _ = send_json(ws.as_ref(), &msg);
                 device_metrics_requested.set_value(false);
                 set_device_metrics.set(None);
             }
@@ -806,13 +842,13 @@ impl WsManager {
             };
 
             if let Some(previous) = followed_display.get_value() {
-                super::preview::send_display_preview_unsubscribe(&ws, &previous);
+                super::preview::send_display_preview_unsubscribe(ws.as_ref(), &previous);
                 set_display_preview_frames.update(|frames| {
                     frames.remove(&previous);
                 });
             }
             if let Some(device_id) = wanted.as_deref() {
-                super::preview::send_display_preview_subscribe(&ws, device_id, 15);
+                super::preview::send_display_preview_subscribe(ws.as_ref(), device_id, 15);
             }
             followed_display.set_value(wanted);
         });
@@ -877,12 +913,12 @@ impl WsManager {
         let send_zone_layout_preview =
             Callback::new(move |(zone_id, layout): (String, SpatialLayout)| {
                 if let Some(ws) = ws_handle.get_value() {
-                    super::preview::send_zone_layout_preview(&ws, &zone_id, &layout);
+                    super::preview::send_zone_layout_preview(ws.as_ref(), &zone_id, &layout);
                 }
             });
         let clear_zone_layout_preview = Callback::new(move |zone_id: String| {
             if let Some(ws) = ws_handle.get_value() {
-                super::preview::send_zone_layout_preview_clear(&ws, &zone_id);
+                super::preview::send_zone_layout_preview_clear(ws.as_ref(), &zone_id);
             }
         });
         let open_interactive_preview = Callback::new(move |request: InteractivePreviewRequest| {
@@ -896,7 +932,7 @@ impl WsManager {
                     .with_value(InteractivePreviewLifecycleTracker::lifecycles),
             );
             if let Some(ws) = ws_handle.get_value() {
-                super::interactive_preview::send_open(&ws, &request);
+                super::interactive_preview::send_open(ws.as_ref(), &request);
             }
         });
         let close_interactive_preview = Callback::new(move |preview_id: String| {
@@ -906,7 +942,7 @@ impl WsManager {
                     .with_value(InteractivePreviewLifecycleTracker::lifecycles),
             );
             if let Some(ws) = ws_handle.get_value() {
-                super::interactive_preview::send_close(&ws, &preview_id);
+                super::interactive_preview::send_close(ws.as_ref(), &preview_id);
             }
             set_interactive_preview_frames.update(|frames| {
                 frames.remove(&preview_id);
@@ -915,7 +951,7 @@ impl WsManager {
         let send_input_inject = Callback::new(
             move |(preview_id, events): (String, Vec<InputInjectEdge>)| {
                 if let Some(ws) = ws_handle.get_value() {
-                    super::interactive_preview::send_input(&ws, &preview_id, &events);
+                    super::interactive_preview::send_input(ws.as_ref(), &preview_id, &events);
                 }
             },
         );
@@ -972,7 +1008,9 @@ fn schedule_reconnect(
     reconnect_timeout: StoredValue<Option<BrowserTimeoutHandle>, LocalStorage>,
     connect: StoredValue<Option<Rc<dyn Fn()>>, LocalStorage>,
 ) {
-    clear_timeout(reconnect_timeout);
+    if reconnect_timeout.with_value(Option::is_some) {
+        return;
+    }
     let attempt = reconnect_attempts.get_value();
     reconnect_attempts.set_value(attempt.saturating_add(1));
 
@@ -998,80 +1036,14 @@ fn clear_timeout(timeout_handle: StoredValue<Option<BrowserTimeoutHandle>, Local
 }
 
 fn dispose_existing_socket(
-    ws_handle: StoredValue<Option<web_sys::WebSocket>>,
-    socket_callbacks: StoredValue<Option<WebSocketEventHandlers>, LocalStorage>,
+    ws_handle: StoredValue<Option<Rc<dyn WebSocketConnection>>, LocalStorage>,
+    socket_generation: StoredValue<u64>,
 ) {
-    let Some(existing_ws) = ws_handle.get_value() else {
-        socket_callbacks.set_value(None);
-        return;
-    };
-
-    socket_callbacks.update_value(|callbacks| {
-        if let Some(callbacks) = callbacks.take() {
-            callbacks.detach_from(&existing_ws);
-        }
-    });
-    let _ = existing_ws.close();
-    ws_handle.set_value(None);
-}
-
-/// Build WS URL from current page origin.
-///
-/// Dev builds (Trunk dev server, any port) connect directly to the daemon
-/// (:9420) since Trunk's proxy doesn't handle WebSocket upgrades. Release
-/// builds are served by the daemon itself, so same-origin works.
-fn build_ws_url() -> Option<String> {
-    let routed = client::daemon_url("/api/v1/ws")?;
-    let native_base = native_websocket_url(&routed);
-    let location = current_page_location();
-    let ws_protocol = location.websocket_protocol();
-
-    // Dev builds only ever run on the Trunk dev server, whose proxy
-    // can't upgrade WebSockets — connect straight to the daemon. The
-    // dev port is configurable (`just ui-dev 9431`), so the split keys
-    // on build profile, not a port literal. Release builds are served
-    // by the daemon itself, where same-origin always works.
-    let host = if cfg!(debug_assertions) {
-        format!("{}:9420", location.hostname)
-    } else {
-        location.host()
-    };
-
-    let base = native_base.unwrap_or_else(|| format!("{ws_protocol}//{host}/api/v1/ws"));
-    Some(authenticated_websocket_url(
-        base,
-        client::authorization_token().as_deref(),
-    ))
-}
-
-fn authenticated_websocket_url(base: String, token: Option<&str>) -> String {
-    token.map_or(base.clone(), |token| {
-        format!("{base}?token={}", percent_encode(token))
-    })
-}
-
-fn native_websocket_url(routed: &str) -> Option<String> {
-    routed
-        .strip_prefix("https://")
-        .map(|rest| format!("wss://{rest}"))
-        .or_else(|| {
-            routed
-                .strip_prefix("http://")
-                .map(|rest| format!("ws://{rest}"))
-        })
-}
-
-fn percent_encode(input: &str) -> String {
-    let mut encoded = String::with_capacity(input.len());
-    for byte in input.bytes() {
-        let unreserved = byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~');
-        if unreserved {
-            encoded.push(char::from(byte));
-        } else {
-            let _ = std::fmt::Write::write_fmt(&mut encoded, format_args!("%{byte:02X}"));
-        }
+    socket_generation.set_value(socket_generation.get_value().wrapping_add(1));
+    if let Some(existing_connection) = ws_handle.get_value() {
+        let _ = existing_connection.close();
     }
-    encoded
+    ws_handle.set_value(None);
 }
 
 fn document_is_visible() -> bool {
@@ -1090,48 +1062,4 @@ fn tauri_window_is_visible() -> bool {
     .ok()
     .and_then(|value| value.as_bool())
     .unwrap_or(true)
-}
-
-#[cfg(test)]
-mod transport_tests {
-    #[test]
-    fn native_daemon_routes_convert_http_schemes_for_websocket() {
-        assert_eq!(
-            super::native_websocket_url("http://127.0.0.1:9420/api/v1/ws").as_deref(),
-            Some("ws://127.0.0.1:9420/api/v1/ws")
-        );
-        assert_eq!(
-            super::native_websocket_url("https://daemon.test/api/v1/ws").as_deref(),
-            Some("wss://daemon.test/api/v1/ws")
-        );
-        assert!(super::native_websocket_url("/api/v1/ws").is_none());
-    }
-
-    #[test]
-    fn every_connection_uses_the_current_verified_websocket_token() {
-        let base = "ws://127.0.0.1:9420/api/v1/ws".to_owned();
-        let first = super::authenticated_websocket_url(base.clone(), Some("session-one"));
-        let rotated = super::authenticated_websocket_url(base, Some("session-two"));
-        assert_eq!(first, "ws://127.0.0.1:9420/api/v1/ws?token=session-one");
-        assert_eq!(rotated, "ws://127.0.0.1:9420/api/v1/ws?token=session-two");
-        assert_ne!(first, rotated);
-    }
-
-    #[test]
-    fn health_verified_native_base_enables_websocket_without_session_token() {
-        crate::api::client::reset_daemon_transport_for_test();
-        crate::api::client::begin_native_daemon_verification();
-        assert!(crate::api::client::daemon_url("/api/v1/ws").is_none());
-
-        crate::api::client::install_verified_daemon_connection("https://daemon.lan:19420", None);
-        let routed = crate::api::client::daemon_url("/api/v1/ws")
-            .expect("health-proven native route should exist");
-        let websocket =
-            super::native_websocket_url(&routed).expect("HTTPS daemon route should convert to WSS");
-        assert_eq!(
-            super::authenticated_websocket_url(websocket, None),
-            "wss://daemon.lan:19420/api/v1/ws"
-        );
-        crate::api::client::reset_daemon_transport_for_test();
-    }
 }

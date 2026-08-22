@@ -5,9 +5,8 @@ use std::collections::{HashMap, VecDeque};
 use hypercolor_leptos_ext::ws::INTERACTIVE_PREVIEW_ID_MAX_BYTES;
 use serde_json::Value;
 
-use hypercolor_leptos_ext::ws::transport::send_websocket_json;
-
 use super::input::InputInjectEdge;
+use super::transport::{WebSocketConnection, send_json};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InteractivePreviewRequest {
@@ -286,17 +285,21 @@ pub fn input_inject_message(preview_id: &str, events: &[InputInjectEdge]) -> Val
     })
 }
 
-pub(super) fn send_open(ws: &web_sys::WebSocket, request: &InteractivePreviewRequest) {
-    let _ = send_websocket_json(ws, &open_message(request));
+pub(super) fn send_open(ws: &dyn WebSocketConnection, request: &InteractivePreviewRequest) {
+    let _ = send_json(ws, &open_message(request));
 }
 
-pub(super) fn send_close(ws: &web_sys::WebSocket, preview_id: &str) {
-    let _ = send_websocket_json(ws, &close_message(preview_id));
+pub(super) fn send_close(ws: &dyn WebSocketConnection, preview_id: &str) {
+    let _ = send_json(ws, &close_message(preview_id));
 }
 
-pub(super) fn send_input(ws: &web_sys::WebSocket, preview_id: &str, events: &[InputInjectEdge]) {
+pub(super) fn send_input(
+    ws: &dyn WebSocketConnection,
+    preview_id: &str,
+    events: &[InputInjectEdge],
+) {
     if events.is_empty() {
         return;
     }
-    let _ = send_websocket_json(ws, &input_inject_message(preview_id, events));
+    let _ = send_json(ws, &input_inject_message(preview_id, events));
 }
