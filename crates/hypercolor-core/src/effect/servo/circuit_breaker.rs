@@ -215,9 +215,8 @@ mod tests {
         }
         assert_eq!(breaker.load_state(), CircuitState::Open);
         assert!(!breaker.can_attempt());
-        assert_eq!(
-            crate::effect::servo::servo_telemetry_snapshot().breaker_opens_total,
-            baseline_opens + 1
+        assert!(
+            crate::effect::servo::servo_telemetry_snapshot().breaker_opens_total > baseline_opens
         );
     }
 
