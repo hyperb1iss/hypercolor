@@ -13,6 +13,7 @@ use serde_json::{Value, json};
 use utoipa::ToSchema;
 
 use crate::app_state::AppState;
+use crate::domain::DomainError;
 use crate::mcp::selector::SelectorError;
 
 mod devices;
@@ -491,6 +492,50 @@ impl ToolError {
     }
 }
 
+impl From<DomainError> for ToolError {
+    fn from(error: DomainError) -> Self {
+        match error {
+            DomainError::NotFound { kind, id } => Self::InvalidParam {
+                param: kind.to_string(),
+                reason: format!("not found: {id}"),
+            },
+            DomainError::Validation { message, field, .. } => Self::InvalidParam {
+                param: field.unwrap_or_else(|| "request".to_owned()),
+                reason: message,
+            },
+            DomainError::Malformed { message } => Self::InvalidParam {
+                param: "request".to_owned(),
+                reason: message,
+            },
+            error @ DomainError::ControlBound { .. } => Self::Conflict(error.to_string()),
+            DomainError::Conflict { message, .. }
+            | DomainError::Unauthorized { message }
+            | DomainError::Forbidden { message, .. }
+            | DomainError::UnsupportedMediaType { message }
+            | DomainError::RateLimited { message, .. }
+            | DomainError::ServiceUnavailable { message, .. } => Self::Conflict(message),
+            DomainError::PayloadTooLarge { limit_bytes } => Self::InvalidParam {
+                param: "payload".to_owned(),
+                reason: format!("exceeds the {limit_bytes} byte limit"),
+            },
+            DomainError::PreconditionFailed {
+                resource,
+                expected,
+                current,
+            } => Self::Conflict(format!(
+                "{resource} version mismatch: expected {expected}, current {current}"
+            )),
+            DomainError::DeviceUnavailable { device_id, reason } => {
+                Self::Conflict(format!("device {device_id} unavailable: {reason}"))
+            }
+            DomainError::Internal(error) => {
+                tracing::error!(chain = format!("{error:#}"), "domain internal error (mcp)");
+                Self::Internal("internal error".to_owned())
+            }
+        }
+    }
+}
+
 pub(super) async fn find_effect_metadata(
     state: &AppState,
     primary_name: &str,
@@ -550,4 +595,31 @@ pub(crate) fn render_capacity_fps(stats: &hypercolor_core::engine::RenderLoopSta
     #[expect(clippy::cast_precision_loss, clippy::as_conversions)]
     let target = stats.tier.fps() as f32;
     throughput.min(target)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ToolError;
+    use crate::domain::{DomainError, ResourceKind};
+
+    #[test]
+    fn domain_error_projection_keeps_mcp_codes_sane() {
+        let not_found: ToolError = DomainError::NotFound {
+            kind: ResourceKind::Effect,
+            id: "fx".to_owned(),
+        }
+        .into();
+        assert_eq!(not_found.error_code(), -32602);
+
+        let conflict: ToolError = DomainError::conflict("busy").into();
+        assert_eq!(conflict.error_code(), -32000);
+
+        let precondition: ToolError = DomainError::PreconditionFailed {
+            resource: ResourceKind::Scene,
+            expected: 1,
+            current: 2,
+        }
+        .into();
+        assert_eq!(precondition.error_code(), -32000);
+    }
 }

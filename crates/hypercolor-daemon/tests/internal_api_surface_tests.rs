@@ -136,6 +136,29 @@ fn transports_use_the_scene_domain_mutation_authority() {
 }
 
 #[test]
+fn domain_modules_do_not_depend_on_transport_modules() {
+    let offenders = daemon_sources()
+        .into_iter()
+        .filter(|(path, _)| {
+            path.components()
+                .any(|component| component.as_os_str() == "domain")
+        })
+        .filter_map(|(path, source)| {
+            ["crate::api::", "crate::mcp::"]
+                .into_iter()
+                .find(|pattern| source.contains(pattern))
+                .map(|pattern| format!("{} contains {pattern}", path.display()))
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        offenders.is_empty(),
+        "domain modules depend on transport modules:\n{}",
+        offenders.join("\n")
+    );
+}
+
+#[test]
 fn output_has_one_brightness_percentage_projection() {
     let definitions = daemon_sources()
         .into_iter()

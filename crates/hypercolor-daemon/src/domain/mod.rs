@@ -8,8 +8,8 @@
 //!   wire input, calls one service function, and wraps the typed
 //!   outcome. `DomainError` owns the shared error projection.
 //! - **MCP**: schema validation, deterministic selector resolution, and
-//!   one service call. `DomainError` converts to
-//!   [`ToolError`](crate::mcp::tools::ToolError) via `From`.
+//!   one service call. The adapter projects `DomainError` into its tool
+//!   error vocabulary.
 //! - **WS commands**: call services directly; versions ride in-band.
 //! - **CLI**: speaks the REST wire and deserializes
 //!   `hypercolor_types::api::envelope::ApiResponse<Outcome>`.
@@ -53,8 +53,6 @@ use serde_json::json;
 use hypercolor_types::api::envelope::{ApiErrorBody, ApiErrorDetail, ResponseMeta};
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::event::ChangeTrigger;
-
-use crate::mcp::tools::ToolError;
 
 /// What kind of resource a domain error is about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -474,50 +472,6 @@ impl IntoResponse for DomainError {
     }
 }
 
-impl From<DomainError> for ToolError {
-    fn from(error: DomainError) -> Self {
-        match error {
-            DomainError::NotFound { kind, id } => ToolError::InvalidParam {
-                param: kind.to_string(),
-                reason: format!("not found: {id}"),
-            },
-            DomainError::Validation { message, field, .. } => ToolError::InvalidParam {
-                param: field.unwrap_or_else(|| "request".to_owned()),
-                reason: message,
-            },
-            DomainError::Malformed { message } => ToolError::InvalidParam {
-                param: "request".to_owned(),
-                reason: message,
-            },
-            error @ DomainError::ControlBound { .. } => ToolError::Conflict(error.to_string()),
-            DomainError::Conflict { message, .. }
-            | DomainError::Unauthorized { message }
-            | DomainError::Forbidden { message, .. }
-            | DomainError::UnsupportedMediaType { message }
-            | DomainError::RateLimited { message, .. }
-            | DomainError::ServiceUnavailable { message, .. } => ToolError::Conflict(message),
-            DomainError::PayloadTooLarge { limit_bytes } => ToolError::InvalidParam {
-                param: "payload".to_owned(),
-                reason: format!("exceeds the {limit_bytes} byte limit"),
-            },
-            DomainError::PreconditionFailed {
-                resource,
-                expected,
-                current,
-            } => ToolError::Conflict(format!(
-                "{resource} version mismatch: expected {expected}, current {current}"
-            )),
-            DomainError::DeviceUnavailable { device_id, reason } => {
-                ToolError::Conflict(format!("device {device_id} unavailable: {reason}"))
-            }
-            DomainError::Internal(error) => {
-                tracing::error!(chain = format!("{error:#}"), "domain internal error (mcp)");
-                ToolError::Internal("internal error".to_owned())
-            }
-        }
-    }
-}
-
 /// Transport provenance for a trigger-bearing mutation.
 ///
 /// Rides beside the command rather than inside it so command payloads
@@ -851,26 +805,5 @@ mod tests {
             "scene not found: sc_1",
             "the not-found message is derived from the kind, never hand-written"
         );
-    }
-
-    #[test]
-    fn tool_error_projection_keeps_codes_sane() {
-        let not_found: ToolError = DomainError::NotFound {
-            kind: ResourceKind::Effect,
-            id: "fx".to_owned(),
-        }
-        .into();
-        assert_eq!(not_found.error_code(), -32602);
-
-        let conflict: ToolError = DomainError::conflict("busy").into();
-        assert_eq!(conflict.error_code(), -32000);
-
-        let precondition: ToolError = DomainError::PreconditionFailed {
-            resource: ResourceKind::Scene,
-            expected: 1,
-            current: 2,
-        }
-        .into();
-        assert_eq!(precondition.error_code(), -32000);
     }
 }
