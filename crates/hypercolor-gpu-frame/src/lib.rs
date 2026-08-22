@@ -285,9 +285,9 @@ impl GpuFrameImportFallbackReason {
             Self::MissingGlFunction => "missing_gl_function",
             Self::GlProcLoaderUnavailable => "gl_proc_loader_unavailable",
             Self::InvalidDimensions => "invalid_dimensions",
-            Self::Vulkan => "vulkan",
-            Self::GlResource => "gl_resource",
-            Self::GlOperation => "gl_operation",
+            Self::Vulkan => "vulkan_error",
+            Self::GlResource => "gl_resource_error",
+            Self::GlOperation => "gl_operation_error",
             Self::GlFramebufferIncomplete => "gl_framebuffer_incomplete",
             Self::UnsupportedPlatform => "unsupported_platform",
             Self::ImportSlotsExhausted => "import_slots_exhausted",
@@ -360,5 +360,17 @@ mod tests {
             assert!(!reason.as_str().is_empty());
         }
         assert_eq!(GpuFrameImportFallbackReason::from_u64(0), None);
+        assert_eq!(
+            GpuFrameImportFallbackReason::Vulkan.as_str(),
+            "vulkan_error"
+        );
+        assert_eq!(
+            GpuFrameImportFallbackReason::GlResource.as_str(),
+            "gl_resource_error"
+        );
+        assert_eq!(
+            GpuFrameImportFallbackReason::GlOperation.as_str(),
+            "gl_operation_error"
+        );
     }
 }

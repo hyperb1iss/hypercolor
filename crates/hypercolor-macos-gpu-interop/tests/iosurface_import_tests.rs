@@ -35,7 +35,7 @@ fn imports_synthetic_iosurface_into_wgpu_texture() -> Result<(), String> {
         hypercolor_macos_gpu_interop::MacosMetalStorageMode::Managed
     );
     let frame = importer
-        .import_iosurface_for_test(&wgpu.device, &iosurface)
+        .import_iosurface_for_test(&wgpu.device, &iosurface, FrameOrigin::BottomLeft)
         .map_err(|error| error.to_string())?;
     let pixels = read_texture_pixels(&wgpu.device, &wgpu.queue, &frame.texture, WIDTH, HEIGHT)?;
 
@@ -65,13 +65,13 @@ fn reuses_cached_wrap_for_repeated_iosurface_imports() -> Result<(), String> {
     assert_eq!(importer.cached_wrap_count(), 0);
 
     let first = importer
-        .import_iosurface(&wgpu.device, &iosurface, 7)
+        .import_iosurface(&wgpu.device, &iosurface, 7, FrameOrigin::BottomLeft)
         .map_err(|error| error.to_string())?;
     assert_eq!(first.content_generation, 7);
     assert_eq!(importer.cached_wrap_count(), 1);
 
     let second = importer
-        .import_iosurface(&wgpu.device, &iosurface, 8)
+        .import_iosurface(&wgpu.device, &iosurface, 8, FrameOrigin::BottomLeft)
         .map_err(|error| error.to_string())?;
     assert_eq!(second.content_generation, 8);
     assert_eq!(second.allocation_id, first.allocation_id);
@@ -89,7 +89,7 @@ fn reuses_cached_wrap_for_repeated_iosurface_imports() -> Result<(), String> {
     let other_iosurface =
         create_bgra_iosurface(WIDTH, HEIGHT).map_err(|error| error.to_string())?;
     let third = importer
-        .import_iosurface(&wgpu.device, &other_iosurface, 9)
+        .import_iosurface(&wgpu.device, &other_iosurface, 9, FrameOrigin::BottomLeft)
         .map_err(|error| error.to_string())?;
     assert_eq!(third.content_generation, 9);
     assert_ne!(third.allocation_id, first.allocation_id);

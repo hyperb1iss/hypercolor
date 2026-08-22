@@ -5081,6 +5081,7 @@ dependencies = [
  "gstreamer-video",
  "hypercolor-color",
  "hypercolor-driver-api",
+ "hypercolor-gpu-frame",
  "hypercolor-hal",
  "hypercolor-linux-gpu-interop",
  "hypercolor-linux-input",

@@ -1,6 +1,8 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use hypercolor_gpu_frame::GpuFrameImportFallbackReason;
+
 use super::worker_client::ServoProducerRole;
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -310,15 +312,15 @@ pub(super) fn record_servo_gpu_import_frame(blit_us: u64, sync_us: u64, total_us
 
 #[cfg(feature = "servo-gpu-import")]
 pub(super) fn record_servo_gpu_import_failure(
-    reason: ServoGpuImportFallbackReason,
+    reason: GpuFrameImportFallbackReason,
     fell_back_to_cpu: bool,
 ) {
     let _ = SERVO_RENDER_GPU_IMPORT_FAILURES_TOTAL.fetch_add(1, Ordering::Relaxed);
     match reason {
-        ServoGpuImportFallbackReason::WindowsImportStaleFrame => {
+        GpuFrameImportFallbackReason::WindowsImportStaleFrame => {
             let _ = SERVO_RENDER_GPU_IMPORT_STALE_FRAME_TOTAL.fetch_add(1, Ordering::Relaxed);
         }
-        ServoGpuImportFallbackReason::AdapterLuidMismatch => {
+        GpuFrameImportFallbackReason::AdapterLuidMismatch => {
             let _ = SERVO_RENDER_GPU_IMPORT_ADAPTER_MISMATCH_TOTAL.fetch_add(1, Ordering::Relaxed);
         }
         _ => {}
@@ -353,133 +355,6 @@ pub(super) fn record_servo_gpu_import_slot_state(
         let oldest_pending_age_us = oldest_pending_age_ms.saturating_mul(1_000);
         let _ = SERVO_RENDER_GPU_IMPORT_OLDEST_PENDING_AGE_MAX_US
             .fetch_max(oldest_pending_age_us, Ordering::Relaxed);
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum ServoGpuImportFallbackReason {
-    DeviceUnavailable,
-    MissingWgpuVulkanDevice,
-    MissingVulkanExternalMemoryFd,
-    MissingGlFunction,
-    GlProcLoaderUnavailable,
-    InvalidDimensions,
-    Vulkan,
-    GlResource,
-    GlOperation,
-    GlFramebufferIncomplete,
-    UnsupportedPlatform,
-    ImportSlotsExhausted,
-    MissingWgpuMetalDevice,
-    MissingMacosServoSurface,
-    IosurfacePixelFormatMismatch,
-    MetalTextureCreateFailed,
-    Other,
-    MissingVulkanExternalMemoryWin32,
-    MissingWindowsAngleContext,
-    D3d11DeviceCreateFailed,
-    D3d11SharedTextureCreateFailed,
-    D3d11SharedHandleCreateFailed,
-    AngleClientBufferSurfaceFailed,
-    AdapterLuidMismatch,
-    VulkanD3d11ImportFailed,
-    WindowsImportStaleFrame,
-}
-
-impl ServoGpuImportFallbackReason {
-    #[cfg(feature = "servo-gpu-import")]
-    const fn as_u64(self) -> u64 {
-        match self {
-            Self::DeviceUnavailable => 1,
-            Self::MissingWgpuVulkanDevice => 2,
-            Self::MissingVulkanExternalMemoryFd => 3,
-            Self::MissingGlFunction => 4,
-            Self::GlProcLoaderUnavailable => 5,
-            Self::InvalidDimensions => 6,
-            Self::Vulkan => 7,
-            Self::GlResource => 8,
-            Self::GlOperation => 9,
-            Self::GlFramebufferIncomplete => 10,
-            Self::UnsupportedPlatform => 11,
-            Self::ImportSlotsExhausted => 12,
-            Self::MissingWgpuMetalDevice => 13,
-            Self::MissingMacosServoSurface => 14,
-            Self::IosurfacePixelFormatMismatch => 15,
-            Self::MetalTextureCreateFailed => 16,
-            Self::Other => 17,
-            Self::MissingVulkanExternalMemoryWin32 => 18,
-            Self::MissingWindowsAngleContext => 19,
-            Self::D3d11DeviceCreateFailed => 20,
-            Self::D3d11SharedTextureCreateFailed => 21,
-            Self::D3d11SharedHandleCreateFailed => 22,
-            Self::AngleClientBufferSurfaceFailed => 23,
-            Self::AdapterLuidMismatch => 24,
-            Self::VulkanD3d11ImportFailed => 25,
-            Self::WindowsImportStaleFrame => 26,
-        }
-    }
-
-    const fn from_u64(value: u64) -> Option<Self> {
-        match value {
-            1 => Some(Self::DeviceUnavailable),
-            2 => Some(Self::MissingWgpuVulkanDevice),
-            3 => Some(Self::MissingVulkanExternalMemoryFd),
-            4 => Some(Self::MissingGlFunction),
-            5 => Some(Self::GlProcLoaderUnavailable),
-            6 => Some(Self::InvalidDimensions),
-            7 => Some(Self::Vulkan),
-            8 => Some(Self::GlResource),
-            9 => Some(Self::GlOperation),
-            10 => Some(Self::GlFramebufferIncomplete),
-            11 => Some(Self::UnsupportedPlatform),
-            12 => Some(Self::ImportSlotsExhausted),
-            13 => Some(Self::MissingWgpuMetalDevice),
-            14 => Some(Self::MissingMacosServoSurface),
-            15 => Some(Self::IosurfacePixelFormatMismatch),
-            16 => Some(Self::MetalTextureCreateFailed),
-            17 => Some(Self::Other),
-            18 => Some(Self::MissingVulkanExternalMemoryWin32),
-            19 => Some(Self::MissingWindowsAngleContext),
-            20 => Some(Self::D3d11DeviceCreateFailed),
-            21 => Some(Self::D3d11SharedTextureCreateFailed),
-            22 => Some(Self::D3d11SharedHandleCreateFailed),
-            23 => Some(Self::AngleClientBufferSurfaceFailed),
-            24 => Some(Self::AdapterLuidMismatch),
-            25 => Some(Self::VulkanD3d11ImportFailed),
-            26 => Some(Self::WindowsImportStaleFrame),
-            _ => None,
-        }
-    }
-
-    pub(super) const fn as_str(self) -> &'static str {
-        match self {
-            Self::DeviceUnavailable => "device_unavailable",
-            Self::MissingWgpuVulkanDevice => "missing_wgpu_vulkan_device",
-            Self::MissingVulkanExternalMemoryFd => "missing_vulkan_external_memory_fd",
-            Self::MissingGlFunction => "missing_gl_function",
-            Self::GlProcLoaderUnavailable => "gl_proc_loader_unavailable",
-            Self::InvalidDimensions => "invalid_dimensions",
-            Self::Vulkan => "vulkan_error",
-            Self::GlResource => "gl_resource_error",
-            Self::GlOperation => "gl_operation_error",
-            Self::GlFramebufferIncomplete => "gl_framebuffer_incomplete",
-            Self::UnsupportedPlatform => "unsupported_platform",
-            Self::ImportSlotsExhausted => "import_slots_exhausted",
-            Self::MissingWgpuMetalDevice => "missing_wgpu_metal_device",
-            Self::MissingMacosServoSurface => "missing_macos_servo_surface",
-            Self::IosurfacePixelFormatMismatch => "iosurface_pixel_format_mismatch",
-            Self::MetalTextureCreateFailed => "metal_texture_create_failed",
-            Self::Other => "other",
-            Self::MissingVulkanExternalMemoryWin32 => "missing_vulkan_external_memory_win32",
-            Self::MissingWindowsAngleContext => "missing_windows_angle_context",
-            Self::D3d11DeviceCreateFailed => "d3d11_device_create_failed",
-            Self::D3d11SharedTextureCreateFailed => "d3d11_shared_texture_create_failed",
-            Self::D3d11SharedHandleCreateFailed => "d3d11_shared_handle_create_failed",
-            Self::AngleClientBufferSurfaceFailed => "angle_client_buffer_surface_failed",
-            Self::AdapterLuidMismatch => "adapter_luid_mismatch",
-            Self::VulkanD3d11ImportFailed => "vulkan_d3d11_import_failed",
-            Self::WindowsImportStaleFrame => "windows_import_stale_frame",
-        }
     }
 }
 
@@ -530,10 +405,10 @@ pub fn servo_telemetry_snapshot() -> ServoTelemetrySnapshot {
             .load(Ordering::Relaxed),
         render_gpu_import_fallbacks_total: SERVO_RENDER_GPU_IMPORT_FALLBACKS_TOTAL
             .load(Ordering::Relaxed),
-        render_gpu_import_fallback_reason: ServoGpuImportFallbackReason::from_u64(
+        render_gpu_import_fallback_reason: GpuFrameImportFallbackReason::from_u64(
             SERVO_RENDER_GPU_IMPORT_FALLBACK_REASON.load(Ordering::Relaxed),
         )
-        .map(ServoGpuImportFallbackReason::as_str),
+        .map(GpuFrameImportFallbackReason::as_str),
         render_gpu_import_windows_sync_mode: windows_gpu_import_sync_mode(),
         render_gpu_import_stale_frame_total: SERVO_RENDER_GPU_IMPORT_STALE_FRAME_TOTAL
             .load(Ordering::Relaxed),
@@ -724,12 +599,12 @@ mod tests {
         let before = servo_telemetry_snapshot();
 
         record_servo_gpu_import_frame(10, 20, 40);
-        record_servo_gpu_import_failure(ServoGpuImportFallbackReason::MissingGlFunction, true);
+        record_servo_gpu_import_failure(GpuFrameImportFallbackReason::MissingGlFunction, true);
         record_servo_gpu_import_failure(
-            ServoGpuImportFallbackReason::WindowsImportStaleFrame,
+            GpuFrameImportFallbackReason::WindowsImportStaleFrame,
             false,
         );
-        record_servo_gpu_import_failure(ServoGpuImportFallbackReason::AdapterLuidMismatch, false);
+        record_servo_gpu_import_failure(GpuFrameImportFallbackReason::AdapterLuidMismatch, false);
         record_servo_gpu_import_slot_state(8, 3, 5, 2, Some(17));
 
         let after = servo_telemetry_snapshot();
@@ -770,11 +645,11 @@ mod tests {
     #[test]
     fn gpu_import_slot_exhaustion_reason_roundtrips() {
         assert_eq!(
-            ServoGpuImportFallbackReason::from_u64(12),
-            Some(ServoGpuImportFallbackReason::ImportSlotsExhausted)
+            GpuFrameImportFallbackReason::from_u64(12),
+            Some(GpuFrameImportFallbackReason::ImportSlotsExhausted)
         );
         assert_eq!(
-            ServoGpuImportFallbackReason::ImportSlotsExhausted.as_str(),
+            GpuFrameImportFallbackReason::ImportSlotsExhausted.as_str(),
             "import_slots_exhausted"
         );
     }

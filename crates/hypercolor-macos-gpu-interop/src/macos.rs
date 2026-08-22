@@ -616,15 +616,9 @@ impl MacosIosurfaceImporter {
         device: &wgpu::Device,
         iosurface: &IOSurfaceRef,
         content_generation: u64,
+        origin: FrameOrigin,
     ) -> Result<ImportedEffectFrame> {
-        self.import_iosurface_scoped(
-            device,
-            iosurface,
-            content_generation,
-            FrameOrigin::BottomLeft,
-            0,
-            0,
-        )
+        self.import_iosurface_scoped(device, iosurface, content_generation, origin, 0, 0)
     }
 
     pub(crate) fn import_iosurface_scoped(
@@ -811,9 +805,10 @@ impl MacosIosurfaceImporter {
         &mut self,
         device: &wgpu::Device,
         iosurface: &IOSurfaceRef,
+        origin: FrameOrigin,
     ) -> Result<ImportedEffectFrame> {
         let content_generation = NEXT_CONTENT_GENERATION.fetch_add(1, Ordering::Relaxed);
-        self.import_iosurface(device, iosurface, content_generation)
+        self.import_iosurface(device, iosurface, content_generation, origin)
     }
 }
 

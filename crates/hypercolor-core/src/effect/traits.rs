@@ -6,6 +6,7 @@
 
 use std::sync::Arc;
 
+pub use hypercolor_gpu_frame::{ImportedEffectFrame, ImportedFrameFormat, ImportedFrameTimings};
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::Canvas;
 use hypercolor_types::display::DisplayDescriptor;
@@ -18,19 +19,6 @@ use tokio::sync::RwLock;
 
 use crate::asset::AssetLibrary;
 use crate::input::{InteractionData, ScreenData};
-
-#[cfg(all(feature = "servo-gpu-import", target_os = "linux"))]
-pub use hypercolor_linux_gpu_interop::{
-    ImportedEffectFrame, ImportedFrameFormat, ImportedFrameTimings,
-};
-#[cfg(all(feature = "servo-gpu-import", target_os = "macos"))]
-pub use hypercolor_macos_gpu_interop::{
-    ImportedEffectFrame, ImportedFrameFormat, ImportedFrameTimings,
-};
-#[cfg(all(feature = "servo-gpu-import", target_os = "windows"))]
-pub use hypercolor_windows_gpu_interop::{
-    ImportedEffectFrame, ImportedFrameFormat, ImportedFrameTimings,
-};
 
 // ── FrameInput ───────────────────────────────────────────────────────────────
 
