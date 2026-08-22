@@ -4086,7 +4086,7 @@ async fn list_devices_returns_empty_list() {
         .as_array()
         .expect("items should be an array");
     assert!(items.is_empty());
-    assert_eq!(json["data"]["pagination"]["total"], 0);
+    assert_eq!(json["data"]["total"], 0);
 }
 
 #[tokio::test]
@@ -4713,8 +4713,14 @@ async fn patch_driver_control_surface_updates_config() {
         .drivers
         .get("wled")
         .expect("wled config should exist");
-    assert_eq!(wled.settings["default_protocol"], "e131");
-    assert_eq!(wled.settings["dedup_threshold"], 7);
+    assert_eq!(
+        wled.settings["default_protocol"],
+        serde_json::json!({ "kind": "enum", "value": "e131" })
+    );
+    assert_eq!(
+        wled.settings["dedup_threshold"],
+        serde_json::json!({ "kind": "int", "value": 7 })
+    );
 
     let backend_manager = state.backend_manager.lock().await;
     assert!(backend_manager.backend_ids().contains(&"wled"));
@@ -4763,8 +4769,14 @@ async fn patch_govee_driver_control_surface_persists_backend_settings() {
         .drivers
         .get("govee")
         .expect("govee config should exist");
-    assert_eq!(govee.settings["power_off_on_disconnect"], true);
-    assert_eq!(govee.settings["lan_state_fps"], 12);
+    assert_eq!(
+        govee.settings["power_off_on_disconnect"],
+        serde_json::json!({ "kind": "bool", "value": true })
+    );
+    assert_eq!(
+        govee.settings["lan_state_fps"],
+        serde_json::json!({ "kind": "int", "value": 12 })
+    );
 }
 
 #[tokio::test]
@@ -4802,7 +4814,10 @@ async fn patch_hue_driver_control_surface_persists_backend_settings() {
 
     let config = manager.get();
     let hue = config.drivers.get("hue").expect("hue config should exist");
-    assert_eq!(hue.settings["use_cie_xy"], false);
+    assert_eq!(
+        hue.settings["use_cie_xy"],
+        serde_json::json!({ "kind": "bool", "value": false })
+    );
 }
 
 #[tokio::test]
@@ -4843,7 +4858,10 @@ async fn patch_nanoleaf_driver_control_surface_persists_backend_settings() {
         .drivers
         .get("nanoleaf")
         .expect("nanoleaf config should exist");
-    assert_eq!(nanoleaf.settings["transition_time"], 8);
+    assert_eq!(
+        nanoleaf.settings["transition_time"],
+        serde_json::json!({ "kind": "int", "value": 8 })
+    );
 }
 
 #[tokio::test]
@@ -6609,7 +6627,7 @@ async fn library_favorites_crud_lifecycle() {
         .expect("failed to execute request");
     assert_eq!(list_response.status(), StatusCode::OK);
     let list_json = body_json(list_response).await;
-    assert_eq!(list_json["data"]["pagination"]["total"], 1);
+    assert_eq!(list_json["data"]["total"], 1);
 
     let delete_response = app
         .clone()
@@ -6635,7 +6653,7 @@ async fn library_favorites_crud_lifecycle() {
         .expect("failed to execute request");
     assert_eq!(list_response.status(), StatusCode::OK);
     let list_json = body_json(list_response).await;
-    assert_eq!(list_json["data"]["pagination"]["total"], 0);
+    assert_eq!(list_json["data"]["total"], 0);
 }
 
 #[tokio::test]
@@ -7259,7 +7277,7 @@ async fn list_scenes_excludes_default_scene() {
         .expect("failed to execute request");
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
-    assert_eq!(json["data"]["pagination"]["total"], 0);
+    assert_eq!(json["data"]["total"], 0);
 
     let response = app
         .oneshot(
@@ -7286,7 +7304,7 @@ async fn list_scenes_excludes_default_scene() {
         .expect("failed to execute request");
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
-    assert_eq!(json["data"]["pagination"]["total"], 1);
+    assert_eq!(json["data"]["total"], 1);
     let items = json["data"]["items"]
         .as_array()
         .expect("scene list should serialize as an array");
@@ -7706,7 +7724,7 @@ async fn layout_crud_lifecycle() {
 
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
-    assert_eq!(json["data"]["pagination"]["total"], 1);
+    assert_eq!(json["data"]["total"], 1);
 
     // Update layout
     let app = test_app_with_state(Arc::clone(&state));
@@ -7897,7 +7915,7 @@ async fn layout_apply_updates_active_layout() {
         .expect("failed to execute request");
     assert_eq!(list_response.status(), StatusCode::OK);
     let list_json = body_json(list_response).await;
-    assert_eq!(list_json["data"]["pagination"]["total"], 1);
+    assert_eq!(list_json["data"]["total"], 1);
     assert_eq!(list_json["data"]["items"][0]["id"], layout_id);
     assert_eq!(list_json["data"]["items"][0]["is_active"], true);
 
@@ -10039,7 +10057,11 @@ async fn update_device_persists_name_enabled_and_brightness_state() {
         .expect("device settings file should exist");
     let persisted_json: serde_json::Value =
         serde_json::from_str(&persisted_raw).expect("device settings file should be valid json");
-    let persisted_device = &persisted_json["devices"][device_id.to_string()];
+    let persisted_key =
+        hypercolor_daemon::device_settings::device_settings_keys(&state.device_registry, device_id)
+            .await
+            .canonical;
+    let persisted_device = &persisted_json["devices"][persisted_key];
     assert_eq!(persisted_device["name"], "Desk Strip Renamed");
     assert_eq!(persisted_device["disabled"], true);
     assert_eq!(persisted_device["brightness"], serde_json::json!(0.27));
@@ -10296,7 +10318,11 @@ async fn patch_device_control_surface_updates_user_settings() {
         .expect("device settings file should exist");
     let persisted_json: serde_json::Value =
         serde_json::from_str(&persisted_raw).expect("device settings file should be valid json");
-    let persisted_device = &persisted_json["devices"][device_id.to_string()];
+    let persisted_key =
+        hypercolor_daemon::device_settings::device_settings_keys(&state.device_registry, device_id)
+            .await
+            .canonical;
+    let persisted_device = &persisted_json["devices"][persisted_key];
     assert_eq!(persisted_device["name"], "Desk Strip Controls");
     assert_eq!(persisted_device["disabled"], true);
     assert_eq!(persisted_device["brightness"], serde_json::json!(0.5));
@@ -11240,7 +11266,7 @@ async fn list_devices_supports_filters() {
         .expect("failed to execute request");
     assert_eq!(disabled_response.status(), StatusCode::OK);
     let disabled_json = body_json(disabled_response).await;
-    assert_eq!(disabled_json["data"]["pagination"]["total"], 1);
+    assert_eq!(disabled_json["data"]["total"], 1);
     assert_eq!(disabled_json["data"]["items"][0]["name"], "Ceiling Panel");
 
     let query_response = app
@@ -11255,7 +11281,7 @@ async fn list_devices_supports_filters() {
         .expect("failed to execute request");
     assert_eq!(query_response.status(), StatusCode::OK);
     let query_json = body_json(query_response).await;
-    assert_eq!(query_json["data"]["pagination"]["total"], 1);
+    assert_eq!(query_json["data"]["total"], 1);
     assert_eq!(query_json["data"]["items"][0]["name"], "Desk Strip");
 
     let backend_response = app
@@ -11270,7 +11296,7 @@ async fn list_devices_supports_filters() {
         .expect("failed to execute request");
     assert_eq!(backend_response.status(), StatusCode::OK);
     let backend_json = body_json(backend_response).await;
-    assert_eq!(backend_json["data"]["pagination"]["total"], 1);
+    assert_eq!(backend_json["data"]["total"], 1);
     assert_eq!(backend_json["data"]["items"][0]["name"], "Aura GPU");
 
     let driver_response = app
@@ -11284,7 +11310,7 @@ async fn list_devices_supports_filters() {
         .expect("failed to execute request");
     assert_eq!(driver_response.status(), StatusCode::OK);
     let driver_json = body_json(driver_response).await;
-    assert_eq!(driver_json["data"]["pagination"]["total"], 1);
+    assert_eq!(driver_json["data"]["total"], 1);
     assert_eq!(
         driver_json["data"]["items"][0]["origin"]["backend_id"],
         "smbus"
