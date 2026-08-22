@@ -374,7 +374,7 @@ async fn removed_runtime_effect_fields_are_rejected_on_startup() {
             "default_scene_groups": [],
             "active_effect_id": effect_id,
             "control_values": {
-                "speed": { "float": 7.0 }
+                "speed": { "kind": "float", "value": 7.0 }
             }
         }))
         .expect("runtime snapshot json should serialize"),

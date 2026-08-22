@@ -342,7 +342,7 @@ mod tests {
                     "ordering": 0
                 }],
                 "actions": [],
-                "values": { "brightness": { "kind": "integer", "value": 100 } },
+                "values": { "brightness": { "kind": "int", "value": 100 } },
                 "availability": {},
                 "action_availability": {}
             },
@@ -420,9 +420,9 @@ mod tests {
                 "actions": [],
                 "values": {
                     "protocol": { "kind": "enum", "value": "ddp" },
-                    "firmware_version": { "kind": "string", "value": "0.15.3" },
+                    "firmware_version": { "kind": "text", "value": "0.15.3" },
                     "channel_mask": { "kind": "flags", "value": ["main"] },
-                    "name": { "kind": "string", "value": "Desk Strip" }
+                    "name": { "kind": "text", "value": "Desk Strip" }
                 },
                 "availability": {},
                 "action_availability": {}

@@ -5,15 +5,6 @@ use hypercolor_types::control::{ControlValue, SecretRef};
 use hypercolor_types::controls::{ControlObjectField, ControlValueType};
 use serde_json::Value as JsonValue;
 
-use crate::control_value_json::control_value_to_json;
-
-pub fn json_text(value: Option<&ControlValue>) -> String {
-    value
-        .map(control_value_to_json)
-        .and_then(|value| serde_json::to_string_pretty(&value).ok())
-        .unwrap_or_default()
-}
-
 pub fn parse_json_control_value(
     value_type: &ControlValueType,
     raw: &str,
@@ -168,7 +159,7 @@ mod tests {
     use hypercolor_types::control::{ControlValue, SecretRef};
     use hypercolor_types::controls::{ControlObjectField, ControlValueType};
 
-    use super::{json_text, parse_json_control_value};
+    use super::parse_json_control_value;
 
     #[test]
     fn parses_secret_json_as_secret_reference() {
@@ -229,10 +220,5 @@ mod tests {
         let error = parse_json_control_value(&ControlValueType::ColorRgb, "[0, 300, 1]")
             .expect_err("out of range channel should fail");
         assert!(error.contains("Expected color channels from 0-255"));
-    }
-
-    #[test]
-    fn json_text_redacts_unknown_values_to_null() {
-        assert_eq!(json_text(Some(&ControlValue::Unknown)), "null");
     }
 }

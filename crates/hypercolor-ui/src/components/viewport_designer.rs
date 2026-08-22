@@ -535,21 +535,19 @@ fn draft_to_controls_payload(draft: &ViewportDraft) -> serde_json::Value {
     controls.insert(
         "viewport".to_owned(),
         json!({
-            "rect": {
-                "x": draft.common.viewport.x,
-                "y": draft.common.viewport.y,
-                "width": draft.common.viewport.width,
-                "height": draft.common.viewport.height,
-            }
+            "x": draft.common.viewport.x,
+            "y": draft.common.viewport.y,
+            "width": draft.common.viewport.width,
+            "height": draft.common.viewport.height,
         }),
     );
     controls.insert(
         "fit_mode".to_owned(),
-        json!({ "enum": fit_mode_label(draft.common.fit_mode) }),
+        json!(fit_mode_label(draft.common.fit_mode)),
     );
     controls.insert(
         "brightness".to_owned(),
-        json!({ "float": draft.common.brightness }),
+        json!(draft.common.brightness),
     );
     if let ModeDraft::WebViewport {
         url,
@@ -559,17 +557,11 @@ fn draft_to_controls_payload(draft: &ViewportDraft) -> serde_json::Value {
         render_height,
     } = &draft.mode
     {
-        controls.insert("url".to_owned(), json!({ "text": url }));
-        controls.insert("scroll_x".to_owned(), json!({ "float": *scroll_x as f32 }));
-        controls.insert("scroll_y".to_owned(), json!({ "float": *scroll_y as f32 }));
-        controls.insert(
-            "render_width".to_owned(),
-            json!({ "float": *render_width as f32 }),
-        );
-        controls.insert(
-            "render_height".to_owned(),
-            json!({ "float": *render_height as f32 }),
-        );
+        controls.insert("url".to_owned(), json!(url));
+        controls.insert("scroll_x".to_owned(), json!(*scroll_x as f32));
+        controls.insert("scroll_y".to_owned(), json!(*scroll_y as f32));
+        controls.insert("render_width".to_owned(), json!(*render_width as f32));
+        controls.insert("render_height".to_owned(), json!(*render_height as f32));
     }
     serde_json::Value::Object(controls)
 }

@@ -253,49 +253,12 @@ async function getEffectDetail(daemon: string, effectId: string): Promise<Effect
     return await restGet<EffectDetail>(daemon, `/api/v1/effects/${encodeURIComponent(effectId)}`)
 }
 
-/**
- * Unwrap the daemon's typed `ControlValue` JSON (`{"float": 84}`, `{"color": [...]}`,
- * `{"enum": "Horizontal"}`) into plain JSON — which is what the apply endpoint's
- * `json_to_control_value` expects. Values already in plain shape pass through.
- */
-function unwrapControlValues(controls: Record<string, unknown>): Record<string, unknown> {
-    const out: Record<string, unknown> = {}
-    for (const [name, value] of Object.entries(controls)) {
-        out[name] = unwrapControlValue(value)
-    }
-    return out
-}
-
-function unwrapControlValue(value: unknown): unknown {
-    if (value && typeof value === 'object' && !Array.isArray(value)) {
-        const entries = Object.entries(value as Record<string, unknown>)
-        if (entries.length === 1) {
-            const [tag, inner] = entries[0] ?? []
-            if (typeof tag === 'string' && isControlValueTag(tag)) return inner
-        }
-    }
-    return value
-}
-
-function isControlValueTag(tag: string): boolean {
-    return (
-        tag === 'float' ||
-        tag === 'integer' ||
-        tag === 'boolean' ||
-        tag === 'color' ||
-        tag === 'gradient' ||
-        tag === 'enum' ||
-        tag === 'text' ||
-        tag === 'rect'
-    )
-}
-
 async function applyEffect(
     daemon: string,
     effectId: string,
     presetControls: Record<string, unknown> | null,
 ): Promise<void> {
-    const body = presetControls ? { controls: unwrapControlValues(presetControls) } : {}
+    const body = presetControls ? { controls: presetControls } : {}
     await restPost(daemon, `/api/v1/effects/${encodeURIComponent(effectId)}/apply`, body)
 }
 

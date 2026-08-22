@@ -21,7 +21,12 @@ fn sources_under(root: &Path, extension: &str) -> Vec<(String, String)> {
         for entry in std::fs::read_dir(&directory).expect("source directory reads") {
             let path = entry.expect("source entry reads").path();
             if path.is_dir() {
-                if path.file_name().is_none_or(|name| name != "target") {
+                if path.file_name().is_none_or(|name| {
+                    !matches!(
+                        name.to_string_lossy().as_ref(),
+                        "target" | "node_modules" | ".venv" | "dist"
+                    )
+                }) {
                     pending.push(path);
                 }
                 continue;
@@ -50,6 +55,21 @@ fn rust_sources() -> Vec<(String, String)> {
     sources_under(&workspace_root().join("crates"), "rs")
         .into_iter()
         .filter(|(path, _)| path != FENCE_SOURCE)
+        .collect()
+}
+
+fn python_sources() -> Vec<(String, String)> {
+    sources_under(&workspace_root().join("python"), "py")
+        .into_iter()
+        .filter(|(path, _)| !path.starts_with("src/hypercolor/_generated/"))
+        .map(|(path, source)| (format!("python/{path}"), source))
+        .collect()
+}
+
+fn typescript_sources() -> Vec<(String, String)> {
+    sources_under(&workspace_root().join("sdk"), "ts")
+        .into_iter()
+        .map(|(path, source)| (format!("sdk/{path}"), source))
         .collect()
 }
 
@@ -278,6 +298,56 @@ fn disallowed_control_surface_list_responses(path: &str, source: &str) -> Vec<St
         .collect()
 }
 
+fn contains_retired_external_tag(source: &str) -> bool {
+    let compact_source = compact(source);
+    [
+        "float", "integer", "boolean", "gradient", "enum", "text", "rect",
+    ]
+    .iter()
+    .any(|tag| compact_source.contains(&format!(r#"{{"{tag}":"#)))
+        || compact_source.contains(r#"{"color":["#)
+}
+
+fn retired_rust_external_tags(path: &str, source: &str) -> Vec<String> {
+    declarations_after(source, "fn")
+        .into_iter()
+        .filter_map(|(name, declaration)| {
+            if !contains_retired_external_tag(declaration) {
+                return None;
+            }
+            let compact_declaration = compact(declaration);
+            let explicit_rejection = compact_declaration.contains("retiredexternaltagshouldfail")
+                && compact_declaration.contains("expect_err");
+            (!explicit_rejection).then(|| format!("{path}: {name}"))
+        })
+        .collect()
+}
+
+fn retired_kind_tags(source: &str) -> Vec<&'static str> {
+    let compact_source = compact(source);
+    ["boolean", "duration_ms", "integer", "object", "string"]
+        .into_iter()
+        .filter(|kind| compact_source.contains(&format!(r#""kind":"{kind}""#)))
+        .collect()
+}
+
+fn retired_value_block_tags(path: &str, source: &str) -> Vec<String> {
+    let compact_source = compact(source);
+    let mut findings = Vec::new();
+    let mut cursor = 0;
+    while let Some(relative) = compact_source[cursor..].find(r#""values":{"#) {
+        let open = cursor + relative + r#""values":"#.len();
+        let Some(close) = matching_brace(&compact_source, open) else {
+            break;
+        };
+        for kind in retired_kind_tags(&compact_source[open..=close]) {
+            findings.push(format!("{path}: values uses {kind}"));
+        }
+        cursor = close + 1;
+    }
+    findings
+}
+
 #[test]
 fn control_value_has_one_definition_and_no_legacy_projection_paths() {
     let sources = rust_sources();
@@ -286,6 +356,7 @@ fn control_value_has_one_definition_and_no_legacy_projection_paths() {
     let mut mirror_enums = Vec::new();
     let mut manual_authorities = Vec::new();
     let mut response_mirrors = Vec::new();
+    let mut retired_rust_tags = Vec::new();
 
     for (path, source) in &sources {
         if declarations_after(source, "enum")
@@ -323,7 +394,32 @@ fn control_value_has_one_definition_and_no_legacy_projection_paths() {
                 .into_iter()
                 .map(|name| format!("{path}: {name}")),
         );
+        retired_rust_tags.extend(retired_rust_external_tags(path, source));
+        retired_rust_tags.extend(retired_value_block_tags(path, source));
     }
+
+    let retired_python_tags = python_sources()
+        .into_iter()
+        .flat_map(|(path, source)| {
+            let mut findings = retired_kind_tags(&source)
+                .into_iter()
+                .map(|kind| format!("{path}: kind {kind}"))
+                .collect::<Vec<_>>();
+            if contains_retired_external_tag(&source) {
+                findings.push(format!("{path}: externally tagged value"));
+            }
+            findings
+        })
+        .collect::<Vec<_>>();
+    let retired_typescript_tags = typescript_sources()
+        .into_iter()
+        .filter_map(|(path, source)| {
+            (contains_retired_external_tag(&source)
+                || source.contains("unwrapControlValue")
+                || source.contains("isControlValueTag"))
+            .then_some(path)
+        })
+        .collect::<Vec<_>>();
 
     assert_eq!(definitions, [CANONICAL_DEFINITION]);
     assert!(
@@ -345,6 +441,18 @@ fn control_value_has_one_definition_and_no_legacy_projection_paths() {
     assert!(
         response_mirrors.is_empty(),
         "control-surface list response mirrors remain in {response_mirrors:#?}"
+    );
+    assert!(
+        retired_rust_tags.is_empty(),
+        "retired Rust control-value tags remain in {retired_rust_tags:#?}"
+    );
+    assert!(
+        retired_python_tags.is_empty(),
+        "retired Python control-value tags remain in {retired_python_tags:#?}"
+    );
+    assert!(
+        retired_typescript_tags.is_empty(),
+        "retired TypeScript control-value adapters remain in {retired_typescript_tags:#?}"
     );
 }
 
@@ -394,5 +502,26 @@ fn authority_fence_detects_renamed_mirrors_and_manual_parsers() {
     assert_eq!(
         disallowed_control_surface_list_responses("fixture.rs", response_mirror),
         ["ControlSurfaceListResponse"]
+    );
+
+    let retired_rust_fixture = r#"
+        fn effect_payload() -> Value {
+            json!({ "float": 0.5 })
+        }
+    "#;
+    assert_eq!(
+        retired_rust_external_tags("fixture.rs", retired_rust_fixture),
+        ["fixture.rs: effect_payload"]
+    );
+    assert_eq!(
+        retired_kind_tags(r#"{"kind": "integer", "value": 7}"#),
+        ["integer"]
+    );
+    assert_eq!(
+        retired_value_block_tags(
+            "fixture.rs",
+            r#"json!({ "values": { "count": { "kind": "string", "value": "7" } } })"#,
+        ),
+        ["fixture.rs: values uses string"]
     );
 }
