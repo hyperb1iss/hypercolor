@@ -1005,6 +1005,60 @@ async fn scene_effect_writes_reject_unknown_and_retired_ids() {
 
 #[cfg(feature = "persistence-test-hooks")]
 #[tokio::test]
+async fn revision_neutral_snapshot_save_cannot_overtake_identity_publication() {
+    let temp = TempDir::new().expect("tempdir");
+    let fixture = late_migration_fixture(&temp).await;
+    let state = Arc::new(fixture.state);
+    let publication_barrier = state
+        .domains
+        .effects
+        .pause_next_identity_publication_for_test();
+    let snapshot_barrier = state.scene_manager.pause_next_persistence_for_test();
+    let revision = state.scene_manager.revision();
+
+    let migration = {
+        let state = Arc::clone(&state);
+        tokio::spawn(async move { rescan_registry(state.as_ref()).await })
+    };
+    publication_barrier.wait_until_entered().await;
+    assert_eq!(state.scene_manager.revision(), revision);
+
+    let snapshot_save = {
+        let state = Arc::clone(&state);
+        tokio::spawn(async move { state.scene_manager.save_snapshot().await })
+    };
+    snapshot_barrier.wait_until_entered().await;
+    snapshot_barrier.release();
+    tokio::task::yield_now().await;
+    assert!(
+        !snapshot_save.is_finished(),
+        "a revision-neutral snapshot must wait for identity publication"
+    );
+    assert_eq!(state.scene_manager.revision(), revision);
+
+    publication_barrier.release();
+    migration
+        .await
+        .expect("migration task should not panic")
+        .expect("migration should publish");
+    snapshot_save
+        .await
+        .expect("snapshot task should not panic")
+        .expect("snapshot should persist after publication");
+
+    let durable = crate::scene_store::SceneStore::load(&state.data_dir.join("scenes.json"))
+        .expect("scene store should load after the race");
+    assert!(
+        durable
+            .list()
+            .flat_map(|scene| &scene.zones)
+            .flat_map(hypercolor_types::scene::Zone::effect_ids)
+            .all(|effect_id| effect_id == fixture.canonical_id)
+    );
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+#[tokio::test]
 async fn migration_generation_preserves_an_admitted_newer_named_scene() {
     let temp = TempDir::new().expect("tempdir");
     let fixture = late_migration_fixture(&temp).await;

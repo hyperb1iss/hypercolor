@@ -75,18 +75,21 @@ pub(crate) struct SceneEffectIdMigration {
     candidate: SceneManager,
     store: Option<SceneStoreSave>,
     migrated: usize,
+    snapshot_save_guard: OwnedRwLockWriteGuard<()>,
 }
 
 pub(crate) struct AdmittedSceneEffectIdMigration {
     base_revision: SceneRevision,
     candidate: SceneManager,
     store: Option<AdmittedSceneStoreSave>,
+    snapshot_save_guard: OwnedRwLockWriteGuard<()>,
 }
 
 pub(crate) struct PersistedSceneEffectIdMigration {
     base_revision: SceneRevision,
     candidate: SceneManager,
     stored_scenes: Option<HashMap<SceneId, Scene>>,
+    snapshot_save_guard: OwnedRwLockWriteGuard<()>,
 }
 
 pub(crate) struct SceneEffectIdMigrationPublication {
@@ -98,6 +101,7 @@ pub(crate) struct SceneEffectIdMigrationPublication {
 struct SceneServiceInner {
     manager: Arc<RwLock<SceneManager>>,
     store: Option<Arc<RwLock<SceneStore>>>,
+    snapshot_save_gate: Arc<RwLock<()>>,
     zone_layout_previews: Arc<ZoneLayoutPreviewStore>,
     commits: Arc<SceneCommitSequencer>,
     event_bus: Arc<HypercolorBus>,
@@ -186,6 +190,7 @@ impl SceneService {
         Self(Arc::new(SceneServiceInner {
             manager: Arc::new(RwLock::new(manager)),
             store,
+            snapshot_save_gate: Arc::new(RwLock::new(())),
             zone_layout_previews,
             commits,
             event_bus,
@@ -238,6 +243,7 @@ impl SceneService {
             hypercolor_types::effect::EffectId,
         >,
     ) -> Result<SceneEffectIdMigration, DomainError> {
+        let snapshot_save_guard = Arc::clone(&self.0.snapshot_save_gate).write_owned().await;
         let manager = self.0.manager.read().await;
         let mut candidate = manager.clone();
         let migrated = candidate.remap_effect_ids(migrations);
@@ -256,6 +262,7 @@ impl SceneService {
             candidate,
             store,
             migrated,
+            snapshot_save_guard,
         })
     }
 
@@ -303,12 +310,18 @@ impl SceneService {
             mut store,
             migration,
         } = publication;
+        let PersistedSceneEffectIdMigration {
+            base_revision: _,
+            candidate,
+            stored_scenes,
+            snapshot_save_guard: _snapshot_save_guard,
+        } = migration;
 
-        if let (Some(store), Some(stored_scenes)) = (store.as_mut(), migration.stored_scenes) {
+        if let (Some(store), Some(stored_scenes)) = (store.as_mut(), stored_scenes) {
             store.replace_named_scenes(stored_scenes.into_values());
         }
 
-        *manager = migration.candidate;
+        *manager = candidate;
         let ticket = self.0.commits.admit(Arc::clone(&self.0.event_bus));
         self.0
             .plan
@@ -501,6 +514,9 @@ impl SceneService {
         let Some(store) = self.0.store.as_ref() else {
             return Ok(());
         };
+        #[cfg(all(test, feature = "persistence-test-hooks"))]
+        self.pause_before_persistence_for_test().await;
+        let _snapshot_save_guard = Arc::clone(&self.0.snapshot_save_gate).read_owned().await;
         let pending = {
             let manager = self.snapshot().await;
             store
@@ -568,6 +584,7 @@ impl SceneEffectIdMigration {
             base_revision: self.base_revision,
             candidate: self.candidate,
             store: self.store.map(SceneStoreSave::admit),
+            snapshot_save_guard: self.snapshot_save_guard,
         }
     }
 }
@@ -579,7 +596,13 @@ impl AdmittedSceneEffectIdMigration {
         PersistedSceneEffectIdMigration,
         IdentityMigrationPersistence,
     ) {
-        let (stored_scenes, persistence) = self.store.map_or_else(
+        let Self {
+            base_revision,
+            candidate,
+            store,
+            snapshot_save_guard,
+        } = self;
+        let (stored_scenes, persistence) = store.map_or_else(
             || (None, IdentityMigrationPersistence::Written),
             |store| {
                 let (scenes, outcome) = store.commit_stage_aware();
@@ -600,9 +623,10 @@ impl AdmittedSceneEffectIdMigration {
         );
         (
             PersistedSceneEffectIdMigration {
-                base_revision: self.base_revision,
-                candidate: self.candidate,
+                base_revision,
+                candidate,
                 stored_scenes,
+                snapshot_save_guard,
             },
             persistence,
         )
