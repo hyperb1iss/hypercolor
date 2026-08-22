@@ -654,6 +654,26 @@ pub enum EffectJsonValueError {
     /// A number cannot be represented by the effect renderer's `f32` ABI.
     #[error("effect control number must be finite and within the f32 range")]
     FloatOutOfRange,
+    /// A canonical integer cannot fit the effect renderer's `i32` ABI.
+    #[error("effect control integer must be within the i32 range")]
+    IntegerOutOfRange,
+    /// A nested projection failed; `path` locates the rejected value.
+    #[error("{path}: {source}")]
+    Nested {
+        /// Where in the list or map the failure sits.
+        path: String,
+        /// The underlying projection failure.
+        source: Box<EffectJsonValueError>,
+    },
+}
+
+impl EffectJsonValueError {
+    fn nested(path: impl Into<String>, source: Self) -> Self {
+        Self::Nested {
+            path: path.into(),
+            source: Box::new(source),
+        }
+    }
 }
 
 impl ControlValueInvalid {
@@ -732,6 +752,109 @@ impl ControlValue {
             ));
         }
         Err(EffectJsonValueError::UnsupportedShape)
+    }
+
+    /// Project a canonical value into the raw JSON value consumed by an
+    /// effect runtime.
+    ///
+    /// Canonical tags remain authoritative until this final renderer
+    /// boundary. Numeric widths are checked against the effect ABI, colors
+    /// preserve alpha, and nested values fail with their exact path.
+    pub fn try_to_effect_json(&self) -> Result<serde_json::Value, EffectJsonValueError> {
+        Ok(match self {
+            Self::Null | Self::Unknown => serde_json::Value::Null,
+            Self::Bool(value) => serde_json::Value::Bool(*value),
+            Self::Int(value) => serde_json::Value::from(
+                i32::try_from(*value).map_err(|_| EffectJsonValueError::IntegerOutOfRange)?,
+            ),
+            Self::Float(value) => serde_json::Value::from(f64::from(narrow_effect_f32(*value)?)),
+            Self::Text(value) | Self::Enum(value) => serde_json::Value::String(value.clone()),
+            Self::SecretRef(value) => serde_json::Value::String(value.as_str().to_owned()),
+            Self::Ip(value) => serde_json::Value::String(value.as_str().to_owned()),
+            Self::Mac(value) => serde_json::Value::String(value.as_str().to_owned()),
+            Self::Duration(value) => serde_json::Value::from(
+                i32::try_from(value.as_millis())
+                    .map_err(|_| EffectJsonValueError::IntegerOutOfRange)?,
+            ),
+            Self::ColorRgb(value) => serde_json::Value::String(value.to_hex()),
+            Self::ColorRgba(value) => serde_json::Value::String(format!(
+                "#{:02x}{:02x}{:02x}{:02x}",
+                value.r, value.g, value.b, value.a
+            )),
+            Self::ColorLinear(value) => {
+                let value = value.to_encoded();
+                serde_json::Value::String(format!(
+                    "#{:02x}{:02x}{:02x}{:02x}",
+                    value.r, value.g, value.b, value.a
+                ))
+            }
+            Self::Gradient(stops) => serde_json::Value::Array(
+                stops
+                    .iter()
+                    .enumerate()
+                    .map(|(index, stop)| {
+                        let position =
+                            narrow_effect_f32(f64::from(stop.position)).map_err(|error| {
+                                EffectJsonValueError::nested(format!("[{index}].pos"), error)
+                            })?;
+                        let color = stop
+                            .color
+                            .iter()
+                            .enumerate()
+                            .map(|(channel, value)| {
+                                narrow_effect_f32(f64::from(*value))
+                                    .map(|value| serde_json::Value::from(f64::from(value)))
+                                    .map_err(|error| {
+                                        EffectJsonValueError::nested(
+                                            format!("[{index}].color[{channel}]"),
+                                            error,
+                                        )
+                                    })
+                            })
+                            .collect::<Result<Vec<_>, _>>()?;
+                        Ok(serde_json::json!({
+                            "pos": position,
+                            "color": color,
+                        }))
+                    })
+                    .collect::<Result<Vec<_>, EffectJsonValueError>>()?,
+            ),
+            Self::Rect(value) => serde_json::json!({
+                "x": narrow_effect_f32(f64::from(value.x))?,
+                "y": narrow_effect_f32(f64::from(value.y))?,
+                "width": narrow_effect_f32(f64::from(value.width))?,
+                "height": narrow_effect_f32(f64::from(value.height))?,
+            }),
+            Self::Flags(values) => serde_json::Value::Array(
+                values
+                    .iter()
+                    .cloned()
+                    .map(serde_json::Value::String)
+                    .collect(),
+            ),
+            Self::List(values) => serde_json::Value::Array(
+                values
+                    .iter()
+                    .enumerate()
+                    .map(|(index, value)| {
+                        value.try_to_effect_json().map_err(|error| {
+                            EffectJsonValueError::nested(format!("[{index}]"), error)
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
+            Self::Map(values) => serde_json::Value::Object(
+                values
+                    .iter()
+                    .map(|(key, value)| {
+                        value
+                            .try_to_effect_json()
+                            .map(|value| (key.clone(), value))
+                            .map_err(|error| EffectJsonValueError::nested(format!(".{key}"), error))
+                    })
+                    .collect::<Result<serde_json::Map<_, _>, _>>()?,
+            ),
+        })
     }
 
     /// Validate and build an IP-address value while preserving its spelling.

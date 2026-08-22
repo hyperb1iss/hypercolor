@@ -146,6 +146,48 @@ fn effect_json_admission_builds_canonical_composites() {
 }
 
 #[test]
+fn effect_json_projection_preserves_alpha_and_nested_values() {
+    let value = ControlValue::Map(BTreeMap::from([
+        (
+            "rgba".to_owned(),
+            ControlValue::ColorRgba(hypercolor_color::Rgba::new(1, 2, 3, 128)),
+        ),
+        (
+            "items".to_owned(),
+            ControlValue::List(vec![
+                ControlValue::Enum("rainbow".to_owned()),
+                ControlValue::Ip(IpText::new("::FFFF:1.2.3.4").expect("valid IP")),
+            ]),
+        ),
+    ]));
+
+    assert_eq!(
+        value
+            .try_to_effect_json()
+            .expect("valid nested value should project"),
+        serde_json::json!({
+            "rgba": "#01020380",
+            "items": ["rainbow", "::FFFF:1.2.3.4"],
+        })
+    );
+}
+
+#[test]
+fn effect_json_projection_rejects_width_overflow_at_its_nested_path() {
+    assert_eq!(
+        ControlValue::List(vec![ControlValue::Int(i64::from(i32::MAX) + 1)]).try_to_effect_json(),
+        Err(EffectJsonValueError::Nested {
+            path: "[0]".to_owned(),
+            source: Box::new(EffectJsonValueError::IntegerOutOfRange),
+        })
+    );
+    assert_eq!(
+        ControlValue::Float(f64::NAN).try_to_effect_json(),
+        Err(EffectJsonValueError::FloatOutOfRange)
+    );
+}
+
+#[test]
 fn canonical_wire_enforces_validation_on_both_directions() {
     assert!(
         serde_json::to_value(ControlValue::Float(f64::NAN)).is_err(),
