@@ -12,12 +12,12 @@ use hypercolor_core::input::{
 };
 use hypercolor_types::config::InteractionRoutePolicy;
 
-use super::{
-    CaptureConfigTransactionError, ConfigApplyQuery, LiveSections,
-    apply_capture_config_transaction, apply_input_config_change, canvas_dimensions_differ,
-    capture_statuses_match, live_sections_for, put_config_key, validate_prepared_capture_status,
-    write_covers,
+use super::live::{
+    CaptureConfigTransactionError, LiveSections, apply_capture_config_transaction,
+    apply_input_config_change, canvas_dimensions_differ, capture_statuses_match, live_sections_for,
+    validate_prepared_capture_status, write_covers,
 };
+use super::{ConfigApplyQuery, put_config_key};
 use crate::app_state::AppState;
 
 struct TestScreenSource {
