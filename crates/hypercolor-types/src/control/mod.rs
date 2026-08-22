@@ -702,6 +702,22 @@ fn finite_stop(stop: &GradientStop) -> Result<(), ControlValueInvalid> {
 }
 
 impl ControlValue {
+    /// Return whether a JSON value has the exact canonical tagged-wire shape.
+    ///
+    /// The tag must be a string and the object may contain only `kind` and
+    /// `value`. This distinguishes persisted control values from arbitrary
+    /// driver configuration objects that happen to carry a `kind` field.
+    #[must_use]
+    pub fn has_canonical_wire_shape(value: &serde_json::Value) -> bool {
+        let Some(object) = value.as_object() else {
+            return false;
+        };
+        object.get("kind").is_some_and(serde_json::Value::is_string)
+            && object
+                .keys()
+                .all(|key| matches!(key.as_str(), "kind" | "value"))
+    }
+
     /// Admit a raw effect-control JSON value into the canonical algebra.
     ///
     /// The returned value still needs validation against its

@@ -19,8 +19,8 @@ use hypercolor_daemon::device_settings::DeviceSettingsStore;
 use hypercolor_driver_api::{
     BackendInfo, ControlApplyTarget, DeviceBackend, DiscoveredDevice, DiscoveryCapability,
     DiscoveryConnectBehavior, DiscoveryRequest, DriverConfigView, DriverControlProvider,
-    DriverDescriptor, DriverError, DriverHost, DriverModule, DriverRuntimeCacheProvider,
-    ValidatedControlChanges,
+    DriverControlStore, DriverDescriptor, DriverError, DriverHost, DriverModule,
+    DriverRuntimeCacheProvider, ValidatedControlChanges,
 };
 #[cfg(feature = "builtin-drivers")]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -497,6 +497,11 @@ static ACTION_TEST_DRIVER: DriverDescriptor = DriverDescriptor::new(
 
 struct ActionTestDriver;
 
+#[derive(serde::Deserialize)]
+struct ActionTestConfig {
+    descriptor: serde_json::Value,
+}
+
 impl DriverModule for ActionTestDriver {
     fn descriptor(&self) -> &'static DriverDescriptor {
         &ACTION_TEST_DRIVER
@@ -512,7 +517,7 @@ impl DriverControlProvider for ActionTestDriver {
     async fn driver_surface(
         &self,
         _host: &dyn DriverHost,
-        _config: DriverConfigView<'_>,
+        config: DriverConfigView<'_>,
     ) -> anyhow::Result<Option<ControlSurfaceDocument>> {
         let mut surface = ControlSurfaceDocument::empty(
             "driver:action_test",
@@ -535,6 +540,17 @@ impl DriverControlProvider for ActionTestDriver {
             availability: ControlAvailabilityExpr::Always,
             ordering: 0,
         });
+        if config.entry.settings.contains_key("descriptor") {
+            let config = config.parse_settings::<ActionTestConfig>()?;
+            let name = config
+                .descriptor
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("test descriptor must have a name"))?;
+            surface
+                .values
+                .insert("descriptor".to_owned(), ControlValue::Text(name.to_owned()));
+        }
         Ok(Some(surface))
     }
 
@@ -5144,6 +5160,49 @@ async fn invoke_driver_control_surface_action_routes_to_provider() {
             .as_str()
             .expect("error message")
             .contains("unknown control action")
+    );
+}
+
+#[tokio::test]
+async fn driver_control_reload_preserves_raw_objects_with_kind_fields() {
+    let (mut state, tempdir) = isolated_state_with_tempdir();
+    let manager = Arc::new(
+        ConfigManager::new(tempdir.path().join("config.toml"))
+            .expect("config manager should be created"),
+    );
+    manager.modify(|config| {
+        config.drivers.insert(
+            "action_test".to_owned(),
+            DriverConfigEntry::enabled(BTreeMap::from([(
+                "descriptor".to_owned(),
+                serde_json::json!({"kind": "network", "name": "fixture"}),
+            )])),
+        );
+    });
+
+    let mut registry = DriverModuleRegistry::new();
+    registry
+        .register(ActionTestDriver)
+        .expect("test action driver should register");
+    let registry = Arc::new(registry);
+    state.driver_registry = Arc::clone(&registry);
+    state.config_manager = Some(Arc::clone(&manager));
+    state.driver_host = Arc::new(
+        state
+            .driver_host
+            .with_driver_registry(registry)
+            .with_config_manager(Some(manager)),
+    );
+
+    let values = state
+        .driver_host
+        .load_driver_values("action_test")
+        .await
+        .expect("driver values should reload");
+
+    assert_eq!(
+        values.get("descriptor"),
+        Some(&ControlValue::Text("fixture".to_owned()))
     );
 }
 

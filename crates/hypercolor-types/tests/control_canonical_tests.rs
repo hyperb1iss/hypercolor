@@ -85,6 +85,26 @@ fn canonical_wire_roundtrips_every_variant() {
 }
 
 #[test]
+fn canonical_wire_shape_requires_an_exact_tagged_envelope() {
+    for value in [
+        serde_json::json!({"kind": "null"}),
+        serde_json::json!({"kind": "float", "value": 0.5}),
+        serde_json::json!({"kind": "future_value"}),
+    ] {
+        assert!(ControlValue::has_canonical_wire_shape(&value));
+    }
+
+    for value in [
+        serde_json::json!({"kind": "network", "name": "fixture"}),
+        serde_json::json!({"kind": 7, "value": true}),
+        serde_json::json!({"value": true}),
+        serde_json::json!("text"),
+    ] {
+        assert!(!ControlValue::has_canonical_wire_shape(&value));
+    }
+}
+
+#[test]
 fn effect_json_admission_uses_checked_scalar_narrowing() {
     assert_eq!(narrow_effect_f32(0.25), Ok(0.25));
     assert_eq!(

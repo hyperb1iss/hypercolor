@@ -21,6 +21,7 @@ use hypercolor_driver_api::{
 };
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::HypercolorConfig;
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::controls::{ControlSurfaceEvent, ControlValueMap};
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::event::{DisconnectReason, HypercolorEvent};
@@ -321,6 +322,7 @@ impl DriverControlStore for DaemonDriverHost {
                 let persisted = entry
                     .settings
                     .get(&key)
+                    .filter(|value| ControlValue::has_canonical_wire_shape(value))
                     .and_then(|value| serde_json::from_value(value.clone()).ok())
                     .unwrap_or(projected);
                 (key, persisted)
