@@ -255,7 +255,11 @@ pub fn authorization_token() -> Option<String> {
 }
 
 fn validate_relative_path(path: &str) -> Result<(), ApiError> {
-    if !path.starts_with('/') || path.starts_with("//") {
+    if !path.starts_with('/')
+        || path.starts_with("//")
+        || path.contains('\\')
+        || path.chars().any(char::is_control)
+    {
         return Err(ApiError::Network(
             "authenticated daemon API URLs must be relative".to_owned(),
         ));
