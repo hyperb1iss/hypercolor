@@ -1157,7 +1157,8 @@ impl WindowsScreenCaptureInput {
                 .fetch_add(1, Ordering::AcqRel)
                 .wrapping_add(1);
             let displaced_publication = self
-                .publication
+                .adapter
+                .compatibility_publication()
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .fence_activity(activity_generation);
