@@ -320,7 +320,7 @@ pub(super) async fn sync_logical_mappings_for_device(
     }
 }
 
-pub(super) async fn desired_connect_behavior(
+pub(crate) async fn desired_connect_behavior(
     runtime: &DiscoveryRuntime,
     device_id: DeviceId,
     device_info: &DeviceInfo,
@@ -343,58 +343,15 @@ pub(super) async fn desired_connect_behavior(
         return hypercolor_driver_api::DiscoveryConnectBehavior::Deferred;
     }
 
-    if active_layout_targets_enabled_device(runtime, device_id, &layout_device_id).await {
+    if runtime
+        .layout
+        .active_layout_targets_enabled_device(runtime, device_id, &layout_device_id)
+        .await
+    {
         hypercolor_driver_api::DiscoveryConnectBehavior::AutoConnect
     } else {
         hypercolor_driver_api::DiscoveryConnectBehavior::Deferred
     }
-}
-
-pub(super) async fn active_layout_targets_enabled_device(
-    runtime: &DiscoveryRuntime,
-    physical_id: DeviceId,
-    layout_device_id: &str,
-) -> bool {
-    let candidate_ids = {
-        let logical_store = runtime.logical_devices.read().await;
-        let mut candidates = logical_devices::list_for_physical(&logical_store, physical_id)
-            .into_iter()
-            .filter(|entry| entry.enabled)
-            .map(|entry| entry.id)
-            .collect::<std::collections::HashSet<_>>();
-
-        let default_enabled = logical_store
-            .get(layout_device_id)
-            .is_none_or(|entry| entry.enabled);
-        if default_enabled {
-            candidates.insert(layout_device_id.to_owned());
-        }
-
-        candidates
-    };
-
-    let targeted_by_spatial_layout = {
-        let spatial = runtime.spatial_engine.snapshot();
-        spatial
-            .layout()
-            .zones
-            .iter()
-            .any(|zone| candidate_ids.contains(&zone.device_id))
-    };
-    if targeted_by_spatial_layout {
-        return true;
-    }
-
-    // Studio composes scenes and never writes the legacy spatial layout, so
-    // a device placed only through a scene zone is invisible above. Without
-    // this arm it stays Deferred forever: discovered, never connected, and
-    // never surfacing an error to explain why.
-    let scene_manager = runtime.scene_manager.snapshot().await;
-    scene_manager
-        .active_render_groups()
-        .iter()
-        .flat_map(|group| group.layout.zones.iter())
-        .any(|zone| candidate_ids.contains(&zone.device_id))
 }
 
 fn map_device_with_zone_segments(

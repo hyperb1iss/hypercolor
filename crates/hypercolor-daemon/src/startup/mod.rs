@@ -32,7 +32,6 @@ use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::server::ServerIdentity;
-use hypercolor_types::spatial::SpatialLayout;
 
 use crate::attachment_profiles::ComponentProfileStore;
 use crate::device_metrics::DeviceMetricsSnapshotStore;
@@ -45,7 +44,6 @@ use crate::domain::scene::SceneService;
 use crate::domain::spatial::SpatialService;
 use crate::extensions::{ApiExtension, DaemonLifecycleExtension, ExtensionRegistry};
 use crate::interaction_routing::InteractionRoutingControl;
-use crate::layout_auto_exclusions;
 use crate::logical_devices::LogicalDevice;
 use crate::network::DaemonDriverHost;
 use crate::output_power::OutputPower;
@@ -222,18 +220,6 @@ pub struct DaemonState {
 
     /// Latest composited display frames captured per device for preview surfaces.
     pub display_frames: Arc<RwLock<crate::display_frames::DisplayFrameRuntime>>,
-
-    /// Persistent JSON file for spatial layouts.
-    pub layouts_path: PathBuf,
-
-    /// In-memory layout store (shared with `AppState`).
-    pub layouts: Arc<RwLock<HashMap<String, SpatialLayout>>>,
-
-    /// Persisted discovery auto-sync exclusions.
-    pub layout_auto_exclusions: Arc<RwLock<layout_auto_exclusions::LayoutAutoExclusionStore>>,
-
-    /// Persistent JSON file for discovery auto-sync exclusions.
-    pub layout_auto_exclusions_path: PathBuf,
 
     /// Persistent JSON file for startup runtime session state.
     pub runtime_state_path: PathBuf,

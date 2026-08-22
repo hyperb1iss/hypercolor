@@ -10,7 +10,7 @@ use hypercolor_types::scene::{SceneId, ZoneId};
 use hypercolor_types::spatial::Output;
 use serde::{Deserialize, Serialize};
 
-use crate::persistence::write_atomic;
+use crate::persistence::serialize_json_pretty;
 
 /// Discovery auto-sync exclusion scope.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -143,17 +143,7 @@ pub fn load(path: &Path) -> anyhow::Result<LayoutAutoExclusionStore> {
     Ok(out)
 }
 
-/// Persist layout auto-exclusions to disk using atomic-replace semantics.
-pub fn save(path: &Path, store: &LayoutAutoExclusionStore) -> anyhow::Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).with_context(|| {
-            format!(
-                "failed to create layout auto-exclusion directory {}",
-                parent.display()
-            )
-        })?;
-    }
-
+pub(crate) fn serialize(store: &LayoutAutoExclusionStore) -> anyhow::Result<Vec<u8>> {
     let mut entries = store
         .iter()
         .filter_map(|(key, device_ids)| {
@@ -171,11 +161,7 @@ pub fn save(path: &Path, store: &LayoutAutoExclusionStore) -> anyhow::Result<()>
         .collect::<Vec<_>>();
     entries.sort_by_key(PersistedLayoutAutoExclusionEntry::sort_key);
 
-    let payload = serde_json::to_string_pretty(&entries)
-        .context("failed to serialize layout auto-exclusions")?;
-    write_atomic(path, payload.as_bytes()).context("failed to persist layout auto-exclusions")?;
-
-    Ok(())
+    serialize_json_pretty(&entries).context("failed to serialize layout auto-exclusions")
 }
 
 /// Merge intentional device removals from a saved layout edit into the exclusion set.

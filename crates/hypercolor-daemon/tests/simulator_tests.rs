@@ -10,9 +10,6 @@ use hypercolor_daemon::api;
 use hypercolor_daemon::app_state::AppState;
 use hypercolor_daemon::display_frames::DisplayFrameSnapshot;
 use hypercolor_daemon::runtime_state;
-use hypercolor_daemon::scene_transactions::{
-    SceneTransaction, SceneTransactionQueue, apply_layout_update,
-};
 use hypercolor_daemon::simulators::{
     SimulatedDisplayConfig, SimulatedDisplayStore, activate_simulated_displays,
     default_layout_device_id, logical_device_ids_for_simulator,
@@ -27,28 +24,22 @@ use uuid::Uuid;
 
 static DATA_DIR_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
-struct LayoutAcknowledger(tokio::task::JoinHandle<()>);
+struct LayoutPublisher(tokio::task::JoinHandle<()>);
 
-impl Drop for LayoutAcknowledger {
+impl Drop for LayoutPublisher {
     fn drop(&mut self) {
         self.0.abort();
     }
 }
 
-fn spawn_layout_acknowledger(queue: SceneTransactionQueue) -> LayoutAcknowledger {
-    LayoutAcknowledger(tokio::spawn(async move {
-        let _consumer = queue.consumer();
+fn spawn_layout_publisher(state: &Arc<AppState>) -> LayoutPublisher {
+    let executor = state.layout_publication_test_executor();
+    LayoutPublisher(tokio::spawn(async move {
         loop {
-            for transaction in queue.drain() {
-                match transaction {
-                    SceneTransaction::PrepareLayout(transaction) => {
-                        transaction.accept_and_commit_for_test();
-                    }
-                    transaction @ SceneTransaction::SetScreenCaptureConfigured(_) => queue
-                        .push(transaction)
-                        .expect("test transaction queue should remain open"),
-                }
-            }
+            executor
+                .execute_next_layout_publication()
+                .await
+                .expect("layout publication should succeed");
             tokio::time::sleep(std::time::Duration::from_millis(1)).await;
         }
     }))
@@ -314,6 +305,7 @@ async fn simulated_display_backend_ignores_empty_led_writes_but_rejects_real_led
             let message = cause.to_string();
             message.contains("failed to write 1 colors")
                 || message.contains("does not accept LED color writes")
+                || message.contains("does not support LED color output")
         }),
         "unexpected error: {error}"
     );
@@ -409,7 +401,7 @@ async fn simulated_display_create_rejects_invalid_resource_dimensions() {
 #[tokio::test]
 async fn simulated_display_crud_routes_update_runtime_state() {
     let (state, _tempdir) = isolated_state();
-    let _layout_acknowledger = spawn_layout_acknowledger(state.scene_transactions.clone());
+    let _layout_publisher = spawn_layout_publisher(&state);
     let app = api::build_router(Arc::clone(&state), None);
 
     let created = body_json(
@@ -501,21 +493,34 @@ async fn simulated_display_crud_routes_update_runtime_state() {
         attachment: None,
         brightness: None,
     });
-    {
-        let mut layouts = state.layouts.write().await;
-        layouts.insert(
-            active_layout_with_simulator.id.clone(),
-            active_layout_with_simulator.clone(),
-        );
-    }
-    apply_layout_update(
-        &state.spatial_engine,
-        &state.scene_manager,
-        &state.scene_transactions,
-        active_layout_with_simulator.clone(),
-    )
-    .await
-    .expect("valid simulator layout should apply");
+    let update = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::PUT)
+                .uri(format!("/api/v1/layouts/{}", active_layout.id))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({ "zones": active_layout_with_simulator.zones.clone() })
+                        .to_string(),
+                ))
+                .expect("layout update request should build"),
+        )
+        .await
+        .expect("layout update should complete");
+    assert_eq!(update.status(), StatusCode::OK);
+    let apply = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/layouts/{}/apply", active_layout.id))
+                .body(Body::empty())
+                .expect("layout apply request should build"),
+        )
+        .await
+        .expect("layout apply should complete");
+    assert_eq!(apply.status(), StatusCode::OK);
 
     let lane = {
         let mut manager = state.backend_manager.lock().await;
@@ -604,10 +609,10 @@ async fn simulated_display_crud_routes_update_runtime_state() {
     assert!(state.display_frames.read().await.frame(device_id).is_none());
     assert!(
         state
-            .layouts
-            .read()
+            .domains
+            .layout
+            .resolve(&active_layout_with_simulator.id)
             .await
-            .get(&active_layout_with_simulator.id)
             .expect("active layout should remain present")
             .zones
             .iter()

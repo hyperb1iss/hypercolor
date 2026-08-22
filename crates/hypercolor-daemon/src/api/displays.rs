@@ -977,8 +977,8 @@ fn display_zone_has_face_assignment(group: &Zone) -> bool {
 pub(crate) async fn sync_connected_display_surfaces(state: &AppState) {
     let displays = state
         .domains
-        .devices
-        .connected_display_surface_layouts()
+        .layout
+        .connected_display_surface_layouts(&state.domains.devices.layout_runtime())
         .await;
     if let Err(error) =
         crate::domain::display::hydrate_existing_display_surfaces(&state.domains.scene, displays)

@@ -25,6 +25,7 @@ use hypercolor_core::input::{
 };
 use hypercolor_core::scene::{SceneManager, make_scene};
 use hypercolor_core::spatial::SpatialEngine;
+use hypercolor_daemon::SceneTransactionQueue;
 use hypercolor_daemon::domain::scene::SceneService;
 use hypercolor_daemon::domain::spatial::SpatialService;
 use hypercolor_daemon::interaction_routing::InteractionRoutingControl;
@@ -34,7 +35,6 @@ use hypercolor_daemon::preview_runtime::PreviewRuntime;
 use hypercolor_daemon::render_thread::{
     CanvasDims, InputPublicationConsumer, InputPublicationDemand, RenderThread, RenderThreadState,
 };
-use hypercolor_daemon::scene_transactions::SceneTransactionQueue;
 use hypercolor_daemon::zone_layout_preview::ZoneLayoutPreviewStore;
 use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::effect::EffectId;

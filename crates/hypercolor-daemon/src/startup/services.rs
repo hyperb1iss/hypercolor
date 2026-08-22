@@ -57,14 +57,14 @@ use crate::attachment_profiles::ComponentProfileStore;
 use crate::device_metrics::DeviceMetricsSnapshot;
 use crate::device_settings::DeviceSettingsStore;
 use crate::domain::context::{
-    DeviceContext, DomainContextResources, DomainContexts, RuntimeSessionService, SceneContext,
+    DeviceContext, DomainContextResources, DomainContexts, RuntimeSessionProjection,
+    RuntimeSessionService, SceneContext,
 };
 use crate::domain::layout::LayoutContext;
 use crate::domain::output::OutputContext;
 use crate::driver_inventory::{DRIVER_INVENTORY_FILENAME, DriverInventoryStore};
 use crate::extensions::ExtensionRegistry;
 use crate::interaction_routing::InteractionRoutingControl;
-use crate::layout_auto_exclusions;
 use crate::network::{self, DaemonDriverHost};
 use crate::output_power::OutputPower;
 use crate::performance::PerformanceTracker;
@@ -266,31 +266,13 @@ impl DaemonState {
 
         // ── Layout Store ─────────────────────────────────────────────
         let layouts_path = ConfigManager::data_dir().join("layouts.json");
-        let mut persisted_layouts = match crate::layout_store::load(&layouts_path) {
-            Ok(entries) => entries,
-            Err(error) => {
-                warn!(
-                    path = %layouts_path.display(),
-                    %error,
-                    "Failed to load persisted layouts; starting with empty store"
-                );
-                HashMap::new()
-            }
-        };
-        if crate::layout_store::ensure_default_layout(&mut persisted_layouts, &default_layout) {
-            if let Err(error) = crate::layout_store::save(&layouts_path, &persisted_layouts) {
-                warn!(
-                    path = %layouts_path.display(),
-                    %error,
-                    "Failed to persist inserted default layout"
-                );
-            } else {
-                info!(
-                    path = %layouts_path.display(),
-                    "Inserted missing default layout into persisted layout store"
-                );
-            }
-        }
+        let layout_auto_exclusions_path =
+            ConfigManager::data_dir().join("layout-auto-exclusions.json");
+        let layout_resources = crate::domain::layout::LayoutContextResources::load(
+            layouts_path,
+            layout_auto_exclusions_path,
+            &default_layout,
+        );
 
         // ── Scene Manager / Store ──────────────────────────────────────
         let scenes_path = ConfigManager::data_dir().join("scenes.json");
@@ -300,7 +282,7 @@ impl DaemonState {
         match crate::profile_import::import_profiles(
             &profiles_path,
             &mut scene_store_inner,
-            &persisted_layouts,
+            layout_resources.catalog(),
             &default_layout,
         )
         .context("failed to import legacy profiles")?
@@ -544,35 +526,6 @@ impl DaemonState {
         let simulated_display_runtime = Arc::new(RwLock::new(SimulatedDisplayRuntime::new()));
         info!("Simulated display store ready");
 
-        let layout_count = persisted_layouts.len();
-        let layouts = Arc::new(RwLock::new(persisted_layouts));
-        info!(
-            path = %layouts_path.display(),
-            count = layout_count,
-            "Layout store ready"
-        );
-
-        // ── Layout Auto-Exclusion Store ─────────────────────────────
-        let layout_auto_exclusions_path =
-            ConfigManager::data_dir().join("layout-auto-exclusions.json");
-        let persisted_layout_auto_exclusions =
-            match layout_auto_exclusions::load(&layout_auto_exclusions_path) {
-                Ok(entries) => entries,
-                Err(error) => {
-                    warn!(
-                        path = %layout_auto_exclusions_path.display(),
-                        %error,
-                        "Failed to load layout auto-exclusions; starting with empty store"
-                    );
-                    HashMap::new()
-                }
-            };
-        let layout_auto_exclusions = Arc::new(RwLock::new(persisted_layout_auto_exclusions));
-        info!(
-            path = %layout_auto_exclusions_path.display(),
-            "Layout auto-exclusion store ready"
-        );
-
         // ── Runtime Session Store ───────────────────────────────────
         let runtime_state_path = state_dir.join("runtime-state.json");
         let startup_runtime_snapshot = match crate::runtime_state::load_migrated(
@@ -628,22 +581,30 @@ impl DaemonState {
             )
             .context("failed to build driver module registry")?,
         );
+        let runtime_projection = RuntimeSessionProjection::new(
+            scene_manager.clone(),
+            spatial_engine.clone(),
+            output_power.clone(),
+        );
+        let layout = LayoutContext::new(
+            layout_resources,
+            spatial_engine.clone(),
+            scene_manager.clone(),
+            scene_transactions.clone(),
+            runtime_state_path.clone(),
+            runtime_projection.clone(),
+        );
         let discovery_runtime = crate::discovery::DiscoveryRuntime {
             device_registry: device_registry.clone(),
             backend_manager: Arc::clone(&backend_manager),
             lifecycle_manager: Arc::clone(&lifecycle_manager),
             reconnect_tasks: Arc::clone(&reconnect_tasks),
             event_bus: Arc::clone(&event_bus),
-            spatial_engine: spatial_engine.clone(),
-            scene_manager: scene_manager.clone(),
-            layouts: Arc::clone(&layouts),
-            layouts_path: layouts_path.clone(),
-            layout_auto_exclusions: Arc::clone(&layout_auto_exclusions),
+            layout: layout.clone(),
             logical_devices: Arc::clone(&logical_devices),
             attachment_registry: Arc::clone(&attachment_registry),
             attachment_profiles: Arc::clone(&attachment_profiles),
             device_settings: device_settings.clone(),
-            scene_transactions: scene_transactions.clone(),
             runtime_state_path: runtime_state_path.clone(),
             device_aliases_path: device_aliases_path.clone(),
             usb_protocol_configs: usb_protocol_configs.clone(),
@@ -691,20 +652,13 @@ impl DaemonState {
         let start_time = Instant::now();
         let runtime_session = RuntimeSessionService::new(
             runtime_state_path.clone(),
-            scene_manager.clone(),
-            spatial_engine.clone(),
-            output_power.clone(),
-            Arc::clone(&driver_host),
-            Arc::clone(&driver_registry),
+            runtime_projection,
+            &driver_host,
         );
         let devices = DeviceContext::new(
-            device_registry.clone(),
-            Arc::clone(&lifecycle_manager),
             Arc::clone(&driver_host),
             Arc::clone(&driver_registry),
             Some(Arc::clone(&config_manager)),
-            Arc::clone(&layout_auto_exclusions),
-            layout_auto_exclusions_path.clone(),
         );
         let scene = SceneContext::new(
             scene_manager.clone(),
@@ -712,16 +666,8 @@ impl DaemonState {
             Arc::clone(&asset_library),
             Some(Arc::clone(&config_manager)),
             Arc::clone(&render_loop),
-            devices.clone(),
-        );
-        let layout = LayoutContext::new(
-            Arc::clone(&layouts),
-            spatial_engine.clone(),
-            scene_manager.clone(),
-            scene_transactions.clone(),
-            runtime_state_path.clone(),
-            runtime_session.clone(),
-            devices.clone(),
+            layout.clone(),
+            devices.layout_runtime(),
         );
         let output = OutputContext::new(
             output_power.clone(),
@@ -796,10 +742,6 @@ impl DaemonState {
             display_frames: Arc::new(RwLock::new(
                 crate::display_frames::DisplayFrameRuntime::new(),
             )),
-            layouts_path,
-            layouts,
-            layout_auto_exclusions,
-            layout_auto_exclusions_path,
             runtime_state_path,
             device_aliases_path,
             startup_device_aliases: Some(startup_device_aliases),

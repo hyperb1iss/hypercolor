@@ -11,7 +11,6 @@ use hypercolor_types::event::{DeviceRef, DisconnectReason, HypercolorEvent};
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
-use super::auto_layout::sync_active_layout_for_renderable_devices;
 use super::device_helpers::{
     apply_persisted_device_settings, desired_connect_behavior, device_log_label,
     device_ref_for_tracked, lifecycle_policy_for_device_info, sync_registry_state,
@@ -485,7 +484,10 @@ pub async fn execute_discovery_scan(
         "Discovery sweep finished"
     );
 
-    sync_active_layout_for_renderable_devices(&runtime, None).await;
+    runtime
+        .layout
+        .sync_active_layout_for_renderable_devices(runtime.clone(), None)
+        .await;
     {
         let mut manager = runtime.backend_manager.lock().await;
         manager.enable_unmapped_layout_warnings();

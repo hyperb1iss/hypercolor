@@ -19,8 +19,6 @@ pub(super) use capture::{
 pub(super) use capture::{capture_statuses_match, validate_prepared_capture_status};
 pub(super) use input::apply_input_config_change;
 use render::apply_render_config_change;
-#[cfg(test)]
-pub(super) use render::canvas_dimensions_differ;
 
 // ── Registry dispatch ───────────────────────────────────────────────
 

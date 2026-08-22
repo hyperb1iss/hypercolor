@@ -4,7 +4,6 @@
 //! Effect render → Spatial sample → Device push → Bus publish.
 
 use std::collections::{HashMap, VecDeque};
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -29,6 +28,7 @@ use hypercolor_core::scene::{SceneManager, make_scene};
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_daemon::attachment_profiles::ComponentProfileStore;
 use hypercolor_daemon::device_settings::DeviceSettingsStore;
+use hypercolor_daemon::domain::layout::LayoutContext;
 use hypercolor_daemon::domain::scene::{SceneMutation, SceneService};
 use hypercolor_daemon::domain::spatial::SpatialService;
 use hypercolor_driver_api::{BackendInfo, DeviceBackend};
@@ -52,6 +52,7 @@ use hypercolor_types::spatial::{
     StripDirection,
 };
 
+use hypercolor_daemon::SceneTransactionQueue;
 use hypercolor_daemon::discovery::DiscoveryRuntime;
 use hypercolor_daemon::logical_devices::LogicalDevice;
 use hypercolor_daemon::output_power::{OutputPower, OutputPowerState};
@@ -61,7 +62,6 @@ use hypercolor_daemon::render_thread::{
     CanvasDims, InputPublicationConsumer, InputPublicationDemand,
     InputPublicationDemandRegistration, RenderThread, RenderThreadState,
 };
-use hypercolor_daemon::scene_transactions::{SceneTransactionQueue, apply_layout_update};
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -81,11 +81,56 @@ fn test_layout(zones: Vec<Output>) -> SpatialLayout {
     }
 }
 
-fn device_settings_access() -> hypercolor_daemon::device_settings::DeviceSettingsAccess {
-    OutputPower::new(DeviceSettingsStore::new(PathBuf::from(
-        "device-settings.json",
-    )))
-    .device_settings()
+fn test_discovery_runtime(
+    device_registry: DeviceRegistry,
+    backend_manager: Arc<Mutex<BackendManager>>,
+    lifecycle_manager: Arc<Mutex<DeviceLifecycleManager>>,
+    event_bus: Arc<HypercolorBus>,
+    spatial: SpatialService,
+) -> DiscoveryRuntime {
+    let state_dir = std::env::temp_dir().join(format!(
+        "hypercolor-render-discovery-{}",
+        uuid::Uuid::now_v7()
+    ));
+    let scene_transactions = SceneTransactionQueue::default();
+    let scene_manager =
+        SceneService::in_memory(SceneManager::with_default(), Arc::clone(&event_bus));
+    let layout = LayoutContext::new_test_context(
+        HashMap::new(),
+        state_dir.join("layouts.json"),
+        HashMap::new(),
+        state_dir.join("layout-auto-exclusions.json"),
+        spatial,
+        scene_manager,
+        scene_transactions,
+        state_dir.join("runtime-state.json"),
+    );
+    DiscoveryRuntime {
+        device_registry,
+        backend_manager,
+        lifecycle_manager,
+        reconnect_tasks: Arc::new(StdMutex::new(HashMap::new())),
+        event_bus,
+        layout,
+        logical_devices: Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new())),
+        attachment_registry: Arc::new(RwLock::new(ComponentRegistry::new())),
+        attachment_profiles: Arc::new(RwLock::new(ComponentProfileStore::new(
+            state_dir.join("attachment-profiles.json"),
+        ))),
+        device_settings: OutputPower::new(DeviceSettingsStore::new(
+            state_dir.join("device-settings.json"),
+        ))
+        .device_settings(),
+        runtime_state_path: state_dir.join("runtime-state.json"),
+        device_aliases_path: state_dir.join("device-aliases.json"),
+        usb_protocol_configs: UsbProtocolConfigStore::new(),
+        credential_store: Arc::new(
+            CredentialStore::open_blocking(&state_dir).expect("test credential store"),
+        ),
+        in_progress: Arc::new(AtomicBool::new(false)),
+        pending_scans: Arc::default(),
+        task_spawner: tokio::runtime::Handle::current(),
+    }
 }
 
 fn demand_input(
@@ -1198,6 +1243,26 @@ fn make_render_state(
         configured_max_fps_tier: FpsTier::Full.into(),
         face_fps_cap: 30,
     }
+}
+
+async fn publish_layout(state: &RenderThreadState, layout: SpatialLayout) {
+    let state_dir =
+        std::env::temp_dir().join(format!("hypercolor-render-layout-{}", uuid::Uuid::now_v7()));
+    let context = LayoutContext::new_test_context(
+        HashMap::new(),
+        state_dir.join("layouts.json"),
+        HashMap::new(),
+        state_dir.join("layout-auto-exclusions.json"),
+        state.spatial_engine.clone(),
+        state.scene_manager.clone(),
+        state.scene_transactions.clone(),
+        state_dir.join("runtime-state.json"),
+    );
+    context
+        .test_workflows()
+        .publish(layout)
+        .await
+        .expect("layout authority should publish the update");
 }
 
 async fn commit_render_mutation(state: &RenderThreadState, mutation: SceneMutation) {
@@ -2792,41 +2857,13 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
     let layout = test_layout(vec![strip_zone("zone_0", &layout_device_id, 8)]);
     let spatial_engine = SpatialService::new(SpatialEngine::new(layout.clone()));
     let event_bus = Arc::new(HypercolorBus::new());
-    let discovery_runtime = DiscoveryRuntime {
-        device_registry: device_registry.clone(),
-        backend_manager: Arc::clone(&backend_manager),
-        lifecycle_manager: Arc::clone(&lifecycle_manager),
-        reconnect_tasks: Arc::new(StdMutex::new(HashMap::new())),
-        event_bus: Arc::clone(&event_bus),
-        spatial_engine: spatial_engine.clone(),
-        scene_manager: SceneService::in_memory(
-            SceneManager::with_default(),
-            Arc::clone(&event_bus),
-        ),
-        layouts: Arc::new(RwLock::new(HashMap::new())),
-        layouts_path: PathBuf::from("layouts.json"),
-        layout_auto_exclusions: Arc::new(RwLock::new(HashMap::new())),
-        logical_devices: Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new())),
-        attachment_registry: Arc::new(RwLock::new(ComponentRegistry::new())),
-        attachment_profiles: Arc::new(RwLock::new(ComponentProfileStore::new(PathBuf::from(
-            "attachment-profiles.json",
-        )))),
-        device_settings: device_settings_access(),
-        scene_transactions: SceneTransactionQueue::default(),
-        runtime_state_path: PathBuf::from("runtime-state.json"),
-        device_aliases_path: PathBuf::from("device-aliases.json"),
-        usb_protocol_configs: UsbProtocolConfigStore::new(),
-        credential_store: Arc::new(
-            CredentialStore::open_blocking(&std::env::temp_dir().join(format!(
-                "hypercolor-test-credentials-{}",
-                uuid::Uuid::now_v7()
-            )))
-            .expect("test credential store"),
-        ),
-        in_progress: Arc::new(AtomicBool::new(false)),
-        pending_scans: Arc::default(),
-        task_spawner: tokio::runtime::Handle::current(),
-    };
+    let discovery_runtime = test_discovery_runtime(
+        device_registry.clone(),
+        Arc::clone(&backend_manager),
+        Arc::clone(&lifecycle_manager),
+        Arc::clone(&event_bus),
+        spatial_engine.clone(),
+    );
 
     let effect_seed = active_builtin_effect("solid_color", solid_color_controls(255, 0, 0));
     let mut scene_manager = SceneManager::with_default();
@@ -2984,41 +3021,13 @@ async fn newer_success_fences_deferred_async_failure_recovery() {
     );
     let backend_manager = Arc::clone(&state.backend_manager);
     let event_bus = Arc::clone(&state.event_bus);
-    let discovery_runtime = DiscoveryRuntime {
-        device_registry: device_registry.clone(),
-        backend_manager: Arc::clone(&backend_manager),
-        lifecycle_manager: Arc::clone(&lifecycle_manager),
-        reconnect_tasks: Arc::new(StdMutex::new(HashMap::new())),
-        event_bus: Arc::clone(&event_bus),
-        spatial_engine: state.spatial_engine.clone(),
-        scene_manager: SceneService::in_memory(
-            SceneManager::with_default(),
-            Arc::clone(&event_bus),
-        ),
-        layouts: Arc::new(RwLock::new(HashMap::new())),
-        layouts_path: PathBuf::from("layouts.json"),
-        layout_auto_exclusions: Arc::new(RwLock::new(HashMap::new())),
-        logical_devices: Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new())),
-        attachment_registry: Arc::new(RwLock::new(ComponentRegistry::new())),
-        attachment_profiles: Arc::new(RwLock::new(ComponentProfileStore::new(PathBuf::from(
-            "attachment-profiles.json",
-        )))),
-        device_settings: device_settings_access(),
-        scene_transactions: SceneTransactionQueue::default(),
-        runtime_state_path: PathBuf::from("runtime-state.json"),
-        device_aliases_path: PathBuf::from("device-aliases.json"),
-        usb_protocol_configs: UsbProtocolConfigStore::new(),
-        credential_store: Arc::new(
-            CredentialStore::open_blocking(&std::env::temp_dir().join(format!(
-                "hypercolor-test-credentials-{}",
-                uuid::Uuid::now_v7()
-            )))
-            .expect("test credential store"),
-        ),
-        in_progress: Arc::new(AtomicBool::new(false)),
-        pending_scans: Arc::default(),
-        task_spawner: tokio::runtime::Handle::current(),
-    };
+    let discovery_runtime = test_discovery_runtime(
+        device_registry.clone(),
+        Arc::clone(&backend_manager),
+        Arc::clone(&lifecycle_manager),
+        Arc::clone(&event_bus),
+        state.spatial_engine.clone(),
+    );
     state.discovery_runtime = Some(discovery_runtime.clone());
 
     let lifecycle_guard = lifecycle_manager.lock().await;
@@ -3174,42 +3183,13 @@ async fn pipeline_keeps_rendering_while_async_write_failure_disconnects() {
     );
     let backend_manager = Arc::clone(&state.backend_manager);
     let event_bus = Arc::clone(&state.event_bus);
-    let spatial_engine = state.spatial_engine.clone();
-    let discovery_runtime = DiscoveryRuntime {
-        device_registry: device_registry.clone(),
-        backend_manager: Arc::clone(&backend_manager),
-        lifecycle_manager: Arc::clone(&lifecycle_manager),
-        reconnect_tasks: Arc::new(StdMutex::new(HashMap::new())),
-        event_bus: Arc::clone(&event_bus),
-        spatial_engine,
-        scene_manager: SceneService::in_memory(
-            SceneManager::with_default(),
-            Arc::clone(&event_bus),
-        ),
-        layouts: Arc::new(RwLock::new(HashMap::new())),
-        layouts_path: PathBuf::from("layouts.json"),
-        layout_auto_exclusions: Arc::new(RwLock::new(HashMap::new())),
-        logical_devices: Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new())),
-        attachment_registry: Arc::new(RwLock::new(ComponentRegistry::new())),
-        attachment_profiles: Arc::new(RwLock::new(ComponentProfileStore::new(PathBuf::from(
-            "attachment-profiles.json",
-        )))),
-        device_settings: device_settings_access(),
-        scene_transactions: SceneTransactionQueue::default(),
-        runtime_state_path: PathBuf::from("runtime-state.json"),
-        device_aliases_path: PathBuf::from("device-aliases.json"),
-        usb_protocol_configs: UsbProtocolConfigStore::new(),
-        credential_store: Arc::new(
-            CredentialStore::open_blocking(&std::env::temp_dir().join(format!(
-                "hypercolor-test-credentials-{}",
-                uuid::Uuid::now_v7()
-            )))
-            .expect("test credential store"),
-        ),
-        in_progress: Arc::new(AtomicBool::new(false)),
-        pending_scans: Arc::default(),
-        task_spawner: tokio::runtime::Handle::current(),
-    };
+    let discovery_runtime = test_discovery_runtime(
+        device_registry.clone(),
+        Arc::clone(&backend_manager),
+        Arc::clone(&lifecycle_manager),
+        Arc::clone(&event_bus),
+        state.spatial_engine.clone(),
+    );
     state.discovery_runtime = Some(discovery_runtime.clone());
 
     let mut event_rx = event_bus.subscribe_all();
@@ -4278,14 +4258,11 @@ async fn pipeline_applies_queued_layout_changes_on_the_next_frame() {
         .expect("initial sampled color should exist");
     assert_eq!(initial_color, [255, 0, 0]);
 
-    apply_layout_update(
-        &state.spatial_engine,
-        &state.scene_manager,
-        &state.scene_transactions,
+    publish_layout(
+        &state,
         test_layout(vec![point_zone("zone_sample", "mock:sample", 0.75, 0.5)]),
     )
-    .await
-    .expect("renderer should acknowledge the layout update");
+    .await;
 
     let updated_color = tokio::time::timeout(WAIT_DEADLINE, async {
         loop {
@@ -4346,18 +4323,15 @@ async fn pipeline_retires_layout_updates_while_the_render_loop_is_paused() {
     }
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    let applied = tokio::time::timeout(
+    tokio::time::timeout(
         Duration::from_secs(5),
-        apply_layout_update(
-            &state.spatial_engine,
-            &state.scene_manager,
-            &state.scene_transactions,
+        publish_layout(
+            &state,
             test_layout(vec![point_zone("zone_sample", "mock:sample", 0.75, 0.5)]),
         ),
     )
     .await
     .expect("a paused render loop must still retire layout transactions");
-    applied.expect("renderer should acknowledge the layout update while paused");
 
     {
         let mut rl = state.render_loop.write().await;

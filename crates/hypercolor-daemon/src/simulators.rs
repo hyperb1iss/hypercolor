@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex as StdMutex, PoisonError};
 use std::time::SystemTime;
 
 use anyhow::{Context, Result, bail};
+use hypercolor_core::device::DeviceLifecycleManager;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
 use utoipa::ToSchema;
@@ -414,7 +415,10 @@ pub async fn activate_simulated_displays(
 
 #[must_use]
 pub fn default_layout_device_id(config: &SimulatedDisplayConfig) -> String {
-    format!("{SIMULATED_DISPLAY_BACKEND_ID}:{}", config.id)
+    DeviceLifecycleManager::canonical_layout_device_id(
+        &config.device_info(),
+        Some(&config.fingerprint()),
+    )
 }
 
 #[must_use]

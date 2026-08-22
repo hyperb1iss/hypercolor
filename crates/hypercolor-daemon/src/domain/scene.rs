@@ -1675,8 +1675,8 @@ pub struct SceneActivated {
 }
 
 /// Activate a scene: validate its media admission, switch the exclusive
-/// current scene, apply soft admission, then persist and reconcile
-/// connectivity.
+/// current scene, apply soft admission, reconcile connectivity, then
+/// persist the converged runtime projection.
 ///
 /// # Errors
 ///
@@ -1690,9 +1690,8 @@ pub async fn activate_scene(
 ) -> Result<SceneActivated, DomainError> {
     let media_admission = ctx.scene.media_admission_context().await;
     let display_surfaces = ctx
-        .scene
-        .devices()
-        .connected_display_surface_layouts()
+        .layout
+        .connected_display_surface_layouts(ctx.scene.layout_runtime())
         .await;
     let _activation_guard = ctx.layout.acquire_scene_activation_guard().await;
     let layout_guard = ctx.layout.acquire_update_guard().await;
@@ -1731,10 +1730,12 @@ pub async fn activate_scene(
         .await;
     let layout = apply_activation_layout(ctx, layout_guard, layout_id).await;
     let brightness = apply_activation_brightness(ctx, activation_brightness).await;
-    ctx.scene.save_runtime_session().await;
 
     // Which scene is active decides which devices are worth connecting.
-    ctx.scene.devices().sync_connectivity().await;
+    ctx.layout
+        .sync_runtime_connectivity(ctx.scene.layout_runtime())
+        .await;
+    ctx.scene.save_runtime_session().await;
 
     Ok(SceneActivated {
         scene_id: command.scene_id,
@@ -1774,7 +1775,12 @@ async fn apply_activation_layout(
         };
     };
 
-    match ctx.layout.apply_persisted_update(guard, layout).await {
+    let result = ctx
+        .layout
+        .admit_persisted_update_under_guard(&guard, layout, ctx.scene.layout_runtime())
+        .await;
+    drop(guard);
+    match result {
         Ok(()) => SceneLayoutActivationOutcome {
             layout_id: Some(layout_id),
             applied: true,
@@ -2036,7 +2042,9 @@ pub async fn replace_scene(
     mutation.retire_scene_previews(updated.id);
     let commit = ctx.scene.commit(mutation).await?;
     ctx.scene.save_runtime_session().await;
-    ctx.scene.devices().sync_connectivity().await;
+    ctx.layout
+        .sync_runtime_connectivity(ctx.scene.layout_runtime())
+        .await;
 
     Ok(SceneWritten {
         scene: updated,
@@ -2278,7 +2286,9 @@ pub async fn delete_scene(
     drop(layout_guard);
     ctx.scene.save_runtime_session().await;
     if is_active {
-        ctx.scene.devices().sync_connectivity().await;
+        ctx.layout
+            .sync_runtime_connectivity(ctx.scene.layout_runtime())
+            .await;
     }
 
     Ok(SceneDeleted {
@@ -2309,7 +2319,9 @@ pub async fn deactivate_scene(ctx: &SceneLibraryContext) -> Result<SceneDeactiva
     ctx.scene.save_runtime_session().await;
 
     // Which scene is active decides which devices are worth connecting.
-    ctx.scene.devices().sync_connectivity().await;
+    ctx.layout
+        .sync_runtime_connectivity(ctx.scene.layout_runtime())
+        .await;
 
     Ok(SceneDeactivated {
         previous_scene,

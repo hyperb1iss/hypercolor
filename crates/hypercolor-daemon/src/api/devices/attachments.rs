@@ -97,8 +97,8 @@ pub async fn update_attachments(
     let layout_device_id = if body.validate_only {
         state
             .domains
-            .devices
-            .resolved_layout_device_id(&tracked.info)
+            .layout
+            .resolved_layout_device_id(&state.domains.devices.layout_runtime(), &tracked.info)
             .await
     } else {
         let device_key = tracked.info.id.to_string();

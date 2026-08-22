@@ -30,8 +30,9 @@ use hypercolor_types::spatial::{Output, SpatialLayout};
 use hypercolor_core::scene::{LayerMutationError, OutputPlacement};
 
 use crate::domain::commit::SceneCommit;
-use crate::domain::context::{DeviceContext, SceneContext};
+use crate::domain::context::SceneContext;
 use crate::domain::effect::EffectContext;
+use crate::domain::layout::LayoutContext;
 use crate::domain::output::OutputContext;
 use crate::domain::scene::SceneMutation;
 use crate::domain::{DomainError, MutationContext, ResourceKind};
@@ -41,7 +42,7 @@ use crate::domain::{DomainError, MutationContext, ResourceKind};
 pub struct SceneTreeContext {
     scene: SceneContext,
     effects: EffectContext,
-    devices: DeviceContext,
+    layout: LayoutContext,
     output: OutputContext,
 }
 
@@ -49,13 +50,13 @@ impl SceneTreeContext {
     pub(crate) fn new(
         scene: SceneContext,
         effects: EffectContext,
-        devices: DeviceContext,
+        layout: LayoutContext,
         output: OutputContext,
     ) -> Self {
         Self {
             scene,
             effects,
-            devices,
+            layout,
             output,
         }
     }
@@ -573,7 +574,9 @@ pub async fn assign_members(
 
     let zone = zone_in_candidate(&mutation, command.zone_id)?;
     let written = finish_zone_mutation(ctx, mutation, scene_id, zone).await?;
-    ctx.devices.sync_connectivity().await;
+    ctx.layout
+        .sync_runtime_connectivity(ctx.scene.layout_runtime())
+        .await;
     reconcile_member_exclusions(ctx, scene_id, &previous_zones).await;
     Ok(written)
 }
@@ -613,7 +616,9 @@ pub async fn unassign_member(
 
     let zone = zone_in_candidate(&mutation, zone_id)?;
     let written = finish_zone_mutation(ctx, mutation, scene_id, zone).await?;
-    ctx.devices.sync_connectivity().await;
+    ctx.layout
+        .sync_runtime_connectivity(ctx.scene.layout_runtime())
+        .await;
     reconcile_member_exclusions(ctx, scene_id, &previous_zones).await;
     Ok(written)
 }
@@ -940,7 +945,10 @@ async fn mint_missing_outputs(
     ctx: &SceneTreeContext,
     request: &AssignMembersRequest,
 ) -> Result<Vec<Output>, DomainError> {
-    Ok(ctx.devices.layout_outputs_for(&request.device_id).await)
+    Ok(ctx
+        .layout
+        .layout_outputs_for(ctx.scene.layout_runtime(), &request.device_id)
+        .await)
 }
 
 /// Rebuild a zone's stored layout from the compact placement contract.
@@ -1005,7 +1013,7 @@ async fn reconcile_member_exclusions(ctx: &SceneTreeContext, scene_id: SceneId, 
             .map(|scene| scene.zones.clone())
             .unwrap_or_default()
     };
-    ctx.devices
+    ctx.layout
         .reconcile_zone_auto_exclusions(scene_id, previous, &updated)
         .await;
 }

@@ -8,7 +8,6 @@ use tracing::{debug, info, warn};
 
 use hypercolor_core::device::{UsbHotplugEvent, UsbHotplugMonitor};
 use hypercolor_core::effect::{EffectWatchEvent, EffectWatcher};
-use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::config::{EffectErrorFallbackPolicy, HypercolorConfig};
 use hypercolor_types::event::{HypercolorEvent, SceneChangeReason};
 use hypercolor_types::scene::SceneId;
@@ -504,30 +503,19 @@ impl DaemonState {
         };
         // Restore active layout if persisted.
         if let Some(layout_id) = &snapshot.active_layout_id {
-            let layout = self.layouts.read().await.get(layout_id).cloned();
-            if let Some(layout) = layout {
-                match SpatialEngine::try_new(layout.clone()) {
-                    Ok(prepared) => {
-                        self.spatial_engine.replace(prepared);
-                        // PRE-INIT WRITER (1 of 4) — see
-                        // `apply_runtime_session_snapshot` for the reasoning
-                        // all restore writers share.
-                        let mut mutation = self.scene_manager.begin_mutation().await;
-                        mutation.sync_primary_layout(&layout);
-                        if let Err(error) = self.scene_manager.commit_mutation(mutation).await {
-                            warn!(%error, "Failed to sync restored scene layout");
-                        }
-                        info!(layout_id, layout_name = %layout.name, "Restored active layout");
-                    }
-                    Err(error) => {
-                        warn!(layout_id, %error, "Rejected persisted active layout");
-                    }
+            match self.domains.layout.restore_startup_layout(layout_id).await {
+                Ok(Some(layout)) => {
+                    info!(layout_id, layout_name = %layout.name, "Restored active layout");
                 }
-            } else {
-                debug!(
-                    layout_id,
-                    "Persisted active layout not found in store; using default"
-                );
+                Ok(None) => {
+                    debug!(
+                        layout_id,
+                        "Persisted active layout not found in store; using default"
+                    );
+                }
+                Err(error) => {
+                    warn!(layout_id, %error, "Rejected persisted active layout");
+                }
             }
         }
 
@@ -598,23 +586,18 @@ impl DaemonState {
         }
 
         if let Some(layout_id) = layout_id {
-            let layout = self.layouts.read().await.get(layout_id.as_str()).cloned();
-            match layout {
-                Some(layout) => match SpatialEngine::try_new(layout.clone()) {
-                    Ok(prepared) => {
-                        self.spatial_engine.replace(prepared);
-                        let mut mutation = self.scene_manager.begin_mutation().await;
-                        mutation.sync_primary_layout(&layout);
-                        if let Err(error) = self.scene_manager.commit_mutation(mutation).await {
-                            warn!(%error, "Failed to sync configured startup scene layout");
-                        }
-                    }
-                    Err(error) => {
-                        warn!(%layout_id, %error, "Rejected configured startup scene layout");
-                    }
-                },
-                None => {
+            match self
+                .domains
+                .layout
+                .restore_startup_layout(layout_id.as_str())
+                .await
+            {
+                Ok(Some(_)) => {}
+                Ok(None) => {
                     warn!(%layout_id, "Configured startup scene layout was not found");
+                }
+                Err(error) => {
+                    warn!(%layout_id, %error, "Rejected configured startup scene layout");
                 }
             }
         }

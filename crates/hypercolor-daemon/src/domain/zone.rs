@@ -161,7 +161,7 @@ pub async fn delete_zone(
 
     let commit = ctx.commit(mutation).await?;
     settle_zone_mutation(ctx).await;
-    ctx.devices()
+    ctx.layout()
         .remove_zone_auto_exclusions(scene_id, command.zone_id)
         .await;
 
@@ -175,7 +175,9 @@ pub async fn delete_zone(
 /// just entered or left the active scene reconnects or releases.
 async fn settle_zone_mutation(ctx: &SceneContext) {
     ctx.save_runtime_session().await;
-    ctx.devices().sync_connectivity().await;
+    ctx.layout()
+        .sync_runtime_connectivity(ctx.layout_runtime())
+        .await;
 }
 
 fn zone_in_scene(

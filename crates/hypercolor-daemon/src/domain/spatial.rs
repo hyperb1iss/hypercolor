@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use arc_swap::{ArcSwap, Guard};
-use hypercolor_core::spatial::{SpatialEngine, SpatialPlanError};
+use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::spatial::SpatialLayout;
 
 /// Cloneable authority for the active spatial engine.
@@ -17,6 +17,23 @@ struct SpatialServiceInner {
 /// Lock-free access to the latest admitted spatial engine.
 #[derive(Clone)]
 pub struct SpatialReader(Arc<SpatialServiceInner>);
+
+#[cfg(feature = "persistence-test-hooks")]
+pub struct SpatialTestFixture<'a> {
+    service: &'a SpatialService,
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+impl SpatialTestFixture<'_> {
+    pub fn replace(&self, layout: SpatialLayout) {
+        let mut candidate = self.service.snapshot().as_ref().clone();
+        if let Err(error) = candidate.try_update_layout(layout) {
+            tracing::warn!(%error, "Rejected spatial fixture layout update");
+            return;
+        }
+        self.service.replace(candidate);
+    }
+}
 
 impl SpatialReader {
     /// Borrow the latest admitted spatial engine without cloning its `Arc`.
@@ -53,30 +70,15 @@ impl SpatialService {
         SpatialReader(Arc::clone(&self.0))
     }
 
+    #[cfg(feature = "persistence-test-hooks")]
+    #[must_use]
+    pub fn test_fixture(&self) -> SpatialTestFixture<'_> {
+        SpatialTestFixture { service: self }
+    }
+
     /// Replace the authoritative engine with a fully prepared candidate.
-    pub fn replace(&self, engine: SpatialEngine) {
+    pub(crate) fn replace(&self, engine: SpatialEngine) {
         self.0.engine.store(Arc::new(engine));
-    }
-
-    /// Prepare and atomically publish a new layout.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SpatialPlanError`] without changing the active engine when
-    /// the candidate layout cannot be represented.
-    pub fn try_update_layout(&self, layout: SpatialLayout) -> Result<(), SpatialPlanError> {
-        let mut candidate = self.snapshot().as_ref().clone();
-        candidate.try_update_layout(layout)?;
-        self.replace(candidate);
-        Ok(())
-    }
-
-    /// Prepare and publish a new layout, retaining the active engine when the
-    /// candidate is invalid.
-    pub fn update_layout(&self, layout: SpatialLayout) {
-        if let Err(error) = self.try_update_layout(layout) {
-            tracing::warn!(%error, "Rejected spatial layout update");
-        }
     }
 
     #[must_use]

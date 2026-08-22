@@ -14,7 +14,7 @@ use hypercolor_types::config::InteractionRoutePolicy;
 
 use super::live::{
     CaptureConfigTransactionError, LiveSections, apply_capture_config_transaction,
-    apply_input_config_change, canvas_dimensions_differ, capture_statuses_match, live_sections_for,
+    apply_input_config_change, capture_statuses_match, live_sections_for,
     validate_prepared_capture_status, write_covers,
 };
 use super::{ConfigApplyQuery, put_config_key};
@@ -278,13 +278,6 @@ fn key_reads_mask_at_every_depth_of_a_secret_namespace() {
         super::redact_key("daemon.port", serde_json::json!(9420)),
         serde_json::json!(9420)
     );
-}
-
-#[test]
-fn canvas_dimensions_differ_only_when_size_changes() {
-    assert!(!canvas_dimensions_differ(800, 600, 800, 600));
-    assert!(canvas_dimensions_differ(800, 600, 801, 600));
-    assert!(canvas_dimensions_differ(800, 600, 800, 601));
 }
 
 #[tokio::test]

@@ -1,305 +1,14 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
-use hypercolor_core::device::DeviceLifecycleManager;
 use hypercolor_core::spatial::generate_positions;
 use hypercolor_types::attachment::zone_name_matches_slot_alias;
-use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceTopologyHint};
+use hypercolor_types::device::{DeviceInfo, DeviceTopologyHint};
 use hypercolor_types::spatial::{
     Corner, EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection, Winding, ZoneShape,
 };
-use tracing::{debug, info, warn};
-
-use super::DiscoveryRuntime;
-use crate::layout_auto_exclusions::LayoutAutoExclusionKey;
-use crate::scene_transactions::{PreparedLayoutUpdate, apply_prepared_layout_update_under_guard};
-
-#[doc(hidden)]
-#[allow(
-    clippy::too_many_lines,
-    reason = "layout reconciliation keeps the full discovery-driven repair flow in one place"
-)]
-pub async fn sync_active_layout_for_renderable_devices(
-    runtime: &DiscoveryRuntime,
-    limit_to_devices: Option<&HashSet<DeviceId>>,
-) {
-    let runtime = runtime.clone();
-    let limit_to_devices = limit_to_devices.cloned();
-    if let Err(error) = tokio::spawn(async move {
-        sync_active_layout_for_renderable_devices_workflow(&runtime, limit_to_devices.as_ref())
-            .await;
-    })
-    .await
-    {
-        warn!(%error, "auto-layout repair workflow failed");
-    }
-}
-
-#[allow(
-    clippy::too_many_lines,
-    reason = "layout reconciliation keeps the full discovery-driven repair flow in one place"
-)]
-async fn sync_active_layout_for_renderable_devices_workflow(
-    runtime: &DiscoveryRuntime,
-    limit_to_devices: Option<&HashSet<DeviceId>>,
-) {
-    let tracked_devices = runtime.device_registry.list().await;
-    let logical_store = runtime.logical_devices.read().await.clone();
-    let lifecycle_layout_ids = {
-        let lifecycle = runtime.lifecycle_manager.lock().await;
-        tracked_devices
-            .iter()
-            .map(|tracked| {
-                let device_id = tracked.info.id;
-                let layout_id = lifecycle
-                    .layout_device_id_for(device_id)
-                    .map(ToOwned::to_owned);
-                (device_id, layout_id)
-            })
-            .collect::<HashMap<_, _>>()
-    };
-    let mut canonical_layout_ids = HashMap::with_capacity(tracked_devices.len());
-    for tracked in &tracked_devices {
-        let device_id = tracked.info.id;
-        let layout_device_id = if let Some(Some(layout_device_id)) =
-            lifecycle_layout_ids.get(&device_id)
-        {
-            layout_device_id.clone()
-        } else {
-            let fingerprint = runtime.device_registry.fingerprint_for_id(&device_id).await;
-            DeviceLifecycleManager::canonical_layout_device_id(&tracked.info, fingerprint.as_ref())
-        };
-        canonical_layout_ids.insert(device_id, layout_device_id);
-    }
-
-    let guard = runtime
-        .scene_transactions
-        .acquire_layout_update_guard()
-        .await;
-    let original_layout = {
-        let spatial = runtime.spatial_engine.snapshot();
-        spatial.layout().as_ref().clone()
-    };
-    let mut layout = original_layout.clone();
-    let excluded_layout_device_ids = {
-        let exclusion_keys = active_auto_exclusion_keys(runtime, &layout).await;
-        let store = runtime.layout_auto_exclusions.read().await;
-        exclusion_keys
-            .iter()
-            .filter_map(|key| store.get(key))
-            .flat_map(|device_ids| device_ids.iter().cloned())
-            .collect::<HashSet<_>>()
-    };
-
-    let inactive_ids = {
-        let manager = runtime.backend_manager.lock().await;
-        manager
-            .connected_devices_without_layout_targets(&layout)
-            .into_iter()
-            .map(|(_, device_id)| device_id)
-            .collect::<HashSet<_>>()
-    };
-
-    let mut repaired_devices = Vec::new();
-    let mut repaired_zone_count = 0_usize;
-    for tracked in tracked_devices {
-        let device_id = tracked.info.id;
-        if !tracked.state.is_renderable() {
-            continue;
-        }
-        if limit_to_devices.is_some_and(|allowed| !allowed.contains(&device_id)) {
-            continue;
-        }
-
-        let layout_device_id = canonical_layout_ids
-            .get(&device_id)
-            .expect("tracked device should have a canonical layout id")
-            .clone();
-        let default_enabled = logical_store
-            .get(&layout_device_id)
-            .is_none_or(|entry| entry.enabled);
-        if !default_enabled {
-            if inactive_ids.contains(&device_id) {
-                debug!(
-                    device_id = %device_id,
-                    device_name = %tracked.info.name,
-                    layout_device_id = %layout_device_id,
-                    "skipping auto-layout sync because the default logical device is disabled"
-                );
-            }
-            continue;
-        }
-        if excluded_layout_device_ids.contains(&layout_device_id) {
-            if inactive_ids.contains(&device_id) {
-                debug!(
-                    device_id = %device_id,
-                    device_name = %tracked.info.name,
-                    layout_device_id = %layout_device_id,
-                    layout_id = %layout.id,
-                    "skipping auto-layout sync because the device is excluded from the active layout"
-                );
-            }
-            continue;
-        }
-
-        let repaired =
-            reconcile_auto_layout_zones_for_device(&mut layout, &layout_device_id, &tracked.info);
-        if repaired > 0 {
-            repaired_zone_count = repaired_zone_count.saturating_add(repaired);
-            repaired_devices.push(format!("{} ({device_id})", tracked.info.name));
-        }
-
-        if inactive_ids.contains(&device_id) {
-            debug!(
-                device_id = %device_id,
-                device_name = %tracked.info.name,
-                layout_device_id = %layout_device_id,
-                segment_count = tracked.info.segments.len(),
-                total_leds = tracked.info.total_led_count(),
-                "leaving layout-inactive device out of the active layout until it is explicitly mapped"
-            );
-        }
-    }
-
-    if repaired_devices.is_empty() {
-        return;
-    }
-
-    let prepared = match PreparedLayoutUpdate::try_new(layout.clone()) {
-        Ok(prepared) => prepared,
-        Err(error) => {
-            warn!(%error, "rejected auto-layout repair before persistence");
-            return;
-        }
-    };
-    if let Err(error) = apply_prepared_layout_update_under_guard(
-        runtime.spatial_engine.clone(),
-        runtime.scene_manager.clone(),
-        runtime.scene_transactions.clone(),
-        &guard,
-        prepared,
-    )
-    .await
-    {
-        warn!(%error, "rejected auto-layout repair before persistence");
-        return;
-    }
-
-    let (previous_saved_layout, layouts_snapshot) = {
-        let mut layouts = runtime.layouts.write().await;
-        let previous = layouts.insert(layout.id.clone(), layout.clone());
-        (previous, layouts.clone())
-    };
-    if let Err(error) = crate::layout_store::save(&runtime.layouts_path, &layouts_snapshot) {
-        let rollback_layout = previous_saved_layout
-            .as_ref()
-            .cloned()
-            .unwrap_or(original_layout);
-        let rollback_snapshot = {
-            let mut layouts = runtime.layouts.write().await;
-            if let Some(previous) = previous_saved_layout {
-                layouts.insert(layout.id.clone(), previous);
-            } else {
-                layouts.remove(&layout.id);
-            }
-            layouts.clone()
-        };
-        let layout_store_rollback =
-            crate::layout_store::save(&runtime.layouts_path, &rollback_snapshot).err();
-        let renderer_rollback = match PreparedLayoutUpdate::try_new(rollback_layout) {
-            Ok(prepared) => apply_prepared_layout_update_under_guard(
-                runtime.spatial_engine.clone(),
-                runtime.scene_manager.clone(),
-                runtime.scene_transactions.clone(),
-                &guard,
-                prepared,
-            )
-            .await
-            .err()
-            .map(|error| error.to_string()),
-            Err(error) => Some(error.to_string()),
-        };
-        warn!(
-            path = %runtime.layouts_path.display(),
-            %error,
-            layout_store_rollback = ?layout_store_rollback,
-            renderer_rollback = ?renderer_rollback,
-            "failed to persist auto-updated layout store; restored previous layout"
-        );
-        return;
-    }
-
-    info!(
-        layout_id = %layout.id,
-        layout_name = %layout.name,
-        repaired_device_count = repaired_devices.len(),
-        repaired_zone_count,
-        repaired_devices = ?repaired_devices,
-        "reconciled existing auto-layout zones in the active layout"
-    );
-}
-
-async fn active_auto_exclusion_keys(
-    runtime: &DiscoveryRuntime,
-    layout: &SpatialLayout,
-) -> Vec<LayoutAutoExclusionKey> {
-    let mut keys = vec![LayoutAutoExclusionKey::layout(layout.id.as_str())];
-    let manager = runtime.scene_manager.snapshot().await;
-    if let Some(scene) = manager.active_scene()
-        && let Some(group) = scene.primary_zone()
-    {
-        keys.push(LayoutAutoExclusionKey::zone(scene.id, group.id));
-    }
-    keys
-}
-
-#[doc(hidden)]
-pub async fn sync_active_layout_connectivity(
-    runtime: &DiscoveryRuntime,
-    limit_to_devices: Option<&HashSet<DeviceId>>,
-) {
-    let tracked_devices = runtime.device_registry.list().await;
-
-    for tracked in tracked_devices {
-        let device_id = tracked.info.id;
-        if limit_to_devices.is_some_and(|allowed| !allowed.contains(&device_id)) {
-            continue;
-        }
-
-        let fingerprint = runtime.device_registry.fingerprint_for_id(&device_id).await;
-        let connect_behavior = super::device_helpers::desired_connect_behavior(
-            runtime,
-            device_id,
-            &tracked.info,
-            fingerprint.as_ref(),
-            tracked.connect_behavior,
-            tracked.user_settings.enabled,
-        )
-        .await;
-
-        let actions = {
-            let mut lifecycle = runtime.lifecycle_manager.lock().await;
-            lifecycle.on_discovered_with_behavior(
-                device_id,
-                &tracked.info,
-                fingerprint.as_ref(),
-                connect_behavior,
-            )
-        };
-        if actions.is_empty() {
-            continue;
-        }
-
-        super::lifecycle::execute_lifecycle_actions(runtime.clone(), actions).await;
-        super::device_helpers::sync_registry_state(runtime, device_id).await;
-    }
-
-    sync_active_layout_for_renderable_devices(runtime, limit_to_devices).await;
-}
-
-#[doc(hidden)]
 #[must_use]
-pub fn append_auto_layout_zones_for_device(
+pub(super) fn append_auto_layout_zones_for_device(
     layout: &mut SpatialLayout,
     layout_device_id: &str,
     device_info: &DeviceInfo,
@@ -376,9 +85,8 @@ pub fn append_auto_layout_zones_for_device(
     eligible_segments.len()
 }
 
-#[doc(hidden)]
 #[must_use]
-pub fn reconcile_auto_layout_zones_for_device(
+pub(super) fn reconcile_auto_layout_zones_for_device(
     layout: &mut SpatialLayout,
     layout_device_id: &str,
     device_info: &DeviceInfo,
@@ -644,5 +352,291 @@ fn sanitize_auto_layout_component(raw: &str) -> String {
         "zone".to_owned()
     } else {
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use hypercolor_types::device::{
+        ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceId, DeviceInfo,
+        DeviceOrigin, DeviceTopologyHint, SegmentInfo, SegmentLayoutHint,
+    };
+    use hypercolor_types::spatial::{
+        EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout, ZoneShape,
+    };
+
+    use super::{append_auto_layout_zones_for_device, reconcile_auto_layout_zones_for_device};
+
+    fn layout() -> SpatialLayout {
+        SpatialLayout {
+            id: "default".to_owned(),
+            name: "Default Layout".to_owned(),
+            description: None,
+            canvas_width: 320,
+            canvas_height: 200,
+            zones: Vec::new(),
+            default_sampling_mode: SamplingMode::Bilinear,
+            default_edge_behavior: EdgeBehavior::Clamp,
+            spaces: None,
+            version: 1,
+        }
+    }
+
+    fn device(segments: Vec<SegmentInfo>) -> DeviceInfo {
+        DeviceInfo {
+            id: DeviceId::new(),
+            name: "Desk Device".to_owned(),
+            vendor: "Test".to_owned(),
+            family: DeviceFamily::new_static("layout-test", "Layout Test"),
+            model: None,
+            connection_type: ConnectionType::Usb,
+            origin: DeviceOrigin::native("layout-test", "usb", ConnectionType::Usb),
+            segments,
+            firmware_version: None,
+            capabilities: DeviceCapabilities::default(),
+        }
+    }
+
+    fn segment(name: &str, led_count: u32, topology: DeviceTopologyHint) -> SegmentInfo {
+        SegmentInfo {
+            name: name.to_owned(),
+            led_count,
+            topology,
+            color_format: DeviceColorFormat::Rgb,
+            layout_hint: None,
+        }
+    }
+
+    #[test]
+    fn append_mints_addressable_segments_and_skips_display_surfaces() {
+        let info = device(vec![
+            segment("Main", 30, DeviceTopologyHint::Strip),
+            segment(
+                "Screen",
+                1,
+                DeviceTopologyHint::Display {
+                    width: 320,
+                    height: 320,
+                    circular: true,
+                },
+            ),
+        ]);
+        let mut layout = layout();
+
+        assert_eq!(
+            append_auto_layout_zones_for_device(&mut layout, "usb:desk", &info),
+            1
+        );
+        assert_eq!(layout.zones.len(), 1);
+        assert_eq!(layout.zones[0].device_id, "usb:desk");
+        assert_eq!(layout.zones[0].zone_name.as_deref(), Some("Main"));
+        assert_eq!(
+            layout.zones[0].topology,
+            LedTopology::Strip {
+                count: 30,
+                direction: hypercolor_types::spatial::StripDirection::LeftToRight,
+            }
+        );
+    }
+
+    #[test]
+    fn append_skips_display_only_devices() {
+        let info = device(vec![segment(
+            "Screen",
+            1,
+            DeviceTopologyHint::Display {
+                width: 320,
+                height: 320,
+                circular: true,
+            },
+        )]);
+        let mut layout = layout();
+
+        assert_eq!(
+            append_auto_layout_zones_for_device(&mut layout, "usb:display", &info),
+            0
+        );
+        assert!(layout.zones.is_empty());
+    }
+
+    #[test]
+    fn append_honors_declared_custom_geometry() {
+        let hint =
+            SegmentLayoutHint::custom_grid(3, 2, &[(0, 0), (1, 0), (2, 0), (2, 1), (1, 1), (0, 1)])
+                .with_size(NormalizedPosition::new(0.2, 0.08))
+                .with_shape(ZoneShape::Rectangle);
+        let mut custom = segment("Perimeter", 6, DeviceTopologyHint::Custom);
+        custom.layout_hint = Some(hint);
+        let info = device(vec![custom]);
+        let mut layout = layout();
+
+        assert_eq!(
+            append_auto_layout_zones_for_device(&mut layout, "usb:custom", &info),
+            1
+        );
+        assert_eq!(layout.zones[0].size, NormalizedPosition::new(0.2, 0.08));
+        assert_eq!(layout.zones[0].shape, Some(ZoneShape::Rectangle));
+        match &layout.zones[0].topology {
+            LedTopology::Custom { positions } => assert_eq!(positions.len(), 6),
+            other => panic!("expected custom topology, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn append_preserves_colocated_ring_geometry() {
+        let outer = SegmentLayoutHint::custom_grid(3, 3, &[(2, 1), (1, 2), (0, 1), (1, 0)])
+            .with_size(NormalizedPosition::new(0.2, 0.2))
+            .with_shape(ZoneShape::Ring)
+            .co_located();
+        let inner = SegmentLayoutHint::custom_grid(3, 3, &[(2, 1), (1, 2), (0, 1), (1, 0)])
+            .with_size(NormalizedPosition::new(0.12, 0.12))
+            .with_shape(ZoneShape::Ring)
+            .co_located();
+        let mut outer_segment = segment("Outer", 4, DeviceTopologyHint::Ring { count: 4 });
+        outer_segment.layout_hint = Some(outer);
+        let mut inner_segment = segment("Inner", 4, DeviceTopologyHint::Ring { count: 4 });
+        inner_segment.layout_hint = Some(inner);
+        let info = device(vec![outer_segment, inner_segment]);
+        let mut layout = layout();
+
+        assert_eq!(
+            append_auto_layout_zones_for_device(&mut layout, "usb:rings", &info),
+            2
+        );
+        assert_eq!(layout.zones[0].position, layout.zones[1].position);
+        assert_eq!(layout.zones[0].size, NormalizedPosition::new(0.2, 0.2));
+        assert_eq!(layout.zones[1].size, NormalizedPosition::new(0.12, 0.12));
+    }
+
+    #[test]
+    fn append_preserves_asymmetric_custom_position_order() {
+        let positions = &[(2, 3), (2, 0), (0, 1), (4, 1), (3, 2)];
+        let mut custom = segment("Pointer", 5, DeviceTopologyHint::Custom);
+        custom.layout_hint = Some(SegmentLayoutHint::custom_grid(5, 4, positions));
+        let info = device(vec![custom]);
+        let mut layout = layout();
+
+        let _ = append_auto_layout_zones_for_device(&mut layout, "usb:pointer", &info);
+        let LedTopology::Custom { positions: actual } = &layout.zones[0].topology else {
+            panic!("expected custom topology");
+        };
+        assert_eq!(actual.len(), positions.len());
+        assert!(actual[0].y > actual[1].y);
+        assert!(actual[2].x < actual[3].x);
+    }
+
+    #[test]
+    fn append_dense_matrix_clamps_geometry_to_normalized_space() {
+        let info = device(
+            (0..12)
+                .map(|index| {
+                    segment(
+                        &format!("Matrix {index}"),
+                        64,
+                        DeviceTopologyHint::Matrix { rows: 8, cols: 8 },
+                    )
+                })
+                .collect(),
+        );
+        let mut layout = layout();
+
+        assert_eq!(
+            append_auto_layout_zones_for_device(&mut layout, "usb:matrix", &info),
+            12
+        );
+        assert!(layout.zones.iter().all(|zone| {
+            zone.position.x >= 0.0
+                && zone.position.x <= 1.0
+                && zone.position.y >= 0.0
+                && zone.position.y <= 1.0
+                && zone.size.x >= 0.0
+                && zone.size.x <= 1.0
+                && zone.size.y >= 0.0
+                && zone.size.y <= 1.0
+        }));
+    }
+
+    #[test]
+    fn reconcile_repairs_geometry_preserves_authored_rotation_and_removes_stale_zones() {
+        let mut original = segment("Main", 10, DeviceTopologyHint::Strip);
+        let mut stale = segment("Removed", 5, DeviceTopologyHint::Strip);
+        let initial = device(vec![original.clone(), stale.clone()]);
+        let mut layout = layout();
+        assert_eq!(
+            append_auto_layout_zones_for_device(&mut layout, "usb:repair", &initial),
+            2
+        );
+        layout.zones[0].rotation = 37.0;
+        original.led_count = 24;
+        original.layout_hint = Some(
+            SegmentLayoutHint::custom_grid(2, 2, &[(0, 0), (1, 0), (1, 1), (0, 1)])
+                .with_size(NormalizedPosition::new(0.3, 0.2)),
+        );
+        stale.name = "Unused".to_owned();
+        let updated = device(vec![original]);
+
+        assert_eq!(
+            reconcile_auto_layout_zones_for_device(&mut layout, "usb:repair", &updated),
+            2
+        );
+        assert_eq!(layout.zones.len(), 1);
+        assert_eq!(layout.zones[0].rotation, 37.0);
+        assert_eq!(layout.zones[0].size, NormalizedPosition::new(0.3, 0.2));
+        match &layout.zones[0].topology {
+            LedTopology::Custom { positions } => assert_eq!(positions.len(), 4),
+            other => panic!("expected repaired custom topology, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reconcile_updates_an_existing_auto_zone_without_duplicating_it() {
+        let initial = device(vec![segment("Main", 10, DeviceTopologyHint::Strip)]);
+        let mut layout = layout();
+        let _ = append_auto_layout_zones_for_device(&mut layout, "usb:update", &initial);
+        let mut updated_segment = segment("Main", 20, DeviceTopologyHint::Strip);
+        updated_segment.layout_hint = Some(
+            SegmentLayoutHint::custom_grid(2, 2, &[(0, 0), (1, 0), (1, 1), (0, 1)])
+                .with_size(NormalizedPosition::new(0.25, 0.25)),
+        );
+        let updated = device(vec![updated_segment]);
+
+        assert_eq!(
+            reconcile_auto_layout_zones_for_device(&mut layout, "usb:update", &updated),
+            1
+        );
+        assert_eq!(layout.zones.len(), 1);
+        assert_eq!(layout.zones[0].zone_name.as_deref(), Some("Main"));
+        assert_eq!(layout.zones[0].size, NormalizedPosition::new(0.25, 0.25));
+    }
+
+    #[test]
+    fn reconcile_removes_only_stale_auto_zones() {
+        let initial = device(vec![
+            segment("Main", 10, DeviceTopologyHint::Strip),
+            segment("Aux", 5, DeviceTopologyHint::Strip),
+        ]);
+        let mut layout = layout();
+        let _ = append_auto_layout_zones_for_device(&mut layout, "usb:remove", &initial);
+        let authored = layout.zones[0].clone();
+        let mut authored = hypercolor_types::spatial::Output {
+            id: "authored-zone".to_owned(),
+            ..authored
+        };
+        authored.device_id = "usb:remove".to_owned();
+        layout.zones.push(authored);
+        let updated = device(vec![segment("Main", 10, DeviceTopologyHint::Strip)]);
+
+        assert_eq!(
+            reconcile_auto_layout_zones_for_device(&mut layout, "usb:remove", &updated),
+            2
+        );
+        assert_eq!(layout.zones.len(), 2);
+        assert!(layout.zones.iter().any(|zone| zone.id == "authored-zone"));
+        assert!(
+            layout
+                .zones
+                .iter()
+                .all(|zone| zone.zone_name.as_deref() != Some("Aux"))
+        );
     }
 }

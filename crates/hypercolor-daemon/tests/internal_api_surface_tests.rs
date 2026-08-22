@@ -315,3 +315,233 @@ fn display_worker_delegates_delivery_policy_to_the_core_lane() {
         );
     }
 }
+
+#[test]
+fn layout_transport_uses_the_layout_domain_authority() {
+    let sources = daemon_sources();
+    let source = |suffix: &str| {
+        sources
+            .iter()
+            .find(|(path, _)| path.ends_with(suffix))
+            .map(|(_, source)| source.as_str())
+            .unwrap_or_else(|| panic!("missing daemon source {suffix}"))
+    };
+
+    let app_state = source("app_state.rs");
+    for retired_field in [
+        "pub layouts:",
+        "pub layouts_path:",
+        "pub layout_auto_exclusions:",
+        "pub layout_auto_exclusions_path:",
+        "pub layout_mutation_test_hooks:",
+    ] {
+        assert!(!app_state.contains(retired_field), "found {retired_field}");
+    }
+
+    let discovery = source("discovery/mod.rs");
+    assert!(discovery.contains("pub layout: LayoutContext"));
+    for bypass in [
+        "pub spatial_engine:",
+        "pub scene_manager:",
+        "pub layouts:",
+        "pub layouts_path:",
+        "pub layout_auto_exclusions:",
+        "pub scene_transactions:",
+    ] {
+        assert!(
+            !discovery.contains(bypass),
+            "discovery runtime exposes {bypass}"
+        );
+    }
+
+    let startup = source("startup/mod.rs");
+    for bypass in [
+        "pub layouts:",
+        "pub layouts_path:",
+        "pub layout_auto_exclusions:",
+        "pub layout_auto_exclusions_path:",
+    ] {
+        assert!(!startup.contains(bypass), "daemon state exposes {bypass}");
+    }
+
+    let contexts = source("domain/context.rs");
+    let device_context = contexts
+        .split_once("pub struct DeviceContext")
+        .map(|(_, tail)| tail)
+        .expect("device context should exist");
+    for layout_authority in [
+        "layout_auto_exclusions",
+        "resolved_layout_device_id",
+        "layout_outputs_for",
+        "connected_display_surface_layouts",
+        "sync_connectivity",
+        "reconcile_zone_auto_exclusions",
+        "remove_zone_auto_exclusions",
+    ] {
+        assert!(
+            !device_context.contains(layout_authority),
+            "device context retains layout authority: {layout_authority}"
+        );
+    }
+
+    let layout_domain = source("domain/layout.rs");
+    assert!(!layout_domain.contains("catalog_for_test"));
+    assert!(!layout_domain.contains("catalog_path_for_test"));
+    assert!(!layout_domain.contains("OnceLock"));
+    assert!(!layout_domain.contains("Weak<DaemonDriverHost>"));
+    assert!(!layout_domain.contains("clippy::too_many_lines"));
+    assert!(
+        layout_domain
+            .contains("#[cfg(feature = \"persistence-test-hooks\")]\npub struct LayoutTestFixture")
+    );
+    assert!(layout_domain.contains("pub(crate) struct LayoutRuntime"));
+
+    for collaborator in [
+        "domain/layout/auto_layout.rs",
+        "domain/layout/catalog.rs",
+        "domain/layout/convergence.rs",
+        "domain/layout/exclusions.rs",
+        "domain/layout/publication.rs",
+        "domain/layout/workflows.rs",
+    ] {
+        let collaborator_source = source(collaborator);
+        assert!(
+            collaborator_source
+                .lines()
+                .all(|line| !line.starts_with("pub ") && !line.starts_with("pub(crate)")),
+            "layout collaborator exports a top-level item: {collaborator}"
+        );
+    }
+
+    let auto_layout = source("domain/layout/auto_layout.rs");
+    assert!(auto_layout.contains("pub(super) fn append_auto_layout_zones_for_device"));
+    assert!(auto_layout.contains("pub(super) fn reconcile_auto_layout_zones_for_device"));
+    assert!(!auto_layout.contains("\npub fn append_auto_layout_zones_for_device"));
+    assert!(!auto_layout.contains("\npub fn reconcile_auto_layout_zones_for_device"));
+
+    let adapter = source("api/layouts.rs");
+    for bypass in [
+        "state.layouts",
+        "state.layouts_path",
+        "state.spatial_engine",
+        "state.scene_transactions",
+        "state.layout_auto_exclusions",
+    ] {
+        assert!(
+            !adapter.contains(bypass),
+            "layout adapter contains {bypass}"
+        );
+    }
+    assert!(adapter.contains("state.domains.layout"));
+    assert!(!adapter.contains("pub use crate::domain::layout"));
+
+    let websocket = source("api/ws/session.rs");
+    assert!(!websocket.contains("crate::api::layouts"));
+}
+
+#[test]
+fn layout_mutation_capabilities_have_named_visibility_boundaries() {
+    let sources = daemon_sources();
+    let source = |suffix: &str| {
+        sources
+            .iter()
+            .find(|(path, _)| path.ends_with(suffix))
+            .map(|(_, source)| source.as_str())
+            .unwrap_or_else(|| panic!("missing daemon source {suffix}"))
+    };
+
+    let library = source("lib.rs");
+    assert!(library.contains("pub(crate) mod scene_transactions;"));
+    assert!(!library.contains("pub mod scene_transactions;"));
+    assert!(library.contains(
+        "#[cfg(feature = \"persistence-test-hooks\")]\n#[doc(hidden)]\npub use scene_transactions::{LayoutPublicationTestExecutor, LayoutTransactionRejection};"
+    ));
+    assert!(!library.contains("SceneTransactionConsumer"));
+    assert!(library.contains("SceneTransactionQueue"));
+
+    let layout_store = source("layout_store.rs");
+    assert!(layout_store.contains("pub(crate) fn save("));
+    assert!(!layout_store.contains("\npub fn save("));
+    let exclusions = source("layout_auto_exclusions.rs");
+    assert!(!exclusions.contains("fn save("));
+    assert!(exclusions.contains("pub(crate) fn serialize("));
+
+    let app_state = source("app_state.rs");
+    assert!(app_state.contains("pub(crate) scene_transactions: SceneTransactionQueue"));
+    assert!(!app_state.contains("pub scene_transactions: SceneTransactionQueue"));
+    assert!(app_state.contains(
+        "#[cfg(feature = \"persistence-test-hooks\")]\n    #[doc(hidden)]\n    #[must_use]\n    pub fn layout_publication_test_executor("
+    ));
+
+    let layout = source("domain/layout.rs");
+    for gated_capability in [
+        "#[cfg(feature = \"persistence-test-hooks\")]\n#[doc(hidden)]\npub struct LayoutTestWorkflows",
+        "#[cfg(feature = \"persistence-test-hooks\")]\nimpl LayoutTestWorkflows",
+        "#[cfg(feature = \"persistence-test-hooks\")]\n    #[allow(\n        clippy::too_many_arguments,\n        reason = \"the fixture mirrors the production composition boundary\"\n    )]\n    pub fn new_test_context(",
+        "#[cfg(feature = \"persistence-test-hooks\")]\n    #[doc(hidden)]\n    #[must_use]\n    pub const fn test_workflows(",
+        "#[cfg(feature = \"persistence-test-hooks\")]\n    #[doc(hidden)]\n    #[must_use]\n    pub fn layout_publication_test_executor(",
+    ] {
+        assert!(
+            layout.contains(gated_capability),
+            "layout test capability is not feature-gated: {gated_capability}"
+        );
+    }
+
+    let transactions = source("scene_transactions.rs");
+    assert!(transactions.contains(
+        "#[cfg(feature = \"persistence-test-hooks\")]\n#[doc(hidden)]\npub struct LayoutPublicationTestExecutor"
+    ));
+    assert!(
+        transactions.contains(
+            "#[cfg(feature = \"persistence-test-hooks\")]\nimpl LayoutPublicationTestExecutor {\n    #[must_use]\n    pub(crate) fn new("
+        )
+    );
+    assert!(transactions.contains("pub(crate) struct SceneTransactionConsumer"));
+    assert!(!transactions.contains("\npub struct SceneTransactionConsumer"));
+    assert!(transactions.contains("pub(crate) fn consumer(&self)"));
+    assert!(!transactions.contains("pub fn consumer(&self)"));
+    assert!(transactions.contains("pub(crate) fn close(&self)"));
+    assert!(!transactions.contains("pub fn close(&self)"));
+    assert!(transactions.contains("pub(crate) struct LayoutTransactionAuthority"));
+    assert!(transactions.contains("\nstruct PreparedLayoutUpdate"));
+    assert!(!transactions.contains("pub(crate) struct PreparedLayoutUpdate"));
+    assert!(transactions.contains("pub(crate) fn drain(&self)"));
+    assert!(!transactions.contains("pub fn drain(&self)"));
+    assert!(transactions.contains("pub(crate) fn accept(self)"));
+    assert!(!transactions.contains("\npub fn accept(self)"));
+    for removed_bypass in [
+        "accept_and_commit_for_test",
+        "accept_and_publish_for_test",
+        "apply_prepared_layout_update_under_guard",
+        "publish_prepared_layout_activation",
+    ] {
+        assert!(
+            !transactions.contains(removed_bypass),
+            "scene transaction bypass remains: {removed_bypass}"
+        );
+    }
+    assert!(transactions.contains("pub async fn execute_next_layout_publication("));
+    assert!(transactions.contains("pub async fn execute_next_layout_publication_with_hook"));
+    assert!(transactions.contains("pub fn reject_next_layout_publication"));
+
+    let manifest =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"))
+            .expect("daemon manifest should read");
+    for test_target in [
+        "api_tests",
+        "attachment_api_tests",
+        "discovery_tests",
+        "display_output_tests",
+        "domain_scene_service_tests",
+        "render_thread_tests",
+        "simulator_tests",
+    ] {
+        let gate = format!(
+            "[[test]]\nname = \"{test_target}\"\nrequired-features = [\"persistence-test-hooks\"]"
+        );
+        assert!(
+            manifest.contains(&gate),
+            "layout integration target is not feature-gated: {test_target}"
+        );
+    }
+}

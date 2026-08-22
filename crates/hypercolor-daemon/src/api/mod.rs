@@ -49,22 +49,6 @@ use hypercolor_types::device::DeviceId;
 use hypercolor_types::event::{HypercolorEvent, ZoneChangeKind};
 use hypercolor_types::scene::{SceneId, Zone};
 
-/// Persist the spatial layout store to disk.
-pub(crate) async fn persist_layouts(state: &Arc<AppState>) -> anyhow::Result<()> {
-    let layouts = state.layouts.read().await;
-    crate::layout_store::save(&state.layouts_path, &layouts)
-}
-
-pub(crate) async fn persist_layouts_best_effort(state: &Arc<AppState>) {
-    if let Err(error) = persist_layouts(state).await {
-        warn!(
-            path = %state.layouts_path.display(),
-            %error,
-            "Failed to persist layout store"
-        );
-    }
-}
-
 pub(crate) async fn persist_simulated_displays(state: &Arc<AppState>) {
     let store = state.simulated_displays.read().await;
     if let Err(error) = store.save() {
@@ -128,11 +112,6 @@ pub(crate) async fn prune_scene_display_groups_for_device(
         return;
     }
     persist_runtime_session(state).await;
-}
-
-/// Persist discovery auto-sync exclusions to disk.
-pub(crate) async fn persist_layout_auto_exclusions(state: &AppState) {
-    state.domains.devices.persist_layout_auto_exclusions().await;
 }
 
 pub(crate) async fn save_runtime_session_snapshot(state: &AppState) {

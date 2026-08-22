@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock, Mutex as StdMutex};
+use std::time::Duration;
 
 use axum::body::Body;
 use http::{Request, StatusCode};
@@ -287,7 +288,7 @@ async fn create_template(app: &axum::Router, template_id: &str, name: &str, coun
     assert_eq!(response.status(), StatusCode::CREATED);
 }
 
-fn set_active_layout_for_device(state: &Arc<AppState>, device_id: DeviceId) {
+async fn set_active_layout_for_device(state: &Arc<AppState>, device_id: DeviceId) {
     let layout = SpatialLayout {
         id: "active-layout".to_owned(),
         name: "Active Layout".to_owned(),
@@ -326,7 +327,26 @@ fn set_active_layout_for_device(state: &Arc<AppState>, device_id: DeviceId) {
         version: 1,
     };
 
-    state.spatial_engine.update_layout(layout);
+    let preview =
+        api::layouts::preview_layout(axum::extract::State(Arc::clone(state)), axum::Json(layout));
+    tokio::pin!(preview);
+    let response = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            tokio::select! {
+                response = &mut preview => break response,
+                () = tokio::task::yield_now() => {
+                    state
+                        .layout_publication_test_executor()
+                        .execute_next_layout_publication()
+                        .await
+                        .expect("attachment layout should publish");
+                }
+            }
+        }
+    })
+    .await
+    .expect("attachment layout publication should finish");
+    assert_eq!(response.status(), StatusCode::OK);
 }
 
 async fn register_recording_backend(
@@ -429,7 +449,7 @@ async fn device_attachment_profile_flow_persists_and_clears() {
     let template_id = "profile-test-strip";
 
     create_template(&app, template_id, "Profile Test Strip", 12).await;
-    set_active_layout_for_device(&state, device_id);
+    set_active_layout_for_device(&state, device_id).await;
 
     let update_body = json!({
         "bindings": [{

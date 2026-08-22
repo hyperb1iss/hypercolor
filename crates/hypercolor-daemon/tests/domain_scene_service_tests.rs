@@ -16,8 +16,9 @@ use hypercolor_core::effect::EffectEntry;
 use hypercolor_core::scene::SceneManager;
 use hypercolor_types::asset::AssetId;
 use hypercolor_types::device::{
-    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
-    DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint, SegmentInfo,
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
+    DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint,
+    SegmentInfo,
 };
 use hypercolor_types::effect::{
     ControlValue, EffectCategory, EffectId, EffectMetadata, EffectSource, EffectState,
@@ -32,7 +33,10 @@ use hypercolor_types::scene::{
     ColorInterpolation, DisplayFaceTarget, EasingFunction, Scene, SceneId, SceneKind,
     SceneMutationMode, ScenePriority, TransitionSpec, UnassignedBehavior, Zone, ZoneId, ZoneRole,
 };
-use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
+use hypercolor_types::spatial::{
+    EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
+    StripDirection,
+};
 use uuid::Uuid;
 
 use hypercolor_daemon::app_state::AppState;
@@ -46,7 +50,7 @@ use hypercolor_daemon::domain::scene_tree::{
     ClearScene, PatchLayerControls, clear_scene, patch_layer_controls, read_document,
 };
 use hypercolor_daemon::domain::{DomainError, MutationContext};
-use hypercolor_daemon::scene_transactions::SceneTransaction;
+use hypercolor_daemon::scene_store::SceneStore;
 use hypercolor_daemon::zone_layout_preview::ZoneLayoutPreviewOwner;
 
 // ── Harness ──────────────────────────────────────────────────────────────
@@ -84,6 +88,29 @@ async fn seed_active_scene(state: &Arc<AppState>, scene: Scene) {
     commit_scene(&state.domains.scene, mutation)
         .await
         .expect("test scene should commit");
+}
+
+async fn await_with_layout_publication<T>(
+    state: &AppState,
+    workflow: impl std::future::Future<Output = T>,
+) -> T {
+    tokio::pin!(workflow);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            tokio::select! {
+                result = &mut workflow => break result,
+                () = tokio::time::sleep(Duration::from_millis(1)) => {
+                    state
+                        .layout_publication_test_executor()
+                        .execute_next_layout_publication()
+                        .await
+                        .expect("layout publication should succeed");
+                }
+            }
+        }
+    })
+    .await
+    .expect("layout workflow should not deadlock")
 }
 
 #[tokio::test]
@@ -301,6 +328,74 @@ fn display_device_info(device_id: DeviceId, width: u32, height: u32) -> DeviceIn
             color_space: hypercolor_types::device::DeviceColorSpace::default(),
             features: DeviceFeatures::default(),
         },
+    }
+}
+
+fn auto_layout_device_info(device_id: DeviceId) -> DeviceInfo {
+    DeviceInfo {
+        id: device_id,
+        name: "Repair Target".to_owned(),
+        vendor: "test".to_owned(),
+        family: DeviceFamily::new_static("test", "Test"),
+        model: Some("Repair Target".to_owned()),
+        connection_type: ConnectionType::Usb,
+        origin: DeviceOrigin::native("test", "usb", ConnectionType::Usb),
+        segments: vec![SegmentInfo {
+            name: "Main".to_owned(),
+            led_count: 16,
+            topology: DeviceTopologyHint::Strip,
+            color_format: DeviceColorFormat::Rgb,
+            layout_hint: None,
+        }],
+        firmware_version: None,
+        capabilities: DeviceCapabilities {
+            led_count: 16,
+            supports_direct: true,
+            supports_brightness: true,
+            has_display: false,
+            display_resolution: None,
+            max_fps: 60,
+            color_space: hypercolor_types::device::DeviceColorSpace::default(),
+            features: DeviceFeatures::default(),
+        },
+    }
+}
+
+fn stale_auto_layout(layout_device_id: &str) -> SpatialLayout {
+    SpatialLayout {
+        id: "default".to_owned(),
+        name: "Default Layout".to_owned(),
+        description: None,
+        canvas_width: 320,
+        canvas_height: 200,
+        zones: vec![Output {
+            id: format!("auto-{}-main", layout_device_id.replace(':', "-")),
+            name: "Stale Repair Target".to_owned(),
+            device_id: layout_device_id.to_owned(),
+            zone_name: Some("Main".to_owned()),
+            position: NormalizedPosition::new(0.5, 0.5),
+            size: NormalizedPosition::new(0.1, 0.1),
+            rotation: 0.0,
+            scale: 1.0,
+            display_order: 0,
+            orientation: None,
+            topology: LedTopology::Strip {
+                count: 1,
+                direction: StripDirection::LeftToRight,
+            },
+            led_positions: Vec::new(),
+            led_mapping: None,
+            sampling_mode: Some(SamplingMode::Bilinear),
+            edge_behavior: Some(EdgeBehavior::Clamp),
+            shape: None,
+            shape_preset: None,
+            attachment: None,
+            brightness: None,
+        }],
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        spaces: None,
+        version: 1,
     }
 }
 
@@ -552,6 +647,91 @@ async fn activate_scene_switches_the_current_scene_and_publishes_once() {
 }
 
 #[tokio::test]
+async fn activation_persists_groups_after_auto_layout_convergence() {
+    let (state, _tempdir) = isolated_state();
+    let device_id = DeviceId::new();
+    let info = auto_layout_device_info(device_id);
+    let fingerprint = DeviceFingerprint::from_persisted("usb:repair-target".to_owned());
+    state
+        .device_registry
+        .add_with_fingerprint(info.clone(), fingerprint.clone())
+        .await;
+    assert!(
+        state
+            .device_registry
+            .set_state(&device_id, DeviceState::Connected)
+            .await
+    );
+    let layout_device_id = {
+        let mut lifecycle = state.lifecycle_manager.lock().await;
+        let _ = lifecycle.on_discovered(device_id, &info, Some(&fingerprint));
+        lifecycle
+            .on_connected(device_id)
+            .expect("repair target should enter the connected state");
+        lifecycle
+            .layout_device_id_for(device_id)
+            .map(ToOwned::to_owned)
+            .expect("repair target should have a canonical layout id")
+    };
+    let stale_layout = stale_auto_layout(&layout_device_id);
+    await_with_layout_publication(
+        &state,
+        state
+            .domains
+            .layout
+            .test_workflows()
+            .publish(stale_layout.clone()),
+    )
+    .await
+    .expect("stale layout should publish");
+
+    let mut scene = named_scene("repair scene");
+    scene.zones = vec![hypercolor_core::scene::default_primary_group(stale_layout)];
+    let scene_id = scene.id;
+    seed_scene(&state, scene).await;
+
+    await_with_layout_publication(
+        &state,
+        activate_scene(
+            &state.domains.scene_library,
+            ActivateScene {
+                scene_id,
+                transition_ms: None,
+            },
+        ),
+    )
+    .await
+    .expect("repair scene should activate");
+
+    let scene_store = SceneStore::load(&state.data_dir.join("scenes.json"))
+        .expect("durable scene store should load");
+    let durable_scene = scene_store
+        .list()
+        .find(|scene| scene.id == scene_id)
+        .expect("activated scene should remain durable");
+    let durable_output = durable_scene
+        .primary_zone()
+        .and_then(|zone| zone.layout.zones.first())
+        .expect("durable primary group should contain the repaired output");
+    assert_eq!(durable_output.name, info.name);
+    assert_eq!(
+        durable_output.topology,
+        LedTopology::Strip {
+            count: 16,
+            direction: StripDirection::LeftToRight,
+        }
+    );
+
+    let runtime = hypercolor_daemon::runtime_state::load(&state.runtime_state_path)
+        .expect("runtime state should load")
+        .expect("activation should write runtime state");
+    assert_eq!(
+        runtime.active_scene_id.as_deref(),
+        Some(scene_id.to_string().as_str())
+    );
+}
+
+#[tokio::test]
 async fn activation_hydrates_only_existing_connected_display_zones() {
     let (state, _tempdir) = isolated_state();
     let assigned_device = DeviceId::new();
@@ -659,17 +839,16 @@ async fn activation_commits_before_layout_failure_and_still_applies_brightness()
 #[tokio::test]
 async fn activation_applies_a_named_layout_without_reentering_its_guard() {
     let (state, _tempdir) = isolated_state();
-    let layout_id = LayoutId::new("activation-layout").expect("valid layout id");
-    let layout = SpatialLayout {
-        id: layout_id.to_string(),
-        name: "Activation Layout".to_owned(),
-        ..state.spatial_engine.snapshot().layout().as_ref().clone()
-    };
-    state
-        .layouts
-        .write()
+    let created = state
+        .domains
+        .layout
+        .create(hypercolor_types::api::layouts::CreateLayoutRequest {
+            name: "Activation Layout".to_owned(),
+            ..Default::default()
+        })
         .await
-        .insert(layout.id.clone(), layout);
+        .expect("activation layout should create");
+    let layout_id = LayoutId::new(created.id).expect("valid layout id");
 
     let mut scene = named_scene("layout scene");
     scene.layout_id = Some(layout_id.clone());
@@ -689,23 +868,11 @@ async fn activation_applies_a_named_layout_without_reentering_its_guard() {
             tokio::select! {
                 result = &mut activation => break result,
                 () = tokio::time::sleep(Duration::from_millis(1)) => {
-                    for transaction in state.scene_transactions.drain() {
-                        match transaction {
-                            SceneTransaction::PrepareLayout(transaction) => {
-                                transaction
-                                    .accept_and_publish_for_test(
-                                        &state.spatial_engine,
-                                        &state.scene_manager,
-                                        || async {},
-                                    )
-                                    .await
-                                    .expect("layout publication should succeed");
-                            }
-                            SceneTransaction::SetScreenCaptureConfigured(_) => {
-                                panic!("activation should not reconfigure screen capture");
-                            }
-                        }
-                    }
+                    state
+                        .layout_publication_test_executor()
+                        .execute_next_layout_publication()
+                        .await
+                        .expect("layout publication should succeed");
                 }
             }
         }
@@ -715,10 +882,10 @@ async fn activation_applies_a_named_layout_without_reentering_its_guard() {
     .expect("layout activation should succeed");
 
     assert!(activated.layout.applied);
-    assert_eq!(activated.layout.layout_id, Some(layout_id));
+    assert_eq!(activated.layout.layout_id, Some(layout_id.clone()));
     assert_eq!(
         state.spatial_engine.snapshot().layout().id,
-        "activation-layout"
+        layout_id.as_str()
     );
 }
 

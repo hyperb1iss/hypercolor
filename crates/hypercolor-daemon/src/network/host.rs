@@ -75,6 +75,12 @@ impl DaemonDriverHost {
         Arc::clone(&self.driver_inventory)
     }
 
+    pub(crate) async fn refresh_driver_inventory(&self) {
+        self.driver_inventory
+            .refresh(self.driver_registry.as_ref(), self)
+            .await;
+    }
+
     fn current_config(&self) -> Arc<HypercolorConfig> {
         self.current_config_snapshot()
             .unwrap_or_else(|| Arc::new(HypercolorConfig::default()))
