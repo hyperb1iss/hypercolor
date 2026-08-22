@@ -1,12 +1,40 @@
 use super::{
+    CaptureExactCommand, CaptureExactCommandEndpoint, CaptureExactCommandRejected,
     CaptureExactPublicationShared, CaptureOwnedSource, CapturePublication, CapturePublicationEpoch,
-    CapturePublicationSource,
+    CapturePublicationSource, begin_capture_exact_retirement,
 };
 use crate::input::screen::{
     CaptureSourceId, ExactBoxList, ScreenCommittedState, ScreenPublicationHub,
     ScreenPublicationSlotPolicy,
 };
-use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+
+#[derive(Clone, Default)]
+struct FakeExactEndpoint {
+    commands: Arc<Mutex<Vec<CaptureExactCommand>>>,
+    wakes: Arc<AtomicUsize>,
+    reject: bool,
+}
+
+impl CaptureExactCommandEndpoint for FakeExactEndpoint {
+    const SOURCE_NAME: &'static str = "fake capture";
+
+    fn send_exact(&self, command: CaptureExactCommand) -> Result<(), CaptureExactCommandRejected> {
+        if self.reject {
+            return Err(CaptureExactCommandRejected);
+        }
+        self.commands
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(command);
+        Ok(())
+    }
+
+    fn wake(&self) {
+        self.wakes.fetch_add(1, Ordering::Relaxed);
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct FakeSource {
@@ -176,4 +204,44 @@ fn exact_publication_state_versions_sources_and_reaps_unowned_incarnations() {
     state.clear_owned_sources();
     assert_eq!(state.owned_source_count(), 0);
     assert!(!state.owns_source(&replacement.id));
+}
+
+#[tokio::test]
+async fn exact_retirement_wakes_the_endpoint_and_reports_completion() {
+    let endpoint = FakeExactEndpoint::default();
+    let retirement = begin_capture_exact_retirement(&endpoint);
+    assert_eq!(endpoint.wakes.load(Ordering::Relaxed), 1);
+    let command = endpoint
+        .commands
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .pop()
+        .expect("retirement enqueues one exact command");
+    let CaptureExactCommand::Reap {
+        completion: Some(completion),
+    } = command
+    else {
+        panic!("retirement enqueues a completing reap command");
+    };
+    completion
+        .send(Ok(()))
+        .expect("test retirement receiver remains live");
+    retirement
+        .complete()
+        .await
+        .expect("completed exact retirement succeeds");
+}
+
+#[tokio::test]
+async fn rejected_exact_retirement_fails_without_waking_the_endpoint() {
+    let endpoint = FakeExactEndpoint {
+        reject: true,
+        ..FakeExactEndpoint::default()
+    };
+    let error = begin_capture_exact_retirement(&endpoint)
+        .complete()
+        .await
+        .expect_err("rejected exact retirement fails");
+    assert!(error.to_string().contains("fake capture worker rejected"));
+    assert_eq!(endpoint.wakes.load(Ordering::Relaxed), 0);
 }

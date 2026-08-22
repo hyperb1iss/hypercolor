@@ -1,12 +1,106 @@
 #[cfg(test)]
 mod tests;
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use tokio::sync::oneshot;
+
 use super::{
-    CaptureSourceId, ExactBoxList, ExactBoxNode, ScreenCommittedState, ScreenPublicationHub,
+    CaptureSourceId, ExactBoxList, ExactBoxNode, ScreenCommittedState, ScreenPreparedWorkerToken,
+    ScreenPublicationHub, ScreenWorkerPreparation, ScreenWorkerPreparationTicket,
+    ScreenWorkerRetirement,
 };
+
+pub enum CaptureExactCommand {
+    Prepare {
+        ticket: ScreenWorkerPreparationTicket,
+        cancelled: Arc<AtomicBool>,
+        completion: oneshot::Sender<anyhow::Result<ScreenPreparedWorkerToken>>,
+    },
+    Reap {
+        completion: Option<oneshot::Sender<anyhow::Result<()>>>,
+    },
+}
+
+pub struct CaptureExactCommandRejected;
+
+pub trait CaptureExactCommandEndpoint: Clone + Send + 'static {
+    const SOURCE_NAME: &'static str;
+
+    fn send_exact(&self, command: CaptureExactCommand) -> Result<(), CaptureExactCommandRejected>;
+
+    fn wake(&self) {}
+}
+
+pub fn begin_capture_exact_preparation<E>(
+    endpoint: &E,
+    ticket: ScreenWorkerPreparationTicket,
+) -> anyhow::Result<ScreenWorkerPreparation>
+where
+    E: CaptureExactCommandEndpoint,
+{
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let (completion, completed) = oneshot::channel();
+    endpoint
+        .send_exact(CaptureExactCommand::Prepare {
+            ticket,
+            cancelled: Arc::clone(&cancelled),
+            completion,
+        })
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "{} worker rejected exact publication preparation",
+                E::SOURCE_NAME
+            )
+        })?;
+    endpoint.wake();
+    let abort = endpoint.clone();
+    Ok(ScreenWorkerPreparation::with_abort(
+        async move {
+            completed.await.map_err(|_| {
+                anyhow::anyhow!(
+                    "{} worker exited during exact publication preparation",
+                    E::SOURCE_NAME
+                )
+            })?
+        },
+        move || {
+            cancelled.store(true, Ordering::Release);
+            let _ = abort.send_exact(CaptureExactCommand::Reap { completion: None });
+            abort.wake();
+        },
+    ))
+}
+
+pub fn begin_capture_exact_retirement<E>(endpoint: &E) -> ScreenWorkerRetirement
+where
+    E: CaptureExactCommandEndpoint,
+{
+    let (completion, completed) = oneshot::channel();
+    if endpoint
+        .send_exact(CaptureExactCommand::Reap {
+            completion: Some(completion),
+        })
+        .is_err()
+    {
+        return ScreenWorkerRetirement::new(async {
+            Err(anyhow::anyhow!(
+                "{} worker rejected exact publication retirement",
+                E::SOURCE_NAME
+            ))
+        });
+    }
+    endpoint.wake();
+    ScreenWorkerRetirement::new(async move {
+        completed.await.map_err(|_| {
+            anyhow::anyhow!(
+                "{} worker exited during exact publication retirement",
+                E::SOURCE_NAME
+            )
+        })?
+    })
+}
 
 pub trait CapturePublicationSource: Clone + PartialEq {
     fn source_id(&self) -> &CaptureSourceId;

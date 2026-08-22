@@ -26,7 +26,6 @@ use hypercolor_pipewire_interop::{
 };
 use hypercolor_types::source_status::SourceDiagnosticsEnvelope;
 use serde_json::{Map, Value, json};
-use tokio::sync::oneshot;
 use tracing::{debug, info, warn};
 
 use crate::input::screen::{
@@ -58,7 +57,11 @@ use crate::input::{
 };
 use hypercolor_worker_retention::{retain_worker, spawn_worker};
 
-use super::adapter::{CaptureExactPublicationShared, CaptureOwnedSource, CapturePublicationSource};
+use super::adapter::{
+    CaptureExactCommand, CaptureExactCommandEndpoint, CaptureExactCommandRejected,
+    CaptureExactPublicationShared, CaptureOwnedSource, CapturePublicationSource,
+    begin_capture_exact_preparation, begin_capture_exact_retirement,
+};
 
 const WORKER_READY_TIMEOUT: Duration = Duration::from_secs(1);
 const WORKER_STOP_TIMEOUT: Duration = Duration::from_secs(1);
@@ -2336,53 +2339,14 @@ impl ScreenSource for WaylandScreenCaptureInput {
         let worker = self.worker.as_ref().ok_or_else(|| {
             anyhow!("Wayland capture worker is unavailable for exact publication preparation")
         })?;
-        let cancelled = Arc::new(AtomicBool::new(false));
-        let (completion_tx, completion_rx) = oneshot::channel();
-        worker
-            .command_tx
-            .send(WorkerCommand::PrepareExact {
-                ticket,
-                cancelled: Arc::clone(&cancelled),
-                completion: completion_tx,
-            })
-            .map_err(|_| {
-                anyhow!("Wayland capture worker rejected exact publication preparation")
-            })?;
-        let abort_tx = worker.command_tx.clone();
-        Ok(ScreenWorkerPreparation::with_abort(
-            async move {
-                completion_rx.await.map_err(|_| {
-                    anyhow!("Wayland capture worker exited during exact publication preparation")
-                })?
-            },
-            move || {
-                cancelled.store(true, Ordering::Release);
-                let _ = abort_tx.send(WorkerCommand::ReapExact { completion: None });
-            },
-        ))
+        begin_capture_exact_preparation(&worker.exact_command_endpoint(), ticket)
     }
 
     fn begin_screen_publication_retirement(&mut self) -> Option<ScreenWorkerRetirement> {
         let worker = self.worker.as_ref()?;
-        let (completion_tx, completion_rx) = oneshot::channel();
-        if worker
-            .command_tx
-            .send(WorkerCommand::ReapExact {
-                completion: Some(completion_tx),
-            })
-            .is_err()
-        {
-            return Some(ScreenWorkerRetirement::new(async {
-                Err(anyhow!(
-                    "Wayland capture worker rejected exact publication retirement"
-                ))
-            }));
-        }
-        Some(ScreenWorkerRetirement::new(async move {
-            completion_rx.await.map_err(|_| {
-                anyhow!("Wayland capture worker exited during exact publication retirement")
-            })?
-        }))
+        Some(begin_capture_exact_retirement(
+            &worker.exact_command_endpoint(),
+        ))
     }
 
     fn reconfigure_screen_capture(&mut self, config: &CaptureConfig) -> anyhow::Result<()> {
@@ -2432,6 +2396,29 @@ struct WaylandCaptureWorker {
     session_generation: Arc<AtomicU64>,
     settings: Arc<SharedSettings>,
     latest_snapshot: Arc<Mutex<Option<CapturedScreenSnapshot>>>,
+}
+
+#[derive(Clone)]
+struct WaylandExactCommandEndpoint {
+    command_tx: LoopSender<WorkerCommand>,
+}
+
+impl CaptureExactCommandEndpoint for WaylandExactCommandEndpoint {
+    const SOURCE_NAME: &'static str = "Wayland capture";
+
+    fn send_exact(&self, command: CaptureExactCommand) -> Result<(), CaptureExactCommandRejected> {
+        self.command_tx
+            .send(WorkerCommand::Exact(command))
+            .map_err(|_| CaptureExactCommandRejected)
+    }
+}
+
+impl WaylandCaptureWorker {
+    fn exact_command_endpoint(&self) -> WaylandExactCommandEndpoint {
+        WaylandExactCommandEndpoint {
+            command_tx: self.command_tx.clone(),
+        }
+    }
 }
 
 impl WaylandCaptureWorker {
@@ -2491,14 +2478,7 @@ struct WorkerFlags {
 enum WorkerCommand {
     SetDemand(ScreenCaptureDemand),
     Reselect,
-    PrepareExact {
-        ticket: ScreenWorkerPreparationTicket,
-        cancelled: Arc<AtomicBool>,
-        completion: oneshot::Sender<anyhow::Result<ScreenPreparedWorkerToken>>,
-    },
-    ReapExact {
-        completion: Option<oneshot::Sender<anyhow::Result<()>>>,
-    },
+    Exact(CaptureExactCommand),
     AdoptSettings {
         adoption_id: u64,
         prepared: PreparedWaylandSettings,
@@ -3076,7 +3056,7 @@ fn publish_callback_diagnostics(
 struct AnalysisExchangeState {
     latest: Option<DecodedChunk>,
     adoption: Option<AnalysisAdoption>,
-    exact_commands: VecDeque<AnalysisExactCommand>,
+    exact_commands: VecDeque<CaptureExactCommand>,
     stopped: bool,
 }
 
@@ -3092,19 +3072,8 @@ struct AnalysisAdoption {
 enum AnalysisEvent {
     Frame(DecodedChunk),
     Adoption(AnalysisAdoption),
-    Exact(AnalysisExactCommand),
+    Exact(CaptureExactCommand),
     Diagnostics,
-}
-
-enum AnalysisExactCommand {
-    Prepare {
-        ticket: ScreenWorkerPreparationTicket,
-        cancelled: Arc<AtomicBool>,
-        completion: oneshot::Sender<anyhow::Result<ScreenPreparedWorkerToken>>,
-    },
-    Reap {
-        completion: Option<oneshot::Sender<anyhow::Result<()>>>,
-    },
 }
 
 #[derive(Default)]
@@ -3160,7 +3129,7 @@ impl AnalysisExchange {
         Ok(())
     }
 
-    fn send_exact(&self, command: AnalysisExactCommand) -> Result<(), Box<AnalysisExactCommand>> {
+    fn send_exact(&self, command: CaptureExactCommand) -> Result<(), Box<CaptureExactCommand>> {
         let mut state = self
             .state
             .lock()
@@ -3708,9 +3677,9 @@ impl WaylandAnalysisState {
         );
     }
 
-    fn handle_exact_command(&mut self, command: AnalysisExactCommand) {
+    fn handle_exact_command(&mut self, command: CaptureExactCommand) {
         match command {
-            AnalysisExactCommand::Prepare {
+            CaptureExactCommand::Prepare {
                 ticket,
                 cancelled,
                 completion,
@@ -3753,7 +3722,7 @@ impl WaylandAnalysisState {
                     }
                 }
             }
-            AnalysisExactCommand::Reap { completion } => {
+            CaptureExactCommand::Reap { completion } => {
                 reap_wayland_exact_runtimes(&mut self.exact_runtimes, &self.settings.exact);
                 if let Some(completion) = completion {
                     let _ = completion.send(Ok(()));
@@ -4712,37 +4681,22 @@ fn run_pipewire_loop(
                 WorkerCommand::Reselect => {
                     return terminate_pipewire_loop(&loop_exit, PipeWireLoopExit::Reselect);
                 }
-                WorkerCommand::PrepareExact {
-                    ticket,
-                    cancelled,
-                    completion,
-                } => {
-                    if let Err(command) =
-                        command_exchange.send_exact(AnalysisExactCommand::Prepare {
-                            ticket,
-                            cancelled,
-                            completion,
-                        })
-                    {
-                        let AnalysisExactCommand::Prepare { completion, .. } = *command else {
-                            unreachable!("the rejected exact command preserves its variant")
-                        };
-                        let _ = completion.send(Err(anyhow!(
-                            "Wayland analysis worker rejected exact publication preparation"
-                        )));
-                    }
-                }
-                WorkerCommand::ReapExact { completion } => {
-                    if let Err(command) =
-                        command_exchange.send_exact(AnalysisExactCommand::Reap { completion })
-                    {
-                        let AnalysisExactCommand::Reap { completion } = *command else {
-                            unreachable!("the rejected exact command preserves its variant")
-                        };
-                        if let Some(completion) = completion {
-                            let _ = completion.send(Err(anyhow!(
-                                "Wayland analysis worker rejected exact publication retirement"
-                            )));
+                WorkerCommand::Exact(command) => {
+                    if let Err(command) = command_exchange.send_exact(command) {
+                        match *command {
+                            CaptureExactCommand::Prepare { completion, .. } => {
+                                let _ = completion.send(Err(anyhow!(
+                                    "Wayland analysis worker rejected exact publication preparation"
+                                )));
+                            }
+                            CaptureExactCommand::Reap { completion } => {
+                                let Some(completion) = completion else {
+                                    return CallbackAction::Continue;
+                                };
+                                let _ = completion.send(Err(anyhow!(
+                                    "Wayland analysis worker rejected exact publication retirement"
+                                )));
+                            }
                         }
                     }
                 }

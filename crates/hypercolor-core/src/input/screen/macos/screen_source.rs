@@ -1,14 +1,6 @@
+use std::sync::Arc;
 #[cfg(feature = "macos-capture-fixtures")]
 use std::sync::mpsc;
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
-
-use anyhow::anyhow;
-use hypercolor_macos_capture::MacosScreenAuthorizationState;
-use hypercolor_macos_input::{MacosCapabilityOwner, MacosDaemonOwnerConflict};
-use tokio::sync::oneshot;
 
 use super::{
     CaptureConfig, CaptureSourceId, LedToneMapCalibration, MacosScreenCaptureInput, PreparedWorker,
@@ -17,11 +9,15 @@ use super::{
     ScreenCaptureDemand, ScreenPublicationHub, ScreenPublicationRequest,
     ScreenRendererExecutionState, ScreenSource, ScreenSourcePickerAction, ScreenWorkerPreparation,
     ScreenWorkerPreparationTicket, ScreenWorkerRetirement, SourceCapabilityContext,
-    SourceDiagnosticArtifactAction, WorkerCommand, production_stream_request,
-    protected_action_identity, resolve_macos_publication_branch_with_telemetry,
+    SourceDiagnosticArtifactAction, begin_capture_exact_preparation,
+    begin_capture_exact_retirement, production_stream_request, protected_action_identity,
+    resolve_macos_publication_branch_with_telemetry,
 };
 #[cfg(feature = "macos-capture-fixtures")]
-use super::{CapturePlanePool, InputSource, ScreenCaptureInput};
+use super::{CapturePlanePool, InputSource, ScreenCaptureInput, WorkerCommand};
+use anyhow::anyhow;
+use hypercolor_macos_capture::MacosScreenAuthorizationState;
+use hypercolor_macos_input::{MacosCapabilityOwner, MacosDaemonOwnerConflict};
 
 impl ScreenSource for MacosScreenCaptureInput {
     fn set_capability_context(&mut self, context: &SourceCapabilityContext) -> anyhow::Result<()> {
@@ -226,55 +222,14 @@ impl ScreenSource for MacosScreenCaptureInput {
         let worker = self.worker.as_ref().ok_or_else(|| {
             anyhow!("macOS capture worker is unavailable for exact publication preparation")
         })?;
-        let cancelled = Arc::new(AtomicBool::new(false));
-        let (completion_tx, completion_rx) = oneshot::channel();
-        worker
-            .command_tx
-            .send(WorkerCommand::PrepareExact {
-                ticket,
-                cancelled: Arc::clone(&cancelled),
-                completion: completion_tx,
-            })
-            .map_err(|_| anyhow!("macOS capture worker rejected exact publication preparation"))?;
-        worker.mailbox.wake();
-        let abort_tx = worker.command_tx.clone();
-        let abort_mailbox = worker.mailbox.clone();
-        Ok(ScreenWorkerPreparation::with_abort(
-            async move {
-                completion_rx.await.map_err(|_| {
-                    anyhow!("macOS capture worker exited during exact publication preparation")
-                })?
-            },
-            move || {
-                cancelled.store(true, Ordering::Release);
-                let _ = abort_tx.send(WorkerCommand::ReapExact { completion: None });
-                abort_mailbox.wake();
-            },
-        ))
+        begin_capture_exact_preparation(&worker.exact_command_endpoint(), ticket)
     }
 
     fn begin_screen_publication_retirement(&mut self) -> Option<ScreenWorkerRetirement> {
         let worker = self.worker.as_ref()?;
-        let (completion_tx, completion_rx) = oneshot::channel();
-        if worker
-            .command_tx
-            .send(WorkerCommand::ReapExact {
-                completion: Some(completion_tx),
-            })
-            .is_err()
-        {
-            return Some(ScreenWorkerRetirement::new(async {
-                Err(anyhow!(
-                    "macOS capture worker rejected exact publication retirement"
-                ))
-            }));
-        }
-        worker.mailbox.wake();
-        Some(ScreenWorkerRetirement::new(async move {
-            completion_rx.await.map_err(|_| {
-                anyhow!("macOS capture worker exited during exact publication retirement")
-            })?
-        }))
+        Some(begin_capture_exact_retirement(
+            &worker.exact_command_endpoint(),
+        ))
     }
 
     fn reconfigure_screen_capture(&mut self, config: &CaptureConfig) -> anyhow::Result<()> {

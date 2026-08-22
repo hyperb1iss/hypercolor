@@ -78,9 +78,10 @@ use crate::input::{
 use hypercolor_worker_retention::{retain_worker, spawn_worker};
 
 use super::adapter::{
+    CaptureExactCommand, CaptureExactCommandEndpoint, CaptureExactCommandRejected,
     CaptureExactPublicationShared, CaptureOwnedSource,
     CapturePublication as AdapterCapturePublication, CapturePublicationEpoch,
-    CapturePublicationSource,
+    CapturePublicationSource, begin_capture_exact_preparation, begin_capture_exact_retirement,
 };
 
 /// How long a worker waits on DXGI before checking its command channel.
@@ -632,6 +633,29 @@ struct CaptureWorker {
     processed_activity_generation: Arc<AtomicU64>,
 }
 
+#[derive(Clone)]
+struct WindowsExactCommandEndpoint {
+    command_tx: mpsc::Sender<WorkerCommand>,
+}
+
+impl CaptureExactCommandEndpoint for WindowsExactCommandEndpoint {
+    const SOURCE_NAME: &'static str = "Windows capture";
+
+    fn send_exact(&self, command: CaptureExactCommand) -> Result<(), CaptureExactCommandRejected> {
+        self.command_tx
+            .send(WorkerCommand::Exact(command))
+            .map_err(|_| CaptureExactCommandRejected)
+    }
+}
+
+impl CaptureWorker {
+    fn exact_command_endpoint(&self) -> WindowsExactCommandEndpoint {
+        WindowsExactCommandEndpoint {
+            command_tx: self.command_tx.clone(),
+        }
+    }
+}
+
 struct WindowsGpuRoute {
     id: GpuSurfaceDescriptorId,
     native: Arc<GpuSurfaceDescriptor>,
@@ -764,14 +788,7 @@ enum WorkerCommand {
         decision: mpsc::Receiver<SettingsDecision>,
         done: mpsc::SyncSender<()>,
     },
-    PrepareExact {
-        ticket: ScreenWorkerPreparationTicket,
-        cancelled: Arc<AtomicBool>,
-        completion: oneshot::Sender<anyhow::Result<ScreenPreparedWorkerToken>>,
-    },
-    ReapExact {
-        completion: Option<oneshot::Sender<anyhow::Result<()>>>,
-    },
+    Exact(CaptureExactCommand),
     Stop,
 }
 
@@ -1568,53 +1585,14 @@ impl ScreenSource for WindowsScreenCaptureInput {
         let worker = self.worker.as_ref().ok_or_else(|| {
             anyhow!("Windows capture worker is unavailable for exact publication preparation")
         })?;
-        let cancelled = Arc::new(AtomicBool::new(false));
-        let (completion_tx, completion_rx) = oneshot::channel();
-        worker
-            .command_tx
-            .send(WorkerCommand::PrepareExact {
-                ticket,
-                cancelled: Arc::clone(&cancelled),
-                completion: completion_tx,
-            })
-            .map_err(|_| {
-                anyhow!("Windows capture worker rejected exact publication preparation")
-            })?;
-        let abort_tx = worker.command_tx.clone();
-        Ok(ScreenWorkerPreparation::with_abort(
-            async move {
-                completion_rx.await.map_err(|_| {
-                    anyhow!("Windows capture worker exited during exact publication preparation")
-                })?
-            },
-            move || {
-                cancelled.store(true, Ordering::Release);
-                let _ = abort_tx.send(WorkerCommand::ReapExact { completion: None });
-            },
-        ))
+        begin_capture_exact_preparation(&worker.exact_command_endpoint(), ticket)
     }
 
     fn begin_screen_publication_retirement(&mut self) -> Option<ScreenWorkerRetirement> {
         let worker = self.worker.as_ref()?;
-        let (completion_tx, completion_rx) = oneshot::channel();
-        if worker
-            .command_tx
-            .send(WorkerCommand::ReapExact {
-                completion: Some(completion_tx),
-            })
-            .is_err()
-        {
-            return Some(ScreenWorkerRetirement::new(async {
-                Err(anyhow!(
-                    "Windows capture worker rejected exact publication retirement"
-                ))
-            }));
-        }
-        Some(ScreenWorkerRetirement::new(async move {
-            completion_rx.await.map_err(|_| {
-                anyhow!("Windows capture worker exited during exact publication retirement")
-            })?
-        }))
+        Some(begin_capture_exact_retirement(
+            &worker.exact_command_endpoint(),
+        ))
     }
 
     fn reconfigure_screen_capture(&mut self, config: &CaptureConfig) -> anyhow::Result<()> {
@@ -3403,11 +3381,11 @@ fn run_worker(
                     decision,
                     done,
                 ),
-                Ok(WorkerCommand::PrepareExact {
+                Ok(WorkerCommand::Exact(CaptureExactCommand::Prepare {
                     ticket,
                     cancelled,
                     completion,
-                }) => prepare_exact_command(
+                })) => prepare_exact_command(
                     ticket,
                     cancelled,
                     completion,
@@ -3416,7 +3394,7 @@ fn run_worker(
                     settings.compute_capacity_policy,
                     &mut exact_runtimes,
                 ),
-                Ok(WorkerCommand::ReapExact { completion }) => {
+                Ok(WorkerCommand::Exact(CaptureExactCommand::Reap { completion })) => {
                     reap_exact_runtimes(&mut exact_runtimes, exact);
                     if let Some(completion) = completion {
                         let _ = completion.send(Ok(()));
@@ -3565,11 +3543,11 @@ fn run_worker(
                             decision,
                             done,
                         ),
-                        Ok(WorkerCommand::PrepareExact {
+                        Ok(WorkerCommand::Exact(CaptureExactCommand::Prepare {
                             ticket,
                             cancelled,
                             completion,
-                        }) => prepare_exact_command(
+                        })) => prepare_exact_command(
                             ticket,
                             cancelled,
                             completion,
@@ -3578,7 +3556,7 @@ fn run_worker(
                             settings.compute_capacity_policy,
                             &mut exact_runtimes,
                         ),
-                        Ok(WorkerCommand::ReapExact { completion }) => {
+                        Ok(WorkerCommand::Exact(CaptureExactCommand::Reap { completion })) => {
                             reap_exact_runtimes(&mut exact_runtimes, exact);
                             if let Some(completion) = completion {
                                 let _ = completion.send(Ok(()));
@@ -3833,11 +3811,11 @@ fn run_worker(
                         decision,
                         done,
                     ),
-                    Ok(WorkerCommand::PrepareExact {
+                    Ok(WorkerCommand::Exact(CaptureExactCommand::Prepare {
                         ticket,
                         cancelled,
                         completion,
-                    }) => prepare_exact_command(
+                    })) => prepare_exact_command(
                         ticket,
                         cancelled,
                         completion,
@@ -3846,7 +3824,7 @@ fn run_worker(
                         settings.compute_capacity_policy,
                         &mut exact_runtimes,
                     ),
-                    Ok(WorkerCommand::ReapExact { completion }) => {
+                    Ok(WorkerCommand::Exact(CaptureExactCommand::Reap { completion })) => {
                         reap_exact_runtimes(&mut exact_runtimes, exact);
                         if let Some(completion) = completion {
                             let _ = completion.send(Ok(()));
@@ -4053,11 +4031,11 @@ fn drain_commands(
                 decision,
                 done,
             ),
-            Ok(WorkerCommand::PrepareExact {
+            Ok(WorkerCommand::Exact(CaptureExactCommand::Prepare {
                 ticket,
                 cancelled,
                 completion,
-            }) => prepare_exact_command(
+            })) => prepare_exact_command(
                 ticket,
                 cancelled,
                 completion,
@@ -4066,7 +4044,7 @@ fn drain_commands(
                 settings.compute_capacity_policy,
                 exact_runtimes,
             ),
-            Ok(WorkerCommand::ReapExact { completion }) => {
+            Ok(WorkerCommand::Exact(CaptureExactCommand::Reap { completion })) => {
                 reap_exact_runtimes(exact_runtimes, exact);
                 if let Some(completion) = completion {
                     let _ = completion.send(Ok(()));

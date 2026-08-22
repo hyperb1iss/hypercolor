@@ -56,11 +56,11 @@ pub(super) fn handle_worker_commands(
     let _ = prepared;
     while let Ok(command) = command_rx.try_recv() {
         match command {
-            WorkerCommand::PrepareExact {
+            WorkerCommand::Exact(super::CaptureExactCommand::Prepare {
                 ticket,
                 cancelled,
                 completion,
-            } => {
+            }) => {
                 if cancelled.load(Ordering::Acquire) {
                     let _ = completion.send(Err(anyhow!(
                         "macOS exact publication preparation was cancelled"
@@ -88,7 +88,7 @@ pub(super) fn handle_worker_commands(
                     }
                 }
             }
-            WorkerCommand::ReapExact { completion } => {
+            WorkerCommand::Exact(super::CaptureExactCommand::Reap { completion }) => {
                 reap_macos_exact_runtimes(runtimes, exact);
                 if let Some(completion) = completion {
                     let _ = completion.send(Ok(()));

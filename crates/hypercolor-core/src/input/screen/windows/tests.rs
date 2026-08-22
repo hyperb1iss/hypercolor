@@ -567,10 +567,7 @@ fn exact_runtime_identity_survives_retention_mixed_publication_and_removal() {
     let mut builder = ScreenPlanBuilder::new();
     let hub = builder.publication_hub();
     let exact = ExactPublicationShared::default();
-    *exact
-        .hub
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&hub));
+    exact.install_hub(Arc::clone(&hub));
     exact.replace_source(Some(source.clone()));
     let mut runtimes = WindowsExactRuntimes::default();
 

@@ -5,19 +5,18 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use super::{
-    AdoptionAuthority, AdoptionWaitError, AnalysisEvent, AnalysisExactCommand, AnalysisExchange,
-    CaptureCallbackMetrics, CaptureFormatRequest, CapturedScreenSnapshot, ChunkDropReason,
-    CopyStats, DoubleBuffer, FormatOffer, NegotiatedFormat, NegotiatedVideoFormat,
-    PendingPipeWireAdoption, PipeWireFormatAcknowledgment, PipeWireFormatRequest,
-    PipeWireFormatState, PipeWireLoopExit, RestoreTokenSink, SharedSettings, SpaChunkView,
-    SpaVideoFormat, UnavailablePark, WaylandAnalysisState, WaylandCaptureUserData,
-    WaylandExactPublicationShared, WaylandScreenCaptureInput, WaylandSourceMetadata,
-    WaylandTopologySignature, commit_if_authorized, convert_packed_to_rgba, decode_chunk,
-    fence_previous_publication, initial_native_extent_correction, initial_worker_demand,
-    park_unavailable_worker, prepare_wayland_exact_runtime, publish_unexpected_exit_status,
-    reap_wayland_exact_runtimes, request_active_worker_demand, set_worker_demand,
-    settle_pipewire_restoration, unavailable_format_outcome, wait_for_adoption_result,
-    worker_demand_epoch, worker_demanded,
+    AdoptionAuthority, AdoptionWaitError, AnalysisEvent, AnalysisExchange, CaptureCallbackMetrics,
+    CaptureExactCommand, CaptureFormatRequest, CapturedScreenSnapshot, ChunkDropReason, CopyStats,
+    DoubleBuffer, FormatOffer, NegotiatedFormat, NegotiatedVideoFormat, PendingPipeWireAdoption,
+    PipeWireFormatAcknowledgment, PipeWireFormatRequest, PipeWireFormatState, PipeWireLoopExit,
+    RestoreTokenSink, SharedSettings, SpaChunkView, SpaVideoFormat, UnavailablePark,
+    WaylandAnalysisState, WaylandCaptureUserData, WaylandExactPublicationShared,
+    WaylandScreenCaptureInput, WaylandSourceMetadata, WaylandTopologySignature,
+    commit_if_authorized, convert_packed_to_rgba, decode_chunk, fence_previous_publication,
+    initial_native_extent_correction, initial_worker_demand, park_unavailable_worker,
+    prepare_wayland_exact_runtime, publish_unexpected_exit_status, reap_wayland_exact_runtimes,
+    request_active_worker_demand, set_worker_demand, settle_pipewire_restoration,
+    unavailable_format_outcome, wait_for_adoption_result, worker_demand_epoch, worker_demanded,
 };
 use crate::input::screen::{
     AnalyzedScreenSnapshot, CaptureColorimetry, CaptureConfig, CaptureFrame, CaptureFrameError,
@@ -789,7 +788,7 @@ fn already_cancelled_exact_preparation_never_creates_runtime_state() {
         .expect("test source owns an exact worker ticket");
     let (completion, completed) = tokio::sync::oneshot::channel();
 
-    worker.handle_exact_command(AnalysisExactCommand::Prepare {
+    worker.handle_exact_command(CaptureExactCommand::Prepare {
         ticket,
         cancelled: Arc::new(AtomicBool::new(true)),
         completion,
@@ -2152,7 +2151,7 @@ fn analysis_exchange_prioritizes_exact_control_over_ready_pixels() {
     );
     assert!(
         exchange
-            .send_exact(AnalysisExactCommand::Reap { completion: None })
+            .send_exact(CaptureExactCommand::Reap { completion: None })
             .is_ok()
     );
 
@@ -2162,7 +2161,7 @@ fn analysis_exchange_prioritizes_exact_control_over_ready_pixels() {
             Instant::now() + Duration::from_secs(30),
             &AtomicBool::new(false)
         ),
-        Some(AnalysisEvent::Exact(AnalysisExactCommand::Reap { .. }))
+        Some(AnalysisEvent::Exact(CaptureExactCommand::Reap { .. }))
     ));
     assert!(matches!(
         exchange.wait_for_event(

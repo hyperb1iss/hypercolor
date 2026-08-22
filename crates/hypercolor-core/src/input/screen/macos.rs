@@ -23,13 +23,11 @@ use hypercolor_macos_capture::{
 use hypercolor_macos_capture::{
     MacosCpuSourceView, MacosRuntimeCapability, MacosTahoeRuntimeProbes,
 };
-use hypercolor_macos_input::{MacosCapabilityOwner, MacosDaemonOwnerConflict};
-use tokio::sync::oneshot;
-
 #[cfg(target_os = "macos")]
 use hypercolor_macos_capture::{
     MacosDisplayClock, MacosScreenCaptureSession, MacosScreenshotReferenceCapture,
 };
+use hypercolor_macos_input::{MacosCapabilityOwner, MacosDaemonOwnerConflict};
 
 #[cfg(not(feature = "macos-capture-fixtures"))]
 use super::ScreenColorTransformCapabilities;
@@ -73,7 +71,11 @@ use crate::input::traits::{
 };
 use crate::input::{SourceIssue, SourceStatusHandle, SourceStatusReporter};
 
-use super::adapter::{CaptureExactPublicationShared, CaptureOwnedSource, CapturePublicationSource};
+use super::adapter::{
+    CaptureExactCommand, CaptureExactCommandEndpoint, CaptureExactCommandRejected,
+    CaptureExactPublicationShared, CaptureOwnedSource, CapturePublicationSource,
+    begin_capture_exact_preparation, begin_capture_exact_retirement,
+};
 
 #[cfg(target_os = "macos")]
 mod surface_pool;
@@ -295,14 +297,7 @@ struct MacosExactRuntime {
 }
 
 enum WorkerCommand {
-    PrepareExact {
-        ticket: ScreenWorkerPreparationTicket,
-        cancelled: Arc<AtomicBool>,
-        completion: oneshot::Sender<anyhow::Result<ScreenPreparedWorkerToken>>,
-    },
-    ReapExact {
-        completion: Option<oneshot::Sender<anyhow::Result<()>>>,
-    },
+    Exact(CaptureExactCommand),
     #[cfg(feature = "macos-capture-fixtures")]
     ReconfigureProcessing {
         calibration: LedToneMapCalibration,
@@ -324,6 +319,35 @@ struct CaptureWorker {
     command_tx: mpsc::Sender<WorkerCommand>,
     exit_rx: mpsc::Receiver<anyhow::Result<()>>,
     join: Option<thread::JoinHandle<()>>,
+}
+
+#[derive(Clone)]
+struct MacosExactCommandEndpoint {
+    command_tx: mpsc::Sender<WorkerCommand>,
+    mailbox: MacosFrameMailbox,
+}
+
+impl CaptureExactCommandEndpoint for MacosExactCommandEndpoint {
+    const SOURCE_NAME: &'static str = "macOS capture";
+
+    fn send_exact(&self, command: CaptureExactCommand) -> Result<(), CaptureExactCommandRejected> {
+        self.command_tx
+            .send(WorkerCommand::Exact(command))
+            .map_err(|_| CaptureExactCommandRejected)
+    }
+
+    fn wake(&self) {
+        self.mailbox.wake();
+    }
+}
+
+impl CaptureWorker {
+    fn exact_command_endpoint(&self) -> MacosExactCommandEndpoint {
+        MacosExactCommandEndpoint {
+            command_tx: self.command_tx.clone(),
+            mailbox: self.mailbox.clone(),
+        }
+    }
 }
 
 struct StagedCaptureWorker {
