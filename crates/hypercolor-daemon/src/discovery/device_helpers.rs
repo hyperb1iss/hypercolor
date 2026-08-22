@@ -1,8 +1,6 @@
 use anyhow::Context;
-use hypercolor_core::device::{
-    BackendIo, BackendManager, DeviceLifecycleManager, DeviceLifecyclePolicy, DiscoveredDevice,
-    SegmentRange,
-};
+use hypercolor_core::device::{BackendIo, BackendManager, DeviceLifecycleManager, SegmentRange};
+use hypercolor_driver_api::{DeviceLifecyclePolicy, DiscoveredDevice};
 use hypercolor_types::device::{
     DeviceError, DeviceFingerprint, DeviceId, DeviceInfo, DeviceTopologyHint, DeviceUserSettings,
 };
@@ -327,9 +325,9 @@ pub(super) async fn desired_connect_behavior(
     device_id: DeviceId,
     device_info: &DeviceInfo,
     fingerprint: Option<&DeviceFingerprint>,
-    discovered_behavior: hypercolor_core::device::DiscoveryConnectBehavior,
+    discovered_behavior: hypercolor_driver_api::DiscoveryConnectBehavior,
     user_enabled: bool,
-) -> hypercolor_core::device::DiscoveryConnectBehavior {
+) -> hypercolor_driver_api::DiscoveryConnectBehavior {
     let layout_device_id =
         DeviceLifecycleManager::canonical_layout_device_id(device_info, fingerprint);
     ensure_default_logical_for_device(
@@ -342,13 +340,13 @@ pub(super) async fn desired_connect_behavior(
     .await;
 
     if !user_enabled || !discovered_behavior.should_auto_connect() {
-        return hypercolor_core::device::DiscoveryConnectBehavior::Deferred;
+        return hypercolor_driver_api::DiscoveryConnectBehavior::Deferred;
     }
 
     if active_layout_targets_enabled_device(runtime, device_id, &layout_device_id).await {
-        hypercolor_core::device::DiscoveryConnectBehavior::AutoConnect
+        hypercolor_driver_api::DiscoveryConnectBehavior::AutoConnect
     } else {
-        hypercolor_core::device::DiscoveryConnectBehavior::Deferred
+        hypercolor_driver_api::DiscoveryConnectBehavior::Deferred
     }
 }
 

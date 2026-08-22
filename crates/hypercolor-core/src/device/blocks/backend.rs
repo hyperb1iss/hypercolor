@@ -8,8 +8,7 @@ use anyhow::Result;
 use tokio::sync::Mutex;
 use tracing::{debug, info};
 
-use crate::device::DiscoveredDevice;
-use crate::device::traits::{BackendInfo, DeviceBackend};
+use hypercolor_driver_api::{BackendInfo, DeviceBackend, DiscoveredDevice};
 use hypercolor_types::device::{BLOCKS_OUTPUT_BACKEND_ID, DeviceError, DeviceId, DeviceInfo};
 
 use super::connection::{self, BlocksConnection};

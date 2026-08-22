@@ -3,6 +3,7 @@
 use std::collections::{BTreeSet, HashMap};
 
 use anyhow::{Context, Result};
+use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior};
 use hypercolor_hal::database::{DeviceDescriptor, ProtocolDatabase};
 use hypercolor_hal::protocol::Protocol;
 use hypercolor_types::device::{
@@ -10,8 +11,6 @@ use hypercolor_types::device::{
     DeviceInfo, DeviceOrigin, DeviceTopologyHint, USB_OUTPUT_BACKEND_ID,
 };
 use hypercolor_types::portable::{PortableIdentityClaim, SerialNormalizerRegistry};
-
-use super::{DiscoveredDevice, DiscoveryConnectBehavior};
 
 /// The serial normalizations reviewed for cross-OS stability.
 ///

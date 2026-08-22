@@ -12,8 +12,10 @@ use anyhow::{Result, bail};
 use tokio::sync::Mutex;
 
 use hypercolor_core::device::{
-    BackendInfo, DeviceBackend, DeviceRegistry, DeviceStateMachine, DiscoveredDevice,
-    DiscoveryConnectBehavior, DiscoveryOrchestrator, ReconnectPolicy,
+    DeviceRegistry, DeviceStateMachine, DiscoveryOrchestrator, ReconnectPolicy,
+};
+use hypercolor_driver_api::{
+    BackendInfo, DeviceBackend, DiscoveredDevice, DiscoveryConnectBehavior,
 };
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceError, DeviceFamily,

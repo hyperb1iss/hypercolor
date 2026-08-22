@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use tracing::debug;
 
-use crate::device::{DiscoveredDevice, DiscoveryConnectBehavior};
+use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior};
 use hypercolor_types::device::{
     BLOCKS_OUTPUT_BACKEND_ID, ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily,
     DeviceFeatures, DeviceFingerprint, DeviceInfo, DeviceOrigin, DeviceTopologyHint,

@@ -14,7 +14,8 @@ use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use hypercolor_core::device::{BackendInfo, BackendManager, DeviceBackend, DeviceFrameSink};
+use hypercolor_core::device::BackendManager;
+use hypercolor_driver_api::{BackendInfo, DeviceBackend, DeviceFrameSink};
 use hypercolor_types::device::{DeviceError, DeviceId};
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::spatial::{

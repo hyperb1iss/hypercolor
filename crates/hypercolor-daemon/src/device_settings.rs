@@ -742,7 +742,7 @@ pub async fn resolve_device_settings_key(
 mod tests {
     use std::net::{IpAddr, Ipv4Addr};
 
-    use hypercolor_core::device::{DiscoveredDevice, DiscoveryConnectBehavior};
+    use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior};
     use hypercolor_types::device::{
         ConnectionType, DeviceCapabilities, DeviceFamily, DeviceFingerprint, DeviceInfo,
         DeviceOrigin,

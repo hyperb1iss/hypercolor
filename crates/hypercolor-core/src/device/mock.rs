@@ -12,6 +12,9 @@ use std::sync::{Mutex, PoisonError};
 use anyhow::{Result, bail};
 
 use hypercolor_color::Hsv;
+use hypercolor_driver_api::{
+    BackendInfo, DeviceBackend, DiscoveredDevice, DiscoveryConnectBehavior,
+};
 use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, Rgba};
 use hypercolor_types::control::{ControlDeltaBatch, ControlValue};
 use hypercolor_types::device::{
@@ -22,8 +25,6 @@ use hypercolor_types::device::{
 use hypercolor_types::effect::EffectMetadata;
 use hypercolor_types::spatial::LedTopology;
 
-use super::traits::{BackendInfo, DeviceBackend};
-use crate::device::{DiscoveredDevice, DiscoveryConnectBehavior};
 use crate::effect::{ControlError, EffectRenderer, FrameInput};
 
 // ── Call Tracking ───────────────────────────────────────────────────────────

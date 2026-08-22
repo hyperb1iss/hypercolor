@@ -5,8 +5,8 @@ use std::time::Duration;
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 
 use hypercolor_core::bus::{CanvasFrame, HypercolorBus};
+use hypercolor_core::device::BackendManager;
 use hypercolor_core::device::mock::{MockDeviceBackend, MockDeviceConfig, MockEffectRenderer};
-use hypercolor_core::device::{BackendManager, DeviceBackend};
 use hypercolor_core::effect::{EffectRenderer, FrameDataSources, FrameInput};
 use hypercolor_core::input::InteractionData;
 use hypercolor_core::spatial::SpatialEngine;
@@ -15,6 +15,7 @@ use hypercolor_daemon::render_thread::sparkleflinger::PreviewSurfaceRequest;
 use hypercolor_daemon::render_thread::sparkleflinger::{
     CompositionLayer, CompositionPlan, SparkleFlinger,
 };
+use hypercolor_driver_api::DeviceBackend;
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{
     Canvas, PublishedSurface, RenderSurfacePool, Rgba, SurfaceDescriptor,

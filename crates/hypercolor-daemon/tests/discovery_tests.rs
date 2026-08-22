@@ -10,8 +10,7 @@ use hypercolor_core::attachment::ComponentRegistry;
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::config::ConfigManager;
 use hypercolor_core::device::{
-    BackendInfo, BackendManager, DeviceBackend, DeviceLifecycleManager, DeviceRegistry,
-    DiscoveredDevice, UsbProtocolConfigStore,
+    BackendManager, DeviceLifecycleManager, DeviceRegistry, UsbProtocolConfigStore,
 };
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
@@ -30,6 +29,7 @@ use hypercolor_daemon::logical_devices::{LogicalDevice, LogicalDeviceKind};
 use hypercolor_daemon::network::{self, DaemonDriverHost};
 use hypercolor_daemon::output_power::OutputPower;
 use hypercolor_daemon::scene_transactions::SceneTransactionQueue;
+use hypercolor_driver_api::{BackendInfo, DeviceBackend, DiscoveredDevice};
 use hypercolor_driver_api::{
     DiscoveryCapability, DiscoveryRequest, DriverConfigView, DriverDescriptor, DriverError,
     DriverHost, DriverModule,

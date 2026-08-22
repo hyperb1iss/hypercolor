@@ -10,6 +10,11 @@ use std::sync::{Arc, Mutex as StdMutex, PoisonError, RwLock as StdRwLock};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
+use hypercolor_driver_api::{
+    BackendInfo, ConnectExecution, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId,
+    DeviceDeliveryObserver, DeviceDisplaySink, DeviceFrameSink, DeviceLifecyclePolicy,
+    DiscoveredDevice,
+};
 use hypercolor_hal::database::{DeviceDescriptor, TransportType};
 use hypercolor_hal::protocol::Protocol;
 use hypercolor_hal::protocol_config::{
@@ -34,11 +39,6 @@ use tracing::{debug, info, trace};
 #[cfg(target_os = "linux")]
 use hypercolor_hal::transport::hidraw::UsbHidRawTransport;
 
-use super::DiscoveredDevice;
-use super::traits::{
-    BackendInfo, ConnectExecution, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId,
-    DeviceDeliveryObserver, DeviceDisplaySink, DeviceFrameSink, DeviceLifecyclePolicy,
-};
 use super::transport_error::{DeviceTransportOperation, map_hal_transport_error};
 use crate::attachment::ComponentRegistry;
 

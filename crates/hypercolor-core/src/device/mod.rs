@@ -16,7 +16,6 @@ mod registry;
 pub mod smbus_backend;
 pub mod smbus_scanner;
 mod state_machine;
-mod traits;
 mod transport_error;
 pub mod usb_backend;
 pub mod usb_hotplug;
@@ -26,7 +25,6 @@ pub mod usb_scanner;
 pub use blocks::{BlocksBackend, BlocksScanner};
 pub use discovery::{DiscoveryOrchestrator, DiscoveryProgress, DiscoveryReport, ScannerScanReport};
 pub use discovery_server::discover_servers;
-pub use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior};
 pub use lifecycle::{DeviceLifecycleManager, LifecycleAction};
 pub use manager::{
     AsyncWriteFailure, BackendIo, BackendManager, DeviceOutputStatistics, DirectControlGuard,
@@ -38,11 +36,6 @@ pub use smbus_scanner::SmBusScanner;
 pub use state_machine::{
     DeviceStateMachine, DeviceStateMachineDebugSnapshot, ReconnectPolicy, ReconnectStatus,
     StateTransitionRecord,
-};
-pub use traits::{
-    BackendInfo, ConnectExecution, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId,
-    DeviceDeliveryObserver, DeviceDeliveryStatus, DeviceDisplaySink, DeviceFrameSink,
-    DeviceLifecyclePolicy, DeviceWriteOutcome, OutputCadence,
 };
 pub use usb_backend::{
     UsbActorMetricsSnapshot, UsbBackend, UsbProtocolConfigStore, usb_actor_metrics_snapshot,

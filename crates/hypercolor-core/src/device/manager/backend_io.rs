@@ -4,10 +4,10 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
-use hypercolor_driver_api::{DeviceError, DiscoveredDevice};
+use hypercolor_driver_api::{
+    DeviceError, DeviceFrameSink, DeviceLifecyclePolicy, DiscoveredDevice, OutputCadence,
+};
 use hypercolor_types::device::{DeviceId, DeviceInfo};
-
-use crate::device::traits::{DeviceFrameSink, DeviceLifecyclePolicy, OutputCadence};
 
 use super::BackendHandle;
 

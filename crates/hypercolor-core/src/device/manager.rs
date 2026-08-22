@@ -10,9 +10,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use hypercolor_driver_api::{DeviceBackend, DeviceFrameSink};
 use hypercolor_types::device::DeviceId;
-
-use super::traits::{DeviceBackend, DeviceFrameSink};
 
 mod backend_io;
 mod brightness;

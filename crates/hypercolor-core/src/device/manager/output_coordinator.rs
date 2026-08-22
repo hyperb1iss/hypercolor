@@ -1,16 +1,15 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex as StdMutex, PoisonError, Weak};
 
+use hypercolor_driver_api::OutputCadence;
 use hypercolor_types::device::DeviceId;
 use tokio::sync::Mutex;
-
-use crate::device::output_queue::{DeviceStagingBuffer, OutputLane, OutputQueue};
-use crate::device::traits::OutputCadence;
 
 use super::{
     BackendDeviceKey, BackendHandle, DeviceFrameSinkHandle, DisplayDeliveryAuthority,
     DisplayOutputLane,
 };
+use crate::device::output_queue::{DeviceStagingBuffer, OutputLane, OutputQueue};
 
 #[derive(Debug, Default)]
 struct DirectControlRegistry {

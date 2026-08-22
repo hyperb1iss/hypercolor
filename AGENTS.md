@@ -176,8 +176,9 @@ Rule of thumb: events are broadcast, data streams are watch.
 
 ### Key Traits
 
-- **`DeviceBackend`** (`core/src/device/traits.rs`): hardware communication.
-  Methods: discover, connect, write_colors, disconnect. Long-running I/O dispatched internally.
+- **`DeviceBackend`** (`driver-api/src/backend.rs`): hardware communication.
+  Discovery adopts devices before connect; frame and display sinks own hot-path delivery.
+  Long-running I/O is dispatched internally.
 - **`EffectRenderer`** (`core/src/effect/traits.rs`): polymorphic renderer (wgpu and Servo
   both implement this). Input: `FrameInput` (timing, audio, interaction, screen). Output: `Canvas`.
 - **`InputSource`** (`core/src/input/traits.rs`): audio, screen capture, keyboard, MIDI.

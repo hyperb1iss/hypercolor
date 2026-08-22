@@ -1,10 +1,8 @@
 use std::collections::{HashSet, VecDeque};
 use std::time::Duration;
 
-use hypercolor_core::device::{
-    AsyncWriteFailure, DeviceDeliveryId, DeviceLifecycleManager, DeviceLifecyclePolicy,
-    DiscoveryConnectBehavior, LifecycleAction,
-};
+use hypercolor_core::device::{AsyncWriteFailure, DeviceLifecycleManager, LifecycleAction};
+use hypercolor_driver_api::{DeviceDeliveryId, DeviceLifecyclePolicy, DiscoveryConnectBehavior};
 use hypercolor_types::device::{
     ConnectionType, DeviceError, DeviceId, DeviceState, ErrorRecoverability,
 };

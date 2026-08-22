@@ -3,16 +3,15 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
-use hypercolor_types::device::{DeviceError, DeviceId, OwnedDisplayFramePayload};
-use tokio::sync::{Mutex, OwnedMutexGuard};
-
-use crate::device::output_queue::{AsyncWriteFailureTracker, next_queue_generation};
-use crate::device::traits::{
+use hypercolor_driver_api::{
     DeviceDeliveryAck, DeviceDeliveryId, DeviceDeliveryObserver, DeviceDeliveryStatus,
     DeviceDisplaySink,
 };
+use hypercolor_types::device::{DeviceError, DeviceId, OwnedDisplayFramePayload};
+use tokio::sync::{Mutex, OwnedMutexGuard};
 
 use super::{AsyncWriteFailure, BackendHandle, BackendManager};
+use crate::device::output_queue::{AsyncWriteFailureTracker, next_queue_generation};
 
 /// Cloneable display transport lane owned by the device output coordinator.
 #[derive(Clone)]

@@ -3,9 +3,8 @@
 use std::path::PathBuf;
 
 use anyhow::Result;
+use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior};
 use hypercolor_hal::{probe_smbus_devices_in_root, probe_smbus_devices_system};
-
-use super::{DiscoveredDevice, DiscoveryConnectBehavior};
 
 /// `SMBus` transport scanner.
 pub struct SmBusScanner {

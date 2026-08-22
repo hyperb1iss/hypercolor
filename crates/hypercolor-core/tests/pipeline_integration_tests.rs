@@ -15,9 +15,7 @@ use uuid::Uuid;
 mod frame_state;
 
 use hypercolor_core::bus::{EventFilter, HypercolorBus};
-use hypercolor_core::device::{
-    DeviceRegistry, DiscoveredDevice, DiscoveryConnectBehavior, DiscoveryOrchestrator,
-};
+use hypercolor_core::device::{DeviceRegistry, DiscoveryOrchestrator};
 use hypercolor_core::effect::{
     ControlError, EffectEntry, EffectRegistry, EffectRenderer, FrameInput,
 };
@@ -26,6 +24,7 @@ use hypercolor_core::engine::{
 };
 use hypercolor_core::scene::{SceneManager, make_scene};
 use hypercolor_core::spatial::{sample_led, sample_zone};
+use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior};
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{Canvas, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, Rgba};
 use hypercolor_types::control::ControlDeltaBatch;

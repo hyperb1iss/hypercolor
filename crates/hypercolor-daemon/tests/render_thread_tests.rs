@@ -19,8 +19,7 @@ use hypercolor_core::attachment::ComponentRegistry;
 use hypercolor_core::bus::{CanvasFrame, DisplayGroupFrame, HypercolorBus, PreviewKind};
 use hypercolor_core::device::mock::{MockDeviceBackend, MockDeviceConfig};
 use hypercolor_core::device::{
-    BackendInfo, BackendManager, DeviceBackend, DeviceLifecycleManager, DeviceRegistry,
-    ReconnectPolicy, UsbProtocolConfigStore,
+    BackendManager, DeviceLifecycleManager, DeviceRegistry, ReconnectPolicy, UsbProtocolConfigStore,
 };
 use hypercolor_core::effect::{EffectRegistry, builtin::register_builtin_effects};
 use hypercolor_core::engine::{FpsTier, RenderLoop};
@@ -32,6 +31,7 @@ use hypercolor_daemon::attachment_profiles::ComponentProfileStore;
 use hypercolor_daemon::device_settings::DeviceSettingsStore;
 use hypercolor_daemon::domain::scene::{SceneMutation, SceneService};
 use hypercolor_daemon::domain::spatial::SpatialService;
+use hypercolor_driver_api::{BackendInfo, DeviceBackend};
 use hypercolor_driver_support::CredentialStore;
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{Canvas, PublishedSurface, Rgba};

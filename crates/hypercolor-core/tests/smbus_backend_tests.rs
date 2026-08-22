@@ -6,9 +6,9 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use anyhow::Result;
-use hypercolor_core::device::{
-    DeviceBackend, DeviceLifecyclePolicy, DiscoveredDevice, DiscoveryConnectBehavior, SmBusBackend,
-    SmBusScanner,
+use hypercolor_core::device::{SmBusBackend, SmBusScanner};
+use hypercolor_driver_api::{
+    DeviceBackend, DeviceLifecyclePolicy, DiscoveredDevice, DiscoveryConnectBehavior,
 };
 use hypercolor_hal::transport::smbus::{SmBusBusArbiter, SmBusOperation, decode_operations};
 use hypercolor_hal::transport::{Transport, TransportError};

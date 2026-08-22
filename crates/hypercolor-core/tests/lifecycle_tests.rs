@@ -10,14 +10,12 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use anyhow::{Result, bail};
-use hypercolor_core::device::{
-    BackendInfo, BackendManager, DeviceBackend, DeviceLifecycleManager, DiscoveryConnectBehavior,
-    LifecycleAction,
-};
+use hypercolor_core::device::{BackendManager, DeviceLifecycleManager, LifecycleAction};
 use hypercolor_core::input::{
     InputData, InputManager, InputSource, SourceIssue, SourceKind, SourceState, SourceStatusHandle,
     SourceStatusReporter,
 };
+use hypercolor_driver_api::{BackendInfo, DeviceBackend, DiscoveryConnectBehavior};
 use hypercolor_types::canvas::{linear_to_output_u8, srgb_to_linear};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceError, DeviceFamily,

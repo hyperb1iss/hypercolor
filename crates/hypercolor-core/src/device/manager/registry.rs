@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
+use hypercolor_driver_api::DeviceBackend;
 use tracing::debug;
 
-use super::super::traits::DeviceBackend;
 use super::{BackendIo, BackendManager};
 
 impl BackendManager {

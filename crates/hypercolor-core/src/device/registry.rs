@@ -8,10 +8,10 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior};
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
-use super::{DiscoveredDevice, DiscoveryConnectBehavior};
 use hypercolor_types::device::{
     ConnectionType, DeviceFingerprint, DeviceId, DeviceInfo, DeviceState, DeviceUserSettings,
     FingerprintNamespace,

@@ -6,12 +6,12 @@
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
+use hypercolor_driver_api::DiscoveryConnectBehavior;
 use hypercolor_types::device::{
     DeviceError, DeviceFingerprint, DeviceHandle, DeviceId, DeviceIdentifier, DeviceInfo,
     DeviceState,
 };
 
-use super::DiscoveryConnectBehavior;
 use super::state_machine::{DeviceStateMachine, ReconnectPolicy};
 
 const DEFAULT_MAX_RECONNECT_ATTEMPTS: u32 = 6;

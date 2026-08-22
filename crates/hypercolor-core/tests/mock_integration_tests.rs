@@ -13,12 +13,10 @@ mod frame_state;
 use hypercolor_core::device::mock::{
     MockCall, MockDeviceBackend, MockDeviceConfig, MockDiscoverySource, MockEffectRenderer,
 };
-use hypercolor_core::device::{
-    DeviceBackend, DeviceRegistry, DiscoveredDevice, DiscoveryConnectBehavior,
-    DiscoveryOrchestrator,
-};
+use hypercolor_core::device::{DeviceRegistry, DiscoveryOrchestrator};
 use hypercolor_core::effect::EffectRenderer;
 use hypercolor_core::spatial::{SpatialEngine, generate_positions};
+use hypercolor_driver_api::{DeviceBackend, DiscoveredDevice, DiscoveryConnectBehavior};
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{Canvas, Rgba};
 use hypercolor_types::device::{DeviceFingerprint, DeviceId, DeviceState};

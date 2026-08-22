@@ -5,16 +5,15 @@ use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
+use hypercolor_driver_api::{
+    DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId, DeviceDeliveryObserver,
+    DeviceDeliveryStatus, DeviceFrameSink, OutputCadence,
+};
 use hypercolor_types::device::{DeviceError, DeviceId};
 use serde::Serialize;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tracing::{trace, warn};
-
-use super::traits::{
-    DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId, DeviceDeliveryObserver,
-    DeviceDeliveryStatus, DeviceFrameSink, OutputCadence,
-};
 
 type BackendHandle = Arc<dyn DeviceBackend>;
 type DeviceFrameSinkHandle = Arc<dyn DeviceFrameSink>;

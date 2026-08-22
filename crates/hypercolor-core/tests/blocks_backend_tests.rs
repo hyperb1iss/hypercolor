@@ -2,7 +2,8 @@
 
 use std::path::Path;
 
-use hypercolor_core::device::{BlocksBackend, BlocksScanner, DeviceBackend};
+use hypercolor_core::device::{BlocksBackend, BlocksScanner};
+use hypercolor_driver_api::DeviceBackend;
 use tempfile::tempdir;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;

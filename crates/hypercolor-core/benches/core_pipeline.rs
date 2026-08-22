@@ -7,7 +7,7 @@ use std::time::Duration;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 
 use hypercolor_core::bus::CanvasFrame;
-use hypercolor_core::device::{BackendInfo, BackendManager, DeviceBackend};
+use hypercolor_core::device::BackendManager;
 use hypercolor_core::effect::builtin::{
     ColorWaveRenderer, GradientRenderer, RainbowRenderer, SolidColorRenderer,
     register_builtin_effects,
@@ -17,6 +17,7 @@ use hypercolor_core::input::InputSource;
 use hypercolor_core::input::InteractionData;
 use hypercolor_core::input::audio::AudioInput;
 use hypercolor_core::input::audio::beat::{BeatDetector, BeatFrame};
+use hypercolor_driver_api::{BackendInfo, DeviceBackend};
 use hypercolor_types::device::DeviceError;
 
 type Result<T> = std::result::Result<T, DeviceError>;

@@ -383,7 +383,7 @@ mod tests {
     use std::collections::HashMap;
     use std::net::{IpAddr, Ipv4Addr};
 
-    use hypercolor_core::device::{DiscoveredDevice, DiscoveryConnectBehavior};
+    use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior};
     use hypercolor_types::device::DeviceState;
     use hypercolor_types::portable::NetworkAttachment;
     use tempfile::TempDir;
