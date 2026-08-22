@@ -31,9 +31,6 @@ use tracing::{debug, info};
 use super::capture_demand::{CaptureDemand, CaptureDemandReconcile, CaptureDemandState};
 
 const STOP_TIMEOUT: Duration = Duration::from_secs(1);
-// Staleness probe for a committed exact screen plan; capped by how long a
-// source-internal retirement may starve the plan before it re-plans.
-const COMMITMENT_PROBE_INTERVAL: Duration = Duration::from_secs(1);
 const LIFECYCLE_PROBE_INTERVAL: Duration = Duration::from_millis(250);
 /// Retry cadence for an exact plan that failed with no committed plan to
 /// replace: the source itself must change (session, consent, capacity)
@@ -1294,7 +1291,7 @@ impl<T> Drop for AbortOnDropTask<T> {
     }
 }
 
-type ExactScreenTransitionKey = (InputPublicationDemandRevision, u64);
+type ExactScreenTransitionKey = (InputPublicationDemandRevision, u64, u64);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ExactScreenTransitionPurpose {
@@ -1330,9 +1327,14 @@ impl ExactScreenTransitionTask {
         reader: InputPublicationReader,
         demands: InputPublicationDemandHandle,
         demand: ScreenPublicationDemandSnapshot,
+        source_resolution_revision: u64,
         purpose: ExactScreenTransitionPurpose,
     ) -> Self {
-        let key = (demand.revision(), demand.graph_generation().get());
+        let key = (
+            demand.revision(),
+            demand.graph_generation().get(),
+            source_resolution_revision,
+        );
         let task = AbortOnDropTask::new(tokio::spawn(run_exact_screen_transition(
             manager, reader, demands, demand,
         )));
@@ -1475,7 +1477,6 @@ async fn run_pump(
     let mut publication_retirements = VecDeque::new();
     let mut worker_retirement_tasks = JoinSet::new();
     let mut due_sources = Vec::with_capacity(SOURCE_KINDS.len());
-    let mut last_commitment_probe = Instant::now();
     let mut graph_changes = reader.graph.subscribe_generation();
     let mut demand_changes = demands.subscribe_revision();
     loop {
@@ -1489,14 +1490,34 @@ async fn run_pump(
             .as_ref()
             .is_some_and(ExactScreenTransitionTask::is_finished)
         {
+            let current_demand = demands.snapshot();
+            let current_graph = reader.graph_snapshot();
+            let current_source_revision = match manager
+                .try_screen_publication_resolution_revision_if(|| {
+                    demands.snapshot().revision() == current_demand.revision()
+                        && reader.graph_snapshot().generation() == current_graph.generation()
+                }) {
+                TryInputManagerIntent::Busy => {
+                    tokio::select! {
+                        () = cancel.cancelled() => break,
+                        () = manager.wait_for_lifecycle_release_after_busy() => {}
+                        _ = demand_changes.changed() => {}
+                        _ = graph_changes.changed() => {}
+                    }
+                    continue;
+                }
+                TryInputManagerIntent::Stale => continue,
+                TryInputManagerIntent::Applied(revision) => revision,
+            };
             let transition = exact_screen_transition
                 .take()
                 .expect("finished exact screen transition remains present");
             let transition_key = transition.key;
             let transition_purpose = transition.purpose;
             let current_key = (
-                demands.snapshot().revision(),
-                reader.graph_snapshot().generation(),
+                current_demand.revision(),
+                current_graph.generation(),
+                current_source_revision,
             );
             match transition.join().await {
                 Ok(Ok(ExactScreenTransitionOutcome::Completed(committed))) => {
@@ -1619,7 +1640,28 @@ async fn run_pump(
             }
         }
         let lifecycle_current = capture_demand.is_current(graph.generation(), desired_capture);
-        let exact_screen_key = (demand.revision(), graph.generation());
+        let source_resolution_revision = match manager
+            .try_screen_publication_resolution_revision_if(|| {
+                demands.snapshot().revision() == demand.revision()
+                    && reader.graph_snapshot().generation() == graph.generation()
+            }) {
+            TryInputManagerIntent::Busy => {
+                tokio::select! {
+                    () = cancel.cancelled() => break,
+                    () = manager.wait_for_lifecycle_release_after_busy() => {}
+                    _ = demand_changes.changed() => {}
+                    _ = graph_changes.changed() => {}
+                }
+                continue;
+            }
+            TryInputManagerIntent::Stale => continue,
+            TryInputManagerIntent::Applied(revision) => revision,
+        };
+        let exact_screen_key = (
+            demand.revision(),
+            graph.generation(),
+            source_resolution_revision,
+        );
         if exact_screen_transition
             .as_ref()
             .is_some_and(|transition| transition.key != exact_screen_key)
@@ -1659,6 +1701,7 @@ async fn run_pump(
                 reader.clone(),
                 demands.clone(),
                 exact_demand,
+                source_resolution_revision,
                 purpose,
             ));
         }
@@ -1729,34 +1772,6 @@ async fn run_pump(
 
         if demands.snapshot().revision() != demand.revision() {
             continue;
-        }
-        // A screen source can retire its publication source without any
-        // demand or graph change (a capture worker restart does exactly
-        // this), leaving a committed plan with no producer behind it.
-        // Piggyback a throttled currency probe on the sampling lock so a
-        // starved plan gets re-planned instead of trusted forever.
-        if applied_exact_screen.is_some()
-            && last_commitment_probe.elapsed() >= COMMITMENT_PROBE_INTERVAL
-        {
-            last_commitment_probe = Instant::now();
-            let commitment = manager.try_screen_publication_commitment_is_current_if(|| {
-                demands.snapshot().revision() == demand.revision()
-                    && reader.graph_snapshot().generation() == graph.generation()
-            });
-            match commitment {
-                TryInputManagerIntent::Applied(false) => applied_exact_screen = None,
-                TryInputManagerIntent::Applied(true) => {}
-                TryInputManagerIntent::Busy => {
-                    tokio::select! {
-                        () = cancel.cancelled() => break,
-                        () = manager.wait_for_lifecycle_release_after_busy() => {}
-                        _ = demand_changes.changed() => {}
-                        _ = graph_changes.changed() => {}
-                    }
-                    continue;
-                }
-                TryInputManagerIntent::Stale => continue,
-            }
         }
         let mut committed_schedule = schedule.clone();
         committed_schedule.collect_due(Instant::now(), &mut due_sources);

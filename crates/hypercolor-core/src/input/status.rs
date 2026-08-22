@@ -1300,6 +1300,18 @@ impl SourceSessionWriter {
         true
     }
 
+    /// Publish platform diagnostics into the public source-status envelope.
+    ///
+    /// This method takes the blocking control mutex and must not run inside an
+    /// audio, graphics, or other real-time callback.
+    pub fn publish_status_diagnostics(
+        &self,
+        diagnostics: Option<SourceDiagnosticsEnvelope>,
+    ) -> bool {
+        let diagnostics = diagnostics.map(Arc::new);
+        self.publish(|status| status.diagnostics = diagnostics)
+    }
+
     /// Publish a neutral user-action issue if this session is still active.
     pub fn set_action_issue(&self, action_issue: Option<SourceIssue>) -> bool {
         self.publish(|status| status.action_issue = action_issue)

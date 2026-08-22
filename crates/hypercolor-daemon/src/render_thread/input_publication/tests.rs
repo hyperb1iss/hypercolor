@@ -1,5 +1,5 @@
 use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, mpsc};
 use std::time::{Duration, Instant};
 
@@ -125,6 +125,7 @@ struct ScreenDemandSource {
     transitions: Arc<StdMutex<Vec<ScreenCaptureDemand>>>,
     source: ResolvedScreenSource,
     runtime: Arc<StdMutex<Vec<ScreenRuntimeAllocation>>>,
+    resolution_revision: Arc<AtomicU64>,
     preparation_started: Option<Arc<Notify>>,
     preparation_release: Option<Arc<Notify>>,
     preparation_attempts: Option<Arc<AtomicUsize>>,
@@ -179,6 +180,7 @@ impl ScreenDemandSource {
                 ),
             ),
             runtime: Arc::new(StdMutex::new(Vec::new())),
+            resolution_revision: Arc::new(AtomicU64::new(0)),
             preparation_started: None,
             preparation_release: None,
             preparation_attempts: None,
@@ -200,6 +202,10 @@ impl ScreenDemandSource {
     fn with_preparation_attempts(mut self, attempts: Arc<AtomicUsize>) -> Self {
         self.preparation_attempts = Some(attempts);
         self
+    }
+
+    fn resolution_revision(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.resolution_revision)
     }
 
     fn with_recovery_gates(
@@ -270,6 +276,10 @@ impl ScreenSource for ScreenDemandSource {
     }
 
     fn set_screen_publication_hub(&mut self, _hub: Arc<ScreenPublicationHub>) {}
+
+    fn screen_publication_resolution_revision(&self) -> u64 {
+        self.resolution_revision.load(Ordering::Acquire)
+    }
 
     fn resolve_screen_publication_branch(
         &self,
@@ -1206,6 +1216,52 @@ async fn pump_propagates_exact_branches_with_revision_and_graph_fences() {
     })
     .await
     .expect("empty exact demand should retire committed branches");
+    pump.shutdown().await.expect("publication pump stops");
+}
+
+#[tokio::test]
+async fn source_extent_and_transform_revisions_replan_without_demand_change() {
+    let transitions = Arc::new(StdMutex::new(Vec::new()));
+    let source = ScreenDemandSource::new(Arc::clone(&transitions));
+    let resolution_revision = source.resolution_revision();
+    let manager = InputManager::new();
+    manager
+        .add_source(ManagedSourceRole::screen(Box::new(source)))
+        .expect("screen demand source should register");
+    manager.start_all().expect("screen source starts");
+    let demands = InputPublicationDemandHandle::new();
+    let mut pump = InputPublicationPump::start(manager.clone(), demands.clone())
+        .await
+        .expect("publication pump starts");
+    let publications = pump.reader().screen_publications();
+    let _registration = demands.register(
+        InputPublicationConsumer::Authoritative,
+        InputPublicationDemand::default().with_fixture_screen(60, extent(1_920, 1_080)),
+    );
+
+    wait_for_exact_extent(&publications, extent(1_920, 1_080)).await;
+    assert!(manager.screen_publication_commitment_is_current());
+
+    resolution_revision.fetch_add(1, Ordering::AcqRel);
+    assert!(!manager.screen_publication_commitment_is_current());
+    tokio::time::timeout(Duration::from_millis(500), async {
+        while !manager.screen_publication_commitment_is_current() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("an extent revision should re-plan without a demand update");
+
+    resolution_revision.fetch_add(1, Ordering::AcqRel);
+    assert!(!manager.screen_publication_commitment_is_current());
+    tokio::time::timeout(Duration::from_millis(500), async {
+        while !manager.screen_publication_commitment_is_current() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("a transform revision should re-plan without a demand update");
+
     pump.shutdown().await.expect("publication pump stops");
 }
 

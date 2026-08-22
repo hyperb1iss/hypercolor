@@ -2327,6 +2327,40 @@ mod tests {
         );
     }
 
+    #[test]
+    fn input_source_status_exposes_wayland_drop_reason_counters() {
+        let diagnostics = SourceDiagnosticsEnvelope::try_new(
+            "wayland.pipewire.capture",
+            1,
+            Vec::new(),
+            json!({
+                "copied_frames": 8,
+                "dropped_frames": 3,
+                "copied_bytes": 4096,
+                "drop_reasons": {
+                    "invalid_crop": 2,
+                    "invalid_transform": 1,
+                },
+            }),
+        )
+        .expect("Wayland callback diagnostics should be bounded");
+        let status = input_source_status(
+            &source_status_fixture(Some(diagnostics)),
+            Instant::now(),
+            true,
+        );
+        let value = serde_json::to_value(status).expect("input status should serialize");
+
+        assert_eq!(
+            value["diagnostics"]["payload"]["drop_reasons"]["invalid_crop"],
+            2
+        );
+        assert_eq!(
+            value["diagnostics"]["payload"]["drop_reasons"]["invalid_transform"],
+            1
+        );
+    }
+
     #[tokio::test]
     async fn system_resource_redacts_protected_diagnostics_without_control() {
         let secret = "display:com.secret.private";

@@ -1504,6 +1504,17 @@ impl InputManager {
         self.with_inner(InputManagerState::screen_publication_resolution_revision)
     }
 
+    /// Try refreshing the exact-screen source revision without waiting for
+    /// another lifecycle transaction to release manager ownership.
+    pub fn try_screen_publication_resolution_revision_if(
+        &self,
+        is_current: impl FnOnce() -> bool,
+    ) -> TryInputManagerIntent<u64> {
+        self.try_with_detached_inner_if(is_current, |state| {
+            state.screen_publication_resolution_revision()
+        })
+    }
+
     #[must_use]
     pub fn screen_publication_commitment_is_current(&self) -> bool {
         self.with_detached_inner(InputManagerState::screen_publication_commitment_is_current)

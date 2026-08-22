@@ -23,6 +23,8 @@ use hypercolor_pipewire_interop::{
     StateChange, StreamControl, StreamEventHandler, StreamState, connect_stream, loop_channel,
     open_portal_session,
 };
+use hypercolor_types::source_status::SourceDiagnosticsEnvelope;
+use serde_json::{Map, Value, json};
 use tokio::sync::oneshot;
 use tracing::{debug, info, warn};
 
@@ -59,6 +61,7 @@ const WORKER_READY_TIMEOUT: Duration = Duration::from_secs(1);
 const WORKER_STOP_TIMEOUT: Duration = Duration::from_secs(1);
 const FORMAT_ADOPTION_TIMEOUT: Duration = Duration::from_secs(5);
 const WORKER_POLL_INTERVAL: Duration = Duration::from_millis(25);
+const CAPTURE_DIAGNOSTICS_INTERVAL: Duration = Duration::from_secs(1);
 const RECONNECT_DELAY: Duration = Duration::from_millis(250);
 
 /// Borrowed, negotiated SPA chunk presented to the synchronous copy seam.
@@ -141,6 +144,73 @@ pub enum ChunkDropReason {
     BufferUnavailable,
     /// The negotiated frame exceeds the capacity prepared outside the callback.
     BufferTooSmall,
+}
+
+impl ChunkDropReason {
+    const ALL: [Self; 17] = [
+        Self::MissingBuffer,
+        Self::MissingPlane,
+        Self::MissingNativeBuffer,
+        Self::MissingChunk,
+        Self::MissingFormat,
+        Self::UnmappedPlane,
+        Self::InvalidExtent,
+        Self::InvalidChunkBounds,
+        Self::InvalidBufferLayout,
+        Self::InvalidDmaBuf,
+        Self::InvalidStride,
+        Self::TruncatedChunk,
+        Self::InvalidCrop,
+        Self::InvalidTransform,
+        Self::VisitorPanicked,
+        Self::BufferUnavailable,
+        Self::BufferTooSmall,
+    ];
+    const COUNT: usize = Self::ALL.len();
+
+    const fn index(self) -> usize {
+        match self {
+            Self::MissingBuffer => 0,
+            Self::MissingPlane => 1,
+            Self::MissingNativeBuffer => 2,
+            Self::MissingChunk => 3,
+            Self::MissingFormat => 4,
+            Self::UnmappedPlane => 5,
+            Self::InvalidExtent => 6,
+            Self::InvalidChunkBounds => 7,
+            Self::InvalidBufferLayout => 8,
+            Self::InvalidDmaBuf => 9,
+            Self::InvalidStride => 10,
+            Self::TruncatedChunk => 11,
+            Self::InvalidCrop => 12,
+            Self::InvalidTransform => 13,
+            Self::VisitorPanicked => 14,
+            Self::BufferUnavailable => 15,
+            Self::BufferTooSmall => 16,
+        }
+    }
+
+    const fn name(self) -> &'static str {
+        match self {
+            Self::MissingBuffer => "missing_buffer",
+            Self::MissingPlane => "missing_plane",
+            Self::MissingNativeBuffer => "missing_native_buffer",
+            Self::MissingChunk => "missing_chunk",
+            Self::MissingFormat => "missing_format",
+            Self::UnmappedPlane => "unmapped_plane",
+            Self::InvalidExtent => "invalid_extent",
+            Self::InvalidChunkBounds => "invalid_chunk_bounds",
+            Self::InvalidBufferLayout => "invalid_buffer_layout",
+            Self::InvalidDmaBuf => "invalid_dma_buf",
+            Self::InvalidStride => "invalid_stride",
+            Self::TruncatedChunk => "truncated_chunk",
+            Self::InvalidCrop => "invalid_crop",
+            Self::InvalidTransform => "invalid_transform",
+            Self::VisitorPanicked => "visitor_panicked",
+            Self::BufferUnavailable => "buffer_unavailable",
+            Self::BufferTooSmall => "buffer_too_small",
+        }
+    }
 }
 
 /// Allocation-free result counters returned by [`decode_chunk`].
@@ -2979,11 +3049,10 @@ const fn buffer_drop_reason(error: BufferFault) -> ChunkDropReason {
     }
 }
 
-#[derive(Default)]
 struct CaptureCallbackMetrics {
     copied_frames: AtomicU64,
-    dropped_frames: AtomicU64,
     copied_bytes: AtomicU64,
+    drop_reasons: [AtomicU64; ChunkDropReason::COUNT],
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -2991,12 +3060,23 @@ struct CaptureCallbackMetricsSnapshot {
     copied_frames: u64,
     dropped_frames: u64,
     copied_bytes: u64,
+    drop_reasons: [u64; ChunkDropReason::COUNT],
+}
+
+impl Default for CaptureCallbackMetrics {
+    fn default() -> Self {
+        Self {
+            copied_frames: AtomicU64::new(0),
+            copied_bytes: AtomicU64::new(0),
+            drop_reasons: std::array::from_fn(|_| AtomicU64::new(0)),
+        }
+    }
 }
 
 impl CaptureCallbackMetrics {
     fn record(&self, stats: CopyStats) {
-        if stats.drop_reason().is_some() {
-            self.dropped_frames.fetch_add(1, Ordering::Relaxed);
+        if let Some(reason) = stats.drop_reason() {
+            self.drop_reasons[reason.index()].fetch_add(1, Ordering::Relaxed);
         } else {
             self.copied_frames.fetch_add(1, Ordering::Relaxed);
             self.copied_bytes.fetch_add(
@@ -3007,11 +3087,47 @@ impl CaptureCallbackMetrics {
     }
 
     fn snapshot(&self) -> CaptureCallbackMetricsSnapshot {
+        let drop_reasons =
+            std::array::from_fn(|index| self.drop_reasons[index].load(Ordering::Relaxed));
         CaptureCallbackMetricsSnapshot {
             copied_frames: self.copied_frames.load(Ordering::Relaxed),
-            dropped_frames: self.dropped_frames.load(Ordering::Relaxed),
+            dropped_frames: drop_reasons.iter().copied().sum(),
             copied_bytes: self.copied_bytes.load(Ordering::Relaxed),
+            drop_reasons,
         }
+    }
+}
+
+impl CaptureCallbackMetricsSnapshot {
+    fn diagnostics(self) -> SourceDiagnosticsEnvelope {
+        let mut drop_reasons = Map::with_capacity(ChunkDropReason::COUNT);
+        for reason in ChunkDropReason::ALL {
+            drop_reasons.insert(
+                reason.name().to_owned(),
+                Value::from(self.drop_reasons[reason.index()]),
+            );
+        }
+        SourceDiagnosticsEnvelope::try_new(
+            "wayland.pipewire.capture",
+            1,
+            Vec::new(),
+            json!({
+                "copied_frames": self.copied_frames,
+                "dropped_frames": self.dropped_frames,
+                "copied_bytes": self.copied_bytes,
+                "drop_reasons": drop_reasons,
+            }),
+        )
+        .expect("fixed Wayland callback diagnostics satisfy envelope bounds")
+    }
+}
+
+fn publish_callback_diagnostics(
+    status_writer: Option<&SourceSessionWriter>,
+    metrics: &CaptureCallbackMetrics,
+) {
+    if let Some(status) = status_writer {
+        status.publish_status_diagnostics(Some(metrics.snapshot().diagnostics()));
     }
 }
 
@@ -3036,6 +3152,7 @@ enum AnalysisEvent {
     Frame(DecodedChunk),
     Adoption(AnalysisAdoption),
     Exact(AnalysisExactCommand),
+    Diagnostics,
 }
 
 enum AnalysisExactCommand {
@@ -3053,6 +3170,19 @@ enum AnalysisExactCommand {
 struct AnalysisExchange {
     state: Mutex<AnalysisExchangeState>,
     wake: Condvar,
+}
+
+fn analysis_wait_timeout(
+    frame_deadline: Instant,
+    diagnostics_deadline: Instant,
+    now: Instant,
+) -> Duration {
+    let next_wake = if now >= frame_deadline {
+        diagnostics_deadline
+    } else {
+        frame_deadline.min(diagnostics_deadline)
+    };
+    next_wake.saturating_duration_since(now)
 }
 
 impl AnalysisExchange {
@@ -3113,7 +3243,12 @@ impl AnalysisExchange {
         drop(discarded);
     }
 
-    fn wait_for_event(&self, deadline: Instant, cancel: &AtomicBool) -> Option<AnalysisEvent> {
+    fn wait_for_event(
+        &self,
+        deadline: Instant,
+        diagnostics_deadline: Instant,
+        cancel: &AtomicBool,
+    ) -> Option<AnalysisEvent> {
         let mut state = self
             .state
             .lock()
@@ -3134,11 +3269,10 @@ impl AnalysisExchange {
             {
                 return Some(AnalysisEvent::Frame(frame));
             }
-            let timeout = if now >= deadline {
-                WORKER_POLL_INTERVAL
-            } else {
-                deadline.saturating_duration_since(now)
-            };
+            if now >= diagnostics_deadline {
+                return Some(AnalysisEvent::Diagnostics);
+            }
+            let timeout = analysis_wait_timeout(deadline, diagnostics_deadline, now);
             let waited = self
                 .wake
                 .wait_timeout(state, timeout.min(WORKER_POLL_INTERVAL))
@@ -3837,6 +3971,7 @@ fn run_analysis_worker(
     demand: ScreenCaptureDemand,
     cancel: &AtomicBool,
     status_writer: Option<SourceSessionWriter>,
+    callback_metrics: &CaptureCallbackMetrics,
 ) {
     let mut state =
         match WaylandAnalysisState::new(settings, latest_snapshot, source, config, demand) {
@@ -3848,7 +3983,10 @@ fn run_analysis_worker(
         };
     let mut analysis_failure_latched = false;
     let mut exact_failure_latched = false;
-    while let Some(event) = exchange.wait_for_event(state.next_analysis_at, cancel) {
+    let mut diagnostics_deadline = Instant::now();
+    while let Some(event) =
+        exchange.wait_for_event(state.next_analysis_at, diagnostics_deadline, cancel)
+    {
         let decoded = match event {
             AnalysisEvent::Frame(decoded) => decoded,
             AnalysisEvent::Adoption(adoption) => {
@@ -3857,6 +3995,11 @@ fn run_analysis_worker(
             }
             AnalysisEvent::Exact(command) => {
                 state.handle_exact_command(command);
+                continue;
+            }
+            AnalysisEvent::Diagnostics => {
+                publish_callback_diagnostics(status_writer.as_ref(), callback_metrics);
+                diagnostics_deadline = Instant::now() + CAPTURE_DIAGNOSTICS_INTERVAL;
                 continue;
             }
         };
@@ -3966,6 +4109,7 @@ fn run_analysis_worker(
             }
         }
     }
+    publish_callback_diagnostics(status_writer.as_ref(), callback_metrics);
 }
 
 fn latch_wayland_analysis_failure(
@@ -4874,6 +5018,7 @@ fn run_pipewire_loop(
         };
 
     let analysis_exchange = Arc::clone(&exchange);
+    let analysis_metrics = Arc::clone(&callback_metrics);
     let analysis_cancel = Arc::clone(&cancel);
     let analysis_config = config.clone();
     let analysis_demand = demand;
@@ -4890,6 +5035,7 @@ fn run_pipewire_loop(
                     analysis_demand,
                     &analysis_cancel,
                     status_writer,
+                    &analysis_metrics,
                 );
             }));
             if result.is_err() {

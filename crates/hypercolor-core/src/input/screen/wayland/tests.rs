@@ -2101,10 +2101,14 @@ fn stopped_analysis_wait_wakes_and_discards_queued_pixels() {
     let handle = thread::spawn(move || {
         match waiter.wait_for_event(
             Instant::now() + Duration::from_secs(30),
+            Instant::now() + Duration::from_secs(30),
             &AtomicBool::new(false),
         ) {
             Some(AnalysisEvent::Frame(frame)) => Some(frame),
-            Some(AnalysisEvent::Adoption(_) | AnalysisEvent::Exact(_)) | None => None,
+            Some(
+                AnalysisEvent::Adoption(_) | AnalysisEvent::Exact(_) | AnalysisEvent::Diagnostics,
+            )
+            | None => None,
         }
     });
     exchange.stop();
@@ -2135,9 +2139,11 @@ fn analysis_exchange_keeps_the_newest_eligible_frame() {
         );
     }
 
-    let Some(AnalysisEvent::Frame(latest)) =
-        exchange.wait_for_event(Instant::now(), &AtomicBool::new(false))
-    else {
+    let Some(AnalysisEvent::Frame(latest)) = exchange.wait_for_event(
+        Instant::now(),
+        Instant::now() + Duration::from_secs(30),
+        &AtomicBool::new(false),
+    ) else {
         panic!("latest frame is immediately eligible");
     };
     assert_eq!(latest.bytes(), &[3; 4]);
@@ -2164,13 +2170,52 @@ fn analysis_exchange_prioritizes_exact_control_over_ready_pixels() {
     );
 
     assert!(matches!(
-        exchange.wait_for_event(Instant::now(), &AtomicBool::new(false)),
+        exchange.wait_for_event(
+            Instant::now(),
+            Instant::now() + Duration::from_secs(30),
+            &AtomicBool::new(false)
+        ),
         Some(AnalysisEvent::Exact(AnalysisExactCommand::Reap { .. }))
     ));
     assert!(matches!(
-        exchange.wait_for_event(Instant::now(), &AtomicBool::new(false)),
+        exchange.wait_for_event(
+            Instant::now(),
+            Instant::now() + Duration::from_secs(30),
+            &AtomicBool::new(false)
+        ),
         Some(AnalysisEvent::Frame(_))
     ));
+}
+
+#[test]
+fn analysis_exchange_wakes_for_diagnostics_without_a_frame() {
+    let exchange = AnalysisExchange::default();
+
+    assert!(matches!(
+        exchange.wait_for_event(
+            Instant::now() + Duration::from_secs(30),
+            Instant::now(),
+            &AtomicBool::new(false)
+        ),
+        Some(AnalysisEvent::Diagnostics)
+    ));
+}
+
+#[test]
+fn elapsed_frame_deadline_waits_for_diagnostics_without_spinning() {
+    let now = Instant::now();
+    let elapsed_frame_deadline = now
+        .checked_sub(Duration::from_secs(1))
+        .expect("current instant supports a one-second lookback");
+
+    assert_eq!(
+        super::analysis_wait_timeout(
+            elapsed_frame_deadline,
+            now + Duration::from_millis(750),
+            now,
+        ),
+        Duration::from_millis(750)
+    );
 }
 
 #[test]
@@ -2301,6 +2346,9 @@ fn callback_metrics_count_copy_and_drop_outcomes() {
             copied_frames: 1,
             dropped_frames: 1,
             copied_bytes: 16,
+            drop_reasons: std::array::from_fn(|index| {
+                u64::from(index == ChunkDropReason::TruncatedChunk.index())
+            }),
         }
     );
 }
@@ -2320,7 +2368,58 @@ fn callback_predecode_failures_are_all_counted() {
         callback.record_drop(reason);
     }
 
-    assert_eq!(metrics.snapshot().dropped_frames, 5);
+    let snapshot = metrics.snapshot();
+    assert_eq!(snapshot.dropped_frames, 5);
+    for reason in [
+        ChunkDropReason::MissingBuffer,
+        ChunkDropReason::MissingPlane,
+        ChunkDropReason::MissingFormat,
+        ChunkDropReason::UnmappedPlane,
+        ChunkDropReason::InvalidChunkBounds,
+    ] {
+        assert_eq!(snapshot.drop_reasons[reason.index()], 1);
+    }
+    assert_eq!(
+        snapshot.drop_reasons.iter().copied().sum::<u64>(),
+        snapshot.dropped_frames
+    );
+}
+
+#[test]
+fn callback_diagnostics_publish_exact_drop_reasons_to_source_status() {
+    let metrics = CaptureCallbackMetrics::default();
+    metrics.record(CopyStats::dropped(ChunkDropReason::InvalidCrop));
+    metrics.record(CopyStats::dropped(ChunkDropReason::InvalidCrop));
+    metrics.record(CopyStats::dropped(ChunkDropReason::InvalidTransform));
+
+    let mut reporter = SourceStatusReporter::new(
+        "wayland:diagnostics",
+        SourceKind::Screen,
+        "wayland_pipewire",
+        true,
+        true,
+        true,
+    );
+    reporter.set_source_graph_generation(1);
+    let writer = reporter
+        .begin_session()
+        .expect("diagnostics session should begin")
+        .expect("manager generation should create a diagnostics session");
+    assert!(writer.publish_status_diagnostics(Some(metrics.snapshot().diagnostics())));
+
+    let status = reporter.handle().snapshot();
+    let diagnostics = status
+        .diagnostics
+        .as_ref()
+        .expect("Wayland callback diagnostics should be visible in source status");
+    assert_eq!(diagnostics.schema(), "wayland.pipewire.capture");
+    assert_eq!(diagnostics.payload()["dropped_frames"], 3);
+    assert_eq!(diagnostics.payload()["drop_reasons"]["invalid_crop"], 2);
+    assert_eq!(
+        diagnostics.payload()["drop_reasons"]["invalid_transform"],
+        1
+    );
+    assert_eq!(diagnostics.payload()["drop_reasons"]["missing_buffer"], 0);
 }
 
 #[test]
