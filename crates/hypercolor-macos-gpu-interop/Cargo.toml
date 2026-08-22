@@ -25,6 +25,7 @@ servo-context = [
 ]
 
 [dependencies]
+hypercolor-gpu-frame = { workspace = true }
 hypercolor-macos-capture = { workspace = true, optional = true }
 thiserror = { workspace = true }
 wgpu = { workspace = true }

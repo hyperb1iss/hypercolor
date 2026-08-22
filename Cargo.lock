@@ -5471,6 +5471,7 @@ dependencies = [
  "euclid",
  "gleam",
  "glow",
+ "hypercolor-gpu-frame",
  "hypercolor-macos-capture",
  "image",
  "libc",
