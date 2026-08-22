@@ -136,7 +136,7 @@ impl PreparedDaemon {
         for installer in extension_installers {
             installer.install(&mut daemon_state)?;
         }
-        daemon_state.start().await?;
+        Box::pin(daemon_state.start()).await?;
 
         let ui_dir = resolve_ui_dir(self.options.ui_dir.clone());
         let mut app_state = AppState::from_daemon_state(&daemon_state);

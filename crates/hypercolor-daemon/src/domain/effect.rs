@@ -7,12 +7,24 @@
 //! [`RequestedTransition`], and both get the same validation, scene
 //! mutation, and ordered events.
 
+mod identity;
+
+pub(crate) use identity::{
+    EffectIdMigrations, install_registry_file, reload_registry_file, remap_effect_id, remap_zones,
+    rescan_registry,
+};
+
 use std::collections::HashMap;
+use std::fs;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use hypercolor_core::effect::{EffectEntry, EffectRegistry, RescanReport};
 use strum::VariantNames;
+use tempfile::NamedTempFile;
 
 use hypercolor_types::api::scene::SideEffectOutcome;
 use hypercolor_types::config::EffectErrorFallbackPolicy;
@@ -20,16 +32,24 @@ use hypercolor_types::effect::{
     ControlValue, EffectCategory, EffectId, EffectMetadata, EffectSource,
 };
 use hypercolor_types::event::{EffectRef, EffectStopReason, ZoneChangeKind};
+use hypercolor_types::layer::LayerSource;
 use hypercolor_types::library::PresetId;
 use hypercolor_types::scene::{SceneId, Zone, ZoneId};
 use hypercolor_types::spatial::SpatialLayout;
-use tokio::sync::RwLock;
+use tokio::sync::{OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
 
 use crate::domain::commit::SceneCommit;
 use crate::domain::context::SceneContext;
 use crate::domain::output::OutputContext;
 use crate::domain::spatial::SpatialService;
 use crate::domain::{DomainError, MutationContext};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum IdentityMigrationPersistence {
+    Written,
+    Superseded,
+    Retrying(String),
+}
 
 /// Effect catalog and activation authority shared by every transport.
 #[derive(Clone)]
@@ -38,6 +58,85 @@ pub struct EffectContext {
     scene: SceneContext,
     spatial: SpatialService,
     output: OutputContext,
+    update_gate: Arc<RwLock<()>>,
+    #[cfg(test)]
+    resolution_test_barrier: Arc<std::sync::Mutex<Option<Arc<EffectResolutionTestBarrier>>>>,
+    #[cfg(test)]
+    identity_publication_test_barrier:
+        Arc<std::sync::Mutex<Option<Arc<EffectResolutionTestBarrier>>>>,
+    #[cfg(test)]
+    identity_inter_component_test_barrier:
+        Arc<std::sync::Mutex<Option<Arc<EffectResolutionTestBarrier>>>>,
+    #[cfg(test)]
+    install_test_barrier: Arc<std::sync::Mutex<Option<Arc<EffectResolutionTestBarrier>>>>,
+}
+
+#[cfg(test)]
+pub(crate) struct EffectResolutionTestBarrier {
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
+
+pub(crate) struct EffectRegistryUpdate {
+    pending_file: Option<PendingEffectFile>,
+    update_guard: OwnedRwLockWriteGuard<()>,
+    registry: Arc<RwLock<EffectRegistry>>,
+    base_generation: u64,
+    candidate: EffectRegistry,
+    report: RescanReport,
+}
+
+pub(crate) struct EffectRegistryPublication {
+    pending_file: Option<PendingEffectFile>,
+    _update_guard: OwnedRwLockWriteGuard<()>,
+    registry: OwnedRwLockWriteGuard<EffectRegistry>,
+    candidate: Option<EffectRegistry>,
+    report: RescanReport,
+}
+
+#[derive(Debug)]
+pub(crate) struct InstalledEffect {
+    pub(crate) metadata: EffectMetadata,
+    pub(crate) source_path: PathBuf,
+    pub(crate) replaced_existing: bool,
+    pub(crate) report: RescanReport,
+}
+
+struct PendingEffectFile {
+    path: PathBuf,
+    rollback: Option<EffectFileRollback>,
+}
+
+enum EffectFileRollback {
+    Remove,
+    Restore(Vec<u8>),
+}
+
+/// Effect metadata qualified by the catalog generation that resolved it.
+#[derive(Debug, Clone)]
+pub struct ResolvedEffect {
+    metadata: EffectMetadata,
+    registry_generation: u64,
+}
+
+impl std::ops::Deref for ResolvedEffect {
+    type Target = EffectMetadata;
+
+    fn deref(&self) -> &Self::Target {
+        &self.metadata
+    }
+}
+
+impl ResolvedEffect {
+    #[must_use]
+    pub fn into_metadata(self) -> EffectMetadata {
+        self.metadata
+    }
+}
+
+/// Shared read admission that excludes catalog identity publication.
+pub struct EffectMutationAdmission {
+    _guard: OwnedRwLockReadGuard<()>,
 }
 
 impl EffectContext {
@@ -52,6 +151,15 @@ impl EffectContext {
             scene,
             spatial,
             output,
+            update_gate: Arc::new(RwLock::new(())),
+            #[cfg(test)]
+            resolution_test_barrier: Arc::new(std::sync::Mutex::new(None)),
+            #[cfg(test)]
+            identity_publication_test_barrier: Arc::new(std::sync::Mutex::new(None)),
+            #[cfg(test)]
+            identity_inter_component_test_barrier: Arc::new(std::sync::Mutex::new(None)),
+            #[cfg(test)]
+            install_test_barrier: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -64,7 +172,11 @@ impl EffectContext {
     /// Resolve one effect schema for scene-tree control validation.
     pub async fn metadata(&self, effect_id: EffectId) -> Option<EffectMetadata> {
         let registry = self.registry.read().await;
-        registry.get(&effect_id).map(|entry| entry.metadata.clone())
+        let metadata = registry.get(&effect_id).map(|entry| entry.metadata.clone());
+        drop(registry);
+        #[cfg(test)]
+        self.pause_after_resolution_for_test().await;
+        metadata
     }
 
     /// Resolve an effect by canonical id or catalog lookup name.
@@ -79,6 +191,132 @@ impl EffectContext {
             .iter()
             .find(|(_, entry)| entry.metadata.matches_lookup(id_or_name))
             .map(|(_, entry)| entry.metadata.clone())
+    }
+
+    /// Resolve one mutation target and bind it to the current catalog generation.
+    pub async fn resolve_for_mutation(&self, id_or_name: &str) -> Option<ResolvedEffect> {
+        let registry = self.registry.read().await;
+        let metadata = if let Ok(uuid) = id_or_name.parse::<uuid::Uuid>() {
+            registry
+                .get(&EffectId::new(uuid))
+                .map(|entry| entry.metadata.clone())
+        } else {
+            registry
+                .iter()
+                .find(|(_, entry)| entry.metadata.matches_lookup(id_or_name))
+                .map(|(_, entry)| entry.metadata.clone())
+        }?;
+        let resolved = ResolvedEffect {
+            metadata,
+            registry_generation: registry.generation(),
+        };
+        drop(registry);
+        #[cfg(test)]
+        self.pause_after_resolution_for_test().await;
+        Some(resolved)
+    }
+
+    /// Resolve one exact mutation target at the current catalog generation.
+    pub async fn metadata_for_mutation(&self, effect_id: EffectId) -> Option<ResolvedEffect> {
+        let registry = self.registry.read().await;
+        let metadata = registry.get(&effect_id)?.metadata.clone();
+        let resolved = ResolvedEffect {
+            metadata,
+            registry_generation: registry.generation(),
+        };
+        drop(registry);
+        #[cfg(test)]
+        self.pause_after_resolution_for_test().await;
+        Some(resolved)
+    }
+
+    /// Capture the catalog as generation-qualified mutation targets.
+    pub(crate) async fn all_for_mutation(&self) -> Vec<ResolvedEffect> {
+        let registry = self.registry.read().await;
+        let generation = registry.generation();
+        registry
+            .iter()
+            .map(|(_, entry)| ResolvedEffect {
+                metadata: entry.metadata.clone(),
+                registry_generation: generation,
+            })
+            .collect()
+    }
+
+    /// Admit a previously resolved effect while excluding registry publication.
+    pub(crate) async fn admit(
+        &self,
+        effect: &ResolvedEffect,
+    ) -> Result<EffectMutationAdmission, DomainError> {
+        self.admit_generation(effect.registry_generation).await
+    }
+
+    /// Admit work resolved against one catalog generation.
+    async fn admit_generation(
+        &self,
+        expected_generation: u64,
+    ) -> Result<EffectMutationAdmission, DomainError> {
+        let guard = Arc::clone(&self.update_gate).read_owned().await;
+        let current_generation = self.registry.read().await.generation();
+        if current_generation != expected_generation {
+            return Err(DomainError::conflict_details(
+                "effect catalog changed after resolving this request",
+                serde_json::json!({
+                    "kind": "effect_resolution_superseded",
+                    "expected_generation": expected_generation,
+                    "current_generation": current_generation,
+                }),
+            ));
+        }
+        Ok(EffectMutationAdmission { _guard: guard })
+    }
+
+    /// Admit a mutation that will resolve its effects while the guard is held.
+    pub(crate) async fn admit_current(&self) -> EffectMutationAdmission {
+        EffectMutationAdmission {
+            _guard: Arc::clone(&self.update_gate).read_owned().await,
+        }
+    }
+
+    /// Validate every effect layer against one catalog generation and retain
+    /// that generation through the caller's scene commit.
+    pub(crate) async fn admit_layer_sources<'a>(
+        &self,
+        sources: impl IntoIterator<Item = &'a LayerSource>,
+    ) -> Result<Option<EffectMutationAdmission>, DomainError> {
+        let effect_ids = sources
+            .into_iter()
+            .filter_map(|source| match source {
+                LayerSource::Effect { effect_id, .. } => Some(*effect_id),
+                LayerSource::Media { .. }
+                | LayerSource::ScreenRegion { .. }
+                | LayerSource::WebViewport { .. }
+                | LayerSource::ColorFill { .. } => None,
+            })
+            .collect::<Vec<_>>();
+        if effect_ids.is_empty() {
+            return Ok(None);
+        }
+
+        let guard = Arc::clone(&self.update_gate).read_owned().await;
+        let registry = self.registry.read().await;
+        if let Some(effect_id) = effect_ids
+            .into_iter()
+            .find(|effect_id| registry.get(effect_id).is_none())
+        {
+            return Err(DomainError::not_found(
+                crate::domain::ResourceKind::Effect,
+                effect_id,
+            ));
+        }
+        drop(registry);
+        #[cfg(test)]
+        self.pause_after_resolution_for_test().await;
+        Ok(Some(EffectMutationAdmission { _guard: guard }))
+    }
+
+    pub(crate) const fn scene_context(&self) -> &SceneContext {
+        &self.scene
     }
 
     /// Capture every catalog entry as owned metadata.
@@ -125,19 +363,354 @@ impl EffectContext {
         })
     }
 
-    /// Rescan the owned effect catalog.
-    pub async fn rescan(&self) -> RescanReport {
-        self.registry.write().await.rescan()
+    pub(crate) async fn prepare_rescan(&self) -> EffectRegistryUpdate {
+        let gate = Arc::clone(&self.update_gate).write_owned().await;
+        let registry = self.registry.read().await;
+        let base_generation = registry.generation();
+        let mut candidate = registry.clone();
+        drop(registry);
+        let mut report = candidate.rescan();
+        retire_legacy_registry_entries(&mut candidate, &mut report);
+        EffectRegistryUpdate {
+            pending_file: None,
+            update_guard: gate,
+            registry: Arc::clone(&self.registry),
+            base_generation,
+            candidate,
+            report,
+        }
     }
 
-    /// Register one validated effect and report whether it replaced an entry.
+    pub(crate) async fn prepare_reload(&self, path: &Path) -> EffectRegistryUpdate {
+        let gate = Arc::clone(&self.update_gate).write_owned().await;
+        let registry = self.registry.read().await;
+        let base_generation = registry.generation();
+        let mut candidate = registry.clone();
+        drop(registry);
+        let mut report = candidate.reload_single(path);
+        retire_legacy_registry_entries(&mut candidate, &mut report);
+        EffectRegistryUpdate {
+            pending_file: None,
+            update_guard: gate,
+            registry: Arc::clone(&self.registry),
+            base_generation,
+            candidate,
+            report,
+        }
+    }
+
+    pub(crate) async fn prepare_install(
+        &self,
+        path: &Path,
+        raw_html: &str,
+    ) -> Result<(EffectRegistryUpdate, EffectMetadata, bool), DomainError> {
+        let gate = Arc::clone(&self.update_gate).write_owned().await;
+        let pending_file =
+            PendingEffectFile::replace(path, raw_html.as_bytes()).map_err(DomainError::Internal)?;
+        #[cfg(test)]
+        self.pause_after_install_write_for_test().await;
+
+        let modified = path
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .unwrap_or_else(|_| SystemTime::now());
+        let registry = self.registry.read().await;
+        let base_generation = registry.generation();
+        let mut candidate = registry.clone();
+        drop(registry);
+        let (mut report, effect_id) =
+            candidate
+                .reload_source(path, raw_html, modified)
+                .map_err(|error| {
+                    DomainError::Internal(anyhow::anyhow!(
+                        "Failed to register uploaded effect '{}': {}",
+                        error.path.display(),
+                        error.message
+                    ))
+                })?;
+        let Some(effect_id) = effect_id else {
+            return Err(DomainError::validation(
+                "Uploaded effect is not supported by this daemon build.",
+            ));
+        };
+        retire_legacy_registry_entries(&mut candidate, &mut report);
+        let metadata = candidate
+            .get(&effect_id)
+            .map(|entry| entry.metadata.clone())
+            .ok_or_else(|| {
+                DomainError::Internal(anyhow::anyhow!(
+                    "installed effect was absent from its candidate"
+                ))
+            })?;
+        let replaced_existing = pending_file.replaced_existing();
+
+        Ok((
+            EffectRegistryUpdate {
+                pending_file: Some(pending_file),
+                update_guard: gate,
+                registry: Arc::clone(&self.registry),
+                base_generation,
+                candidate,
+                report,
+            },
+            metadata,
+            replaced_existing,
+        ))
+    }
+
+    /// Register one already canonical entry and report whether it replaced one.
     pub async fn register(&self, entry: EffectEntry) -> bool {
+        let _update_guard = self.update_gate.write().await;
         self.registry.write().await.register(entry).is_some()
     }
 
     #[cfg(test)]
     pub(crate) fn registry_handle(&self) -> Arc<RwLock<EffectRegistry>> {
         Arc::clone(&self.registry)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pause_next_resolution_for_test(&self) -> Arc<EffectResolutionTestBarrier> {
+        let barrier = Arc::new(EffectResolutionTestBarrier {
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+        });
+        *self
+            .resolution_test_barrier
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&barrier));
+        barrier
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pause_next_identity_publication_for_test(
+        &self,
+    ) -> Arc<EffectResolutionTestBarrier> {
+        let barrier = Arc::new(EffectResolutionTestBarrier {
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+        });
+        *self
+            .identity_publication_test_barrier
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&barrier));
+        barrier
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pause_next_identity_inter_component_for_test(
+        &self,
+    ) -> Arc<EffectResolutionTestBarrier> {
+        let barrier = Arc::new(EffectResolutionTestBarrier {
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+        });
+        *self
+            .identity_inter_component_test_barrier
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&barrier));
+        barrier
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pause_next_install_write_for_test(&self) -> Arc<EffectResolutionTestBarrier> {
+        let barrier = Arc::new(EffectResolutionTestBarrier {
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+        });
+        *self
+            .install_test_barrier
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&barrier));
+        barrier
+    }
+
+    #[cfg(test)]
+    async fn pause_after_resolution_for_test(&self) {
+        let barrier = self
+            .resolution_test_barrier
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(barrier) = barrier {
+            barrier.entered.notify_one();
+            barrier.release.notified().await;
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn pause_before_identity_publication_for_test(&self) {
+        let barrier = self
+            .identity_publication_test_barrier
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(barrier) = barrier {
+            barrier.entered.notify_one();
+            barrier.release.notified().await;
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn pause_between_identity_components_for_test(&self) {
+        let barrier = self
+            .identity_inter_component_test_barrier
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(barrier) = barrier {
+            barrier.entered.notify_one();
+            barrier.release.notified().await;
+        }
+    }
+
+    #[cfg(test)]
+    async fn pause_after_install_write_for_test(&self) {
+        let barrier = self
+            .install_test_barrier
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(barrier) = barrier {
+            barrier.entered.notify_one();
+            barrier.release.notified().await;
+        }
+    }
+}
+
+impl PendingEffectFile {
+    fn replace(path: &Path, contents: &[u8]) -> anyhow::Result<Self> {
+        let parent = path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("effect install path has no parent"))?;
+        fs::create_dir_all(parent)?;
+        let rollback = match fs::read(path) {
+            Ok(contents) => EffectFileRollback::Restore(contents),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                EffectFileRollback::Remove
+            }
+            Err(error) => return Err(error.into()),
+        };
+        replace_file_atomically(path, contents)?;
+        Ok(Self {
+            path: path.to_path_buf(),
+            rollback: Some(rollback),
+        })
+    }
+
+    fn replaced_existing(&self) -> bool {
+        matches!(self.rollback.as_ref(), Some(EffectFileRollback::Restore(_)))
+    }
+
+    fn commit(mut self) {
+        self.rollback = None;
+    }
+
+    fn rollback(&mut self) -> anyhow::Result<()> {
+        let Some(rollback) = self.rollback.take() else {
+            return Ok(());
+        };
+        match rollback {
+            EffectFileRollback::Restore(contents) => replace_file_atomically(&self.path, &contents),
+            EffectFileRollback::Remove => match fs::remove_file(&self.path) {
+                Ok(()) => sync_parent_directory(&self.path),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(error.into()),
+            },
+        }
+    }
+}
+
+impl Drop for PendingEffectFile {
+    fn drop(&mut self) {
+        if let Err(error) = self.rollback() {
+            tracing::error!(
+                path = %self.path.display(),
+                %error,
+                "Failed to roll back an unpublished effect installation"
+            );
+        }
+    }
+}
+
+fn replace_file_atomically(path: &Path, contents: &[u8]) -> anyhow::Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("effect install path has no parent"))?;
+    let mut temporary = NamedTempFile::new_in(parent)?;
+    temporary.write_all(contents)?;
+    temporary.as_file_mut().sync_all()?;
+    temporary.persist(path).map_err(|error| error.error)?;
+    sync_parent_directory(path)
+}
+
+#[cfg(unix)]
+fn sync_parent_directory(path: &Path) -> anyhow::Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("effect install path has no parent"))?;
+    fs::File::open(parent)?.sync_all()?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn sync_parent_directory(_path: &Path) -> anyhow::Result<()> {
+    Ok(())
+}
+
+fn retire_legacy_registry_entries(registry: &mut EffectRegistry, report: &mut RescanReport) {
+    report.removed += report
+        .legacy_effect_ids
+        .keys()
+        .filter(|legacy_id| registry.remove(legacy_id).is_some())
+        .count();
+}
+
+#[cfg(test)]
+impl EffectResolutionTestBarrier {
+    pub(crate) async fn wait_until_entered(&self) {
+        self.entered.notified().await;
+    }
+
+    pub(crate) fn release(&self) {
+        self.release.notify_one();
+    }
+}
+
+impl EffectRegistryUpdate {
+    pub(crate) const fn report(&self) -> &RescanReport {
+        &self.report
+    }
+
+    pub(crate) async fn prepare_publication(
+        self,
+    ) -> Result<EffectRegistryPublication, DomainError> {
+        let registry = Arc::clone(&self.registry).write_owned().await;
+        if registry.generation() != self.base_generation {
+            return Err(DomainError::conflict(
+                "effect registry changed while publishing an identity migration",
+            ));
+        }
+        Ok(EffectRegistryPublication {
+            pending_file: self.pending_file,
+            _update_guard: self.update_guard,
+            registry,
+            candidate: Some(self.candidate),
+            report: self.report,
+        })
+    }
+}
+
+impl EffectRegistryPublication {
+    pub(crate) fn publish(&mut self) -> RescanReport {
+        *self.registry = self
+            .candidate
+            .take()
+            .expect("effect registry publication must publish exactly once");
+        if let Some(pending_file) = self.pending_file.take() {
+            pending_file.commit();
+        }
+        std::mem::take(&mut self.report)
     }
 }
 
@@ -229,17 +802,8 @@ impl AppliedTransition {
 /// Load an effect into a zone of the active scene.
 #[derive(Debug, Clone)]
 pub struct ApplyEffect {
-    /// The effect to load, already resolved.
-    ///
-    /// Adapters own identity resolution and hand over what they found.
-    /// REST resolves its path segment while MCP applies the deterministic
-    /// selector policy. The service
-    /// does not look it up again: re-resolving would reintroduce a
-    /// window where a rescan between the adapter's lookup and the
-    /// service's turns a request the adapter already accepted into a
-    /// not-found, and it would give the domain a second opinion about
-    /// identity that the adapter contract deliberately owns.
-    pub effect: EffectMetadata,
+    /// The effect to load, bound to the catalog generation that resolved it.
+    pub effect: ResolvedEffect,
     /// Control values, already normalized against the effect's schema.
     pub controls: HashMap<String, ControlValue>,
     /// Preset provenance to record on the zone.
@@ -302,7 +866,8 @@ pub async fn apply_effect(
     meta: MutationContext,
 ) -> Result<EffectApplied, DomainError> {
     let transition = command.transition.resolve()?;
-    let metadata = command.effect;
+    let _admission = ctx.admit(&command.effect).await?;
+    let metadata = command.effect.into_metadata();
 
     // Resolving the outgoing effect's name needs the registry, and the
     // outgoing effect is not known until the scene snapshot is in hand.

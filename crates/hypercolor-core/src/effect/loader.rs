@@ -1,6 +1,6 @@
 //! HTML effect discovery and registry loading.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -21,12 +21,15 @@ use super::meta_parser::{
 };
 use super::paths::bundled_effects_root;
 use super::{EffectEntry, EffectRegistry};
-#[cfg(feature = "servo")]
 use crate::effect::builtin::builtin_effect_stable_id;
 
 const HTML_EXTENSION: &str = "html";
-#[cfg(feature = "servo")]
 const NATIVE_SCREEN_CAST_BUILTIN_ID: &str = "screen_cast";
+
+pub(super) struct HtmlEffectFile {
+    pub(super) entry: Option<EffectEntry>,
+    pub(super) legacy_effect_ids: Vec<(EffectId, EffectId)>,
+}
 
 /// Discovery error for a single file/path during HTML scanning.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,6 +46,8 @@ pub struct HtmlDiscoveryReport {
     pub replaced_effects: usize,
     pub skipped_files: usize,
     pub errors: Vec<HtmlDiscoveryError>,
+    /// Path-derived IDs that persisted documents must replace before use.
+    pub legacy_effect_ids: HashMap<EffectId, EffectId>,
 }
 
 impl HtmlDiscoveryReport {
@@ -115,17 +120,27 @@ pub fn register_html_effects(
                 continue;
             }
 
-            let entry = match load_html_effect_file(&file) {
-                Ok(Some(entry)) => entry,
-                Ok(None) => {
-                    report.skipped_files += 1;
-                    continue;
-                }
+            let loaded = match inspect_html_effect_file(&file) {
+                Ok(loaded) => loaded,
                 Err(error) => {
                     report.errors.push(error);
                     continue;
                 }
             };
+
+            let Some(entry) = loaded.entry else {
+                report
+                    .legacy_effect_ids
+                    .extend(registered_migrations(registry, loaded.legacy_effect_ids));
+                report.skipped_files += 1;
+                continue;
+            };
+
+            let canonical_id = entry.metadata.id;
+            for (legacy_id, migration_target) in loaded.legacy_effect_ids {
+                debug_assert_eq!(migration_target, canonical_id);
+                report.legacy_effect_ids.insert(legacy_id, migration_target);
+            }
 
             if registry.register(entry).is_some() {
                 report.replaced_effects += 1;
@@ -148,30 +163,60 @@ pub fn register_html_effects(
     report
 }
 
+pub(super) fn registered_migrations(
+    registry: &EffectRegistry,
+    migrations: impl IntoIterator<Item = (EffectId, EffectId)>,
+) -> HashMap<EffectId, EffectId> {
+    migrations
+        .into_iter()
+        .filter(|(_, canonical_id)| registry.get(canonical_id).is_some())
+        .collect()
+}
+
 /// Load a single HTML effect file into a registry-ready entry.
 pub fn load_html_effect_file(file: &Path) -> Result<Option<EffectEntry>, HtmlDiscoveryError> {
+    inspect_html_effect_file(file).map(|loaded| loaded.entry)
+}
+
+pub(super) fn inspect_html_effect_file(file: &Path) -> Result<HtmlEffectFile, HtmlDiscoveryError> {
     let raw_html = fs::read_to_string(file).map_err(|error| HtmlDiscoveryError {
         path: file.to_path_buf(),
         message: format!("failed to read file: {error}"),
     })?;
 
-    let parsed = parse_html_effect_metadata(&raw_html);
+    let modified = file
+        .metadata()
+        .and_then(|metadata| metadata.modified())
+        .unwrap_or_else(|_| SystemTime::now());
+
+    inspect_html_effect_source(file, &raw_html, modified)
+}
+
+pub(super) fn inspect_html_effect_source(
+    file: &Path,
+    raw_html: &str,
+    modified: SystemTime,
+) -> Result<HtmlEffectFile, HtmlDiscoveryError> {
+    let parsed = parse_html_effect_metadata(raw_html);
+    let source_path = normalize_path(file);
+    let canonical_id = html_effect_id(&source_path, &parsed);
+    let legacy_effect_ids = html_effect_id_migrations(&source_path, canonical_id)
+        .into_iter()
+        .map(|legacy_id| (legacy_id, canonical_id))
+        .collect();
     #[cfg(not(feature = "servo"))]
     if parsed.builtin_id.is_some() {
-        return Ok(None);
+        return Ok(HtmlEffectFile {
+            entry: None,
+            legacy_effect_ids,
+        });
     }
 
-    let source_path = normalize_path(file);
     let effect_name = if parsed.title == "Unnamed Effect" {
         fallback_effect_name(file)
     } else {
         parsed.title.clone()
     };
-
-    let modified = file
-        .metadata()
-        .and_then(|metadata| metadata.modified())
-        .unwrap_or_else(|_| SystemTime::now());
 
     let controls: Vec<ControlDefinition> = parsed
         .controls
@@ -197,7 +242,7 @@ pub fn load_html_effect_file(file: &Path) -> Result<Option<EffectEntry>, HtmlDis
     presets.sort_by(|a, b| a.name.cmp(&b.name));
 
     let metadata = EffectMetadata {
-        id: html_effect_id(&source_path, &parsed),
+        id: canonical_id,
         name: effect_name,
         author: parsed.publisher,
         version: "0.1.0".to_owned(),
@@ -215,12 +260,15 @@ pub fn load_html_effect_file(file: &Path) -> Result<Option<EffectEntry>, HtmlDis
         license: None,
     };
 
-    Ok(Some(EffectEntry {
-        metadata,
-        source_path,
-        modified,
-        state: EffectState::Loading,
-    }))
+    Ok(HtmlEffectFile {
+        entry: Some(EffectEntry {
+            metadata,
+            source_path,
+            modified,
+            state: EffectState::Loading,
+        }),
+        legacy_effect_ids,
+    })
 }
 
 fn collect_html_files(root: &Path) -> std::io::Result<Vec<PathBuf>> {
@@ -285,7 +333,6 @@ fn stable_bundled_html_effect_id(source_path: &Path) -> Option<EffectId> {
     })
 }
 
-#[cfg(feature = "servo")]
 fn html_effect_id(
     source_path: &Path,
     parsed: &super::meta_parser::ParsedHtmlEffectMetadata,
@@ -299,45 +346,24 @@ fn html_effect_id(
         .unwrap_or_else(|| deterministic_html_effect_id(source_path))
 }
 
-#[cfg(not(feature = "servo"))]
-fn html_effect_id(
-    source_path: &Path,
-    _parsed: &super::meta_parser::ParsedHtmlEffectMetadata,
-) -> EffectId {
-    stable_bundled_html_effect_id(source_path)
-        .unwrap_or_else(|| deterministic_html_effect_id(source_path))
-}
-
-pub(super) fn html_effect_aliases(entry: &EffectEntry) -> Vec<EffectId> {
-    if !matches!(&entry.metadata.source, EffectSource::Html { .. }) {
-        return Vec::new();
-    }
-
-    let canonical = entry.metadata.id;
-    let mut aliases = Vec::new();
+fn html_effect_id_migrations(source_path: &Path, canonical: EffectId) -> Vec<EffectId> {
+    let mut legacy_ids = Vec::new();
     let mut seen = HashSet::new();
-    let mut push_alias = |alias: EffectId| {
-        if alias != canonical && seen.insert(alias) {
-            aliases.push(alias);
+    let mut push_legacy_id = |legacy_id: EffectId| {
+        if legacy_id != canonical && seen.insert(legacy_id) {
+            legacy_ids.push(legacy_id);
         }
     };
 
-    push_alias(deterministic_html_effect_id(&entry.source_path));
+    push_legacy_id(deterministic_html_effect_id(source_path));
 
-    if bundled_effect_slug(&entry.source_path).is_some() {
-        for path in related_bundled_effect_paths(&entry.source_path) {
-            push_alias(deterministic_html_effect_id(&path));
+    if bundled_effect_slug(source_path).is_some() {
+        for path in related_bundled_effect_paths(source_path) {
+            push_legacy_id(deterministic_html_effect_id(&path));
         }
     }
 
-    aliases
-}
-
-/// Return the legacy path-derived HTML effect id for compatibility tests.
-#[doc(hidden)]
-#[must_use]
-pub fn html_path_effect_id_for_testing(path: &Path) -> EffectId {
-    deterministic_html_effect_id(&normalize_path(path))
+    legacy_ids
 }
 
 fn bundled_effect_slug(source_path: &Path) -> Option<String> {

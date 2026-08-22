@@ -386,6 +386,71 @@ async fn newer_scene_state_supersedes_prepared_layout_before_publication() {
 }
 
 #[tokio::test]
+async fn effect_id_migration_supersedes_queued_layout_publication() {
+    let initial = layout("initial-migration", 320, 200);
+    let (spatial_engine, scene_manager, queue) = state(initial.clone());
+    let _consumer = queue.consumer();
+    let update_spatial_engine = spatial_engine.clone();
+    let update_scene_manager = scene_manager.clone();
+    let update_queue = queue.clone();
+    let update = tokio::spawn(async move {
+        apply_layout_update(
+            &update_spatial_engine,
+            &update_scene_manager,
+            &update_queue,
+            layout("stale-after-migration", 1_920, 1_080),
+        )
+        .await
+    });
+    wait_for_pending(&queue, 1).await;
+    let SceneTransaction::PrepareLayout(transaction) = queue
+        .drain()
+        .into_iter()
+        .next()
+        .expect("layout transaction should be queued")
+    else {
+        panic!("queued transaction should apply a layout");
+    };
+    let accepted = accept_publication(transaction);
+    wait_for_decision(&accepted.activation, LayoutActivationDecision::Commit).await;
+
+    let legacy_id = hypercolor_types::effect::EffectId::new(uuid::Uuid::now_v7());
+    let canonical_id = hypercolor_types::effect::EffectId::new(uuid::Uuid::now_v7());
+    let migration = scene_manager
+        .prepare_effect_id_migration(&std::collections::HashMap::from([(
+            legacy_id,
+            canonical_id,
+        )]))
+        .await
+        .expect("scene migration should prepare")
+        .admit()
+        .persist();
+    let (migration, persistence) = migration;
+    assert_eq!(
+        persistence,
+        crate::domain::effect::IdentityMigrationPersistence::Written
+    );
+    let mut publication = scene_manager
+        .prepare_effect_id_migration_publication(migration)
+        .await
+        .expect("scene migration should prepare publication");
+    scene_manager.publish_effect_id_migration(&mut publication);
+    drop(publication);
+
+    assert_eq!(
+        publish_commit(accepted, &spatial_engine, &scene_manager).await,
+        Err(LayoutTransactionRejection::Superseded)
+    );
+    assert!(matches!(
+        update.await.expect("layout coordinator should not panic"),
+        Err(LayoutUpdateError::Transaction(
+            LayoutTransactionRejection::Superseded
+        ))
+    ));
+    assert_eq!(spatial_engine.snapshot().layout().as_ref(), &initial);
+}
+
+#[tokio::test]
 async fn renderer_rejection_preserves_state_and_a_retry_can_commit() {
     let initial = layout("initial", 320, 200);
     let (spatial_engine, scene_manager, queue) = state(initial.clone());

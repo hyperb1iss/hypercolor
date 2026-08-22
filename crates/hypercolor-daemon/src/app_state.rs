@@ -51,7 +51,7 @@ use crate::domain::spatial::SpatialService;
 use crate::driver_inventory::{DRIVER_INVENTORY_FILENAME, DriverInventoryStore};
 use crate::extensions::{ApiExtension, ExtensionRegistry};
 use crate::interaction_routing::InteractionRoutingControl;
-use crate::library::{InMemoryLibraryStore, LibraryStore};
+use crate::library::{InMemoryLibraryStore, LibraryIdentityMigration, LibraryStore};
 use crate::logical_devices::LogicalDevice;
 use crate::network::{self, DaemonDriverHost};
 use crate::output_power::OutputPower;
@@ -111,9 +111,6 @@ pub struct AppState {
 
     /// Scene CRUD, priority stack, and transitions.
     pub scene_manager: SceneService,
-
-    /// Persisted named-scene store.
-    pub scene_store: Arc<RwLock<SceneStore>>,
 
     /// System-wide event bus (broadcast + watch channels).
     pub event_bus: Arc<HypercolorBus>,
@@ -253,6 +250,8 @@ pub struct AppState {
 
     /// Saved effect library storage (favorites, presets, playlists).
     pub library_store: Arc<dyn LibraryStore>,
+
+    pub(crate) library_identity: Arc<dyn LibraryIdentityMigration>,
 
     /// Active playlist runner state (single background worker at a time).
     pub playlist_runtime: Arc<Mutex<PlaylistRuntimeState>>,
@@ -412,13 +411,12 @@ impl AppState {
                 warn!(%error, "Failed to install persisted named scene into default app state");
             }
         }
-        let scene_store = Arc::new(RwLock::new(scene_store));
         let event_bus = Arc::new(HypercolorBus::new());
         let zone_layout_previews = Arc::new(ZoneLayoutPreviewStore::default());
         let scene_manager = SceneService::new(
             scene_manager_inner,
             Arc::clone(&event_bus),
-            Arc::clone(&scene_store),
+            scene_store,
             Arc::clone(&zone_layout_previews),
         );
         let scene_transactions = SceneTransactionQueue::default();
@@ -585,11 +583,14 @@ impl AppState {
             },
         );
 
+        let library = Arc::new(InMemoryLibraryStore::new());
+        let library_store: Arc<dyn LibraryStore> = library.clone();
+        let library_identity: Arc<dyn LibraryIdentityMigration> = library;
+
         Self {
             domains,
             device_registry,
             scene_manager,
-            scene_store,
             event_bus,
             macos_daemon_ownership: Arc::new(ArcSwapOption::empty()),
             asset_library,
@@ -637,7 +638,8 @@ impl AppState {
             runtime_state_path,
             output_power,
             scene_transactions,
-            library_store: Arc::new(InMemoryLibraryStore::new()),
+            library_store,
+            library_identity,
             playlist_runtime: Arc::new(Mutex::new(PlaylistRuntimeState::new())),
             start_time,
             server_identity: ServerIdentity {
@@ -657,12 +659,11 @@ impl AppState {
     /// shared by `Arc::clone` — the API operates on the exact same live
     /// instances as the daemon's render pipeline.
     pub fn from_daemon_state(daemon: &crate::startup::DaemonState) -> Self {
-        // Stores are shared from the daemon, never reopened: every
-        // AppState built from one daemon must see the same in-memory
-        // copy, or a save through one silently clobbers writes made
-        // through another.
+        // State-owned stores are shared from the daemon, never reopened, so
+        // one API projection cannot silently clobber another projection's writes.
         let data_dir = ConfigManager::data_dir();
         let library_store = Arc::clone(&daemon.library_store);
+        let library_identity = Arc::clone(&daemon.library_identity);
         let driver_host = Arc::clone(&daemon.driver_host);
         let driver_registry = Arc::clone(&daemon.driver_registry);
         let domains = daemon.domains.clone();
@@ -671,7 +672,6 @@ impl AppState {
             domains,
             device_registry: daemon.device_registry.clone(),
             scene_manager: daemon.scene_manager.clone(),
-            scene_store: Arc::clone(&daemon.scene_store),
             event_bus: Arc::clone(&daemon.event_bus),
             macos_daemon_ownership: Arc::clone(&daemon.macos_daemon_ownership),
             asset_library: Arc::clone(&daemon.asset_library),
@@ -722,7 +722,8 @@ impl AppState {
             output_power: daemon.output_power.clone(),
             scene_transactions: daemon.scene_transactions.clone(),
             library_store,
-            playlist_runtime: Arc::new(Mutex::new(PlaylistRuntimeState::new())),
+            library_identity,
+            playlist_runtime: Arc::clone(&daemon.playlist_runtime),
             start_time: daemon.start_time,
             server_identity: daemon.server_identity.clone(),
             server_session_id: None,

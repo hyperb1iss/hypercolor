@@ -138,7 +138,10 @@ pub async fn update_scene(
         Ok(updated) => updated,
         // The service reports the resolved id; the caller gets back the
         // id it actually sent.
-        Err(DomainError::NotFound { .. }) => {
+        Err(DomainError::NotFound {
+            kind: ResourceKind::Scene,
+            ..
+        }) => {
             return DomainError::not_found(ResourceKind::Scene, &id).into_response();
         }
         Err(error) => return error.into_response(),

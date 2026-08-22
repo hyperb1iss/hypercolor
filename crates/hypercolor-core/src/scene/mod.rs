@@ -443,6 +443,39 @@ impl SceneManager {
         self.active_render_groups_revision = self.active_render_groups_revision.saturating_add(1);
     }
 
+    /// Replace effect identities throughout authored and runtime-only scene state.
+    ///
+    /// The render-group revision advances even when only an inactive scene
+    /// changed, fencing prepared layout publications captured before the
+    /// identity rewrite.
+    pub fn remap_effect_ids(&mut self, migrations: &HashMap<EffectId, EffectId>) -> usize {
+        let mut migrated = 0;
+        for scene in self.scenes.values_mut() {
+            let mut scene_changed = false;
+            for zone in &mut scene.zones {
+                let zone_migrated = remap_zone_effect_ids(zone, migrations);
+                if zone_migrated > 0 {
+                    zone.layers_version = zone.layers_version.saturating_add(1);
+                    scene_changed = true;
+                    migrated += zone_migrated;
+                }
+            }
+            if scene_changed {
+                bump_zones_revision(scene);
+            }
+        }
+        for zone in &mut self.default_display_groups {
+            let zone_migrated = remap_zone_effect_ids(zone, migrations);
+            if zone_migrated > 0 {
+                zone.layers_version = zone.layers_version.saturating_add(1);
+                migrated += zone_migrated;
+            }
+        }
+        self.refresh_active_render_groups();
+        self.invalidate_active_render_groups();
+        migrated
+    }
+
     // ── Transition ──────────────────────────────────────────────────
 
     /// Get the latest immutable transition plan, if activation requested one.
@@ -2048,6 +2081,25 @@ pub fn default_primary_group(mut layout: SpatialLayout) -> Zone {
 
 fn bump_zones_revision(scene: &mut Scene) {
     scene.zones_revision = scene.zones_revision.saturating_add(1);
+}
+
+fn remap_zone_effect_ids(zone: &mut Zone, migrations: &HashMap<EffectId, EffectId>) -> usize {
+    zone.layers
+        .iter_mut()
+        .map(|layer| match &mut layer.source {
+            LayerSource::Effect { effect_id, .. } => {
+                let Some(canonical_id) = migrations.get(effect_id).copied() else {
+                    return 0;
+                };
+                *effect_id = canonical_id;
+                1
+            }
+            LayerSource::Media { .. }
+            | LayerSource::ScreenRegion { .. }
+            | LayerSource::WebViewport { .. }
+            | LayerSource::ColorFill { .. } => 0,
+        })
+        .sum()
 }
 
 fn display_group_has_face(group: &Zone) -> bool {

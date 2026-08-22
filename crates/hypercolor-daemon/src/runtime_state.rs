@@ -8,13 +8,14 @@ use hypercolor_core::scene::SceneManager;
 use hypercolor_types::scene::{SceneId, Zone};
 use serde::{Deserialize, Serialize};
 
+use crate::domain::effect::{EffectIdMigrations, remap_zones};
 use crate::path_migration::{
     MigratedStore, MigrationOutcome, PathMigrationEntry, PathMigrationError, VersionedDocument,
     migrate,
 };
 use crate::persistence::{
-    AtomicFileWriter, AtomicWriteOutcome, AtomicWriteReservation, PersistenceError,
-    serialize_json_pretty,
+    AdmittedAtomicWrite, AtomicFileWriter, AtomicWriteCommitResult, AtomicWriteOutcome,
+    AtomicWriteReservation, PersistenceError, serialize_json_pretty,
 };
 
 const STORE_SUBJECT: &str = "runtime session state";
@@ -37,11 +38,29 @@ pub struct RuntimeSessionSnapshot {
     pub manual_paused: bool,
 }
 
+impl RuntimeSessionSnapshot {
+    /// Rewrite path-derived effect IDs in the persisted default scene.
+    pub fn migrate_effect_ids(&mut self, migrations: &EffectIdMigrations) -> usize {
+        remap_zones(&mut self.default_scene_groups, migrations)
+    }
+}
+
 /// A runtime snapshot write ordered at the owning mutation boundary.
 #[derive(Debug)]
 pub struct RuntimeSnapshotSave {
     path: PathBuf,
     write: AtomicWriteReservation,
+}
+
+#[derive(Debug)]
+pub(crate) struct PreparedRuntimeSnapshotSave {
+    write: AtomicWriteReservation,
+    payload: Vec<u8>,
+}
+
+#[derive(Debug)]
+pub(crate) struct AdmittedRuntimeSnapshotSave {
+    write: AdmittedAtomicWrite,
 }
 
 /// Errors produced while loading/saving runtime snapshots.
@@ -216,17 +235,39 @@ pub fn save_reserved(
     pending: RuntimeSnapshotSave,
     snapshot: &RuntimeSessionSnapshot,
 ) -> Result<AtomicWriteOutcome, RuntimeSessionError> {
-    let bytes = serialize_json_pretty(snapshot).map_err(RuntimeSessionError::Serialize)?;
-    let outcome =
-        pending
-            .write
-            .admit(bytes)
-            .commit()
-            .map_err(|source| RuntimeSessionError::Persist {
-                path: pending.path,
-                source,
-            })?;
+    let path = pending.path.clone();
+    let prepared = prepare_reserved(pending, snapshot)?;
+    let outcome = prepared
+        .admit()
+        .write
+        .commit()
+        .map_err(|source| RuntimeSessionError::Persist { path, source })?;
     Ok(outcome)
+}
+
+pub(crate) fn prepare_reserved(
+    pending: RuntimeSnapshotSave,
+    snapshot: &RuntimeSessionSnapshot,
+) -> Result<PreparedRuntimeSnapshotSave, RuntimeSessionError> {
+    let payload = serialize_json_pretty(snapshot).map_err(RuntimeSessionError::Serialize)?;
+    Ok(PreparedRuntimeSnapshotSave {
+        write: pending.write,
+        payload,
+    })
+}
+
+impl PreparedRuntimeSnapshotSave {
+    pub(crate) fn admit(self) -> AdmittedRuntimeSnapshotSave {
+        AdmittedRuntimeSnapshotSave {
+            write: self.write.admit(self.payload),
+        }
+    }
+}
+
+impl AdmittedRuntimeSnapshotSave {
+    pub(crate) fn commit_stage_aware(self) -> AtomicWriteCommitResult {
+        self.write.commit_stage_aware()
+    }
 }
 
 #[cfg(test)]
@@ -302,6 +343,55 @@ mod tests {
             .expect("snapshot should reload")
             .expect("snapshot should exist");
         assert_eq!(reloaded.default_scene_groups[0].layers[0].id, loaded_id);
+    }
+
+    #[test]
+    fn runtime_snapshot_effect_id_migration_is_durable() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let path = tempdir.path().join("runtime-state.json");
+        let legacy_id = EffectId::from(Uuid::now_v7());
+        let canonical_id = EffectId::from(Uuid::now_v7());
+        let mut zone = SceneManager::with_default()
+            .get(&SceneId::DEFAULT)
+            .and_then(|scene| scene.zones.first())
+            .cloned()
+            .expect("default scene should have a primary zone");
+        zone.layers = vec![SceneLayer::from_effect(
+            SceneLayerId::new(),
+            legacy_id,
+            std::collections::HashMap::new(),
+            std::collections::HashMap::new(),
+            None,
+        )];
+        let mut snapshot = RuntimeSessionSnapshot {
+            default_scene_groups: vec![zone],
+            ..RuntimeSessionSnapshot::default()
+        };
+        save(&path, &snapshot).expect("legacy snapshot should persist");
+
+        assert_eq!(
+            snapshot.migrate_effect_ids(&std::collections::HashMap::from([(
+                legacy_id,
+                canonical_id,
+            )])),
+            1
+        );
+        save(&path, &snapshot).expect("migrated snapshot should persist");
+
+        let reopened = load(&path)
+            .expect("snapshot should reload")
+            .expect("snapshot should exist");
+        assert_eq!(
+            reopened.default_scene_groups[0]
+                .effect_ids()
+                .collect::<Vec<_>>(),
+            vec![canonical_id]
+        );
+        assert!(
+            !std::fs::read_to_string(path)
+                .expect("snapshot should read")
+                .contains(&legacy_id.to_string())
+        );
     }
 
     #[test]

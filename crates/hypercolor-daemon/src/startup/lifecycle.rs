@@ -18,6 +18,7 @@ use crate::discovery::{self, DiscoveryTarget};
 use crate::display_output::{
     DEFAULT_STATIC_HOLD_REFRESH_INTERVAL, DisplayOutputState, DisplayOutputThread,
 };
+use crate::domain::effect::reload_registry_file;
 use crate::interactive_preview::{
     InteractivePreviewAcceleration, InteractivePreviewContext, InteractivePreviewExecutor,
 };
@@ -43,7 +44,7 @@ impl DaemonState {
     ///
     /// Returns an error if any subsystem fails to start.
     pub async fn start(&mut self) -> Result<()> {
-        if let Err(start_error) = self.start_inner().await {
+        if let Err(start_error) = Box::pin(self.start_inner()).await {
             if let Err(rollback_error) = self.shutdown().await {
                 return Err(start_error.context(format!(
                     "daemon startup rollback also failed: {rollback_error:#}"
@@ -312,6 +313,11 @@ impl DaemonState {
 
         if let Some(handle) = self.effect_watcher_task.take() {
             handle.abort();
+            if let Err(error) = handle.await
+                && !error.is_cancelled()
+            {
+                warn!(%error, "Effect watcher did not stop cleanly");
+            }
         }
         if let Some(handle) = self.display_preference_sync_task.take() {
             handle.abort();
@@ -356,7 +362,7 @@ impl DaemonState {
 
         // 5. Persist the current runtime session before scene cleanup.
         let runtime_snapshot = self.persist_runtime_session_snapshot().await;
-        let scene_snapshot = self.persist_scene_store_snapshot().await;
+        let scene_snapshot = persist_scene_store_snapshot(&self.scene_manager).await;
         let flush_report = persistence::flush_all(SHUTDOWN_PERSISTENCE_FLUSH_TIMEOUT);
         for error in flush_report.errors() {
             warn!(%error, "Persistence retry did not converge during shutdown");
@@ -436,35 +442,11 @@ impl DaemonState {
     }
 
     async fn persist_runtime_session_snapshot(&self) -> Result<AtomicWriteOutcome> {
-        let pending_save = runtime_state::reserve_save(&self.runtime_state_path)?;
-        let mut snapshot = {
-            let scene_manager = self.scene_manager.snapshot().await;
-            runtime_state::snapshot_from_scene_manager(&scene_manager)
-        };
-
-        {
-            let spatial = self.spatial_engine.snapshot();
-            snapshot.active_layout_id = Some(spatial.layout().id.clone());
-        }
-        snapshot.manual_paused = self.output_power.snapshot().manually_paused();
-        self.driver_host
-            .driver_inventory()
-            .refresh(self.driver_registry.as_ref(), self.driver_host.as_ref())
-            .await;
-
-        runtime_state::save_reserved(pending_save, &snapshot).map_err(Into::into)
-    }
-
-    async fn persist_scene_store_snapshot(&self) -> Result<AtomicWriteOutcome> {
-        let pending = {
-            let scene_manager = self.scene_manager.snapshot().await;
-            let store = self.scene_store.read().await;
-            store.reserve_save(scene_manager.list().into_iter().cloned())
-        };
-
-        let pending = pending?;
-        let mut store = self.scene_store.write().await;
-        store.save_reserved(pending)
+        self.domains
+            .runtime_session
+            .persist_snapshot()
+            .await
+            .map_err(Into::into)
     }
 
     async fn restore_runtime_session(&mut self, config: &HypercolorConfig) {
@@ -670,8 +652,6 @@ impl DaemonState {
     }
 
     async fn spawn_effect_watcher(&mut self) {
-        let registry = Arc::clone(&self.effect_registry);
-        let event_bus = Arc::clone(&self.event_bus);
         // The reload invalidates the active scene's resolved zones, which
         // is a scene commit and therefore needs the shared sequencer, not
         // a bare handle on the manager.
@@ -704,21 +684,15 @@ impl DaemonState {
                 };
                 info!(path = %path.display(), action, "Effect file change detected");
 
-                let report = {
-                    let mut reg = registry.write().await;
-                    reg.reload_single(&path)
+                let report = match reload_registry_file(&watcher_state, &path).await {
+                    Ok(report) => report,
+                    Err(error) => {
+                        warn!(path = %path.display(), %error, "Effect hot reload rejected");
+                        continue;
+                    }
                 };
 
-                if (report.added > 0 || report.removed > 0 || report.updated > 0)
-                    && let Err(error) = crate::domain::effect::invalidate_active_zones(
-                        &watcher_state.domains.effects,
-                    )
-                    .await
-                {
-                    warn!(%error, "Failed to refresh active zones after an effect registry update");
-                }
-
-                event_bus.publish(
+                watcher_state.event_bus.publish(
                     hypercolor_types::event::HypercolorEvent::EffectRegistryUpdated {
                         added: report.added,
                         removed: report.removed,
@@ -992,6 +966,12 @@ impl DaemonState {
             }
         }));
     }
+}
+
+pub(crate) async fn persist_scene_store_snapshot(
+    scene_manager: &crate::domain::scene::SceneService,
+) -> Result<Option<AtomicWriteOutcome>> {
+    scene_manager.persist_snapshot().await
 }
 
 fn spawn_delayed_usb_hotplug_scan(worker: DiscoveryWorkerContext) {

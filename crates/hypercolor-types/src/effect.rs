@@ -15,10 +15,11 @@ use crate::viewport::ViewportRect;
 
 // ── EffectId ──────────────────────────────────────────────────────────────────
 
-/// Unique identifier for an effect, wrapping a UUID v7.
+/// Opaque stable identifier for an effect, wrapping a UUID.
 ///
-/// Generated at discovery time and used as the primary key across
-/// the registry, event bus, API, and UI.
+/// The effect source owns its generation policy. Loaders may derive a stable
+/// UUID from source identity or accept an explicitly authored UUID; callers
+/// must not infer UUID version or creation time from this type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
 pub struct EffectId(pub Uuid);
 
@@ -671,18 +672,11 @@ impl EffectMetadata {
     /// Whether this effect wants host keyboard/mouse data injected.
     ///
     /// Single predicate shared by renderer payload injection and capture
-    /// demand: the explicit `input_reactive` capability, the `Interactive`
-    /// category, or one of the legacy opt-in tags.
+    /// demand: the explicit `input_reactive` capability or the `Interactive`
+    /// category.
     #[must_use]
     pub fn requires_interaction(&self) -> bool {
-        self.input_reactive
-            || self.category == EffectCategory::Interactive
-            || self.tags.iter().any(|tag| {
-                tag.eq_ignore_ascii_case("interactive")
-                    || tag.eq_ignore_ascii_case("input")
-                    || tag.eq_ignore_ascii_case("mouse")
-                    || tag.eq_ignore_ascii_case("keyboard")
-            })
+        self.input_reactive || self.category == EffectCategory::Interactive
     }
 
     /// Look up a control definition by id (case-insensitive).
@@ -700,16 +694,11 @@ impl EffectMetadata {
             .find(|control| control.control_id().eq_ignore_ascii_case(id))
     }
 
-    /// Match either the display name or a stable source-stem alias.
+    /// Match the display name using its human-readable normalized form.
     #[must_use]
     pub fn matches_lookup(&self, id_or_name: &str) -> bool {
         let lookup_key = effect_lookup_key(id_or_name);
-        self.name.eq_ignore_ascii_case(id_or_name)
-            || effect_lookup_key(&self.name) == lookup_key
-            || self
-                .source
-                .source_stem()
-                .is_some_and(|stem| effect_lookup_key(stem) == lookup_key)
+        self.name.eq_ignore_ascii_case(id_or_name) || effect_lookup_key(&self.name) == lookup_key
     }
 }
 

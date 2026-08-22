@@ -448,6 +448,10 @@ pub async fn replace_layer(
     ctx: &SceneTreeContext,
     command: ReplaceLayer,
 ) -> Result<ZoneWritten, DomainError> {
+    let _effect_admission = ctx
+        .effects
+        .admit_layer_sources(std::iter::once(&command.layer.source))
+        .await?;
     let media_admission = ctx.scene.media_admission_for_layer(&command.layer).await;
     let mut mutation = ctx.scene.begin_mutation().await;
     check_scene_revision(&mutation, command.expected_revision)?;

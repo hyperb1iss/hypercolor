@@ -24,6 +24,7 @@ use hypercolor_types::scene::{SceneId, Zone, ZoneId};
 
 use crate::domain::commit::SceneCommit;
 use crate::domain::context::SceneContext;
+use crate::domain::effect::EffectContext;
 use crate::domain::scene::SceneMutation;
 use crate::domain::{DomainError, ResourceKind};
 
@@ -59,12 +60,16 @@ pub type LayerResult = Result<LayerStackWritten, LayerMutationError>;
 /// [`DomainError::Conflict`] when a concurrent scene mutation
 /// lands first.
 pub async fn insert_layer(
-    ctx: &SceneContext,
+    effects: &EffectContext,
     zone_id: ZoneId,
     layer: SceneLayer,
     index: Option<usize>,
     expected_revision: Option<u64>,
 ) -> Result<LayerResult, DomainError> {
+    let _effect_admission = effects
+        .admit_layer_sources(std::iter::once(&layer.source))
+        .await?;
+    let ctx = effects.scene_context();
     let media_admission = ctx.media_admission_for_layer(&layer).await;
     let mut mutation = ctx.begin_mutation().await;
     let scene_id = mutation.active_scene_for_runtime_mutation("creating a layer")?;

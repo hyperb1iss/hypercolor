@@ -229,7 +229,7 @@ fn effect_source_source_stem_uses_file_stem() {
 }
 
 #[test]
-fn effect_metadata_matches_display_name_and_native_source_alias() {
+fn effect_metadata_matches_normalized_display_name() {
     let metadata = EffectMetadata {
         id: EffectId::new(Uuid::now_v7()),
         name: "Solid Color".to_owned(),
@@ -257,10 +257,10 @@ fn effect_metadata_matches_display_name_and_native_source_alias() {
 }
 
 #[test]
-fn effect_metadata_lookup_treats_html_and_native_slugs_equivalently() {
+fn effect_metadata_lookup_does_not_admit_source_stem_aliases() {
     let metadata = EffectMetadata {
         id: EffectId::new(Uuid::now_v7()),
-        name: "Audio Pulse".to_owned(),
+        name: "Sound Reactive Pulse".to_owned(),
         author: "Hypercolor".to_owned(),
         version: "0.1.0".to_owned(),
         description: "test effect".to_owned(),
@@ -277,9 +277,12 @@ fn effect_metadata_lookup_treats_html_and_native_slugs_equivalently() {
         license: Some("Apache-2.0".to_owned()),
     };
 
-    assert!(metadata.matches_lookup("audio_pulse"));
-    assert!(metadata.matches_lookup("audio-pulse"));
-    assert!(metadata.matches_lookup("audio pulse"));
+    assert!(metadata.matches_lookup("sound_reactive_pulse"));
+    assert!(metadata.matches_lookup("sound-reactive-pulse"));
+    assert!(metadata.matches_lookup("sound reactive pulse"));
+    assert!(!metadata.matches_lookup("audio_pulse"));
+    assert!(!metadata.matches_lookup("audio-pulse"));
+    assert!(!metadata.matches_lookup("audio pulse"));
 }
 
 // ── EffectState ───────────────────────────────────────────────────────────
@@ -810,9 +813,14 @@ fn effect_metadata_empty_tags_default() {
 }
 
 #[test]
-fn requires_interaction_covers_flag_category_and_legacy_tags() {
+fn requires_interaction_uses_only_the_flag_or_category() {
     let mut metadata = sample_metadata();
-    metadata.tags = vec!["ambient".into()];
+    metadata.tags = vec![
+        "interactive".into(),
+        "input".into(),
+        "Mouse".into(),
+        "KEYBOARD".into(),
+    ];
     assert!(!metadata.requires_interaction());
 
     metadata.input_reactive = true;
@@ -821,15 +829,6 @@ fn requires_interaction_covers_flag_category_and_legacy_tags() {
     metadata.input_reactive = false;
     metadata.category = EffectCategory::Interactive;
     assert!(metadata.requires_interaction());
-
-    metadata.category = EffectCategory::Ambient;
-    for tag in ["interactive", "input", "Mouse", "KEYBOARD"] {
-        metadata.tags = vec![tag.into()];
-        assert!(
-            metadata.requires_interaction(),
-            "tag {tag} should opt into interaction"
-        );
-    }
 }
 
 #[test]

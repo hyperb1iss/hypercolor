@@ -175,7 +175,7 @@ pub async fn set_display_face(
         let Some(effect) = state
             .domains
             .effects
-            .resolve_metadata(&body.effect_id)
+            .resolve_for_mutation(&body.effect_id)
             .await
         else {
             return DomainError::not_found(ResourceKind::Effect, &body.effect_id).into_response();
@@ -219,6 +219,10 @@ pub async fn set_display_face(
     }
 
     if body.scope == DisplayFaceScope::Default {
+        let _admission = match state.domains.effects.admit(&effect).await {
+            Ok(admission) => admission,
+            Err(error) => return error.into_response(),
+        };
         let preference = crate::display_preferences::DisplayPreference {
             blend_mode: display_target.blend_mode,
             controls: body.controls,
@@ -234,7 +238,8 @@ pub async fn set_display_face(
                 .into_response();
             }
         }
-        let Some(zone) = apply_display_preference_overlay(state.as_ref(), device_id).await else {
+        let Some(zone) = apply_display_preference_overlay_admitted(state.as_ref(), device_id).await
+        else {
             return DomainError::Internal(anyhow::anyhow!(
                 "Failed to install the default face overlay"
             ))
@@ -256,7 +261,7 @@ pub async fn set_display_face(
         return envelope::ok(DisplayFaceResponse {
             default_assigned: true,
             device_id: device_id.to_string(),
-            effect,
+            effect: effect.into_metadata(),
             zone,
             live_scope: if scene_assigned {
                 DisplayFaceScope::Scene
@@ -274,7 +279,7 @@ pub async fn set_display_face(
     };
 
     let written = match crate::domain::display::set_display_face(
-        &state.domains.scene,
+        &state.domains.effects,
         crate::domain::display::SetDisplayFace {
             device_id,
             device_name: tracked.info.name.clone(),
@@ -293,7 +298,7 @@ pub async fn set_display_face(
     envelope::ok(DisplayFaceResponse {
         default_assigned,
         device_id: device_id.to_string(),
-        effect,
+        effect: effect.into_metadata(),
         zone: if composition_explicit {
             written.zone
         } else {
@@ -831,6 +836,14 @@ fn build_default_display_zone(
 /// stored preference. Removes the overlay when the preference is gone or
 /// its effect no longer resolves. Returns the installed zone, if any.
 pub(crate) async fn apply_display_preference_overlay(
+    state: &AppState,
+    device_id: DeviceId,
+) -> Option<Zone> {
+    let _effect_admission = state.domains.effects.admit_current().await;
+    apply_display_preference_overlay_admitted(state, device_id).await
+}
+
+pub(crate) async fn apply_display_preference_overlay_admitted(
     state: &AppState,
     device_id: DeviceId,
 ) -> Option<Zone> {

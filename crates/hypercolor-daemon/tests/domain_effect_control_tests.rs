@@ -81,10 +81,16 @@ async fn insert_effect(state: &AppState, metadata: &EffectMetadata) {
 /// the zone it landed in.
 async fn running_effect(state: &AppState, metadata: &EffectMetadata) -> ZoneId {
     insert_effect(state, metadata).await;
+    let resolved = state
+        .domains
+        .effects
+        .metadata_for_mutation(metadata.id)
+        .await
+        .expect("registered effect should resolve");
     let applied = apply_effect(
         &state.domains.effects,
         ApplyEffect {
-            effect: metadata.clone(),
+            effect: resolved,
             controls: HashMap::new(),
             preset_id: None,
             target_zone: None,

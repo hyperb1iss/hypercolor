@@ -130,9 +130,6 @@ impl EffectPool {
             let key = EffectSlotKey::new(group.id, layer.id);
 
             let entry = lookup_effect_entry(registry, source.effect_id)?;
-            let resolved_effect_id = registry
-                .resolve_id(&source.effect_id)
-                .unwrap_or(source.effect_id);
 
             let display_descriptor = group
                 .display_target
@@ -140,7 +137,7 @@ impl EffectPool {
                 .and_then(|_| display_descriptors.get(&group.id));
             let needs_replacement = self.slots.get(&key).is_none_or(|slot| {
                 slot.needs_rebuild(
-                    resolved_effect_id,
+                    source.effect_id,
                     entry,
                     display_descriptor,
                     group.layout.canvas_width,

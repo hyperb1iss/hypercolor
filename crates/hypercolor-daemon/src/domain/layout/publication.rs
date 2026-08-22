@@ -7,12 +7,11 @@ use hypercolor_types::scene::SceneId;
 use hypercolor_types::spatial::SpatialLayout;
 
 use crate::domain::DomainError;
-use crate::domain::context::RuntimeSessionProjection;
+use crate::domain::context::{RuntimeSessionPersistenceError, RuntimeSessionProjection};
 use crate::domain::scene::SceneService;
 use crate::domain::spatial::SpatialService;
 use crate::network::DaemonDriverHost;
-use crate::persistence::{AtomicFileWriter, AtomicWriteOutcome};
-use crate::runtime_state::RuntimeSessionError;
+use crate::persistence::AtomicWriteOutcome;
 #[cfg(feature = "persistence-test-hooks")]
 use crate::scene_transactions::LayoutPublicationTestExecutor;
 use crate::scene_transactions::{
@@ -172,33 +171,37 @@ async fn persist_layout_runtime_phase(
     context: &LayoutPersistenceContext,
     phase: LayoutPersistencePhase,
 ) -> LayoutPersistenceOutcome {
-    let writer = match AtomicFileWriter::new(&context.runtime_state_path) {
-        Ok(writer) => writer,
-        Err(error) => return LayoutPersistenceOutcome::BeforeAdmission(error.to_string()),
-    };
-    let pending = match crate::runtime_state::reserve_save(&context.runtime_state_path) {
-        Ok(pending) => pending,
-        Err(error) => return LayoutPersistenceOutcome::BeforeAdmission(error.to_string()),
-    };
     let requires_durable_completion = matches!(
         &phase,
         LayoutPersistencePhase::Rollback | LayoutPersistencePhase::Converge
     );
-    let mut snapshot = context.runtime_projection.snapshot().await;
-    context.driver_host.refresh_driver_inventory().await;
-    if let LayoutPersistencePhase::Precommit(candidate) = phase {
-        snapshot.active_layout_id = Some(candidate.layout.id);
-        if candidate.active_scene_id == Some(SceneId::DEFAULT) {
-            snapshot.default_scene_groups = candidate.active_render_groups.to_vec();
-        }
-    }
-    let outcome = match crate::runtime_state::save_reserved(pending, &snapshot) {
+    let driver_host = Arc::clone(&context.driver_host);
+    let outcome = match context
+        .runtime_projection
+        .persist_snapshot_with(
+            &context.runtime_state_path,
+            async move {
+                driver_host.refresh_driver_inventory().await;
+            },
+            move |snapshot| {
+                if let LayoutPersistencePhase::Precommit(candidate) = phase {
+                    snapshot.active_layout_id = Some(candidate.layout.id);
+                    if candidate.active_scene_id == Some(SceneId::DEFAULT) {
+                        snapshot.default_scene_groups = candidate.active_render_groups.to_vec();
+                    }
+                }
+            },
+        )
+        .await
+    {
         Ok(AtomicWriteOutcome::Written) => LayoutPersistenceOutcome::Written,
         Ok(AtomicWriteOutcome::Superseded) => LayoutPersistenceOutcome::Superseded,
-        Err(error @ RuntimeSessionError::Persist { .. }) => {
+        Err(RuntimeSessionPersistenceError::RetryArmed(error)) => {
             LayoutPersistenceOutcome::RetryArmed(error.to_string())
         }
-        Err(error) => LayoutPersistenceOutcome::BeforeAdmission(error.to_string()),
+        Err(RuntimeSessionPersistenceError::BeforeAdmission(error)) => {
+            LayoutPersistenceOutcome::BeforeAdmission(error.to_string())
+        }
     };
     if requires_durable_completion
         && matches!(
@@ -206,17 +209,20 @@ async fn persist_layout_runtime_phase(
             LayoutPersistenceOutcome::Superseded | LayoutPersistenceOutcome::RetryArmed(_)
         )
     {
-        return flush_layout_runtime_persistence(writer).await;
+        return flush_layout_runtime_persistence(context).await;
     }
     outcome
 }
 
-async fn flush_layout_runtime_persistence(writer: AtomicFileWriter) -> LayoutPersistenceOutcome {
-    match tokio::task::spawn_blocking(move || writer.flush(LAYOUT_DURABILITY_TIMEOUT)).await {
-        Ok(Ok(_)) => LayoutPersistenceOutcome::Written,
-        Ok(Err(error)) => LayoutPersistenceOutcome::RetryArmed(error.to_string()),
-        Err(error) => LayoutPersistenceOutcome::RetryArmed(format!(
-            "layout persistence flush task failed: {error}"
-        )),
+async fn flush_layout_runtime_persistence(
+    context: &LayoutPersistenceContext,
+) -> LayoutPersistenceOutcome {
+    match context
+        .runtime_projection
+        .flush_persistence(&context.runtime_state_path, LAYOUT_DURABILITY_TIMEOUT)
+        .await
+    {
+        Ok(()) => LayoutPersistenceOutcome::Written,
+        Err(error) => LayoutPersistenceOutcome::RetryArmed(error.to_string()),
     }
 }

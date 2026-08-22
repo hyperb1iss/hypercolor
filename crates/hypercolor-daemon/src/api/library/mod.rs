@@ -10,10 +10,11 @@ pub use presets::*;
 
 use std::sync::Arc;
 
-use hypercolor_types::effect::{EffectId, EffectMetadata};
+use hypercolor_types::effect::EffectId;
 use hypercolor_types::library::PresetId;
 
 use crate::app_state::AppState;
+use crate::domain::effect::ResolvedEffect;
 use crate::domain::{DomainError, ResourceKind};
 use crate::library::LibraryStoreError;
 
@@ -36,8 +37,8 @@ pub(crate) async fn resolve_preset_id(state: &Arc<AppState>, id_or_name: &str) -
 pub(crate) async fn metadata_for_effect_id(
     state: &Arc<AppState>,
     effect_id: EffectId,
-) -> Result<EffectMetadata, String> {
-    let Some(metadata) = state.domains.effects.metadata(effect_id).await else {
+) -> Result<ResolvedEffect, String> {
+    let Some(metadata) = state.domains.effects.metadata_for_mutation(effect_id).await else {
         return Err(format!("effect not found: {effect_id}"));
     };
     Ok(metadata)

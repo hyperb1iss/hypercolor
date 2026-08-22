@@ -49,16 +49,18 @@ use hypercolor_types::scene::{
     SceneKind, SceneMutationMode, ScenePriority, TransitionSpec, UnassignedBehavior, Zone, ZoneId,
 };
 use hypercolor_types::spatial::{EdgeBehavior, Output, SamplingMode, SpatialLayout};
+use tokio::sync::{OwnedRwLockWriteGuard, RwLock};
 
 use crate::domain::commit::SceneCommitSequencer;
 use crate::domain::commit::{CommitDurability, SceneCommit, SceneRevision};
 use crate::domain::context::SceneContext;
+use crate::domain::effect::IdentityMigrationPersistence;
 use crate::domain::layout::LayoutContext;
 use crate::domain::output::OutputContext;
 use crate::domain::spatial::SpatialService;
 use crate::domain::{DomainError, ResourceKind};
 use crate::persistence::AtomicWriteOutcome;
-use crate::scene_store::SceneStore;
+use crate::scene_store::{AdmittedSceneStoreSave, SceneStore, SceneStoreSave};
 use crate::scene_transactions::{LayoutTransactionRejection, LayoutUpdateGuard};
 use crate::zone_layout_preview::ZoneLayoutPreviewStore;
 
@@ -68,13 +70,53 @@ use crate::zone_layout_preview::ZoneLayoutPreviewStore;
 #[derive(Clone)]
 pub struct SceneService(Arc<SceneServiceInner>);
 
+pub(crate) struct SceneEffectIdMigration {
+    base_revision: SceneRevision,
+    candidate: SceneManager,
+    store: Option<SceneStoreSave>,
+    migrated: usize,
+    snapshot_save_guard: OwnedRwLockWriteGuard<()>,
+}
+
+pub(crate) struct AdmittedSceneEffectIdMigration {
+    base_revision: SceneRevision,
+    candidate: SceneManager,
+    store: Option<AdmittedSceneStoreSave>,
+    snapshot_save_guard: OwnedRwLockWriteGuard<()>,
+}
+
+pub(crate) struct PersistedSceneEffectIdMigration {
+    base_revision: SceneRevision,
+    candidate: SceneManager,
+    stored_scenes: Option<HashMap<SceneId, Scene>>,
+    snapshot_save_guard: OwnedRwLockWriteGuard<()>,
+}
+
+pub(crate) struct SceneEffectIdMigrationPublication {
+    manager: OwnedRwLockWriteGuard<SceneManager>,
+    store: Option<OwnedRwLockWriteGuard<SceneStore>>,
+    candidate: Option<SceneManager>,
+    stored_scenes: Option<HashMap<SceneId, Scene>>,
+    _snapshot_save_guard: OwnedRwLockWriteGuard<()>,
+}
+
 struct SceneServiceInner {
-    manager: tokio::sync::RwLock<SceneManager>,
-    store: Option<Arc<tokio::sync::RwLock<SceneStore>>>,
+    manager: Arc<RwLock<SceneManager>>,
+    store: Option<Arc<RwLock<SceneStore>>>,
+    _temporary_store_root: Option<tempfile::TempDir>,
+    snapshot_save_gate: Arc<RwLock<()>>,
     zone_layout_previews: Arc<ZoneLayoutPreviewStore>,
     commits: Arc<SceneCommitSequencer>,
     event_bus: Arc<HypercolorBus>,
     plan: ArcSwap<ScenePlanSnapshot>,
+    #[cfg(all(test, feature = "persistence-test-hooks"))]
+    persistence_test_barrier: std::sync::Mutex<Option<Arc<ScenePersistenceTestBarrier>>>,
+}
+
+#[cfg(all(test, feature = "persistence-test-hooks"))]
+pub(crate) struct ScenePersistenceTestBarrier {
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
 }
 
 /// Lock-free render-side access to the latest admitted scene plan.
@@ -85,6 +127,7 @@ pub struct ScenePlanReader(Arc<SceneServiceInner>);
 #[derive(Clone)]
 pub struct SceneLibraryContext {
     scene: SceneContext,
+    effects: crate::domain::effect::EffectContext,
     layout: LayoutContext,
     output: OutputContext,
     event_bus: Arc<HypercolorBus>,
@@ -93,12 +136,14 @@ pub struct SceneLibraryContext {
 impl SceneLibraryContext {
     pub(crate) fn new(
         scene: SceneContext,
+        effects: crate::domain::effect::EffectContext,
         layout: LayoutContext,
         output: OutputContext,
         event_bus: Arc<HypercolorBus>,
     ) -> Self {
         Self {
             scene,
+            effects,
             layout,
             output,
             event_bus,
@@ -122,8 +167,29 @@ impl SceneService {
             manager,
             event_bus,
             None,
+            None,
             Arc::new(ZoneLayoutPreviewStore::default()),
         )
+    }
+
+    /// Own a temporary scene store for isolated persistence harnesses.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the temporary store cannot be prepared.
+    #[doc(hidden)]
+    pub fn with_temporary_store(
+        manager: SceneManager,
+        event_bus: Arc<HypercolorBus>,
+    ) -> anyhow::Result<Self> {
+        let (store, root) = SceneStore::temporary()?;
+        Ok(Self::build(
+            manager,
+            event_bus,
+            Some(Arc::new(tokio::sync::RwLock::new(store))),
+            Some(root),
+            Arc::new(ZoneLayoutPreviewStore::default()),
+        ))
     }
 
     /// Own a scene manager together with its durable and transient stores.
@@ -131,27 +197,38 @@ impl SceneService {
     pub(crate) fn new(
         manager: SceneManager,
         event_bus: Arc<HypercolorBus>,
-        store: Arc<tokio::sync::RwLock<SceneStore>>,
+        store: SceneStore,
         zone_layout_previews: Arc<ZoneLayoutPreviewStore>,
     ) -> Self {
-        Self::build(manager, event_bus, Some(store), zone_layout_previews)
+        Self::build(
+            manager,
+            event_bus,
+            Some(Arc::new(tokio::sync::RwLock::new(store))),
+            None,
+            zone_layout_previews,
+        )
     }
 
     fn build(
         manager: SceneManager,
         event_bus: Arc<HypercolorBus>,
         store: Option<Arc<tokio::sync::RwLock<SceneStore>>>,
+        temporary_store_root: Option<tempfile::TempDir>,
         zone_layout_previews: Arc<ZoneLayoutPreviewStore>,
     ) -> Self {
         let commits = Arc::new(SceneCommitSequencer::new());
         let plan = ArcSwap::from_pointee(manager.plan_snapshot(commits.revision()));
         Self(Arc::new(SceneServiceInner {
-            manager: tokio::sync::RwLock::new(manager),
+            manager: Arc::new(RwLock::new(manager)),
             store,
+            _temporary_store_root: temporary_store_root,
+            snapshot_save_gate: Arc::new(RwLock::new(())),
             zone_layout_previews,
             commits,
             event_bus,
             plan,
+            #[cfg(all(test, feature = "persistence-test-hooks"))]
+            persistence_test_barrier: std::sync::Mutex::new(None),
         }))
     }
 
@@ -191,6 +268,107 @@ impl SceneService {
         }
     }
 
+    pub(crate) async fn prepare_effect_id_migration(
+        &self,
+        migrations: &HashMap<
+            hypercolor_types::effect::EffectId,
+            hypercolor_types::effect::EffectId,
+        >,
+    ) -> Result<SceneEffectIdMigration, DomainError> {
+        let snapshot_save_guard = Arc::clone(&self.0.snapshot_save_gate).write_owned().await;
+        let manager = self.0.manager.read().await;
+        let mut candidate = manager.clone();
+        let migrated = candidate.remap_effect_ids(migrations);
+        let store = match self.0.store.as_ref() {
+            Some(store) => Some(
+                store
+                    .read()
+                    .await
+                    .reserve_save(candidate.list().into_iter().cloned())
+                    .map_err(|error| DomainError::Internal(error.into()))?,
+            ),
+            None => None,
+        };
+        Ok(SceneEffectIdMigration {
+            base_revision: self.0.commits.revision(),
+            candidate,
+            store,
+            migrated,
+            snapshot_save_guard,
+        })
+    }
+
+    pub(crate) async fn prepare_effect_id_migration_publication(
+        &self,
+        migration: PersistedSceneEffectIdMigration,
+    ) -> Result<SceneEffectIdMigrationPublication, DomainError> {
+        let manager = Arc::clone(&self.0.manager).write_owned().await;
+        let current_revision = self.0.commits.revision();
+        if current_revision != migration.base_revision {
+            return Err(DomainError::conflict_details(
+                "effect ID migration was superseded by newer scene state",
+                serde_json::json!({
+                    "kind": "effect_id_migration_superseded",
+                    "expected_revision": migration.base_revision,
+                    "current_revision": current_revision,
+                }),
+            ));
+        }
+
+        let store = if migration.stored_scenes.is_some() {
+            let store = self
+                .0
+                .store
+                .as_ref()
+                .expect("persisted scene migration must retain its owning store");
+            Some(Arc::clone(store).write_owned().await)
+        } else {
+            None
+        };
+
+        let PersistedSceneEffectIdMigration {
+            base_revision: _,
+            candidate,
+            stored_scenes,
+            snapshot_save_guard,
+        } = migration;
+        Ok(SceneEffectIdMigrationPublication {
+            manager,
+            store,
+            candidate: Some(candidate),
+            stored_scenes,
+            _snapshot_save_guard: snapshot_save_guard,
+        })
+    }
+
+    pub(crate) fn publish_effect_id_migration(
+        &self,
+        publication: &mut SceneEffectIdMigrationPublication,
+    ) -> SceneCommit {
+        let SceneEffectIdMigrationPublication {
+            manager,
+            store,
+            candidate,
+            stored_scenes,
+            _snapshot_save_guard: _,
+        } = publication;
+
+        if let (Some(store), Some(stored_scenes)) = (store.as_mut(), stored_scenes.take()) {
+            store.replace_named_scenes(stored_scenes.into_values());
+        }
+
+        **manager = candidate
+            .take()
+            .expect("scene migration publication must publish exactly once");
+        let ticket = self.0.commits.admit(Arc::clone(&self.0.event_bus));
+        self.0
+            .plan
+            .store(Arc::new(manager.plan_snapshot(ticket.generation())));
+        let generation = ticket.generation();
+        ticket.release(Vec::new());
+        SceneCommit::new(generation, generation, CommitDurability::Written, None)
+    }
+
     pub(crate) async fn stage_zone_layout_preview<E, F>(
         &self,
         owner: crate::zone_layout_preview::ZoneLayoutPreviewOwner,
@@ -218,6 +396,20 @@ impl SceneService {
         self.0.manager.try_write().is_err()
     }
 
+    #[cfg(all(test, feature = "persistence-test-hooks"))]
+    pub(crate) fn pause_next_persistence_for_test(&self) -> Arc<ScenePersistenceTestBarrier> {
+        let barrier = Arc::new(ScenePersistenceTestBarrier {
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+        });
+        *self
+            .0
+            .persistence_test_barrier
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&barrier));
+        barrier
+    }
+
     /// Admit an owned candidate through persistence and ordered publication.
     ///
     /// # Errors
@@ -238,15 +430,6 @@ impl SceneService {
             preview_zones_to_clear,
         } = mutation;
 
-        let coordinator = if persists_scene_content {
-            match self.0.store.as_ref() {
-                Some(store) => Some(store.read().await.clone()),
-                None => None,
-            }
-        } else {
-            None
-        };
-
         let (ticket, pending) = {
             let mut manager = self.0.manager.write().await;
             let current_revision = self.0.commits.revision();
@@ -263,8 +446,17 @@ impl SceneService {
                 ));
             }
 
-            let pending = if let Some(coordinator) = coordinator.as_ref() {
-                match coordinator.reserve_save(candidate.list().into_iter().cloned()) {
+            let pending = if persists_scene_content {
+                let Some(store) = self.0.store.as_ref() else {
+                    return Err(DomainError::Internal(anyhow::anyhow!(
+                        "durable scene mutation has no owning scene store"
+                    )));
+                };
+                match store
+                    .read()
+                    .await
+                    .reserve_save(candidate.list().into_iter().cloned())
+                {
                     Ok(pending) => Some(pending),
                     Err(error) => {
                         return Err(DomainError::Internal(anyhow::anyhow!(
@@ -307,6 +499,8 @@ impl SceneService {
             .store
             .as_ref()
             .expect("persistent scene commit must retain its owning store");
+        #[cfg(all(test, feature = "persistence-test-hooks"))]
+        self.pause_before_persistence_for_test().await;
         let outcome = store.write().await.save_reserved(pending);
         match outcome {
             Ok(AtomicWriteOutcome::Written) => {
@@ -328,7 +522,7 @@ impl SceneService {
                 ))
             }
             Err(error) => {
-                ticket.release(events);
+                ticket.discard();
                 Ok(SceneCommit::new(
                     generation,
                     generation,
@@ -339,11 +533,32 @@ impl SceneService {
         }
     }
 
+    #[cfg(all(test, feature = "persistence-test-hooks"))]
+    async fn pause_before_persistence_for_test(&self) {
+        let barrier = self
+            .0
+            .persistence_test_barrier
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(barrier) = barrier {
+            barrier.entered.notify_one();
+            barrier.release.notified().await;
+        }
+    }
+
     /// Persist the current named-scene projection through the owning store.
     pub async fn save_snapshot(&self) -> anyhow::Result<()> {
+        self.persist_snapshot().await.map(|_| ())
+    }
+
+    pub(crate) async fn persist_snapshot(&self) -> anyhow::Result<Option<AtomicWriteOutcome>> {
         let Some(store) = self.0.store.as_ref() else {
-            return Ok(());
+            return Ok(None);
         };
+        #[cfg(all(test, feature = "persistence-test-hooks"))]
+        self.pause_before_persistence_for_test().await;
+        let _snapshot_save_guard = Arc::clone(&self.0.snapshot_save_gate).read_owned().await;
         let pending = {
             let manager = self.snapshot().await;
             store
@@ -351,7 +566,7 @@ impl SceneService {
                 .await
                 .reserve_save(manager.list().into_iter().cloned())?
         };
-        store.write().await.save_reserved(pending).map(|_| ())
+        store.write().await.save_reserved(pending).map(Some)
     }
 
     pub(crate) async fn publish_layout_activation<F>(
@@ -383,6 +598,80 @@ impl SceneService {
         publish_renderer_state(candidate_spatial_engine);
         ticket.release(Vec::new());
         Ok(())
+    }
+}
+
+#[cfg(all(test, feature = "persistence-test-hooks"))]
+impl ScenePersistenceTestBarrier {
+    pub(crate) async fn wait_until_entered(&self) {
+        self.entered.notified().await;
+    }
+
+    pub(crate) fn release(&self) {
+        self.release.notify_one();
+    }
+}
+
+impl SceneEffectIdMigration {
+    pub(crate) fn candidate(&self) -> &SceneManager {
+        &self.candidate
+    }
+
+    pub(crate) fn migrated(&self) -> usize {
+        self.migrated
+    }
+
+    pub(crate) fn admit(self) -> AdmittedSceneEffectIdMigration {
+        AdmittedSceneEffectIdMigration {
+            base_revision: self.base_revision,
+            candidate: self.candidate,
+            store: self.store.map(SceneStoreSave::admit),
+            snapshot_save_guard: self.snapshot_save_guard,
+        }
+    }
+}
+
+impl AdmittedSceneEffectIdMigration {
+    pub(crate) fn persist(
+        self,
+    ) -> (
+        PersistedSceneEffectIdMigration,
+        IdentityMigrationPersistence,
+    ) {
+        let Self {
+            base_revision,
+            candidate,
+            store,
+            snapshot_save_guard,
+        } = self;
+        let (stored_scenes, persistence) = store.map_or_else(
+            || (None, IdentityMigrationPersistence::Written),
+            |store| {
+                let (scenes, outcome) = store.commit_stage_aware();
+                let persistence = match outcome {
+                    crate::persistence::AtomicWriteCommitResult::DurableWritten => {
+                        IdentityMigrationPersistence::Written
+                    }
+                    crate::persistence::AtomicWriteCommitResult::Superseded => {
+                        IdentityMigrationPersistence::Superseded
+                    }
+                    crate::persistence::AtomicWriteCommitResult::FailedBeforeReplacement(error)
+                    | crate::persistence::AtomicWriteCommitResult::ReplacementVisibleButNotDurable(error) => {
+                        IdentityMigrationPersistence::Retrying(error.to_string())
+                    }
+                };
+                (Some(scenes), persistence)
+            },
+        );
+        (
+            PersistedSceneEffectIdMigration {
+                base_revision,
+                candidate,
+                stored_scenes,
+                snapshot_save_guard,
+            },
+            persistence,
+        )
     }
 }
 
@@ -1991,6 +2280,18 @@ pub async fn replace_scene(
             "scene id must match the route path",
         ));
     }
+
+    let _effect_admission = ctx
+        .effects
+        .admit_layer_sources(
+            command
+                .document
+                .zones
+                .iter()
+                .flat_map(|zone| zone.layers.iter())
+                .map(|layer| &layer.source),
+        )
+        .await?;
 
     let default_layout = ctx.layout.current();
     let mut mutation = ctx.scene.begin_mutation().await;

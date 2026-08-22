@@ -68,6 +68,7 @@ pub async fn create_playlist(
         return DomainError::validation("Playlist name must not be empty").into_response();
     }
 
+    let _admission = state.domains.effects.admit_current().await;
     let items = match build_playlist_items(&state, body.items.as_deref()).await {
         Ok(items) => items,
         Err(error) => return DomainError::validation(error).into_response(),
@@ -113,6 +114,7 @@ pub async fn update_playlist(
     let Some(existing) = state.library_store.get_playlist(playlist_id).await else {
         return DomainError::not_found(ResourceKind::Playlist, &id).into_response();
     };
+    let _admission = state.domains.effects.admit_current().await;
     let items = match build_playlist_items(&state, body.items.as_deref()).await {
         Ok(items) => items,
         Err(error) => return DomainError::validation(error).into_response(),
@@ -208,7 +210,7 @@ pub async fn activate_playlist(
     let Some(playlist_id) = resolve_playlist_id(&state, &id).await else {
         return DomainError::not_found(ResourceKind::Playlist, &id).into_response();
     };
-    let Some(playlist) = state.library_store.get_playlist(playlist_id).await else {
+    let Some(mut playlist) = state.library_store.get_playlist(playlist_id).await else {
         return DomainError::not_found(ResourceKind::Playlist, &id).into_response();
     };
     if playlist.items.is_empty() {
@@ -231,6 +233,12 @@ pub async fn activate_playlist(
         .into_response();
     }
 
+    let _admission = state.domains.effects.admit_current().await;
+    let Some(current_playlist) = state.library_store.get_playlist(playlist_id).await else {
+        return DomainError::not_found(ResourceKind::Playlist, &id).into_response();
+    };
+    playlist = current_playlist;
+
     let generation;
     let started_at_ms = unix_epoch_ms();
     let (stop_tx, stop_rx) = watch::channel(false);
@@ -240,9 +248,10 @@ pub async fn activate_playlist(
     }
 
     let state_for_task = Arc::clone(&state);
-    let playlist_for_task = playlist.clone();
+    let playlist_for_task = Arc::new(tokio::sync::RwLock::new(playlist.clone()));
+    let worker_playlist = Arc::clone(&playlist_for_task);
     let task = tokio::spawn(async move {
-        run_playlist_task(state_for_task, playlist_for_task, generation, stop_rx, true).await;
+        run_playlist_task(state_for_task, worker_playlist, generation, stop_rx, true).await;
     });
 
     let response_payload;
@@ -256,6 +265,7 @@ pub async fn activate_playlist(
             item_count: playlist.items.len(),
             started_at_ms,
             stop_tx,
+            playlist: playlist_for_task,
             task,
         };
         response_payload = active_playlist_payload(&active);
@@ -336,46 +346,61 @@ fn stop_runtime(active: Option<ActivePlaylistRuntime>) {
 
 async fn run_playlist_task(
     state: Arc<AppState>,
-    playlist: EffectPlaylist,
+    playlist: Arc<tokio::sync::RwLock<EffectPlaylist>>,
     generation: u64,
     mut stop_rx: watch::Receiver<bool>,
     first_item_already_applied: bool,
 ) {
     let mut index = 0usize;
     if first_item_already_applied {
-        let first_duration = playlist
+        let playlist_snapshot = playlist.read().await;
+        let first_duration = playlist_snapshot
             .items
             .first()
             .and_then(|item| item.duration_ms)
             .unwrap_or(DEFAULT_PLAYLIST_ITEM_DURATION_MS)
             .max(1);
+        drop(playlist_snapshot);
         if wait_for_item_window(first_duration, &mut stop_rx).await {
             clear_runtime_if_generation_matches(&state, generation).await;
             return;
         }
         index = 1;
-        if index >= playlist.items.len() {
-            if playlist.loop_enabled {
+        let playlist_snapshot = playlist.read().await;
+        if index >= playlist_snapshot.items.len() {
+            if playlist_snapshot.loop_enabled {
                 index = 0;
             } else {
+                drop(playlist_snapshot);
                 clear_runtime_if_generation_matches(&state, generation).await;
                 return;
             }
         }
+        drop(playlist_snapshot);
     }
 
-    while index < playlist.items.len() {
+    loop {
         if *stop_rx.borrow() {
             break;
         }
 
-        let Some(item) = playlist.items.get(index) else {
+        let (playlist_id, playlist_name, item, item_count, loop_enabled) = {
+            let playlist = playlist.read().await;
+            (
+                playlist.id,
+                playlist.name.clone(),
+                playlist.items.get(index).cloned(),
+                playlist.items.len(),
+                playlist.loop_enabled,
+            )
+        };
+        let Some(item) = item else {
             break;
         };
-        if let Err(error) = activate_playlist_item(&state, item).await {
+        if let Err(error) = activate_playlist_item(&state, &item).await {
             warn!(
-                playlist_id = %playlist.id,
-                playlist = %playlist.name,
+                playlist_id = %playlist_id,
+                playlist = %playlist_name,
                 item_index = index,
                 %error,
                 "Playlist item activation failed"
@@ -391,8 +416,8 @@ async fn run_playlist_task(
         }
 
         index += 1;
-        if index >= playlist.items.len() {
-            if playlist.loop_enabled {
+        if index >= item_count {
+            if loop_enabled {
                 index = 0;
             } else {
                 break;
@@ -423,7 +448,10 @@ async fn clear_runtime_if_generation_matches(state: &Arc<AppState>, generation: 
     }
 }
 
-async fn activate_playlist_item(state: &Arc<AppState>, item: &PlaylistItem) -> Result<(), String> {
+pub(crate) async fn activate_playlist_item(
+    state: &Arc<AppState>,
+    item: &PlaylistItem,
+) -> Result<(), String> {
     let (metadata, requested_controls, preset_id) = match &item.target {
         PlaylistItemTarget::Effect { effect_id } => {
             let metadata = metadata_for_effect_id(state, *effect_id).await?;

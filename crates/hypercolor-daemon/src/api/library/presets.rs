@@ -60,6 +60,7 @@ pub async fn create_preset(
         return DomainError::validation("Preset name must not be empty").into_response();
     }
 
+    let _admission = state.domains.effects.admit_current().await;
     let Some(effect) = state.domains.effects.resolve_metadata(&body.effect).await else {
         return DomainError::not_found(ResourceKind::Effect, &body.effect).into_response();
     };
@@ -118,6 +119,7 @@ pub async fn update_preset(
         return DomainError::not_found(ResourceKind::Preset, &id).into_response();
     };
 
+    let _admission = state.domains.effects.admit_current().await;
     let Some(effect) = state.domains.effects.resolve_metadata(&body.effect).await else {
         return DomainError::not_found(ResourceKind::Effect, &body.effect).into_response();
     };

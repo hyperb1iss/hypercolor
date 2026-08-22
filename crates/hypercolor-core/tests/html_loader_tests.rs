@@ -7,8 +7,8 @@ use tempfile::TempDir;
 
 use hypercolor_core::effect::{
     EffectRegistry, builtin::register_builtin_effects, bundled_effects_root,
-    default_effect_search_paths, html_path_effect_id_for_testing, load_html_effect_file,
-    parse_html_effect_metadata, register_html_effects,
+    default_effect_search_paths, load_html_effect_file, parse_html_effect_metadata,
+    register_html_effects,
 };
 use hypercolor_types::canvas::srgb_to_linear;
 use hypercolor_types::effect::{EffectCategory, EffectSource};
@@ -240,7 +240,7 @@ fn bundled_html_effect_ids_are_stable_across_build_roots() {
 }
 
 #[test]
-fn registry_resolves_legacy_bundled_html_path_aliases() {
+fn discovery_reports_legacy_bundled_ids_without_installing_runtime_aliases() {
     let temp = TempDir::new().expect("failed to create tempdir");
     let root = temp.path().join("effects");
     let html = r#"
@@ -250,26 +250,24 @@ fn registry_resolves_legacy_bundled_html_path_aliases() {
   <meta publisher="Hypercolor" />
 </head>
 "#;
-    let source_path = root.join("hypercolor/poisonous.html");
     let installed_path = root.join("bundled/poisonous.html");
-    write_html(&source_path, html);
     write_html(&installed_path, html);
 
-    let installed_entry = load_html_effect_file(&installed_path)
-        .expect("installed effect should load")
-        .expect("installed effect should register");
-    let canonical_id = installed_entry.metadata.id;
-    let legacy_id = html_path_effect_id_for_testing(&source_path);
-    assert_ne!(legacy_id, canonical_id);
+    let mut registry = EffectRegistry::new(vec![root.clone()]);
+    let report = register_html_effects(&mut registry, &[root]);
 
-    let mut registry = EffectRegistry::new(vec![root]);
-    registry.register(installed_entry);
-
-    assert_eq!(registry.resolve_id(&legacy_id), Some(canonical_id));
-    let effect = registry
-        .get(&legacy_id)
-        .expect("legacy path id should resolve to the installed effect");
-    assert_eq!(effect.metadata.name, "Poisonous");
+    assert_eq!(registry.len(), 1);
+    assert!(!report.legacy_effect_ids.is_empty());
+    for (legacy_id, canonical_id) in report.legacy_effect_ids {
+        assert_ne!(legacy_id, canonical_id);
+        assert!(registry.get(&legacy_id).is_none());
+        assert_eq!(
+            registry
+                .get(&canonical_id)
+                .map(|effect| effect.metadata.name.as_str()),
+            Some("Poisonous")
+        );
+    }
 }
 
 #[test]
@@ -397,6 +395,34 @@ fn registry_rescan_preserves_builtin_native_effects() {
 }
 
 #[test]
+fn registry_rescan_preserves_late_legacy_id_migrations() {
+    let temp = TempDir::new().expect("failed to create tempdir");
+    let root = temp.path().join("effects");
+    fs::create_dir_all(&root).expect("effect root should exist");
+    let mut registry = EffectRegistry::new(vec![root.clone()]);
+
+    write_html(
+        &root.join("bundled/late-arrival.html"),
+        r#"
+<head>
+  <title>Late Arrival</title>
+  <meta description="Discovered after startup" />
+  <meta publisher="Hypercolor" />
+</head>
+"#,
+    );
+
+    let report = registry.rescan();
+
+    assert_eq!(report.added, 1);
+    assert!(!report.legacy_effect_ids.is_empty());
+    for (legacy_id, canonical_id) in report.legacy_effect_ids {
+        assert!(registry.get(&legacy_id).is_none());
+        assert!(registry.get(&canonical_id).is_some());
+    }
+}
+
+#[test]
 fn registry_reload_single_does_not_rescan_sibling_effects() {
     let temp = TempDir::new().expect("failed to create tempdir");
     let root = temp.path().join("effects");
@@ -454,6 +480,33 @@ fn registry_reload_single_does_not_rescan_sibling_effects() {
             .any(|(_, entry)| entry.metadata.name == "Nebula"),
         "unchanged sibling registry entry should keep its previous metadata"
     );
+}
+
+#[test]
+fn registry_reload_single_preserves_late_legacy_id_migrations() {
+    let temp = TempDir::new().expect("failed to create tempdir");
+    let root = temp.path().join("effects");
+    let path = root.join("bundled/watched-arrival.html");
+    write_html(
+        &path,
+        r#"
+<head>
+  <title>Watched Arrival</title>
+  <meta description="Discovered by the watcher" />
+  <meta publisher="Hypercolor" />
+</head>
+"#,
+    );
+    let mut registry = EffectRegistry::new(vec![root]);
+
+    let report = registry.reload_single(&path);
+
+    assert_eq!(report.added, 1);
+    assert!(!report.legacy_effect_ids.is_empty());
+    for (legacy_id, canonical_id) in report.legacy_effect_ids {
+        assert!(registry.get(&legacy_id).is_none());
+        assert!(registry.get(&canonical_id).is_some());
+    }
 }
 
 #[test]
@@ -657,7 +710,69 @@ fn register_html_effects_skips_builtin_html_ports_without_servo() {
     assert_eq!(report.scanned_files, 1);
     assert_eq!(report.loaded_effects, 0);
     assert_eq!(report.skipped_files, 1);
+    assert!(report.legacy_effect_ids.is_empty());
     assert_eq!(registry.len(), 0);
+}
+
+#[cfg(not(feature = "servo"))]
+#[test]
+fn skipped_builtin_html_port_only_targets_a_registered_native_effect() {
+    let temp = TempDir::new().expect("failed to create tempdir");
+    let root = temp.path().join("effects");
+
+    write_html(
+        &root.join("hypercolor/breathing.html"),
+        r#"
+<head>
+  <title>Breathing</title>
+  <meta builtin-id="breathing" />
+</head>
+"#,
+    );
+
+    let mut empty_registry = EffectRegistry::new(vec![root.clone()]);
+    let empty_report = register_html_effects(&mut empty_registry, std::slice::from_ref(&root));
+    assert!(empty_report.legacy_effect_ids.is_empty());
+
+    let mut native_registry = EffectRegistry::new(vec![root.clone()]);
+    register_builtin_effects(&mut native_registry);
+    let native_id = native_registry
+        .iter()
+        .find(|(_, entry)| entry.metadata.source.source_stem() == Some("breathing"))
+        .map(|(id, _)| *id)
+        .expect("native Breathing should be registered");
+    let report = register_html_effects(&mut native_registry, &[root]);
+
+    assert!(!report.legacy_effect_ids.is_empty());
+    assert!(
+        report
+            .legacy_effect_ids
+            .values()
+            .all(|canonical_id| *canonical_id == native_id)
+    );
+}
+
+#[cfg(not(feature = "servo"))]
+#[test]
+fn skipped_screen_cast_port_never_targets_an_unregistered_html_effect() {
+    let temp = TempDir::new().expect("failed to create tempdir");
+    let root = temp.path().join("effects");
+
+    write_html(
+        &root.join("hypercolor/screen-cast.html"),
+        r#"
+<head>
+  <title>Screen Cast</title>
+  <meta builtin-id="screen_cast" />
+</head>
+"#,
+    );
+
+    let mut registry = EffectRegistry::new(vec![root.clone()]);
+    register_builtin_effects(&mut registry);
+    let report = register_html_effects(&mut registry, &[root]);
+
+    assert!(report.legacy_effect_ids.is_empty());
 }
 
 #[cfg(feature = "servo")]
@@ -720,8 +835,6 @@ fn stale_screen_cast_html_coexists_with_native_and_current_canvas_port() {
             &html_entry.1.metadata.source,
             EffectSource::Html { .. }
         ));
-        let path_alias = html_path_effect_id_for_testing(&path);
-        assert_eq!(registry.resolve_id(&path_alias), Some(html_entry.0));
     }
 }
 

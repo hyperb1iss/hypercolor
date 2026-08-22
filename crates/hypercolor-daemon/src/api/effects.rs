@@ -15,7 +15,7 @@ use tokio::fs;
 use tracing::{info, warn};
 
 use hypercolor_core::effect::{
-    HtmlControlKind, ParsedHtmlEffectMetadata, load_html_effect_file, parse_html_effect_metadata,
+    HtmlControlKind, ParsedHtmlEffectMetadata, parse_html_effect_metadata,
 };
 use hypercolor_types::api::scene::{
     ApplyEffectRequest as SceneApplyEffectRequest, ApplyEffectResponse as SceneApplyEffectResponse,
@@ -40,13 +40,6 @@ use crate::domain::{DomainError, MutationContext, ResourceKind};
 const MAX_EFFECT_UPLOAD_BYTES: usize = 1024 * 1024;
 const EFFECT_COVER_FILE_NAME: &str = "default.webp";
 const EFFECT_COVER_CONTENT_TYPE: &str = "image/webp";
-
-async fn invalidate_active_zones_after_registry_update(state: &AppState) {
-    if let Err(error) = domain::effect::invalidate_active_zones(&state.domains.effects).await {
-        warn!(%error, "Failed to refresh active zones after an effect registry update");
-    }
-}
-
 // Wire contracts live in hypercolor-types::api::effects — shared with the
 // web UI and the TUI.
 pub use hypercolor_types::api::effects::{
@@ -275,7 +268,7 @@ pub async fn apply_effect(
 
     // Validate before the scene commit or output wake so a refusal leaves
     // the rig unchanged.
-    let Some(metadata) = state.domains.effects.resolve_metadata(&id).await else {
+    let Some(metadata) = state.domains.effects.resolve_for_mutation(&id).await else {
         return DomainError::not_found(ResourceKind::Effect, &id).into_response();
     };
 
@@ -418,11 +411,10 @@ pub async fn get_effect_cover(
 
 /// `POST /api/v1/effects/rescan` — Manually trigger an effect registry rescan.
 pub async fn rescan_effects(State(state): State<Arc<AppState>>) -> Response {
-    let report = state.domains.effects.rescan().await;
-
-    if report.added > 0 || report.removed > 0 || report.updated > 0 {
-        invalidate_active_zones_after_registry_update(state.as_ref()).await;
-    }
+    let report = match crate::domain::effect::rescan_registry(state.as_ref()).await {
+        Ok(report) => report,
+        Err(error) => return error.into_response(),
+    };
 
     info!(
         added = report.added,
@@ -479,14 +471,6 @@ pub async fn install_effect(
     };
 
     let install_dir = user_effects_install_dir(state.as_ref());
-    if let Err(error) = fs::create_dir_all(&install_dir).await {
-        return DomainError::Internal(anyhow::anyhow!(
-            "Failed to create user effects directory '{}': {error}",
-            install_dir.display()
-        ))
-        .into_response();
-    }
-
     let preferred_stem = file_name
         .as_deref()
         .and_then(uploaded_file_stem)
@@ -498,65 +482,35 @@ pub async fn install_effect(
     // so existing assignments follow the update instead of a `-2` clone
     // appearing beside the original.
     let installed_path = install_dir.join(format!("{preferred_stem}.html"));
-    let replacing = installed_path.exists();
-
-    if let Err(error) = fs::write(&installed_path, html.as_bytes()).await {
-        return DomainError::Internal(anyhow::anyhow!(
-            "Failed to write uploaded effect to '{}': {error}",
-            installed_path.display()
-        ))
-        .into_response();
-    }
-
-    let entry = match load_html_effect_file(&installed_path) {
-        Ok(Some(entry)) => entry,
-        Ok(None) => {
-            let _ = fs::remove_file(&installed_path).await;
-            return DomainError::validation(
-                "Uploaded effect is not supported by this daemon build.",
-            )
-            .into_response();
-        }
-        Err(error) => {
-            let _ = fs::remove_file(&installed_path).await;
-            return DomainError::Internal(anyhow::anyhow!(
-                "Failed to register uploaded effect '{}': {}",
-                error.path.display(),
-                error.message
-            ))
-            .into_response();
-        }
-    };
-
-    let (added, updated) = if state.domains.effects.register(entry.clone()).await {
-        (0, 1)
-    } else {
-        (1, 0)
-    };
-
-    invalidate_active_zones_after_registry_update(state.as_ref()).await;
+    let installed =
+        match crate::domain::effect::install_registry_file(state.as_ref(), &installed_path, &html)
+            .await
+        {
+            Ok(installed) => installed,
+            Err(error) => return error.into_response(),
+        };
 
     state
         .event_bus
         .publish(HypercolorEvent::EffectRegistryUpdated {
-            added,
-            removed: 0,
-            updated,
+            added: installed.report.added,
+            removed: installed.report.removed,
+            updated: installed.report.updated,
         });
 
     info!(
-        effect = %entry.metadata.name,
-        path = %entry.source_path.display(),
-        replaced_existing = replacing,
+        effect = %installed.metadata.name,
+        path = %installed.source_path.display(),
+        replaced_existing = installed.replaced_existing,
         "Installed uploaded effect"
     );
 
     envelope::created(InstalledEffectResponse {
-        id: entry.metadata.id.to_string(),
-        name: entry.metadata.name,
-        path: entry.source_path.display().to_string(),
-        controls: entry.metadata.controls.len(),
-        presets: entry.metadata.presets.len(),
+        id: installed.metadata.id.to_string(),
+        name: installed.metadata.name,
+        path: installed.source_path.display().to_string(),
+        controls: installed.metadata.controls.len(),
+        presets: installed.metadata.presets.len(),
     })
 }
 

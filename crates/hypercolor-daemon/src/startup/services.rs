@@ -68,6 +68,7 @@ use crate::interaction_routing::InteractionRoutingControl;
 use crate::network::{self, DaemonDriverHost};
 use crate::output_power::OutputPower;
 use crate::performance::PerformanceTracker;
+use crate::playlist_runtime::PlaylistRuntimeState;
 use crate::preview_runtime::PreviewRuntime;
 use crate::scene_store::SceneStore;
 use crate::scene_transactions::SceneTransactionQueue;
@@ -79,17 +80,44 @@ use super::config::resolve_server_identity;
 use super::resolve_compositor_acceleration_mode;
 use crate::render_thread::ConfiguredFpsTier;
 
+#[cfg(test)]
 fn open_persisted_library_store(
     path: &std::path::Path,
-) -> Result<Arc<dyn crate::library::LibraryStore>> {
-    Ok(Arc::new(
+) -> Result<(
+    Arc<dyn crate::library::LibraryStore>,
+    Arc<dyn crate::library::LibraryIdentityMigration>,
+)> {
+    let store = Arc::new(
         crate::library::JsonLibraryStore::open(path.to_owned()).with_context(|| {
             format!(
                 "failed to open persisted library store at {}",
                 path.display()
             )
         })?,
-    ))
+    );
+    Ok((store.clone(), store))
+}
+
+fn open_persisted_library_store_with_effect_id_migrations(
+    path: &std::path::Path,
+    migrations: &crate::domain::effect::EffectIdMigrations,
+) -> Result<(
+    Arc<dyn crate::library::LibraryStore>,
+    Arc<dyn crate::library::LibraryIdentityMigration>,
+)> {
+    let store = Arc::new(
+        crate::library::JsonLibraryStore::open_with_effect_id_migrations(
+            path.to_owned(),
+            migrations,
+        )
+        .with_context(|| {
+            format!(
+                "failed to migrate persisted library store at {}",
+                path.display()
+            )
+        })?,
+    );
+    Ok((store.clone(), store))
 }
 
 impl DaemonState {
@@ -250,6 +278,7 @@ impl DaemonState {
             html_failed = html_report.failed_files(),
             "Effect registry created"
         );
+        let effect_id_migrations = html_report.legacy_effect_ids;
 
         let default_layout = SpatialLayout {
             id: "default".into(),
@@ -277,11 +306,9 @@ impl DaemonState {
         // ── Scene Manager / Store ──────────────────────────────────────
         let scenes_path = ConfigManager::data_dir().join("scenes.json");
         let profiles_path = ConfigManager::data_dir().join("profiles.json");
-        let mut scene_store_inner = SceneStore::load(&scenes_path)
-            .with_context(|| format!("failed to load scenes from {}", scenes_path.display()))?;
         match crate::profile_import::import_profiles(
             &profiles_path,
-            &mut scene_store_inner,
+            &scenes_path,
             layout_resources.catalog(),
             &default_layout,
         )
@@ -292,17 +319,37 @@ impl DaemonState {
                 info!(profiles, backup = %backup.display(), "Imported legacy profiles as scenes");
             }
         }
+        let mut scene_store_inner = SceneStore::load(&scenes_path)
+            .with_context(|| format!("failed to load scenes from {}", scenes_path.display()))?;
+        if scene_store_inner
+            .persist_normalization()
+            .context("failed to persist normalized scene store")?
+        {
+            info!(
+                path = %scenes_path.display(),
+                "Persisted normalized scene store"
+            );
+        }
+        let migrated_scene_effect_ids = scene_store_inner
+            .migrate_effect_ids(&effect_id_migrations)
+            .context("failed to migrate persisted scene effect IDs")?;
+        if migrated_scene_effect_ids > 0 {
+            info!(
+                migrated = migrated_scene_effect_ids,
+                path = %scenes_path.display(),
+                "Migrated persisted scene effect IDs"
+            );
+        }
         let mut scene_manager_inner = SceneManager::with_default_layout(default_layout.clone());
         for scene in scene_store_inner.list().cloned() {
             if let Err(error) = scene_manager_inner.create(scene) {
                 warn!(%error, "Failed to install persisted named scene");
             }
         }
-        let scene_store = Arc::new(RwLock::new(scene_store_inner));
         let scene_manager = crate::domain::scene::SceneService::new(
             scene_manager_inner,
             Arc::clone(&event_bus),
-            Arc::clone(&scene_store),
+            scene_store_inner,
             Arc::clone(&zone_layout_previews),
         );
         info!(path = %scenes_path.display(), "Scene manager created");
@@ -468,6 +515,17 @@ impl DaemonState {
                         ?migration,
                         "Display preferences store ready"
                     );
+                    let mut store = store;
+                    let migrated = store
+                        .migrate_effect_ids(&effect_id_migrations)
+                        .context("failed to migrate display preference effect IDs")?;
+                    if migrated > 0 {
+                        info!(
+                            migrated,
+                            path = %display_preferences_path.display(),
+                            "Migrated display preference effect IDs"
+                        );
+                    }
                     store
                 }
                 Err(error) => {
@@ -528,7 +586,7 @@ impl DaemonState {
 
         // ── Runtime Session Store ───────────────────────────────────
         let runtime_state_path = state_dir.join("runtime-state.json");
-        let startup_runtime_snapshot = match crate::runtime_state::load_migrated(
+        let mut startup_runtime_snapshot = match crate::runtime_state::load_migrated(
             &data_dir.join("runtime-state.json"),
             &runtime_state_path,
         ) {
@@ -549,6 +607,18 @@ impl DaemonState {
                 None
             }
         };
+        if let Some(snapshot) = startup_runtime_snapshot.as_mut() {
+            let migrated = snapshot.migrate_effect_ids(&effect_id_migrations);
+            if migrated > 0 {
+                crate::runtime_state::save(&runtime_state_path, snapshot)
+                    .context("failed to migrate runtime session effect IDs")?;
+                info!(
+                    migrated,
+                    path = %runtime_state_path.display(),
+                    "Migrated runtime session effect IDs"
+                );
+            }
+        }
 
         let device_aliases_path = state_dir.join(crate::device_aliases::DEVICE_ALIASES_FILE);
         let startup_device_aliases = match crate::device_aliases::load_migrated(
@@ -648,7 +718,12 @@ impl DaemonState {
         info!("Device backends registered");
 
         let library_path = ConfigManager::data_dir().join("library.json");
-        let library_store = open_persisted_library_store(&library_path)?;
+        let (library_store, library_identity) =
+            open_persisted_library_store_with_effect_id_migrations(
+                &library_path,
+                &effect_id_migrations,
+            )?;
+        let playlist_runtime = Arc::new(Mutex::new(PlaylistRuntimeState::new()));
         let start_time = Instant::now();
         let runtime_session = RuntimeSessionService::new(
             runtime_state_path.clone(),
@@ -704,13 +779,14 @@ impl DaemonState {
             device_registry,
             effect_registry,
             scene_manager,
-            scene_store,
             event_bus,
             macos_daemon_ownership,
             #[cfg(target_os = "macos")]
             _macos_owner_watch: macos_owner_watch,
             asset_library,
             library_store,
+            library_identity,
+            playlist_runtime,
             preview_runtime,
             zone_layout_previews,
             render_loop,
