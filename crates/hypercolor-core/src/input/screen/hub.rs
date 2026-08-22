@@ -930,12 +930,6 @@ impl ScreenBranchPublication {
         self.branch_sequence
     }
 
-    /// Compatibility alias for the branch-local publication sequence.
-    #[must_use]
-    pub const fn publication_epoch(&self) -> NonZeroU64 {
-        self.branch_sequence
-    }
-
     /// Capture timestamp supplied by the source worker.
     #[must_use]
     pub const fn captured_at(&self) -> Instant {
