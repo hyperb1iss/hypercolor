@@ -20,7 +20,7 @@ use crate::components::section_label::{LabelSize, LabelTone, label_class};
 use crate::components::silk_select::SilkSelect;
 use crate::components::status_banner::{StatusBanner, StatusBannerTone};
 use crate::icons::*;
-use crate::optimistic_controls::OptimisticControlSession;
+use crate::optimistic_controls::OptimisticEffectControlSession;
 use crate::toasts;
 use crate::zones::{ZoneEffectState, ZonesContext};
 use hypercolor_types::control::ControlValue;
@@ -180,32 +180,37 @@ pub fn EffectsPage() -> impl IntoView {
         MIN_CONTROLS_WIDTH,
         MAX_CONTROLS_WIDTH,
     ));
-    let control_session = OptimisticControlSession::new();
+    let control_session = OptimisticEffectControlSession::new();
     let preferences_store = use_context::<crate::preferences::PreferencesStore>();
     let flush_control_updates = use_debounce_fn(
         move || {
-            let Some(mut updates) = control_session.start_flush() else {
-                return;
-            };
             let Some(active_effect_id) = fx.active_effect_id.get_untracked() else {
                 control_session.fail_flush();
                 fx.refresh_active_effect();
                 return;
             };
+            let mut batch = match control_session.start_flush_for(&active_effect_id) {
+                Ok(Some(batch)) => batch,
+                Ok(None) => return,
+                Err(()) => {
+                    fx.refresh_active_effect();
+                    return;
+                }
+            };
             leptos::task::spawn_local(async move {
                 loop {
                     if fx.active_effect_id.get_untracked().as_deref()
-                        != Some(active_effect_id.as_str())
+                        != Some(batch.effect_id.as_str())
                     {
                         control_session.fail_flush();
                         fx.refresh_active_effect();
                         return;
                     }
 
-                    match api::update_effect_controls(&active_effect_id, &updates).await {
+                    match api::update_effect_controls(&batch.effect_id, &batch.values).await {
                         Ok(()) => {
                             if fx.active_effect_id.get_untracked().as_deref()
-                                != Some(active_effect_id.as_str())
+                                != Some(batch.effect_id.as_str())
                             {
                                 control_session.fail_flush();
                                 fx.refresh_active_effect();
@@ -214,7 +219,7 @@ pub fn EffectsPage() -> impl IntoView {
                             let Some(next) = control_session.complete_flush() else {
                                 if let Some(store) = preferences_store
                                     && let Err(error) = store.save(
-                                        active_effect_id,
+                                        batch.effect_id,
                                         crate::preferences::EffectPreferences {
                                             preset_id: fx.active_preset_id.get_untracked(),
                                             control_values: fx
@@ -229,7 +234,7 @@ pub fn EffectsPage() -> impl IntoView {
                                 }
                                 return;
                             };
-                            updates = next;
+                            batch = next;
                         }
                         Err(error) => {
                             control_session.fail_flush();
@@ -484,9 +489,9 @@ pub fn EffectsPage() -> impl IntoView {
 
     // Control change handler
     let on_control_change = Callback::new(move |(name, value): (String, serde_json::Value)| {
-        if fx.active_effect_id.get().is_none() {
+        let Some(active_effect_id) = fx.active_effect_id.get() else {
             return;
-        }
+        };
 
         let controls_snapshot = fx.active_controls.get();
         let current_values = fx.active_control_values.get();
@@ -498,6 +503,7 @@ pub fn EffectsPage() -> impl IntoView {
         );
 
         control_session.admit_raw_updates_to(
+            active_effect_id,
             fx.set_active_control_values,
             &controls_snapshot,
             &updates,
