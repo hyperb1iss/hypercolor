@@ -100,6 +100,73 @@ fn quantize_preview_fps(value: f64) -> f32 {
     }
 }
 
+struct ConnectionEventGate {
+    socket_generation: StoredValue<u64>,
+    generation: u64,
+    ready: Cell<bool>,
+    terminal: Cell<bool>,
+    pending: RefCell<VecDeque<WebSocketEvent>>,
+    process: Rc<dyn Fn(WebSocketEvent)>,
+}
+
+impl ConnectionEventGate {
+    fn new(
+        socket_generation: StoredValue<u64>,
+        generation: u64,
+        process: Rc<dyn Fn(WebSocketEvent)>,
+    ) -> Rc<Self> {
+        Rc::new(Self {
+            socket_generation,
+            generation,
+            ready: Cell::new(false),
+            terminal: Cell::new(false),
+            pending: RefCell::new(VecDeque::new()),
+            process,
+        })
+    }
+
+    fn handler(self: &Rc<Self>) -> Rc<dyn Fn(WebSocketEvent)> {
+        let gate = Rc::clone(self);
+        Rc::new(move |event| gate.receive(event))
+    }
+
+    fn activate(&self) {
+        self.ready.set(true);
+        while let Some(event) = self.pending.borrow_mut().pop_front() {
+            self.dispatch(event);
+        }
+    }
+
+    fn receive(&self, event: WebSocketEvent) {
+        if self.socket_generation.get_value() != self.generation || self.terminal.get() {
+            return;
+        }
+        if self.ready.get() {
+            self.dispatch(event);
+        } else {
+            self.pending.borrow_mut().push_back(event);
+        }
+    }
+
+    fn dispatch(&self, event: WebSocketEvent) {
+        if self.socket_generation.get_value() != self.generation || self.terminal.get() {
+            return;
+        }
+        let terminal = matches!(
+            event,
+            WebSocketEvent::Closed { .. } | WebSocketEvent::Error { .. }
+        );
+        if terminal {
+            self.terminal.set(true);
+        }
+        (self.process)(event);
+        if terminal {
+            self.socket_generation
+                .set_value(self.generation.wrapping_add(1));
+        }
+    }
+}
+
 // ── WebSocket Manager ───────────────────────────────────────────────────────
 
 /// Reactive WebSocket connection to the daemon.
@@ -402,11 +469,10 @@ impl WsManager {
                         set_connection_state.set(ConnectionState::Error);
                         schedule_reconnect(reconnect_attempts, reconnect_timeout, connect);
                     }
-                    WebSocketEvent::Message(WebSocketMessage::Binary(bytes)) => {
-                        let buffer = js_sys::Uint8Array::from(bytes.as_slice()).buffer();
+                    WebSocketEvent::Message(WebSocketMessage::Binary(frame)) => {
                         let message = event_preview_decoder
                             .borrow_mut()
-                            .decode_at(buffer, preview_now_ms());
+                            .decode_at(frame, preview_now_ms());
                         schedule_preview_expiry(
                             &event_preview_decoder,
                             &event_preview_expiry_timeout,
@@ -590,20 +656,8 @@ impl WsManager {
                 }
             });
 
-            let pending_events = Rc::new(RefCell::new(VecDeque::new()));
-            let connection_ready = Rc::new(Cell::new(false));
-            let event_handler = {
-                let process_event = Rc::clone(&process_event);
-                let pending_events = Rc::clone(&pending_events);
-                let connection_ready = Rc::clone(&connection_ready);
-                Rc::new(move |event| {
-                    if connection_ready.get() {
-                        process_event(event);
-                    } else {
-                        pending_events.borrow_mut().push_back(event);
-                    }
-                })
-            };
+            let event_gate = ConnectionEventGate::new(socket_generation, generation, process_event);
+            let event_handler = event_gate.handler();
             let request = WebSocketConnectRequest {
                 path: "/api/v1/ws".to_owned(),
                 protocol: HYPERCOLOR_WS_PROTOCOL.to_owned(),
@@ -618,10 +672,7 @@ impl WsManager {
                 }
             };
             ws_handle.set_value(Some(connection));
-            connection_ready.set(true);
-            while let Some(event) = pending_events.borrow_mut().pop_front() {
-                process_event(event);
-            }
+            event_gate.activate();
         });
 
         connect.set_value(Some(connect_fn));
@@ -1062,4 +1113,163 @@ fn tauri_window_is_visible() -> bool {
     .ok()
     .and_then(|value| value.as_bool())
     .unwrap_or(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    use leptos::prelude::{GetValue, LocalStorage, Owner, SetValue, StoredValue};
+
+    use super::{
+        ConnectionEventGate, WebSocketConnection, WebSocketEvent, WebSocketMessage,
+        dispose_existing_socket,
+    };
+    use crate::ws::transport::WebSocketTransportError;
+
+    fn closed_event() -> WebSocketEvent {
+        WebSocketEvent::Closed {
+            code: 1006,
+            reason: "transport closed".to_owned(),
+        }
+    }
+
+    #[test]
+    fn connection_gate_buffers_synchronous_connect_events_in_order() {
+        Owner::new().with(|| {
+            let socket_generation = StoredValue::new(4_u64);
+            let received = Rc::new(RefCell::new(Vec::new()));
+            let received_for_process = Rc::clone(&received);
+            let gate = ConnectionEventGate::new(
+                socket_generation,
+                4,
+                Rc::new(move |event| received_for_process.borrow_mut().push(event)),
+            );
+            let handler = gate.handler();
+
+            handler(WebSocketEvent::Opened);
+            handler(WebSocketEvent::Message(WebSocketMessage::Text(
+                r#"{"type":"hello"}"#.to_owned(),
+            )));
+            assert!(received.borrow().is_empty());
+
+            gate.activate();
+            assert_eq!(
+                received.borrow().as_slice(),
+                [
+                    WebSocketEvent::Opened,
+                    WebSocketEvent::Message(WebSocketMessage::Text(
+                        r#"{"type":"hello"}"#.to_owned()
+                    )),
+                ]
+            );
+        });
+    }
+
+    #[test]
+    fn connection_gate_ignores_stale_callbacks() {
+        Owner::new().with(|| {
+            let socket_generation = StoredValue::new(7_u64);
+            let received = Rc::new(RefCell::new(Vec::new()));
+            let received_for_process = Rc::clone(&received);
+            let gate = ConnectionEventGate::new(
+                socket_generation,
+                7,
+                Rc::new(move |event| received_for_process.borrow_mut().push(event)),
+            );
+            gate.activate();
+            let handler = gate.handler();
+
+            socket_generation.set_value(8);
+            handler(WebSocketEvent::Opened);
+            handler(closed_event());
+
+            assert!(received.borrow().is_empty());
+        });
+    }
+
+    #[test]
+    fn connection_gate_delivers_one_terminal_event_in_either_order() {
+        for events in [
+            vec![
+                WebSocketEvent::Error {
+                    message: "transport failed".to_owned(),
+                },
+                closed_event(),
+            ],
+            vec![
+                closed_event(),
+                WebSocketEvent::Error {
+                    message: "transport failed".to_owned(),
+                },
+            ],
+        ] {
+            Owner::new().with(|| {
+                let socket_generation = StoredValue::new(11_u64);
+                let received = Rc::new(RefCell::new(Vec::new()));
+                let received_for_process = Rc::clone(&received);
+                let gate = ConnectionEventGate::new(
+                    socket_generation,
+                    11,
+                    Rc::new(move |event| received_for_process.borrow_mut().push(event)),
+                );
+                gate.activate();
+                let handler = gate.handler();
+
+                for event in events {
+                    handler(event);
+                }
+
+                assert_eq!(received.borrow().len(), 1);
+                assert_eq!(socket_generation.get_value(), 12);
+            });
+        }
+    }
+
+    struct SynchronousCloseConnection {
+        handler: Rc<dyn Fn(WebSocketEvent)>,
+        close_count: Rc<Cell<u32>>,
+    }
+
+    impl WebSocketConnection for SynchronousCloseConnection {
+        fn send(&self, _message: WebSocketMessage) -> Result<(), WebSocketTransportError> {
+            Ok(())
+        }
+
+        fn close(&self) -> Result<(), WebSocketTransportError> {
+            self.close_count.set(self.close_count.get() + 1);
+            (self.handler)(closed_event());
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn disposal_fences_a_synchronous_close_callback() {
+        Owner::new().with(|| {
+            let socket_generation = StoredValue::new(21_u64);
+            let received = Rc::new(RefCell::new(Vec::new()));
+            let received_for_process = Rc::clone(&received);
+            let gate = ConnectionEventGate::new(
+                socket_generation,
+                21,
+                Rc::new(move |event| received_for_process.borrow_mut().push(event)),
+            );
+            gate.activate();
+            let close_count = Rc::new(Cell::new(0));
+            let connection: Rc<dyn WebSocketConnection> = Rc::new(SynchronousCloseConnection {
+                handler: gate.handler(),
+                close_count: Rc::clone(&close_count),
+            });
+            let ws_handle: StoredValue<Option<Rc<dyn WebSocketConnection>>, LocalStorage> =
+                StoredValue::new_local(Some(connection));
+
+            dispose_existing_socket(ws_handle, socket_generation);
+
+            assert_eq!(close_count.get(), 1);
+            assert!(received.borrow().is_empty());
+            assert_eq!(socket_generation.get_value(), 22);
+            assert!(ws_handle.get_value().is_none());
+        });
+    }
 }

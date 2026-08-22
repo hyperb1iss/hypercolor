@@ -18,10 +18,76 @@ pub struct WebSocketConnectRequest {
     pub protocol: String,
 }
 
+#[derive(Clone)]
+pub struct WebSocketBinaryFrame {
+    storage: WebSocketBinaryStorage,
+}
+
+#[derive(Clone)]
+enum WebSocketBinaryStorage {
+    ArrayBuffer(js_sys::ArrayBuffer),
+    Bytes(Vec<u8>),
+}
+
+impl WebSocketBinaryFrame {
+    #[must_use]
+    pub fn from_bytes(bytes: Vec<u8>) -> Self {
+        Self {
+            storage: WebSocketBinaryStorage::Bytes(bytes),
+        }
+    }
+
+    #[must_use]
+    pub fn to_vec(&self) -> Vec<u8> {
+        match &self.storage {
+            WebSocketBinaryStorage::ArrayBuffer(buffer) => js_sys::Uint8Array::new(buffer).to_vec(),
+            WebSocketBinaryStorage::Bytes(bytes) => bytes.clone(),
+        }
+    }
+
+    pub(super) fn from_array_buffer(buffer: js_sys::ArrayBuffer) -> Self {
+        Self {
+            storage: WebSocketBinaryStorage::ArrayBuffer(buffer),
+        }
+    }
+
+    pub(super) fn into_array_buffer(self) -> js_sys::ArrayBuffer {
+        match self.storage {
+            WebSocketBinaryStorage::ArrayBuffer(buffer) => buffer,
+            WebSocketBinaryStorage::Bytes(bytes) => {
+                js_sys::Uint8Array::from(bytes.as_slice()).buffer()
+            }
+        }
+    }
+}
+
+impl From<Vec<u8>> for WebSocketBinaryFrame {
+    fn from(bytes: Vec<u8>) -> Self {
+        Self::from_bytes(bytes)
+    }
+}
+
+impl fmt::Debug for WebSocketBinaryFrame {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_tuple("WebSocketBinaryFrame")
+            .field(&self.to_vec())
+            .finish()
+    }
+}
+
+impl PartialEq for WebSocketBinaryFrame {
+    fn eq(&self, other: &Self) -> bool {
+        self.to_vec() == other.to_vec()
+    }
+}
+
+impl Eq for WebSocketBinaryFrame {}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WebSocketMessage {
     Text(String),
-    Binary(Vec<u8>),
+    Binary(WebSocketBinaryFrame),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -191,7 +257,7 @@ impl WebSocketTransport for BrowserWebSocketTransport {
             move |event| {
                 if let Some(buffer) = message_array_buffer(&event) {
                     message_events(WebSocketEvent::Message(WebSocketMessage::Binary(
-                        js_sys::Uint8Array::new(&buffer).to_vec(),
+                        WebSocketBinaryFrame::from_array_buffer(buffer),
                     )));
                 } else if let Some(text) = event.data().as_string() {
                     message_events(WebSocketEvent::Message(WebSocketMessage::Text(text)));
@@ -220,7 +286,9 @@ impl WebSocketConnection for BrowserWebSocketConnection {
     fn send(&self, message: WebSocketMessage) -> Result<(), WebSocketTransportError> {
         let result = match message {
             WebSocketMessage::Text(text) => self.socket.send_with_str(&text),
-            WebSocketMessage::Binary(bytes) => self.socket.send_with_u8_array(&bytes),
+            WebSocketMessage::Binary(frame) => self
+                .socket
+                .send_with_array_buffer(&frame.into_array_buffer()),
         };
         result.map_err(|error| WebSocketTransportError {
             message: js_error_message(&error),
@@ -432,9 +500,9 @@ mod tests {
         handler(WebSocketEvent::Message(WebSocketMessage::Text(
             r#"{"type":"hello"}"#.to_owned(),
         )));
-        handler(WebSocketEvent::Message(WebSocketMessage::Binary(vec![
-            0, 1, 2, 255,
-        ])));
+        handler(WebSocketEvent::Message(WebSocketMessage::Binary(
+            vec![0, 1, 2, 255].into(),
+        )));
         handler(WebSocketEvent::Closed {
             code: 1000,
             reason: "complete".to_owned(),
@@ -444,7 +512,7 @@ mod tests {
             [
                 WebSocketEvent::Opened,
                 WebSocketEvent::Message(WebSocketMessage::Text(r#"{"type":"hello"}"#.to_owned())),
-                WebSocketEvent::Message(WebSocketMessage::Binary(vec![0, 1, 2, 255])),
+                WebSocketEvent::Message(WebSocketMessage::Binary(vec![0, 1, 2, 255].into())),
                 WebSocketEvent::Closed {
                     code: 1000,
                     reason: "complete".to_owned(),
@@ -455,14 +523,14 @@ mod tests {
         super::send_json(opened.as_ref(), &serde_json::json!({ "type": "subscribe" }))
             .expect("JSON serializes to one text frame");
         opened
-            .send(WebSocketMessage::Binary(vec![5, 4, 3]))
+            .send(WebSocketMessage::Binary(vec![5, 4, 3].into()))
             .expect("binary send reaches the provider");
         opened.close().expect("close reaches the provider");
         assert_eq!(
             connection.messages.borrow().as_slice(),
             [
                 WebSocketMessage::Text(r#"{"type":"subscribe"}"#.to_owned()),
-                WebSocketMessage::Binary(vec![5, 4, 3]),
+                WebSocketMessage::Binary(vec![5, 4, 3].into()),
             ]
         );
         assert_eq!(connection.close_count.get(), 1);

@@ -27,6 +27,8 @@ use serde::Deserialize;
 
 use crate::api::{DeviceMetricsSnapshot, MacosDaemonOwnershipStatus};
 
+use super::transport::WebSocketBinaryFrame;
+
 // ── Connection State ────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -610,9 +612,10 @@ impl PreviewBinaryDecoder {
 
     pub(super) fn decode_at(
         &mut self,
-        buffer: js_sys::ArrayBuffer,
+        frame: WebSocketBinaryFrame,
         now_ms: u64,
     ) -> Option<PreviewBinaryMessage> {
+        let buffer = frame.into_array_buffer();
         let bytes = js_sys::Uint8Array::new(&buffer);
         if bytes.length() > 0 && bytes.get_index(0) == PREVIEW_CHUNK_FRAME_TAG {
             let encoded = Bytes::from(bytes.to_vec());
