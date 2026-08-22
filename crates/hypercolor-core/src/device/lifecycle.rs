@@ -597,7 +597,7 @@ impl DeviceLifecycleManager {
             if let Some(driver_scoped_value) = value.strip_prefix(&owner_prefix) {
                 return format!("{owner}:{}", sanitize_component(driver_scoped_value));
             }
-            return format!("{owner}:{}", sanitize_component(value));
+            return Self::layout_device_id(device_info);
         }
 
         if let Some(value) = value.strip_prefix("usb:") {
@@ -1034,6 +1034,33 @@ mod tests {
             DeviceLifecycleManager::canonical_layout_device_id(&info, Some(&fingerprint));
 
         assert_eq!(layout_id, "simulator:01987654-3210-7abc-8def-0123456789ab");
+    }
+
+    #[test]
+    fn mismatched_bridge_fingerprints_keep_the_name_derived_layout_id() {
+        let info = device_info(
+            "Renamable Bridge Device",
+            DeviceFamily::new_static("simulator", "Simulator"),
+        );
+        let fingerprint = DeviceFingerprint::from_persisted("bridge:blocksd:LPMJW6".to_owned());
+
+        let layout_id =
+            DeviceLifecycleManager::canonical_layout_device_id(&info, Some(&fingerprint));
+
+        assert_eq!(layout_id, "simulator:renamable-bridge-device");
+    }
+
+    #[test]
+    fn registry_bridge_fingerprints_keep_the_name_derived_layout_id() {
+        let info = device_info("Matrix Panel", DeviceFamily::new_static("wled", "WLED"));
+        let fingerprint = DeviceFingerprint::from_persisted(
+            "bridge:registry:01987654-3210-7abc-8def-0123456789ab".to_owned(),
+        );
+
+        let layout_id =
+            DeviceLifecycleManager::canonical_layout_device_id(&info, Some(&fingerprint));
+
+        assert_eq!(layout_id, "wled:matrix-panel");
     }
 
     #[test]
