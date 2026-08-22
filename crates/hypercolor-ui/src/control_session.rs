@@ -22,14 +22,14 @@ use hypercolor_types::effect::ControlDefinition;
 use leptos::prelude::*;
 use leptos_use::use_debounce_fn;
 
-use crate::api::client::MutationOutcome;
+use crate::api::{ApiError, ApiResult, MutationOutcome};
 use crate::async_helpers::spawn_mutation;
 use crate::optimistic_controls::{ControlValueMap, OptimisticControlSession};
 
 /// Future returned by a surface's patch function. Not `Send` — it runs on
 /// the single-threaded WASM executor via `spawn_local`.
 pub type ControlPatchFuture =
-    Pin<Box<dyn Future<Output = Result<MutationOutcome<Option<u64>>, String>>>>;
+    Pin<Box<dyn Future<Output = ApiResult<MutationOutcome<Option<u64>>>>>>;
 
 /// One targeted control-surface PATCH. A versioned route returns
 /// `Applied(Some(new_version))` so the session can chain the next
@@ -229,9 +229,12 @@ pub fn use_control_patch_session(config: ControlPatchConfig) -> ControlPatchSess
                             }
                             ReconcileAction::GiveUp { current } => {
                                 version.set(Some(current));
-                                return Err(format!(
-                                    "control state changed again at version {current}"
-                                ));
+                                return Err(ApiError::Http {
+                                    status: 412,
+                                    message: Some(format!(
+                                        "control state changed again at version {current}"
+                                    )),
+                                });
                             }
                         }
                     }
@@ -255,7 +258,7 @@ pub fn use_control_patch_session(config: ControlPatchConfig) -> ControlPatchSess
             move |error| {
                 optimistic.fail_flush();
                 recover.run(());
-                on_error.run(error);
+                on_error.run(error.to_string());
             },
         );
     };

@@ -2,12 +2,8 @@
 //!
 //! Every function in `api/*.rs` should be a thin wrapper over one of these
 //! helpers. They handle: request construction, serialization, error mapping,
-//! status-code checks, envelope unwrapping, and response deserialization — so
+//! status-code checks, envelope unwrapping, and response deserialization so
 //! domain modules only specify the URL, request body type, and response type.
-//!
-//! Helpers return [`ApiError`]. Domain functions that still return
-//! `Result<T, String>` can convert via `?` (see `From<ApiError> for String`)
-//! or `map_err(Into::into)`.
 
 use std::{cell::RefCell, fmt};
 
@@ -87,11 +83,8 @@ impl fmt::Display for ApiError {
 
 impl std::error::Error for ApiError {}
 
-impl From<ApiError> for String {
-    fn from(err: ApiError) -> Self {
-        err.to_string()
-    }
-}
+/// Canonical result type for daemon REST operations.
+pub type ApiResult<T> = Result<T, ApiError>;
 
 // ── Versioned-mutation outcome ──────────────────────────────────────────────
 
@@ -122,7 +115,7 @@ impl<T> MutationOutcome<T> {
     }
 }
 
-async fn ensure_success(resp: Response) -> Result<Response, ApiError> {
+async fn ensure_success(resp: Response) -> ApiResult<Response> {
     let status = resp.status();
     if (200..300).contains(&status) {
         Ok(resp)
@@ -147,10 +140,6 @@ fn extract_error_message(body: &serde_json::Value) -> Option<String> {
         .map(str::trim)
         .filter(|message| !message.is_empty())
         .map(ToOwned::to_owned)
-}
-
-pub async fn response_error_string(resp: Response) -> String {
-    http_error(resp).await.to_string()
 }
 
 /// Return the browser-stored API key, if one has been configured.
@@ -211,7 +200,7 @@ pub fn authorization_token() -> Option<String> {
     DAEMON_TRANSPORT.with_borrow(|transport| transport.authorization_token(stored_api_key()))
 }
 
-pub(crate) fn request(method: Method, url: &str) -> Result<RequestBuilder, ApiError> {
+pub(crate) fn request(method: Method, url: &str) -> ApiResult<RequestBuilder> {
     if !url.starts_with('/') {
         return Err(ApiError::Network(
             "authenticated daemon API URLs must be relative".to_owned(),
@@ -278,7 +267,7 @@ async fn send_request<Req>(
     url: &str,
     body: Option<&Req>,
     if_match: Option<u64>,
-) -> Result<Response, ApiError>
+) -> ApiResult<Response>
 where
     Req: Serialize + ?Sized,
 {
@@ -306,7 +295,7 @@ where
 }
 
 /// Unwrap the canonical [`ApiResponse`] from a successful response.
-async fn parse_envelope<Res>(resp: Response) -> Result<Res, ApiError>
+async fn parse_envelope<Res>(resp: Response) -> ApiResult<Res>
 where
     Res: DeserializeOwned,
 {
@@ -318,7 +307,7 @@ where
 }
 
 /// Send a JSON request, require success, parse the envelope.
-async fn send_json<Req, Res>(method: Method, url: &str, body: Option<&Req>) -> Result<Res, ApiError>
+async fn send_json<Req, Res>(method: Method, url: &str, body: Option<&Req>) -> ApiResult<Res>
 where
     Req: Serialize + ?Sized,
     Res: DeserializeOwned,
@@ -329,11 +318,7 @@ where
 }
 
 /// Send a JSON request, require success, discard the response body.
-async fn send_json_discard<Req>(
-    method: Method,
-    url: &str,
-    body: Option<&Req>,
-) -> Result<(), ApiError>
+async fn send_json_discard<Req>(method: Method, url: &str, body: Option<&Req>) -> ApiResult<()>
 where
     Req: Serialize + ?Sized,
 {
@@ -355,7 +340,7 @@ pub async fn send_json_versioned<Req, Res>(
     url: &str,
     body: Option<&Req>,
     if_match: Option<u64>,
-) -> Result<MutationOutcome<Res>, ApiError>
+) -> ApiResult<MutationOutcome<Res>>
 where
     Req: Serialize + ?Sized,
     Res: DeserializeOwned,
@@ -392,7 +377,7 @@ fn stale_current_version(body: &serde_json::Value) -> Option<u64> {
 // ── GET helpers ─────────────────────────────────────────────────────────────
 
 /// GET `url`, unwrap the canonical [`ApiResponse`], return the inner data.
-pub async fn fetch_json<T>(url: &str) -> Result<T, ApiError>
+pub async fn fetch_json<T>(url: &str) -> ApiResult<T>
 where
     T: DeserializeOwned,
 {
@@ -402,7 +387,7 @@ where
 /// GET `url`, returning `Ok(None)` on HTTP 404 and `Ok(Some(data))` on success.
 /// All other non-2xx responses return `Err`. Used for endpoints where absence
 /// is a normal state (e.g., "no active effect").
-pub async fn fetch_json_optional<T>(url: &str) -> Result<Option<T>, ApiError>
+pub async fn fetch_json_optional<T>(url: &str) -> ApiResult<Option<T>>
 where
     T: DeserializeOwned,
 {
@@ -424,7 +409,7 @@ where
 // ── Write helpers that return a parsed response ─────────────────────────────
 
 /// POST JSON body, parse envelope, return inner data.
-pub async fn post_json<Req, Res>(url: &str, body: &Req) -> Result<Res, ApiError>
+pub async fn post_json<Req, Res>(url: &str, body: &Req) -> ApiResult<Res>
 where
     Req: Serialize + ?Sized,
     Res: DeserializeOwned,
@@ -433,7 +418,7 @@ where
 }
 
 /// PATCH JSON body, parse envelope, return inner data.
-pub async fn patch_json<Req, Res>(url: &str, body: &Req) -> Result<Res, ApiError>
+pub async fn patch_json<Req, Res>(url: &str, body: &Req) -> ApiResult<Res>
 where
     Req: Serialize + ?Sized,
     Res: DeserializeOwned,
@@ -442,7 +427,7 @@ where
 }
 
 /// PUT JSON body, parse envelope, return inner data.
-pub async fn put_json<Req, Res>(url: &str, body: &Req) -> Result<Res, ApiError>
+pub async fn put_json<Req, Res>(url: &str, body: &Req) -> ApiResult<Res>
 where
     Req: Serialize + ?Sized,
     Res: DeserializeOwned,
@@ -454,13 +439,13 @@ where
 
 /// POST with no request body, discard the response. Used for trigger actions
 /// like `apply_effect` or `discover_devices`.
-pub async fn post_empty(url: &str) -> Result<(), ApiError> {
+pub async fn post_empty(url: &str) -> ApiResult<()> {
     send_json_discard::<()>(Method::POST, url, None).await
 }
 
 /// POST JSON body, discard the response. Used for actions that send a payload
 /// but don't return anything meaningful (e.g., `identify_device`, `add_favorite`).
-pub async fn post_json_discard<Req>(url: &str, body: &Req) -> Result<(), ApiError>
+pub async fn post_json_discard<Req>(url: &str, body: &Req) -> ApiResult<()>
 where
     Req: Serialize + ?Sized,
 {
@@ -469,7 +454,7 @@ where
 
 /// PUT JSON body, discard the response. Used for idempotent actions that
 /// send a payload but don't return anything (e.g., `preview_layout`).
-pub async fn put_json_discard<Req>(url: &str, body: &Req) -> Result<(), ApiError>
+pub async fn put_json_discard<Req>(url: &str, body: &Req) -> ApiResult<()>
 where
     Req: Serialize + ?Sized,
 {
@@ -478,7 +463,7 @@ where
 
 /// PATCH JSON body, discard the response. Used for partial updates that
 /// don't echo the updated resource (e.g., `update_controls`).
-pub async fn patch_json_discard<Req>(url: &str, body: &Req) -> Result<(), ApiError>
+pub async fn patch_json_discard<Req>(url: &str, body: &Req) -> ApiResult<()>
 where
     Req: Serialize + ?Sized,
 {
@@ -487,7 +472,7 @@ where
 
 /// DELETE `url`, parse envelope, return inner data. Used for deletes that
 /// echo a confirmation payload (e.g., `unpair_device`).
-pub async fn delete_json<Res>(url: &str) -> Result<Res, ApiError>
+pub async fn delete_json<Res>(url: &str) -> ApiResult<Res>
 where
     Res: DeserializeOwned,
 {
@@ -495,7 +480,7 @@ where
 }
 
 /// DELETE `url`, discard the response body.
-pub async fn delete_empty(url: &str) -> Result<(), ApiError> {
+pub async fn delete_empty(url: &str) -> ApiResult<()> {
     send_json_discard::<()>(Method::DELETE, url, None).await
 }
 

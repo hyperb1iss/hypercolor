@@ -807,7 +807,7 @@ pub fn WiringPanel(
                                 }.into_any()
                             }
                             Err(error) => view! {
-                                <div class="text-[10px] text-status-error py-2">{error}</div>
+                                <div class="text-[10px] text-status-error py-2">{error.to_string()}</div>
                             }.into_any(),
                         })
                     }}
@@ -822,10 +822,10 @@ pub fn WiringPanel(
 pub fn sync_wiring_to_layout(
     device: api::DeviceSummary,
     suggested_zones: Vec<ComponentSuggestedZone>,
-    layouts_resource: LocalResource<Result<Vec<api::LayoutSummary>, String>>,
+    layouts_resource: LocalResource<api::ApiResult<Vec<api::LayoutSummary>>>,
 ) {
     leptos::task::spawn_local(async move {
-        let result: Result<usize, String> = async {
+        let result: api::ApiResult<usize> = async {
             let mut layout = api::fetch_active_layout().await?;
             let layout_id = layout.id.clone();
             let mut seeded = layout_geometry::seeded_attachment_layout(
@@ -887,7 +887,7 @@ fn sync_channel_name_to_active_layout(
     }
 
     leptos::task::spawn_local(async move {
-        let result: Result<bool, String> = async {
+        let result: api::ApiResult<bool> = async {
             let mut layout = api::fetch_active_layout().await?;
             let layout_id = layout.id.clone();
             let changed = crate::layout_utils::sync_channel_display_name_in_layout(

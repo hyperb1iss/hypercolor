@@ -10,8 +10,8 @@ use hypercolor_types::api::scene::{
 use hypercolor_types::scene::UnassignedBehavior;
 use hypercolor_types::spatial::{Output, SpatialLayout};
 
-use super::client;
 use super::client::MutationOutcome;
+use super::{ApiError, ApiResult, client};
 use crate::control_surface_api::path_segment;
 
 pub type ZoneOutcome<T> = MutationOutcome<T>;
@@ -28,7 +28,7 @@ pub async fn create_zone(
     name: &str,
     color: Option<&str>,
     expected_revision: u64,
-) -> Result<ZoneOutcome<ZoneResource>, String> {
+) -> ApiResult<ZoneOutcome<ZoneResource>> {
     let request = CreateZoneRequest {
         name: name.to_owned(),
         role: None,
@@ -41,14 +41,13 @@ pub async fn create_zone(
         Some(expected_revision),
     )
     .await
-    .map_err(Into::into)
 }
 
 pub async fn update_zone(
     zone_id: &str,
     request: &PatchZoneRequest,
     expected_revision: u64,
-) -> Result<ZoneOutcome<ZoneResource>, String> {
+) -> ApiResult<ZoneOutcome<ZoneResource>> {
     client::send_json_versioned::<_, ZoneResource>(
         Method::PATCH,
         &format!("/api/v1/scene/zones/{}", path_segment(zone_id)),
@@ -56,14 +55,13 @@ pub async fn update_zone(
         Some(expected_revision),
     )
     .await
-    .map_err(Into::into)
 }
 
 pub async fn update_zone_layout(
     zone_id: &str,
     layout: &SpatialLayout,
     expected_revision: u64,
-) -> Result<ZoneOutcome<ZoneResource>, String> {
+) -> ApiResult<ZoneOutcome<ZoneResource>> {
     let request = ZoneLayoutRequest {
         placements: layout.zones.iter().map(member_placement).collect(),
     };
@@ -74,10 +72,9 @@ pub async fn update_zone_layout(
         Some(expected_revision),
     )
     .await
-    .map_err(Into::into)
 }
 
-pub async fn delete_zone(zone_id: &str, expected_revision: u64) -> Result<ZoneOutcome<()>, String> {
+pub async fn delete_zone(zone_id: &str, expected_revision: u64) -> ApiResult<ZoneOutcome<()>> {
     client::send_json_versioned::<(), SceneDocument>(
         Method::DELETE,
         &format!("/api/v1/scene/zones/{}", path_segment(zone_id)),
@@ -86,7 +83,6 @@ pub async fn delete_zone(zone_id: &str, expected_revision: u64) -> Result<ZoneOu
     )
     .await
     .map(|outcome| outcome.map(|_| ()))
-    .map_err(Into::into)
 }
 
 /// Assign or move outputs through canonical device-and-segment membership
@@ -96,7 +92,7 @@ pub async fn assign_devices(
     assignments: Vec<OutputAssignment>,
     preserve_placement: bool,
     expected_revision: u64,
-) -> Result<ZoneOutcome<u64>, String> {
+) -> ApiResult<ZoneOutcome<u64>> {
     let scene: SceneDocument = client::fetch_json("/api/v1/scene").await?;
     let mut by_device = BTreeMap::<String, BTreeSet<String>>::new();
     let mut whole_devices = BTreeSet::<String>::new();
@@ -119,7 +115,9 @@ pub async fn assign_devices(
                     .iter()
                     .flat_map(|zone| zone.members.iter())
                     .find(|member| member.id.0 == id)
-                    .ok_or_else(|| format!("Scene member {id} no longer exists"))?;
+                    .ok_or_else(|| {
+                        ApiError::Parse(format!("Scene member {id} no longer exists"))
+                    })?;
                 add_member_target(
                     &mut by_device,
                     &mut whole_devices,
@@ -135,7 +133,9 @@ pub async fn assign_devices(
         .zones
         .into_iter()
         .find(|zone| zone.id.to_string() == zone_id)
-        .ok_or_else(|| format!("Zone {zone_id} is not present in the live scene"))?;
+        .ok_or_else(|| {
+            ApiError::Parse(format!("Zone {zone_id} is not present in the live scene"))
+        })?;
 
     for (device_id, segments) in by_device {
         let request = AssignMembersRequest {
@@ -188,7 +188,7 @@ pub async fn unassign_device(
     zone_id: &str,
     member_id: &str,
     expected_revision: u64,
-) -> Result<ZoneOutcome<u64>, String> {
+) -> ApiResult<ZoneOutcome<u64>> {
     let outcome = client::send_json_versioned::<(), ZoneResource>(
         Method::DELETE,
         &format!(
@@ -211,7 +211,7 @@ pub async fn unassign_device(
 pub async fn update_unassigned_behavior(
     behavior: &UnassignedBehavior,
     expected_revision: u64,
-) -> Result<ZoneOutcome<UnassignedBehavior>, String> {
+) -> ApiResult<ZoneOutcome<UnassignedBehavior>> {
     let request = ScenePatchRequest {
         name: None,
         unassigned_behavior: Some(behavior.clone()),
@@ -224,7 +224,6 @@ pub async fn update_unassigned_behavior(
     )
     .await
     .map(|outcome| outcome.map(|scene| scene.unassigned_behavior))
-    .map_err(Into::into)
 }
 
 fn add_member_target(

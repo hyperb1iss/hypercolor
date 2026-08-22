@@ -1,6 +1,6 @@
 //! Library API — presets and favorites.
 
-use super::client;
+use super::{ApiResult, client};
 
 // Wire contracts are shared with the daemon
 // (hypercolor-types::api::library) — drift is a compile error rather
@@ -15,42 +15,36 @@ pub use hypercolor_types::library::EffectPreset;
 // ── Preset Functions ────────────────────────────────────────────────────────
 
 /// Fetch all saved presets.
-pub async fn fetch_presets() -> Result<Vec<EffectPreset>, String> {
+pub async fn fetch_presets() -> ApiResult<Vec<EffectPreset>> {
     let list: PresetListResponse = client::fetch_json("/api/v1/library/presets").await?;
     Ok(list.items)
 }
 
 /// Create a new preset from current control values.
-pub async fn create_preset(req: &SavePresetRequest) -> Result<EffectPreset, String> {
-    client::post_json("/api/v1/library/presets", req)
-        .await
-        .map_err(Into::into)
+pub async fn create_preset(req: &SavePresetRequest) -> ApiResult<EffectPreset> {
+    client::post_json("/api/v1/library/presets", req).await
 }
 
 /// Update an existing preset (name, controls, etc.).
-pub async fn update_preset(id: &str, req: &SavePresetRequest) -> Result<EffectPreset, String> {
-    client::put_json(&format!("/api/v1/library/presets/{id}"), req)
-        .await
-        .map_err(Into::into)
+pub async fn update_preset(id: &str, req: &SavePresetRequest) -> ApiResult<EffectPreset> {
+    client::put_json(&format!("/api/v1/library/presets/{id}"), req).await
 }
 
 /// Delete a preset by ID.
-pub async fn delete_preset(id: &str) -> Result<(), String> {
-    client::delete_empty(&format!("/api/v1/library/presets/{id}"))
-        .await
-        .map_err(Into::into)
+pub async fn delete_preset(id: &str) -> ApiResult<()> {
+    client::delete_empty(&format!("/api/v1/library/presets/{id}")).await
 }
 
 // ── Favorite Functions ──────────────────────────────────────────────────────
 
 /// Fetch all favorited effect IDs.
-pub async fn fetch_favorites() -> Result<Vec<FavoriteSummary>, String> {
+pub async fn fetch_favorites() -> ApiResult<Vec<FavoriteSummary>> {
     let list: FavoriteListResponse = client::fetch_json("/api/v1/library/favorites").await?;
     Ok(list.items)
 }
 
 /// Add an effect to favorites.
-pub async fn add_favorite(effect_id: &str) -> Result<(), String> {
+pub async fn add_favorite(effect_id: &str) -> ApiResult<()> {
     client::post_json_discard(
         "/api/v1/library/favorites",
         &AddFavoriteRequest {
@@ -58,12 +52,9 @@ pub async fn add_favorite(effect_id: &str) -> Result<(), String> {
         },
     )
     .await
-    .map_err(Into::into)
 }
 
 /// Remove an effect from favorites.
-pub async fn remove_favorite(effect_id: &str) -> Result<(), String> {
-    client::delete_empty(&format!("/api/v1/library/favorites/{effect_id}"))
-        .await
-        .map_err(Into::into)
+pub async fn remove_favorite(effect_id: &str) -> ApiResult<()> {
+    client::delete_empty(&format!("/api/v1/library/favorites/{effect_id}")).await
 }

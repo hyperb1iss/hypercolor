@@ -283,7 +283,7 @@ pub fn MediaPage() -> impl IntoView {
                                     <EmptyState
                                         icon=LuTriangleAlert
                                         title="Media library unavailable"
-                                        hint=error
+                                            hint=error.to_string()
                                     />
                                 }.into_any(),
                                 Some(Ok(_)) => {

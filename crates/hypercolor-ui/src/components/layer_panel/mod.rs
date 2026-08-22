@@ -62,7 +62,7 @@ pub fn LayerPanel(
     /// in the header and drops its own redundant group selector.
     #[prop(optional, into)]
     surface_label: MaybeProp<String>,
-    layers_resource: LocalResource<Result<api::LayerStackResponse, String>>,
+    layers_resource: LocalResource<api::ApiResult<api::LayerStackResponse>>,
     on_layers_mutated: Callback<()>,
 ) -> impl IntoView {
     // Content selection is owned here, not driven by the host page — the
@@ -255,7 +255,7 @@ pub fn LayerPanel(
                         None => view! { <LayerLoadingSkeleton /> }.into_any(),
                         Some(Err(error)) => view! {
                             <div class="rounded-lg border border-status-error/30 bg-status-error/10 px-3 py-3 text-xs text-status-error">
-                                {error}
+                                {error.to_string()}
                             </div>
                         }.into_any(),
                         Some(Ok(stack)) if stack.items.is_empty() => view! {

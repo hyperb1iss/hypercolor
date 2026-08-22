@@ -65,7 +65,7 @@ pub(super) fn CompoundBoundingBoxOutline(
 #[component]
 pub(super) fn CanvasDepthBreadcrumb(
     #[prop(into)] compound_depth: Signal<CompoundDepth>,
-    devices_resource: LocalResource<Result<Vec<api::DeviceSummary>, String>>,
+    devices_resource: LocalResource<api::ApiResult<Vec<api::DeviceSummary>>>,
 ) -> impl IntoView {
     view! {
         {move || {

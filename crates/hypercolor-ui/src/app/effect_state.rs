@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use hypercolor_types::control::ControlValue;
 use hypercolor_types::effect::{ControlDefinition, EffectId};
-use hypercolor_types::layer::{LayerAdjust, BlendMode, LayerSource, LayerTransform};
+use hypercolor_types::layer::{BlendMode, LayerAdjust, LayerSource, LayerTransform};
 use hypercolor_types::scene::ZoneRole;
 use leptos::prelude::*;
 
@@ -72,7 +72,7 @@ pub(super) async fn apply_effect_to_current_led_zones(ctx: &EffectsContext, effe
     }
 }
 
-async fn apply_effect_layer(zone_id: &str, source: &LayerSource) -> Result<(), String> {
+async fn apply_effect_layer(zone_id: &str, source: &LayerSource) -> api::ApiResult<()> {
     let stack = api::list_layers(zone_id).await?;
     let outcome = if let Some(layer) = stack
         .items
@@ -103,7 +103,10 @@ async fn apply_effect_layer(zone_id: &str, source: &LayerSource) -> Result<(), S
     };
     match outcome {
         api::LayerStackOutcome::Applied(_) => Ok(()),
-        api::LayerStackOutcome::Stale { .. } => Err("layer stack changed".to_owned()),
+        api::LayerStackOutcome::Stale { current } => Err(api::ApiError::Http {
+            status: 412,
+            message: Some(format!("Layer stack changed at revision {current}")),
+        }),
     }
 }
 
@@ -287,7 +290,7 @@ fn restore_effect_preferences(
 async fn patch_restored_controls(
     target: &api::EffectLayerTarget,
     controls: &HashMap<String, ControlValue>,
-) -> Result<(), String> {
+) -> api::ApiResult<()> {
     patch_restored_controls_with(target, controls, |zone_id, layer_id, controls| async move {
         api::patch_layer_controls(&zone_id, &layer_id, &controls).await
     })
@@ -298,10 +301,10 @@ async fn patch_restored_controls_with<Patch, PatchFuture>(
     target: &api::EffectLayerTarget,
     controls: &HashMap<String, ControlValue>,
     patch: Patch,
-) -> Result<(), String>
+) -> api::ApiResult<()>
 where
     Patch: FnOnce(String, String, HashMap<String, ControlValue>) -> PatchFuture,
-    PatchFuture: std::future::Future<Output = Result<(), String>>,
+    PatchFuture: std::future::Future<Output = api::ApiResult<()>>,
 {
     patch(
         target.zone_id.clone(),
@@ -395,7 +398,7 @@ mod tests {
     use hypercolor_types::control::ControlValue;
 
     use super::patch_restored_controls_with;
-    use crate::api::EffectLayerTarget;
+    use crate::api::{ApiResult, EffectLayerTarget};
 
     struct SuspendedPatch {
         current_layer: Rc<RefCell<String>>,
@@ -404,7 +407,7 @@ mod tests {
     }
 
     impl Future for SuspendedPatch {
-        type Output = Result<(), String>;
+        type Output = ApiResult<()>;
 
         fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
             if !self.suspended {

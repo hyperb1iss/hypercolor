@@ -246,7 +246,7 @@ fn ZoneControlsPanel(
                 schema_cache.update_value(|cache| {
                     cache.insert(effect_id, detail.controls.clone());
                 });
-                Ok::<_, String>(detail.controls)
+                Ok::<_, api::ApiError>(detail.controls)
             }
         }
     });

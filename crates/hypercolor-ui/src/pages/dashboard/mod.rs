@@ -445,7 +445,7 @@ pub fn DashboardPage() -> impl IntoView {
                                 Ok(status) => view! { <StatusStrip status=status /> }.into_any(),
                                 Err(e) => view! {
                                     <div class="text-[11px] text-status-error shrink-0">
-                                        "Failed to connect: " {e}
+                                        "Failed to connect: " {e.to_string()}
                                     </div>
                                 }.into_any(),
                             }

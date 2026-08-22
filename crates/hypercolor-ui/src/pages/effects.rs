@@ -191,7 +191,9 @@ pub fn EffectsPage() -> impl IntoView {
               -> ControlPatchFuture {
             Box::pin(async move {
                 let (zone_id, layer_id) = api::EffectLayerTarget::session_ids(&target_key)
-                    .ok_or_else(|| "Invalid effect layer target".to_owned())?;
+                    .ok_or_else(|| {
+                        api::ApiError::Serialize("Invalid effect layer target".to_owned())
+                    })?;
                 api::patch_layer_controls(zone_id, layer_id, &payload).await?;
                 Ok(api::MutationOutcome::Applied(None))
             })

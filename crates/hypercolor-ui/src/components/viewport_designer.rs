@@ -294,7 +294,7 @@ pub fn ViewportDesignerModal(
 async fn apply_viewport_controls(
     target: &EffectLayerTarget,
     controls: &HashMap<String, ControlValue>,
-) -> Result<(), String> {
+) -> crate::api::ApiResult<()> {
     apply_viewport_controls_with(target, controls, |zone_id, layer_id, controls| async move {
         crate::api::patch_layer_controls(&zone_id, &layer_id, &controls).await
     })
@@ -305,10 +305,10 @@ async fn apply_viewport_controls_with<Patch, PatchFuture>(
     target: &EffectLayerTarget,
     controls: &HashMap<String, ControlValue>,
     patch: Patch,
-) -> Result<(), String>
+) -> crate::api::ApiResult<()>
 where
     Patch: FnOnce(String, String, HashMap<String, ControlValue>) -> PatchFuture,
-    PatchFuture: std::future::Future<Output = Result<(), String>>,
+    PatchFuture: std::future::Future<Output = crate::api::ApiResult<()>>,
 {
     patch(
         target.zone_id.clone(),
@@ -621,7 +621,7 @@ mod tests {
     use std::task::{Context, Poll, Waker};
 
     use super::apply_viewport_controls_with;
-    use crate::api::EffectLayerTarget;
+    use crate::api::{ApiResult, EffectLayerTarget};
 
     struct SuspendedPatch {
         current_layer: Rc<RefCell<String>>,
@@ -630,7 +630,7 @@ mod tests {
     }
 
     impl Future for SuspendedPatch {
-        type Output = Result<(), String>;
+        type Output = ApiResult<()>;
 
         fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
             if !self.suspended {

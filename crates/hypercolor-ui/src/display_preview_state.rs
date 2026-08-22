@@ -22,7 +22,7 @@ pub fn use_display_preview_subscription(
 pub fn use_display_face_resource(
     selected_display_id: Signal<Option<String>>,
     refresh_tick: Signal<u64>,
-) -> LocalResource<Result<Option<api::DisplayFaceResponse>, String>> {
+) -> LocalResource<api::ApiResult<Option<api::DisplayFaceResponse>>> {
     api::daemon_resource(move || {
         let selected_display_id = selected_display_id.get();
         let _refresh_tick = refresh_tick.get();

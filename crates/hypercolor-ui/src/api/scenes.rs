@@ -7,7 +7,7 @@ use hypercolor_types::layer::LayerSource;
 use hypercolor_types::library::PresetId;
 use hypercolor_types::spatial::Output;
 
-use super::client;
+use super::{ApiError, ApiResult, client};
 use gloo_net::http::Method;
 
 pub use hypercolor_types::api::scenes::{
@@ -22,16 +22,12 @@ pub struct ZoneEffectRef<'a> {
     pub preset_id: Option<PresetId>,
 }
 
-pub async fn fetch_active_scene() -> Result<SceneDocument, String> {
-    client::fetch_json("/api/v1/scene")
-        .await
-        .map_err(Into::into)
+pub async fn fetch_active_scene() -> ApiResult<SceneDocument> {
+    client::fetch_json("/api/v1/scene").await
 }
 
-pub async fn deactivate_scene() -> Result<(), String> {
-    client::post_empty("/api/v1/scene/deactivate")
-        .await
-        .map_err(Into::into)
+pub async fn deactivate_scene() -> ApiResult<()> {
+    client::post_empty("/api/v1/scene/deactivate").await
 }
 
 #[must_use]
@@ -94,26 +90,23 @@ pub fn zone_outputs(zone: &ZoneResource) -> Vec<Output> {
 }
 
 /// List every user-facing scene (the daemon omits the ephemeral default).
-pub async fn list_scenes() -> Result<Vec<SceneSummary>, String> {
+pub async fn list_scenes() -> ApiResult<Vec<SceneSummary>> {
     client::fetch_json::<SceneListResponse>("/api/v1/scenes")
         .await
         .map(|response| response.items)
-        .map_err(Into::into)
 }
 
 /// Create a scene. The daemon seeds it with a Default zone (§5.2).
-pub async fn create_scene(name: &str) -> Result<SceneSummary, String> {
+pub async fn create_scene(name: &str) -> ApiResult<SceneSummary> {
     let request = CreateSceneRequest {
         name: name.to_owned(),
         ..CreateSceneRequest::default()
     };
-    client::post_json("/api/v1/scenes", &request)
-        .await
-        .map_err(Into::into)
+    client::post_json("/api/v1/scenes", &request).await
 }
 
 /// Rename a scene through the guarded whole-document replacement route.
-pub async fn rename_scene(scene_id: &str, name: &str) -> Result<(), String> {
+pub async fn rename_scene(scene_id: &str, name: &str) -> ApiResult<()> {
     let url = format!("/api/v1/scenes/{scene_id}");
     let mut document = client::fetch_json::<SceneDocument>(&url).await?;
     document.name = name.to_owned();
@@ -127,25 +120,25 @@ pub async fn rename_scene(scene_id: &str, name: &str) -> Result<(), String> {
     .await?
     {
         client::MutationOutcome::Applied(_) => Ok(()),
-        client::MutationOutcome::Stale { current } => Err(format!(
-            "Scene changed while it was being renamed; reload revision {current}"
-        )),
+        client::MutationOutcome::Stale { current } => Err(ApiError::Http {
+            status: 412,
+            message: Some(format!(
+                "Scene changed while it was being renamed; reload revision {current}"
+            )),
+        }),
     }
 }
 
 /// Delete a scene.
-pub async fn delete_scene(scene_id: &str) -> Result<(), String> {
-    client::delete_empty(&format!("/api/v1/scenes/{scene_id}"))
-        .await
-        .map_err(Into::into)
+pub async fn delete_scene(scene_id: &str) -> ApiResult<()> {
+    client::delete_empty(&format!("/api/v1/scenes/{scene_id}")).await
 }
 
 /// Activate a scene, making it the one the render loop composes.
-pub async fn activate_scene(scene_id: &str) -> Result<(), String> {
+pub async fn activate_scene(scene_id: &str) -> ApiResult<()> {
     client::post_json_discard(
         &format!("/api/v1/scenes/{scene_id}/activate"),
         &ActivateSceneRequest::default(),
     )
     .await
-    .map_err(Into::into)
 }

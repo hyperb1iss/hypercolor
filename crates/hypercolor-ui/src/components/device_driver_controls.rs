@@ -103,7 +103,7 @@ pub fn DeviceDriverControls(#[prop(into)] device_id: Signal<String>) -> impl Int
                 <div class="rounded-xl bg-surface-raised border border-edge-subtle/60 overflow-hidden">
                     <div class="px-4 py-3 flex items-center gap-2 text-[10px] text-fg-tertiary/60">
                         <Icon icon=LuTriangleAlert width="12px" height="12px" />
-                        <span>{error}</span>
+                        <span>{error.to_string()}</span>
                     </div>
                 </div>
             }.into_any(),
@@ -142,7 +142,7 @@ fn driver_surface_event_matches_device(surface_id: &str, device_id: &str) -> boo
 fn render_surface(
     surface: ControlSurfaceDocument,
     show_title: bool,
-    surfaces_resource: LocalResource<Result<Vec<ControlSurfaceDocument>, String>>,
+    surfaces_resource: LocalResource<api::ApiResult<Vec<ControlSurfaceDocument>>>,
 ) -> impl IntoView {
     let title = surface_title(&surface);
     let groups = grouped_surface_items(&surface);
@@ -270,7 +270,7 @@ fn section_from_group(group: ControlGroupDescriptor) -> ControlSurfaceSection {
 fn render_group(
     surface: ControlSurfaceDocument,
     group: ControlSurfaceSection,
-    surfaces_resource: LocalResource<Result<Vec<ControlSurfaceDocument>, String>>,
+    surfaces_resource: LocalResource<api::ApiResult<Vec<ControlSurfaceDocument>>>,
 ) -> impl IntoView {
     let label = group.label.clone();
     let items = group.items.clone();
@@ -301,7 +301,7 @@ fn render_group(
 fn render_field(
     surface: ControlSurfaceDocument,
     field: ControlFieldDescriptor,
-    surfaces_resource: LocalResource<Result<Vec<ControlSurfaceDocument>, String>>,
+    surfaces_resource: LocalResource<api::ApiResult<Vec<ControlSurfaceDocument>>>,
 ) -> impl IntoView {
     let field_id = field.id.clone();
     let current_value = surface.values.get(&field_id).cloned();
@@ -344,7 +344,7 @@ fn render_field_editor(
     field: ControlFieldDescriptor,
     current_value: Option<ControlValue>,
     editable: bool,
-    surfaces_resource: LocalResource<Result<Vec<ControlSurfaceDocument>, String>>,
+    surfaces_resource: LocalResource<api::ApiResult<Vec<ControlSurfaceDocument>>>,
 ) -> AnyView {
     if !editable {
         return render_read_only_value(current_value.as_ref()).into_any();
@@ -439,7 +439,7 @@ fn render_bool_editor(
     surface_id: String,
     field_id: String,
     checked: bool,
-    surfaces_resource: LocalResource<Result<Vec<ControlSurfaceDocument>, String>>,
+    surfaces_resource: LocalResource<api::ApiResult<Vec<ControlSurfaceDocument>>>,
 ) -> impl IntoView {
     view! {
         <input
@@ -468,7 +468,7 @@ struct NumberEditorProps {
     min: Option<String>,
     max: Option<String>,
     step: String,
-    surfaces_resource: LocalResource<Result<Vec<ControlSurfaceDocument>, String>>,
+    surfaces_resource: LocalResource<api::ApiResult<Vec<ControlSurfaceDocument>>>,
 }
 
 #[derive(Clone, Copy)]
@@ -526,7 +526,7 @@ fn render_enum_editor(
     field_id: String,
     value: String,
     options: Vec<(String, String)>,
-    surfaces_resource: LocalResource<Result<Vec<ControlSurfaceDocument>, String>>,
+    surfaces_resource: LocalResource<api::ApiResult<Vec<ControlSurfaceDocument>>>,
 ) -> impl IntoView {
     view! {
         <select
@@ -557,7 +557,7 @@ fn render_text_editor(
     surface_id: String,
     field_id: String,
     value: String,
-    surfaces_resource: LocalResource<Result<Vec<ControlSurfaceDocument>, String>>,
+    surfaces_resource: LocalResource<api::ApiResult<Vec<ControlSurfaceDocument>>>,
 ) -> impl IntoView {
     let is_secret = matches!(kind, TextEditorKind::Secret);
     view! {
@@ -592,7 +592,7 @@ fn render_text_editor(
 fn render_action(
     surface: ControlSurfaceDocument,
     action: ControlActionDescriptor,
-    surfaces_resource: LocalResource<Result<Vec<ControlSurfaceDocument>, String>>,
+    surfaces_resource: LocalResource<api::ApiResult<Vec<ControlSurfaceDocument>>>,
 ) -> impl IntoView {
     let action_id = action.id.clone();
     let state = surface
@@ -683,7 +683,7 @@ fn apply_change(
     surface_id: String,
     field_id: String,
     value: ControlValue,
-    surfaces_resource: LocalResource<Result<Vec<ControlSurfaceDocument>, String>>,
+    surfaces_resource: LocalResource<api::ApiResult<Vec<ControlSurfaceDocument>>>,
 ) {
     leptos::task::spawn_local(async move {
         if let Err(error) = value.validate() {

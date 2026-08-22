@@ -46,7 +46,7 @@ pub(crate) struct LayoutZoneDisplayContext {
 }
 
 pub(super) fn embedded_attachment_profiles(
-    devices_resource: LocalResource<Result<Vec<api::DeviceSummary>, String>>,
+    devices_resource: LocalResource<api::ApiResult<Vec<api::DeviceSummary>>>,
 ) -> Memo<HashMap<String, api::DeviceComponentsResponse>> {
     Memo::new(move |_| {
         devices_resource

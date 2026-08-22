@@ -125,7 +125,7 @@ pub fn InputSection(
         leptos::task::spawn_local(async move {
             match api::authorize_input_monitoring().await {
                 Ok(()) => input_status.refetch(),
-                Err(error) => set_authorization_error.set(Some(error)),
+                Err(error) => set_authorization_error.set(Some(error.to_string())),
             }
             set_authorizing.set(false);
         });

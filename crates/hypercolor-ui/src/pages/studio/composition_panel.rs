@@ -29,7 +29,7 @@ pub fn CompositionPanel(
     selected_group_id: ReadSignal<Option<String>>,
     set_selected_group_id: WriteSignal<Option<String>>,
     #[prop(into)] surface_label: Signal<Option<String>>,
-    layers_resource: LocalResource<Result<api::LayerStackResponse, String>>,
+    layers_resource: LocalResource<api::ApiResult<api::LayerStackResponse>>,
     on_layers_mutated: Callback<()>,
 ) -> impl IntoView {
     let studio = expect_context::<StudioContext>();

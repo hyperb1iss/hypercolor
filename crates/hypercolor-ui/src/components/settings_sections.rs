@@ -219,7 +219,7 @@ pub fn CaptureSection(
         set_action_error.set(None);
         leptos::task::spawn_local(async move {
             if let Err(e) = crate::api::pick_capture_source().await {
-                set_action_error.set(Some(e));
+                set_action_error.set(Some(e.to_string()));
             }
             set_picking.set(false);
             capture_status.refetch();
@@ -233,7 +233,7 @@ pub fn CaptureSection(
         set_action_error.set(None);
         leptos::task::spawn_local(async move {
             if let Err(error) = crate::api::authorize_screen_recording().await {
-                set_action_error.set(Some(error));
+                set_action_error.set(Some(error.to_string()));
             }
             set_authorizing.set(false);
             capture_status.refetch();

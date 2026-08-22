@@ -428,7 +428,7 @@ pub(crate) fn LayoutEditorProvider(children: Children) -> impl IntoView {
         leptos::task::spawn_local(async move {
             let mut next_selection = fallback_layout.clone();
 
-            let delete_result: Result<(), String> = async {
+            let delete_result: api::ApiResult<()> = async {
                 if selected_summary
                     .as_ref()
                     .is_some_and(|entry| entry.is_active)

@@ -222,23 +222,23 @@ pub struct EffectsContext {
 /// Shared device + layout state — accessible from devices page and layout builder.
 #[derive(Clone, Copy)]
 pub struct DevicesContext {
-    pub devices_resource: LocalResource<Result<Vec<api::DeviceSummary>, String>>,
-    pub layouts_resource: LocalResource<Result<Vec<api::LayoutSummary>, String>>,
+    pub devices_resource: LocalResource<api::ApiResult<Vec<api::DeviceSummary>>>,
+    pub layouts_resource: LocalResource<api::ApiResult<Vec<api::LayoutSummary>>>,
 }
 
 #[derive(Clone, Copy)]
 pub struct DisplaysContext {
-    pub displays_resource: LocalResource<Result<Vec<api::DisplaySummary>, String>>,
+    pub displays_resource: LocalResource<api::ApiResult<Vec<api::DisplaySummary>>>,
 }
 
 async fn apply_owned_target<Apply, ApplyFuture, CurrentGeneration>(
     request_generation: u64,
     apply: Apply,
     current_generation: CurrentGeneration,
-) -> Result<Option<api::EffectLayerTarget>, String>
+) -> api::ApiResult<Option<api::EffectLayerTarget>>
 where
     Apply: FnOnce() -> ApplyFuture,
-    ApplyFuture: std::future::Future<Output = Result<api::EffectLayerTarget, String>>,
+    ApplyFuture: std::future::Future<Output = api::ApiResult<api::EffectLayerTarget>>,
     CurrentGeneration: FnOnce() -> u64,
 {
     let target = apply().await?;
@@ -1104,7 +1104,7 @@ mod tests {
     use std::task::{Context, Poll, Waker};
 
     use super::apply_owned_target;
-    use crate::api::EffectLayerTarget;
+    use crate::api::{ApiResult, EffectLayerTarget};
 
     struct SuspendedApply {
         generation: Rc<Cell<u64>>,
@@ -1113,7 +1113,7 @@ mod tests {
     }
 
     impl Future for SuspendedApply {
-        type Output = Result<EffectLayerTarget, String>;
+        type Output = ApiResult<EffectLayerTarget>;
 
         fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
             if !self.suspended {
