@@ -5,6 +5,13 @@
 
 use std::fs::File;
 
+mod model;
+
+pub use model::{
+    BufferFault, CaptureFormatRequest, D4Transform, DequeueOutcome, FrameView, MetaFault,
+    NegotiatedVideoFormat, PackedVideoFormat, PixelCrop, VideoFraction,
+};
+
 /// One source selected through the XDG ScreenCast portal.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PortalStreamDescriptor {
