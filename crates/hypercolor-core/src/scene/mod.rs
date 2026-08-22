@@ -40,18 +40,16 @@ const DEFAULT_ZONE_NAME: &str = "Default zone";
 
 /// Error variants for precondition-checked control patches.
 ///
-/// `NoActiveScene` and `GroupMissing` are plumbed separately from
-/// `Stale` so API callers can map each to a distinct HTTP status
-/// (404 vs 412) without reflecting on strings.
+/// These variants belong to the legacy internal zone mutation helpers.
+/// The REST scene API uses the document revision for structural writes
+/// and immutable layer identity for control writes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ControlsVersionMismatch {
     /// No scene is currently active — nothing to patch.
     NoActiveScene,
     /// The active scene exists but no group with the given id.
     GroupMissing,
-    /// The group exists and the `If-Match` precondition did not
-    /// match. `current` is the server-side version the client should
-    /// rebase against if they choose to retry.
+    /// The group exists but its internal control generation changed.
     Stale { current: u64 },
     /// More than one effect layer could receive the patch.
     AmbiguousLayerStack,
@@ -70,9 +68,7 @@ pub enum LayerMutationError {
     LayerMissing { layer_id: SceneLayerId },
     /// The requested layer id already exists in the group.
     DuplicateLayer { layer_id: SceneLayerId },
-    /// The supplied `layers_version` precondition is stale. `expected`
-    /// is the version the request carried, `current` the one the zone
-    /// holds.
+    /// The internal layer-stack generation is stale.
     Stale { expected: u64, current: u64 },
     /// The supplied layer payload violates layer-stack invariants.
     InvalidLayer { errors: Vec<String> },
@@ -116,7 +112,7 @@ pub struct SceneGroupLayerInsert {
     pub layer: SceneLayer,
     /// Optional bottom-to-top insertion index. `None` appends on top.
     pub index: Option<usize>,
-    /// Optional expected `layers_version` for optimistic concurrency.
+    /// Optional expected internal layer-stack generation.
     pub expected_version: Option<u64>,
 }
 
@@ -152,9 +148,8 @@ pub struct ScenePlanSnapshot {
 
 /// Central scene lifecycle manager.
 ///
-/// Owns the scene store, the priority stack, and the active transition
-/// state. The render loop calls into the manager each frame to advance
-/// transitions and resolve the effective zone assignments.
+/// Owns the scene store, priority stack, and immutable transition plans.
+/// Render-local frame state owns clocks and transition progress.
 #[derive(Debug, Clone)]
 pub struct SceneManager {
     /// All registered scenes, keyed by [`SceneId`].
@@ -537,12 +532,9 @@ impl SceneManager {
             group.enabled = true;
             group.display_target = None;
             group.role = ZoneRole::Primary;
-            // An effect swap is the classic trigger for the modal's
-            // TOCTOU race: the group id stays the same but `effect_id`
-            // has changed out from under an open modal. Bumping the
-            // version makes that modal's Apply fail its `If-Match`,
-            // forcing it to re-seed against the new effect instead of
-            // quietly overwriting controls for the wrong effect.
+            // Preserve the internal control generation for compatibility
+            // observers. Wire clients are fenced by the replacement's new
+            // immutable layer id and the scene document revision.
             group.controls_version = group.controls_version.saturating_add(1);
         } else {
             let mut group = Zone {
@@ -1583,14 +1575,11 @@ impl SceneManager {
             .map(|(group, _version)| group)
     }
 
-    /// Apply control updates subject to an optional version precondition.
+    /// Apply control updates with an optional internal generation check.
     ///
-    /// `expected_version = Some(N)` returns
-    /// `Err(ControlsVersionMismatch { current })` if the group's
-    /// current version is not `N`. `None` skips the check (the common
-    /// patch_group_controls caller is preserved). On success the
-    /// returned tuple carries the new version so callers can echo it
-    /// back as an `ETag`.
+    /// `expected_version = Some(N)` rejects a changed internal group.
+    /// The returned generation is not a wire `ETag`; REST control writes
+    /// address immutable layer ids and carry no version token.
     pub fn patch_group_controls_with_precondition(
         &mut self,
         group_id: ZoneId,
@@ -1600,17 +1589,11 @@ impl SceneManager {
         self.patch_effect_controls_with_precondition(group_id, None, updates, expected_version)
     }
 
-    /// Patch a zone's controls, optionally requiring the group
-    /// to currently be bound to a specific `expected_effect_id`.
+    /// Patch a zone's controls, optionally requiring the legacy internal
+    /// group to remain bound to `expected_effect_id`.
     ///
-    /// The `expected_effect_id` gate closes the TOCTOU window the
-    /// Viewport Designer modal would otherwise hit: a GET resolves an
-    /// `effect_id → group_id` mapping, the modal edits, and later
-    /// issues a PATCH. If another client swaps the Default-zone effect in
-    /// between, `group_id` will be reused ([`upsert_primary_group`])
-    /// but `effect_id` will have changed — so the PATCH would land on
-    /// the wrong effect. Requiring `effect_id` to match at write time
-    /// turns that silent drift into a clean `GroupMissing` error.
+    /// REST callers do not resolve effect ids back to zones. They patch
+    /// the immutable layer id observed in the scene document.
     pub fn patch_effect_controls_with_precondition(
         &mut self,
         group_id: ZoneId,
@@ -1707,10 +1690,8 @@ impl SceneManager {
         } else {
             return None;
         }
-        // Reset is a controls mutation from a concurrency standpoint
-        // — any modal that opened before this call is holding a
-        // stale snapshot, so its next `If-Match` PATCH must fail.
-        // Same treatment as `patch_group_controls_with_precondition`.
+        // Keep the internal control generation aligned with the replaced
+        // source. Wire clients observe the newly minted layer identity.
         group.controls_version = group.controls_version.saturating_add(1);
         self.refresh_active_render_groups();
         self.active_scene()
@@ -1754,8 +1735,7 @@ impl SceneManager {
             active_preset_id,
         );
         group.enabled = true;
-        // An effect swap is the TOCTOU trigger for an open controls
-        // modal, so the version advances — mirrors upsert_primary_group.
+        // Keep compatibility observers aligned with the source replacement.
         group.controls_version = group.controls_version.saturating_add(1);
         self.refresh_active_render_groups();
         self.active_scene()
@@ -1770,9 +1750,7 @@ impl SceneManager {
             group.layers.clear();
             group.layers_version = group.layers_version.saturating_add(1);
         }
-        // Clearing the effect zeros every control; that is by far the
-        // most dramatic controls mutation and must invalidate every
-        // outstanding modal draft.
+        // Keep the internal generation aligned with the cleared source.
         group.controls_version = group.controls_version.saturating_add(1);
         self.refresh_active_render_groups();
         self.active_scene()
@@ -1796,10 +1774,8 @@ impl SceneManager {
         } else {
             return None;
         }
-        // Bindings surface as control values at render time, so a
-        // new binding changes what the user would see if they opened
-        // the modal — version must advance alongside raw control
-        // mutations.
+        // Bindings affect resolved render values, so internal observers
+        // advance alongside raw control mutations.
         group.controls_version = group.controls_version.saturating_add(1);
         self.refresh_active_render_groups();
         self.active_scene()

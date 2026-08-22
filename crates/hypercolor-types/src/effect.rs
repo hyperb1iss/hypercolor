@@ -388,8 +388,9 @@ pub enum PreviewSource {
 
 /// A single user-facing parameter declared by an effect.
 ///
-/// The UI auto-generates widgets from these definitions. The engine
-/// injects current values into the active renderer every frame.
+/// The UI generates widgets from these definitions. Admitted control
+/// changes enter renderer state at a frame boundary; unchanged values
+/// remain in that state without repeated control-plane injection.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct ControlDefinition {
     /// Stable control identifier used in API payloads and renderer globals.
