@@ -5103,7 +5103,6 @@ dependencies = [
  "notify",
  "nusb",
  "nvml-wrapper",
- "pipewire",
  "pollster",
  "raw-window-handle",
  "rayon",

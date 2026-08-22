@@ -6,13 +6,13 @@ use std::time::{Duration, Instant};
 
 use super::{
     AdoptionAuthority, AdoptionWaitError, AnalysisEvent, AnalysisExactCommand, AnalysisExchange,
-    CaptureCallbackMetrics, CapturedScreenSnapshot, ChunkDropReason, CopyStats, DoubleBuffer,
-    NegotiatedFormat, NegotiatedPipeWireFormat, PendingPipeWireAdoption,
-    PipeWireFormatAcknowledgment, PipeWireFormatRequest, PipeWireFormatState, PipeWireLoopExit,
-    RestoreTokenSink, SharedSettings, SpaChunkView, SpaVideoFormat, UnavailablePark,
-    WaylandAnalysisState, WaylandCaptureUserData, WaylandExactPublicationShared,
-    WaylandScreenCaptureInput, WaylandSourceMetadata, WaylandTopologySignature,
-    build_format_params, commit_if_authorized, convert_packed_to_rgba, decode_chunk,
+    CaptureCallbackMetrics, CaptureFormatRequest, CapturedScreenSnapshot, ChunkDropReason,
+    CopyStats, DoubleBuffer, FormatOffer, NegotiatedFormat, NegotiatedVideoFormat,
+    PendingPipeWireAdoption, PipeWireFormatAcknowledgment, PipeWireFormatRequest,
+    PipeWireFormatState, PipeWireLoopExit, RestoreTokenSink, SharedSettings, SpaChunkView,
+    SpaVideoFormat, UnavailablePark, WaylandAnalysisState, WaylandCaptureUserData,
+    WaylandExactPublicationShared, WaylandScreenCaptureInput, WaylandSourceMetadata,
+    WaylandTopologySignature, commit_if_authorized, convert_packed_to_rgba, decode_chunk,
     fence_previous_publication, initial_native_extent_correction, initial_worker_demand,
     park_unavailable_worker, prepare_wayland_exact_runtime, publish_unexpected_exit_status,
     reap_wayland_exact_runtimes, request_active_worker_demand, set_worker_demand,
@@ -29,7 +29,8 @@ use crate::input::screen::{
     ScreenComputeCapacityPolicy, ScreenExtentRequest, ScreenInputGraphGeneration,
     ScreenPlanBuilder, ScreenProcessingProfile, ScreenPublicationExecutorRequest,
     ScreenPublicationKind, ScreenPublicationRequest, ScreenResourceApi, ScreenResourceKind,
-    ScreenSourceSelector, ScreenUpscalePolicy, ScreenWorkerBindingState, analyze_screen_frame,
+    ScreenSourceSelector, ScreenUpscalePolicy, ScreenWorkerBindingState, SourceScale,
+    analyze_screen_frame,
 };
 use crate::input::{SourceIssue, SourceKind, SourceState, SourceStatusReporter};
 
@@ -79,18 +80,25 @@ fn unlimited_compute_capacity() -> ScreenAnalysisComputeCapacity {
     ScreenAnalysisComputeCapacity::new(NonZeroUsize::MIN, NonZeroU64::MAX)
 }
 
-fn negotiated_format(width: u32, height: u32, target_fps: u32) -> NegotiatedPipeWireFormat {
-    NegotiatedPipeWireFormat {
-        frame: NegotiatedFormat {
-            width,
-            height,
-            format: SpaVideoFormat::Rgba,
-        },
-        framerate: pipewire::spa::utils::Fraction {
-            num: target_fps,
-            denom: 1,
+fn negotiated_format(width: u32, height: u32, target_fps: u32) -> NegotiatedVideoFormat {
+    NegotiatedVideoFormat {
+        width,
+        height,
+        format: SpaVideoFormat::Rgba,
+        framerate: hypercolor_pipewire_interop::VideoFraction {
+            numerator: target_fps,
+            denominator: 1,
         },
     }
+}
+
+fn format_offer(request: PipeWireFormatRequest) -> FormatOffer {
+    FormatOffer::new(CaptureFormatRequest {
+        width: request.extent.width(),
+        height: request.extent.height(),
+        target_fps: request.target_fps,
+    })
+    .expect("test format offer is valid")
 }
 
 fn pending_adoption(id: u64, request: PipeWireFormatRequest) -> PendingPipeWireAdoption {
@@ -108,7 +116,7 @@ fn pending_adoption_with_done(
         PendingPipeWireAdoption {
             id,
             request,
-            format_bytes: vec![u8::try_from(id).unwrap_or_default()],
+            offer: format_offer(request),
             callback_buffers: DoubleBuffer::try_with_capacity(4)
                 .expect("test callback storage allocates"),
             analysis_decision,
@@ -130,6 +138,8 @@ fn source(
             source_id: source_id("wayland:portal:stable"),
             origin,
             logical_extent: Some(logical_extent),
+            native_extent: None,
+            transform: CaptureRotation::Identity,
         },
         session_generation,
         topology: None,
@@ -153,6 +163,16 @@ fn capture_raw(
     height: u32,
     fill: u8,
 ) -> CaptureFrame<RawCaptureSurface> {
+    capture_raw_with_transform(state, width, height, fill, CaptureRotation::Identity)
+}
+
+fn capture_raw_with_transform(
+    state: &mut WaylandAnalysisState,
+    width: u32,
+    height: u32,
+    fill: u8,
+    transform: CaptureRotation,
+) -> CaptureFrame<RawCaptureSurface> {
     let plane_len = usize::try_from(width)
         .expect("test width fits usize")
         .checked_mul(usize::try_from(height).expect("test height fits usize"))
@@ -169,7 +189,7 @@ fn capture_raw(
             width,
             height,
             None,
-            CaptureRotation::Identity,
+            transform,
             plane.freeze(),
             CaptureColorimetry::SRGB,
         )
@@ -226,7 +246,7 @@ fn rgba_view(
 }
 
 #[test]
-fn physical_topology_persists_across_storage_resize_and_session_restart() {
+fn physical_topology_advances_for_extent_transform_and_source_changes() {
     let settings = settings(7);
     let latest = Arc::new(Mutex::new(None::<CapturedScreenSnapshot>));
     let physical_origin = PhysicalOrigin { x: -1920, y: 0 };
@@ -242,10 +262,10 @@ fn physical_topology_persists_across_storage_resize_and_session_restart() {
     let first = capture_legacy(&mut first_worker, 4, 2, 1);
     let resized = capture_legacy(&mut first_worker, 2, 1, 2);
     assert_eq!(first.geometry_frame().metadata().topology_generation, 1);
-    assert_eq!(resized.geometry_frame().metadata().topology_generation, 1);
+    assert_eq!(resized.geometry_frame().metadata().topology_generation, 2);
     assert_eq!(
         resized.geometry_frame().metadata().geometry.native_extent(),
-        extent(4, 2)
+        extent(2, 1)
     );
     assert_eq!(
         resized
@@ -254,6 +274,17 @@ fn physical_topology_persists_across_storage_resize_and_session_restart() {
             .geometry
             .storage_extent(),
         extent(2, 1)
+    );
+
+    let stable = capture_legacy(&mut first_worker, 2, 1, 3);
+    assert_eq!(stable.geometry_frame().metadata().topology_generation, 2);
+
+    let transformed =
+        capture_raw_with_transform(&mut first_worker, 2, 1, 4, CaptureRotation::Clockwise90);
+    assert_eq!(transformed.metadata().topology_generation, 3);
+    assert_eq!(
+        transformed.metadata().geometry.source_scale(),
+        SourceScale::new(1920, 1).expect("test source scale is valid")
     );
 
     let next_session = settings.begin_session();
@@ -265,15 +296,15 @@ fn physical_topology_persists_across_storage_resize_and_session_restart() {
         active_demand(),
     )
     .expect("test analysis extent allocates");
-    let restarted = capture_legacy(&mut successor, 1, 1, 3);
-    assert_eq!(restarted.geometry_frame().metadata().topology_generation, 1);
+    let restarted = capture_legacy(&mut successor, 2, 1, 5);
+    assert_eq!(restarted.geometry_frame().metadata().topology_generation, 4);
     assert_eq!(
         restarted
             .geometry_frame()
             .metadata()
             .geometry
             .native_extent(),
-        extent(4, 2)
+        extent(2, 1)
     );
 
     let mut moved_source = WaylandAnalysisState::new(
@@ -288,8 +319,8 @@ fn physical_topology_persists_across_storage_resize_and_session_restart() {
         active_demand(),
     )
     .expect("test analysis extent allocates");
-    let moved = capture_legacy(&mut moved_source, 2, 1, 4);
-    assert_eq!(moved.geometry_frame().metadata().topology_generation, 2);
+    let moved = capture_legacy(&mut moved_source, 2, 1, 6);
+    assert_eq!(moved.geometry_frame().metadata().topology_generation, 5);
     assert_eq!(
         moved.geometry_frame().metadata().geometry.native_extent(),
         extent(2, 1)
@@ -1467,7 +1498,7 @@ fn negotiated_format_change_rebuilds_callback_planes_outside_decode() {
 fn initial_format_rejection_becomes_typed_unavailable() {
     let state = PipeWireFormatState {
         current: format_request(640, 480, 30),
-        current_format_bytes: vec![1],
+        current_offer: format_offer(format_request(640, 480, 30)),
         current_acknowledged: false,
         pending: None,
         restoring: None,
@@ -1490,7 +1521,7 @@ fn delayed_current_ack_does_not_consume_pending_format_adoption() {
     let requested = format_request(3840, 2160, 144);
     let state = PipeWireFormatState {
         current,
-        current_format_bytes: vec![1],
+        current_offer: format_offer(current),
         current_acknowledged: true,
         pending: Some(pending_adoption(7, requested)),
         restoring: None,
@@ -1514,7 +1545,7 @@ fn rejected_adoption_settles_only_after_prior_format_ack() {
     let (pending, done_rx) = pending_adoption_with_done(11, requested);
     let mut state = PipeWireFormatState {
         current,
-        current_format_bytes: vec![1],
+        current_offer: format_offer(current),
         current_acknowledged: true,
         pending: Some(pending),
         restoring: None,
@@ -1540,7 +1571,7 @@ fn rejected_adoption_settles_only_after_prior_format_ack() {
     assert!(rejected.authority.cancel());
     assert_eq!(
         state.begin_restoring(rejected, "fixture rejection".to_owned()),
-        vec![1]
+        format_offer(current)
     );
     assert!(!state.can_begin_adoption());
     assert_eq!(state.restoring_id(), Some(11));
@@ -1565,8 +1596,12 @@ fn rejected_adoption_settles_only_after_prior_format_ack() {
         Arc::new(AnalysisExchange::default()),
         Arc::new(CaptureCallbackMetrics::default()),
     );
-    settle_pipewire_restoration(&mut callback, &state, negotiated_format(640, 480, 30).frame)
-        .expect("authoritative prior format settles restoration");
+    settle_pipewire_restoration(
+        &mut callback,
+        &state,
+        NegotiatedFormat::from_native(negotiated_format(640, 480, 30)),
+    )
+    .expect("authoritative prior format settles restoration");
 
     assert_eq!(
         done_rx
@@ -1589,7 +1624,7 @@ fn timed_out_adoption_cannot_consume_its_late_exact_ack() {
     assert!(pending.authority.cancel());
     let state = PipeWireFormatState {
         current: format_request(640, 480, 30),
-        current_format_bytes: vec![1],
+        current_offer: format_offer(format_request(640, 480, 30)),
         current_acknowledged: true,
         pending: Some(pending),
         restoring: None,
@@ -1835,78 +1870,11 @@ fn commit_winner_completes_install_before_signalling_success() {
 }
 
 #[test]
-fn format_pod_offers_negotiable_extent_and_transport_rate_ranges() {
-    let requested = extent(7680, 4320);
-    let bytes = build_format_params(10_000, requested)
-        .expect("representable high cadence and extent serialize");
-
-    let (_, value) = pipewire::spa::pod::deserialize::PodDeserializer::deserialize_any_from(&bytes)
-        .expect("format pod deserializes to a value");
-    let pipewire::spa::pod::Value::Object(object) = value else {
-        panic!("format pod is not an object");
-    };
-
-    let size = object
-        .properties
-        .iter()
-        .find(|property| {
-            property.key == pipewire::spa::param::format::FormatProperties::VideoSize.as_raw()
-        })
-        .expect("format pod carries a size property");
-    let pipewire::spa::pod::Value::Choice(pipewire::spa::pod::ChoiceValue::Rectangle(choice)) =
-        &size.value
-    else {
-        panic!("size must be a rectangle choice so scaled outputs can fixate");
-    };
-    let pipewire::spa::utils::Choice(
-        _,
-        pipewire::spa::utils::ChoiceEnum::Range { default, min, max },
-    ) = choice
-    else {
-        panic!("size choice must be a range");
-    };
-    assert_eq!(
-        (default.width, default.height),
-        (requested.width(), requested.height()),
-        "requested extent stays the preference"
-    );
-    assert_eq!((min.width, min.height), (1, 1));
-    assert_eq!((max.width, max.height), (16_384, 16_384));
-
-    let framerate = object
-        .properties
-        .iter()
-        .find(|property| {
-            property.key == pipewire::spa::param::format::FormatProperties::VideoFramerate.as_raw()
-        })
-        .expect("format pod carries a framerate property");
-    let pipewire::spa::pod::Value::Choice(pipewire::spa::pod::ChoiceValue::Fraction(choice)) =
-        &framerate.value
-    else {
-        panic!("framerate must be a fraction choice, not a fixed fraction");
-    };
-    let pipewire::spa::utils::Choice(
-        _,
-        pipewire::spa::utils::ChoiceEnum::Range { default, min, max },
-    ) = choice
-    else {
-        panic!("framerate choice must be a range");
-    };
-    assert_eq!((default.num, default.denom), (10_000, 1));
-    assert_eq!(
-        (min.num, min.denom),
-        (0, 1),
-        "variable rate must be admissible"
-    );
-    assert_eq!((max.num, max.denom), (1000, 1));
-}
-
-#[test]
 fn initial_extent_correction_only_fires_before_first_acknowledgment() {
     let make_state = |acknowledged: bool| {
         std::sync::Mutex::new(PipeWireFormatState {
             current: format_request(2560, 1440, 30),
-            current_format_bytes: vec![1],
+            current_offer: format_offer(format_request(2560, 1440, 30)),
             current_acknowledged: acknowledged,
             pending: None,
             restoring: None,
@@ -1969,13 +1937,14 @@ fn format_acknowledgment_treats_transport_rate_as_advisory() {
         request.matches(negotiated_format(2560, 1440, 60)),
         "display-pinned transport acknowledges"
     );
-    let malformed = NegotiatedPipeWireFormat {
-        frame: NegotiatedFormat {
-            width: 2560,
-            height: 1440,
-            format: SpaVideoFormat::Rgba,
+    let malformed = NegotiatedVideoFormat {
+        width: 2560,
+        height: 1440,
+        format: SpaVideoFormat::Rgba,
+        framerate: hypercolor_pipewire_interop::VideoFraction {
+            numerator: 30,
+            denominator: 0,
         },
-        framerate: pipewire::spa::utils::Fraction { num: 30, denom: 0 },
     };
     assert!(!request.matches(malformed), "zero-denominator rate rejects");
     assert!(

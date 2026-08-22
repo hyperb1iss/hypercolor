@@ -108,7 +108,6 @@ rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] 
 [target.'cfg(target_os = "linux")'.dependencies]
 libpulse-binding = { workspace = true }
 hypercolor-pipewire-interop = { workspace = true }
-pipewire = { workspace = true }
 zbus = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]

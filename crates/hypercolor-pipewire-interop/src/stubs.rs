@@ -1,8 +1,9 @@
 use std::marker::PhantomData;
 
 use super::{
-    CallbackAction, DequeueOutcome, FormatOffer, LoopReceiver, PortalError, PortalRemote,
-    PortalRequest, SpaBufferView, StreamConnectError, StreamError, StreamEventHandler,
+    CallbackAction, DequeueOutcome, FormatOffer, LoopReceiver, NegotiatedVideoFormat, PortalError,
+    PortalRemote, PortalRequest, SpaBufferView, StreamConnectError, StreamError,
+    StreamEventHandler,
 };
 
 /// Stub portal selection on hosts without XDG ScreenCast support.
@@ -36,6 +37,11 @@ impl StreamControl<'_> {
 
     /// Reports that native stream formats cannot be changed on this platform.
     pub fn update_format(&self, _offer: &FormatOffer) -> Result<(), StreamError> {
+        Err(StreamError::UnsupportedPlatform)
+    }
+
+    /// Reports that native buffer contracts cannot be changed on this platform.
+    pub fn acknowledge_format(&self, _format: NegotiatedVideoFormat) -> Result<(), StreamError> {
         Err(StreamError::UnsupportedPlatform)
     }
 }

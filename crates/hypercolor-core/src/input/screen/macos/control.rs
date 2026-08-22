@@ -1,10 +1,13 @@
 use super::{
-    CaptureConfig, Context, Instant, MacosCaptureCadence, MacosCaptureCallbackDiagnostics,
-    MacosCaptureControl, MacosCaptureSelection, MacosFrameMailbox, MacosScreenAuthorizationState,
-    MacosScreenCaptureSession, MacosScreenshotReferenceCapture, MacosStreamRequest,
-    NativeCaptureCapabilities, NativeCaptureControl, NativeProtectedSourceState,
-    NativeTahoeSelectionCapabilities, ScreenCaptureCadence, ScreenCaptureDemand,
-    ScreenCursorPolicy, StreamRequest, mpsc,
+    CaptureConfig, Context, MacosCaptureCadence, MacosStreamRequest, NativeCaptureCapabilities,
+    ScreenCaptureCadence, ScreenCaptureDemand, ScreenCursorPolicy, StreamRequest,
+};
+#[cfg(target_os = "macos")]
+use super::{
+    Instant, MacosCaptureCallbackDiagnostics, MacosCaptureControl, MacosCaptureSelection,
+    MacosFrameMailbox, MacosScreenAuthorizationState, MacosScreenCaptureSession,
+    MacosScreenshotReferenceCapture, NativeCaptureControl, NativeProtectedSourceState,
+    NativeTahoeSelectionCapabilities, mpsc,
 };
 
 impl StreamRequest {

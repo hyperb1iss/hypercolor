@@ -8,8 +8,8 @@ use pw::properties::properties;
 
 use super::{ProcessBuffer, format};
 use crate::{
-    CallbackAction, FormatEvent, FormatOffer, LoopReceiver, PortalRemote, StateChange,
-    StreamConnectError, StreamError, StreamEventHandler, StreamState,
+    CallbackAction, FormatEvent, FormatOffer, LoopReceiver, NegotiatedVideoFormat, PortalRemote,
+    StateChange, StreamConnectError, StreamError, StreamEventHandler, StreamState,
 };
 
 type NativeStream<H> = (
@@ -56,6 +56,27 @@ impl StreamControl<'_> {
         self.stream
             .update_params(&mut [pod])
             .map_err(|error| operation("failed to update PipeWire format", error))
+    }
+
+    /// Advertises mapped buffers and supported frame metadata after fixation.
+    ///
+    /// # Errors
+    ///
+    /// Returns a native operation error when serialization or update fails.
+    pub fn acknowledge_format(&self, format: NegotiatedVideoFormat) -> Result<(), StreamError> {
+        let bytes = format::serialize_buffer_contract(format)?;
+        let mut pods = bytes
+            .iter()
+            .map(|bytes| {
+                pw::spa::pod::Pod::from_bytes(bytes).ok_or_else(|| StreamError::Operation {
+                    operation: "failed to deserialize PipeWire buffer contract",
+                    detail: "serialized contract was not a complete SPA pod".to_owned(),
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        self.stream
+            .update_params(&mut pods)
+            .map_err(|error| operation("failed to update PipeWire buffer contract", error))
     }
 }
 
@@ -113,6 +134,10 @@ where
         let attached = receiver
             ._inner
             .attach(self.mainloop.loop_(), move |command| {
+                if callback_exit.quit.get() {
+                    mainloop.quit();
+                    return;
+                }
                 let control = StreamControl { stream: &stream };
                 if invoke_callback("command", &callback_exit, || {
                     command_handler(&control, command)
