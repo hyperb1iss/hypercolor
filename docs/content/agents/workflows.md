@@ -196,7 +196,7 @@ After installing, the daemon picks up the new effect through a rescan. There is 
 
 ```bash
 hypercolor effects rescan
-# → Rescanned: 12 effects found
+# → Rescanned: 3 added, 1 updated, 0 removed
 hypercolor effects list --search aurora -j
 ```
 

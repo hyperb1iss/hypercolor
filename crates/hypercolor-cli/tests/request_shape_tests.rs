@@ -241,7 +241,9 @@ async fn effects_patch_uses_active_effect_color_schema() -> Result<()> {
                     |State(captured_body): State<SharedBody>,
                      Json(body): Json<serde_json::Value>| async move {
                         *captured_body.lock().await = Some(body);
-                        Json(serde_json::json!({"data": {}}))
+                        Json(serde_json::json!({
+                            "data": zone_resource_fixture(ZONE_ID, LAYER_ID, EFFECT_ID)
+                        }))
                     },
                 ),
             )
@@ -345,7 +347,9 @@ async fn effects_reset_replaces_the_real_layer_without_reapplying() -> Result<()
                  Json(body): Json<serde_json::Value>| async move {
                     *captured_uri.lock().await = Some(uri.to_string());
                     *captured_body.lock().await = Some(body);
-                    Json(serde_json::json!({ "data": {} }))
+                    Json(serde_json::json!({
+                        "data": zone_resource_fixture(ZONE_ID, LAYER_ID, EFFECT_ID)
+                    }))
                 },
             ),
         )
@@ -875,28 +879,46 @@ async fn scenes_deactivate_sends_empty_object_body() -> Result<()> {
     Ok(())
 }
 
+/// The zone resource every scene write answers with, in the shape the
+/// daemon actually publishes.
+fn zone_resource_fixture(zone_id: &str, layer_id: &str, effect_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": zone_id,
+        "name": "Primary",
+        "description": null,
+        "role": "primary",
+        "enabled": true,
+        "brightness": 1.0,
+        "color": null,
+        "display_target": null,
+        "members": [],
+        "layout": null,
+        "layers": [{
+            "id": layer_id,
+            "source": {
+                "type": "effect",
+                "effect_id": effect_id,
+                "controls": {}
+            },
+            "blend": "replace",
+            "opacity": 1.0
+        }]
+    })
+}
+
 async fn capture_effect_apply(
-    Path(effect): Path<String>,
+    Path(_effect): Path<String>,
     State(captured_body): State<SharedBody>,
     Json(body): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
     *captured_body.lock().await = Some(body);
     Json(serde_json::json!({
         "data": {
-            "zone": {
-                "id": "00000000-0000-0000-0000-000000000010",
-                "name": "Primary",
-                "enabled": true,
-                "brightness": 1.0,
-                "members": [],
-                "layers": [{
-                    "id": "00000000-0000-0000-0000-000000000011",
-                    "source": {
-                        "type": "effect",
-                        "effect_id": effect,
-                    },
-                }],
-            },
+            "zone": zone_resource_fixture(
+                "00000000-0000-0000-0000-000000000010",
+                "00000000-0000-0000-0000-000000000011",
+                "00000000-0000-0000-0000-000000000012",
+            ),
             "transition": { "type": "cut" },
             "output": { "applied": true },
         },
@@ -1374,6 +1396,62 @@ async fn layouts_list_requests_the_route_ceiling() -> Result<()> {
         captured_uris.lock().await.as_slice(),
         ["limit=200&offset=0"]
     );
+
+    Ok(())
+}
+
+/// Decode one `--json` invocation's stdout.
+async fn run_hyper_json(port: u16, args: &[&str]) -> Result<serde_json::Value> {
+    let output = run_hyper_output(port, args).await?;
+    if !output.status.success() {
+        bail!(
+            "hyper CLI failed (status={}):\nstderr:\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    serde_json::from_slice(&output.stdout).context("CLI --json output was not valid JSON")
+}
+
+#[tokio::test]
+async fn effects_list_json_output_preserves_the_daemon_payload() -> Result<()> {
+    let payload = serde_json::json!({
+        "items": [{
+            "id": "aurora",
+            "name": "Aurora",
+            "description": "Slow ribbons",
+            "author": "hyperb1iss",
+            "category": "ambient",
+            "source": "html",
+            "runnable": true,
+            "tags": ["calm"],
+            "version": "1.2.0",
+            "audio_reactive": false,
+            "input_reactive": false,
+            "capabilities": {
+                "audio_reactive": false,
+                "screen_reactive": false,
+                "input_reactive": false
+            }
+        }],
+        "total": 1
+    });
+    let expected = payload.clone();
+    let router = Router::new().route(
+        "/api/v1/effects",
+        get(move || {
+            let payload = payload.clone();
+            async move { Json(serde_json::json!({ "data": payload })) }
+        }),
+    );
+    let (port, shutdown_tx, task) = spawn_server(router).await?;
+
+    let rendered = run_hyper_json(port, &["effects", "list"]).await;
+
+    let _ = shutdown_tx.send(());
+    task.await.context("test server task join failed")?;
+
+    assert_eq!(rendered?, expected);
 
     Ok(())
 }
