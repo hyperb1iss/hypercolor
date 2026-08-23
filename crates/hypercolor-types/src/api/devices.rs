@@ -316,32 +316,24 @@ pub struct DiscoveryScanResult {
     pub scanners: Vec<DiscoveryScannerResult>,
 }
 
-/// Immediate acknowledgement for an asynchronous discovery scan.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-pub struct DiscoveryStartedResponse {
-    pub scan_id: String,
-    pub status: String,
-    pub targets: Vec<String>,
-    pub timeout_ms: u64,
-}
-
-/// Completed response for a synchronous discovery scan.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-pub struct DiscoveryCompletedResponse {
-    pub scan_id: String,
-    pub status: String,
-    pub result: DiscoveryScanResult,
-}
-
 /// Response from `POST /api/v1/devices/discover`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-#[serde(untagged)]
+#[serde(tag = "status", rename_all = "snake_case")]
 pub enum DiscoverResponse {
-    Started(DiscoveryStartedResponse),
-    Completed(DiscoveryCompletedResponse),
+    /// Immediate acknowledgement for an asynchronous discovery scan.
+    #[cfg_attr(feature = "schema", schema(title = "DiscoveryScanningResponse"))]
+    Scanning {
+        scan_id: String,
+        targets: Vec<String>,
+        timeout_ms: u64,
+    },
+    /// Completed response for a synchronous discovery scan.
+    #[cfg_attr(feature = "schema", schema(title = "DiscoveryCompletedResponse"))]
+    Completed {
+        scan_id: String,
+        result: DiscoveryScanResult,
+    },
 }
 
 /// Response for `POST /api/v1/devices/{id}/pair`.

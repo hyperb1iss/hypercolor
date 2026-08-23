@@ -14,9 +14,7 @@ use crate::app_state::AppState;
 use crate::discovery;
 use crate::domain::DomainError;
 
-pub use hypercolor_types::api::devices::{
-    DiscoverRequest, DiscoverResponse, DiscoveryCompletedResponse, DiscoveryStartedResponse,
-};
+pub use hypercolor_types::api::devices::{DiscoverRequest, DiscoverResponse};
 
 /// `POST /api/v1/devices/discover` — Trigger device discovery.
 pub async fn discover_devices(
@@ -61,11 +59,7 @@ pub async fn discover_devices(
         )
         .await;
 
-        return envelope::ok(DiscoverResponse::Completed(DiscoveryCompletedResponse {
-            scan_id,
-            status: "completed".to_owned(),
-            result,
-        }));
+        return envelope::ok(DiscoverResponse::Completed { scan_id, result });
     }
 
     let state_for_task = Arc::clone(&state);
@@ -82,10 +76,9 @@ pub async fn discover_devices(
         .await;
     });
 
-    envelope::accepted(DiscoverResponse::Started(DiscoveryStartedResponse {
+    envelope::accepted(DiscoverResponse::Scanning {
         scan_id,
-        status: "scanning".to_owned(),
         targets: target_names,
         timeout_ms: u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
-    }))
+    })
 }
