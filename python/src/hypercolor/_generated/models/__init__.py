@@ -518,6 +518,7 @@ from .preview_layout_response_200 import PreviewLayoutResponse200
 from .preview_runtime_status import PreviewRuntimeStatus
 from .preview_source import PreviewSource
 from .protected_source_grant_owner import ProtectedSourceGrantOwner
+from .protection import Protection
 from .put_config_key_response_200 import PutConfigKeyResponse200
 from .put_live_zone_layout_response_200 import PutLiveZoneLayoutResponse200
 from .redaction import Redaction
@@ -1100,6 +1101,7 @@ __all__ = (
     "PreviewRuntimeStatus",
     "PreviewSource",
     "ProtectedSourceGrantOwner",
+    "Protection",
     "PutConfigKeyResponse200",
     "PutLiveZoneLayoutResponse200",
     "Redaction",

@@ -6,7 +6,9 @@ from typing import TYPE_CHECKING, Any, TypeVar
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
+from ..models.protection import Protection
 from ..models.redaction import Redaction
+from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
     from ..models.apply_policy_type_0 import ApplyPolicyType0
@@ -32,6 +34,11 @@ class ConfigKeySchemaEntryListItem:
                 root suffixed `.*`, or `*` for the extensions catch-all.
             redaction (Redaction): How a key's value renders on read surfaces (config GET, schema,
                 events).
+            protection (Protection | Unset): Which writes to a row need a protected-control credential.
+
+                Protected controls start or retarget a consented capture stream,
+                so they stay behind an API key even on a keyless install; tuning an
+                already-consented stream does not.
     """
 
     apply: (
@@ -44,6 +51,7 @@ class ConfigKeySchemaEntryListItem:
     has_validator: bool
     pattern: str
     redaction: Redaction
+    protection: Protection | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -70,6 +78,10 @@ class ConfigKeySchemaEntryListItem:
 
         redaction = self.redaction.value
 
+        protection: str | Unset = UNSET
+        if not isinstance(self.protection, Unset):
+            protection = self.protection.value
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -80,6 +92,8 @@ class ConfigKeySchemaEntryListItem:
                 "redaction": redaction,
             }
         )
+        if protection is not UNSET:
+            field_dict["protection"] = protection
 
         return field_dict
 
@@ -148,11 +162,19 @@ class ConfigKeySchemaEntryListItem:
 
         redaction = Redaction(d.pop("redaction"))
 
+        _protection = d.pop("protection", UNSET)
+        protection: Protection | Unset
+        if isinstance(_protection, Unset):
+            protection = UNSET
+        else:
+            protection = Protection(_protection)
+
         config_key_schema_entry_list_item = cls(
             apply=apply,
             has_validator=has_validator,
             pattern=pattern,
             redaction=redaction,
+            protection=protection,
         )
 
         config_key_schema_entry_list_item.additional_properties = d

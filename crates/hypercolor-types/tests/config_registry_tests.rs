@@ -150,3 +150,64 @@ fn schema_entries_project_every_row() {
         .expect("capture row present");
     assert!(capture.has_validator);
 }
+
+#[test]
+fn protected_control_keys_are_exactly_the_consent_surface() {
+    let protected = [
+        "capture",
+        "capture.enabled",
+        "capture.source.kind",
+        "audio",
+        "audio.enabled",
+        "audio.device",
+        "input",
+        "input.enabled",
+        "input.keyboard",
+        "input.mouse",
+    ];
+    for key in protected {
+        assert!(
+            hypercolor_types::config_registry::requires_protected_control(key),
+            "{key} must require protected control"
+        );
+    }
+
+    let open = [
+        "audio.fft_size",
+        "audio.smoothing",
+        "audio.noise_gate",
+        "input.daemon_route",
+        "input.preview_route",
+        "daemon.target_fps",
+        "display",
+        "drivers.wled.api_key",
+        "extensions.anything",
+    ];
+    for key in open {
+        assert!(
+            !hypercolor_types::config_registry::requires_protected_control(key),
+            "{key} must stay open"
+        );
+    }
+}
+
+#[test]
+fn schema_entries_carry_protection() {
+    let entries = hypercolor_types::config_registry::schema_entries();
+    let capture = entries
+        .iter()
+        .find(|entry| entry.pattern == "capture")
+        .expect("capture section row");
+    assert_eq!(
+        capture.protection,
+        hypercolor_types::config_registry::Protection::Tree
+    );
+    let audio = entries
+        .iter()
+        .find(|entry| entry.pattern == "audio")
+        .expect("audio section row");
+    assert_eq!(
+        audio.protection,
+        hypercolor_types::config_registry::Protection::SectionRoot
+    );
+}

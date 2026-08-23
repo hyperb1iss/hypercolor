@@ -632,7 +632,13 @@ async fn config_schema_is_served_as_a_list_of_entries() {
     let entries = json["data"].as_array().expect("schema is a list");
     assert_keys(
         &entries[0],
-        &["pattern", "apply", "redaction", "has_validator"],
+        &[
+            "pattern",
+            "apply",
+            "redaction",
+            "has_validator",
+            "protection",
+        ],
         "config schema entry",
     );
 }

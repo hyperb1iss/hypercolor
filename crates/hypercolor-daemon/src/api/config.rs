@@ -99,33 +99,6 @@ pub async fn get_config_key(
 /// control-credential requirement as the dedicated capture endpoints
 /// (`PUT /capture/source` guards the identical `capture.source` mutation).
 ///
-/// The whole `capture` domain qualifies (screen content is the most
-/// sensitive plane and every leaf feeds the capture reconfiguration
-/// transaction). For audio and input, only the leaves that enable capture
-/// or retarget a device qualify: DSP tuning (`audio.fft_size`,
-/// `audio.smoothing`, ...) and interaction routing policy shape an
-/// already-consented stream and stay credential-free so a keyless install
-/// keeps its sliders.
-fn key_requires_protected_control(key: &str) -> bool {
-    if key == "capture"
-        || key
-            .strip_prefix("capture")
-            .is_some_and(|rest| rest.starts_with('.'))
-    {
-        return true;
-    }
-    matches!(
-        key,
-        "audio"
-            | "audio.enabled"
-            | "audio.device"
-            | "input"
-            | "input.enabled"
-            | "input.keyboard"
-            | "input.mouse"
-    )
-}
-
 /// Pseudo-key resetting the LED calibration cluster in one request. Not a
 /// registry key: the four fields are leaves of `capture`, not a subtree,
 /// so a section reset cannot address them together.
@@ -151,7 +124,7 @@ pub(crate) async fn put_config_key(
     if !config_registry::is_valid_key(&key) {
         return DomainError::malformed(format!("Malformed config key: {key}")).into_response();
     }
-    if key_requires_protected_control(&key)
+    if hypercolor_types::config_registry::requires_protected_control(&key)
         && let Some(rejection) = protected_control_rejection(auth_context)
     {
         return rejection;
@@ -170,7 +143,7 @@ pub(crate) async fn delete_config_key(
     if key != CAPTURE_CALIBRATION_RESET_KEY && !config_registry::is_valid_key(&key) {
         return DomainError::malformed(format!("Malformed config key: {key}")).into_response();
     }
-    if key_requires_protected_control(&key)
+    if hypercolor_types::config_registry::requires_protected_control(&key)
         && let Some(rejection) = protected_control_rejection(auth_context)
     {
         return rejection;

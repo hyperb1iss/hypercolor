@@ -126,6 +126,24 @@ pub enum Redaction {
     Secret,
 }
 
+/// Which writes to a row need a protected-control credential.
+///
+/// Protected controls start or retarget a consented capture stream,
+/// so they stay behind an API key even on a keyless install; tuning an
+/// already-consented stream does not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum Protection {
+    /// Any caller with config write access may set it.
+    Open,
+    /// Writing the whole section is protected; its leaves decide for
+    /// themselves through more specific rows.
+    SectionRoot,
+    /// The row and every key beneath it are protected.
+    Tree,
+}
+
 /// Extra validation a descriptor runs beyond the serde round-trip.
 pub type KeyValidator = fn(&serde_json::Value) -> Result<(), String>;
 
@@ -140,6 +158,8 @@ pub struct ConfigKeyDescriptor {
     pub validate: Option<KeyValidator>,
     /// Read-surface rendering.
     pub redaction: Redaction,
+    /// Which writes need a protected-control credential.
+    pub protection: Protection,
 }
 
 /// Declares the registry table plus the closed-section root list the
@@ -153,8 +173,8 @@ pub struct ConfigKeyDescriptor {
 /// policy only. Grow the macro when an exact row first needs more.
 macro_rules! config_key_registry {
     (
-        sections: [ $( $sroot:literal => $sapply:expr, $sredact:expr $(, validate: $svalidate:expr)? ; )* ]
-        exact: [ $( $ekey:literal => $eapply:expr ; )* ]
+        sections: [ $( $sroot:literal => $sapply:expr, $sredact:expr $(, validate: $svalidate:expr)? $(, protect: $sprotect:expr)? ; )* ]
+        exact: [ $( $ekey:literal => $eapply:expr $(, protect: $eprotect:expr)? ; )* ]
         namespaces: [ $( $nroot:literal => $napply:expr ; )* ]
     ) => {
         /// Every registry row, most-specific rows not required to come
@@ -167,24 +187,28 @@ macro_rules! config_key_registry {
                     apply: $sapply,
                     validate: config_key_registry!(@validate $($svalidate)?),
                     redaction: $sredact,
+                    protection: config_key_registry!(@protect $($sprotect)?),
                 },)*
                 $(ConfigKeyDescriptor {
                     pattern: KeyPattern::Exact($ekey),
                     apply: $eapply,
                     validate: None,
                     redaction: Redaction::Plain,
+                    protection: config_key_registry!(@protect $($eprotect)?),
                 },)*
                 $(ConfigKeyDescriptor {
                     pattern: KeyPattern::Namespace($nroot),
                     apply: $napply,
                     validate: None,
                     redaction: Redaction::Secret,
+                    protection: Protection::Open,
                 },)*
                 ConfigKeyDescriptor {
                     pattern: KeyPattern::ExtensionsCatchAll,
                     apply: ApplyPolicy::Inert,
                     validate: None,
                     redaction: Redaction::Secret,
+                    protection: Protection::Open,
                 },
             ];
             REGISTRY
@@ -205,6 +229,8 @@ macro_rules! config_key_registry {
     };
     (@validate $validate:expr) => { Some($validate) };
     (@validate) => { None };
+    (@protect $protect:expr) => { $protect };
+    (@protect) => { Protection::Open };
 }
 
 fn validate_capture_section(value: &serde_json::Value) -> Result<(), String> {
@@ -224,10 +250,14 @@ config_key_registry! {
         "effect_engine" => ApplyPolicy::Restart, Redaction::Plain;
         "rendering" => ApplyPolicy::Restart, Redaction::Plain;
         "media" => ApplyPolicy::LiveOnRead, Redaction::Plain;
-        "audio" => ApplyPolicy::Live(LiveSection::Audio), Redaction::Plain;
+        // Whole-section writes can retarget a consented stream; DSP
+        // tuning leaves stay open so a keyless install keeps its sliders.
+        "audio" => ApplyPolicy::Live(LiveSection::Audio), Redaction::Plain,
+            protect: Protection::SectionRoot;
         "capture" => ApplyPolicy::Live(LiveSection::Capture), Redaction::Plain,
-            validate: validate_capture_section;
-        "input" => ApplyPolicy::Live(LiveSection::Input), Redaction::Plain;
+            validate: validate_capture_section, protect: Protection::Tree;
+        "input" => ApplyPolicy::Live(LiveSection::Input), Redaction::Plain,
+            protect: Protection::SectionRoot;
         // The running render and display threads freeze their copies;
         // the API reading live is reporting, not application.
         "display" => ApplyPolicy::Restart, Redaction::Plain;
@@ -257,6 +287,12 @@ config_key_registry! {
         // Read from the manager on every effect-error event, unlike
         // the rest of its boot-frozen section.
         "effect_engine.effect_error_fallback" => ApplyPolicy::LiveOnRead;
+        // Starting or retargeting a capture source is a consent act.
+        "audio.enabled" => ApplyPolicy::Live(LiveSection::Audio), protect: Protection::Tree;
+        "audio.device" => ApplyPolicy::Live(LiveSection::Audio), protect: Protection::Tree;
+        "input.enabled" => ApplyPolicy::Live(LiveSection::Input), protect: Protection::Tree;
+        "input.keyboard" => ApplyPolicy::Live(LiveSection::Input), protect: Protection::Tree;
+        "input.mouse" => ApplyPolicy::Live(LiveSection::Input), protect: Protection::Tree;
     ]
     namespaces: [
         "drivers" => ApplyPolicy::LiveOnRead;
@@ -289,6 +325,18 @@ pub fn requires_restart(key: &str) -> bool {
     matches!(descriptor_for(key).apply, ApplyPolicy::Restart)
 }
 
+/// Whether writing `key` needs a protected-control credential.
+#[must_use]
+pub fn requires_protected_control(key: &str) -> bool {
+    let descriptor = descriptor_for(key);
+    match (descriptor.protection, descriptor.pattern) {
+        (Protection::Open, _) => false,
+        (Protection::Tree, _) => true,
+        (Protection::SectionRoot, KeyPattern::Section(root)) => key == root,
+        (Protection::SectionRoot, _) => true,
+    }
+}
+
 /// Whether `key` is masked on read surfaces.
 #[must_use]
 pub fn is_redacted(key: &str) -> bool {
@@ -309,6 +357,13 @@ pub struct ConfigKeySchemaEntry {
     pub redaction: Redaction,
     /// Whether the daemon runs extra validation beyond type checking.
     pub has_validator: bool,
+    /// Which writes need a protected-control credential.
+    #[serde(default = "default_protection")]
+    pub protection: Protection,
+}
+
+const fn default_protection() -> Protection {
+    Protection::Open
 }
 
 impl From<&ConfigKeyDescriptor> for ConfigKeySchemaEntry {
@@ -324,6 +379,7 @@ impl From<&ConfigKeyDescriptor> for ConfigKeySchemaEntry {
             apply: descriptor.apply,
             redaction: descriptor.redaction,
             has_validator: descriptor.validate.is_some(),
+            protection: descriptor.protection,
         }
     }
 }
