@@ -1662,3 +1662,38 @@ async fn drivers_list_json_output_preserves_the_daemon_payload() -> Result<()> {
 
     Ok(())
 }
+
+#[tokio::test]
+async fn library_presets_list_json_output_preserves_the_daemon_payload() -> Result<()> {
+    let payload = serde_json::json!({
+        "items": [{
+            "id": "0198c5b6-5555-7000-8000-000000000001",
+            "name": "Warm Desk",
+            "description": null,
+            "effect_id": "0198c5b6-5555-7000-8000-000000000002",
+            "controls": { "speed": { "kind": "float", "value": 0.25 } },
+            "tags": ["warm"],
+            "created_at_ms": 1_700_000_000_000_u64,
+            "updated_at_ms": 1_700_000_500_000_u64
+        }],
+        "total": 1
+    });
+    let expected = payload.clone();
+    let router = Router::new().route(
+        "/api/v1/library/presets",
+        get(move || {
+            let payload = payload.clone();
+            async move { Json(serde_json::json!({ "data": payload })) }
+        }),
+    );
+    let (port, shutdown_tx, task) = spawn_server(router).await?;
+
+    let rendered = run_hyper_json(port, &["library", "presets", "list"]).await;
+
+    let _ = shutdown_tx.send(());
+    task.await.context("test server task join failed")?;
+
+    assert_eq!(rendered?, expected);
+
+    Ok(())
+}
