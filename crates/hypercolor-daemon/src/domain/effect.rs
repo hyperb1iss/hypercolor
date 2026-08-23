@@ -41,7 +41,7 @@ use crate::domain::commit::SceneCommit;
 use crate::domain::context::SceneContext;
 use crate::domain::output::OutputContext;
 use crate::domain::spatial::SpatialService;
-use crate::domain::{DomainError, MutationContext, ResourceKind};
+use crate::domain::{DomainError, DomainErrorDetails, MutationContext, ResourceKind};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum IdentityMigrationPersistence {
@@ -301,11 +301,10 @@ impl EffectContext {
         if current_generation != expected_generation {
             return Err(DomainError::conflict_details(
                 "effect catalog changed after resolving this request",
-                serde_json::json!({
-                    "kind": "effect_resolution_superseded",
-                    "expected_generation": expected_generation,
-                    "current_generation": current_generation,
-                }),
+                DomainErrorDetails::EffectResolutionSuperseded {
+                    expected_generation,
+                    current_generation,
+                },
             ));
         }
         Ok(EffectMutationAdmission { _guard: guard })
@@ -1409,7 +1408,7 @@ fn validate_control_values<'a>(
     } else {
         Err(DomainError::validation_details(
             "one or more control values were rejected",
-            serde_json::json!({ "rejected": rejected }),
+            DomainErrorDetails::RejectedControls { rejected },
         ))
     }
 }

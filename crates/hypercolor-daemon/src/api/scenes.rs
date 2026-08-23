@@ -13,7 +13,7 @@ use hypercolor_types::scene::{Scene, SceneId, SceneKind};
 
 use crate::api::envelope;
 use crate::app_state::AppState;
-use crate::domain::{DomainError, ResourceKind};
+use crate::domain::{DomainError, DomainErrorDetails, ResourceKind};
 
 // ── Request / Response Types ─────────────────────────────────────────────
 
@@ -200,14 +200,10 @@ pub async fn activate_scene(
         let admission = state.domains.scene.evaluate_media_admission(scene).await;
         (scene_id, admission)
     };
-    if let Some(violation) = admission.violation.as_ref() {
+    if let Some(violation) = admission.violation {
         return DomainError::validation_details(
             violation.message.clone(),
-            serde_json::json!({
-                "caps": violation.caps,
-                "counts": violation.counts,
-                "layers": violation.layers,
-            }),
+            DomainErrorDetails::MediaAdmission(Box::new(violation)),
         )
         .into_response();
     }

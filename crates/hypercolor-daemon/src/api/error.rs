@@ -6,7 +6,7 @@ use axum::response::{IntoResponse, Response};
 use hypercolor_types::api::envelope::{ApiErrorBody, ApiErrorDetail};
 
 use super::envelope::response_meta;
-use crate::domain::DomainError;
+use crate::domain::{DomainError, DomainErrorDetails};
 
 const fn status(error: &DomainError) -> StatusCode {
     match error {
@@ -27,15 +27,66 @@ const fn status(error: &DomainError) -> StatusCode {
     }
 }
 
+/// Wire projection for one typed recovery-context payload.
+fn details_json(details: &DomainErrorDetails) -> serde_json::Value {
+    match details {
+        DomainErrorDetails::SceneCommitSuperseded {
+            expected_revision,
+            current_revision,
+        } => serde_json::json!({
+            "kind": "scene_commit_superseded",
+            "expected_revision": expected_revision,
+            "current_revision": current_revision,
+        }),
+        DomainErrorDetails::EffectIdMigrationSuperseded {
+            expected_revision,
+            current_revision,
+        } => serde_json::json!({
+            "kind": "effect_id_migration_superseded",
+            "expected_revision": expected_revision,
+            "current_revision": current_revision,
+        }),
+        DomainErrorDetails::EffectResolutionSuperseded {
+            expected_generation,
+            current_generation,
+        } => serde_json::json!({
+            "kind": "effect_resolution_superseded",
+            "expected_generation": expected_generation,
+            "current_generation": current_generation,
+        }),
+        DomainErrorDetails::MediaAdmission(violation) => serde_json::json!({
+            "caps": violation.caps,
+            "counts": violation.counts,
+            "layers": violation.layers,
+        }),
+        DomainErrorDetails::Zone { zone_id } => serde_json::json!({ "zone_id": zone_id }),
+        DomainErrorDetails::Layer { layer_id } => serde_json::json!({ "layer_id": layer_id }),
+        DomainErrorDetails::Member { member } => serde_json::json!({ "member": member }),
+        DomainErrorDetails::UnknownMember { unknown_member } => {
+            serde_json::json!({ "unknown_member": unknown_member })
+        }
+        DomainErrorDetails::MemberCount { expected, received } => serde_json::json!({
+            "expected": expected,
+            "received": received,
+        }),
+        DomainErrorDetails::Errors { errors } => serde_json::json!({ "errors": errors }),
+        DomainErrorDetails::Segments { segments } => serde_json::json!({ "segments": segments }),
+        DomainErrorDetails::RejectedControls { rejected } => {
+            serde_json::json!({ "rejected": rejected })
+        }
+        DomainErrorDetails::Adapter(details) => details.clone(),
+    }
+}
+
 /// Structured recovery context every transport projection shares.
 pub(crate) fn client_details(error: &DomainError) -> Option<serde_json::Value> {
     match error {
         DomainError::Validation { field, details, .. } => {
-            merge_field(details.clone(), field.as_ref())
+            merge_field(details.as_ref().map(details_json), field.as_ref())
         }
         DomainError::Conflict { details, .. }
         | DomainError::Forbidden { details, .. }
-        | DomainError::ServiceUnavailable { details, .. } => details.clone(),
+        | DomainError::ServiceUnavailable { details, .. } => details.as_ref().map(details_json),
         DomainError::ControlBound { keys } => Some(serde_json::json!({ "bound": keys })),
         DomainError::PreconditionFailed {
             expected, current, ..
@@ -175,7 +226,9 @@ mod tests {
         let error = DomainError::Validation {
             message: "no valid controls to apply".to_owned(),
             field: Some("controls".to_owned()),
-            details: Some(json!({ "rejected": ["speed"] })),
+            details: Some(DomainErrorDetails::RejectedControls {
+                rejected: vec!["speed".to_owned()],
+            }),
         };
         let json = body_json(error.into_response()).await;
         assert_eq!(json["error"]["details"]["field"], "controls");

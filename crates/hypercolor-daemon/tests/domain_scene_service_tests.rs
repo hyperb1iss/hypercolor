@@ -49,7 +49,7 @@ use hypercolor_daemon::domain::scene::{
 use hypercolor_daemon::domain::scene_tree::{
     ClearScene, PatchLayerControls, clear_scene, patch_layer_controls, read_document,
 };
-use hypercolor_daemon::domain::{DomainError, MutationContext};
+use hypercolor_daemon::domain::{DomainError, DomainErrorDetails, MutationContext};
 use hypercolor_daemon::scene_store;
 use hypercolor_daemon::zone_layout_preview::ZoneLayoutPreviewOwner;
 
@@ -1111,13 +1111,18 @@ async fn a_stale_base_revision_is_rejected_before_admission() {
     // a 412 here would be indistinguishable from the `If-Match` failures
     // the zone and layer routes serve.
     match error {
-        DomainError::Conflict { details, .. } => {
-            let details = details.expect("the conflict names the revisions");
-            assert_eq!(details["kind"], "scene_commit_superseded");
-            assert_eq!(details["expected_revision"], commit.revision() - 1);
-            assert_eq!(details["current_revision"], commit.revision());
+        DomainError::Conflict {
+            details:
+                Some(DomainErrorDetails::SceneCommitSuperseded {
+                    expected_revision,
+                    current_revision,
+                }),
+            ..
+        } => {
+            assert_eq!(expected_revision, commit.revision() - 1);
+            assert_eq!(current_revision, commit.revision());
         }
-        other => panic!("expected Conflict, got {other:?}"),
+        other => panic!("expected a superseded-commit Conflict, got {other:?}"),
     }
 }
 

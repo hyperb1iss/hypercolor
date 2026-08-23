@@ -46,6 +46,8 @@ pub mod zone;
 
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::event::ChangeTrigger;
+use hypercolor_types::layer::SceneLayerId;
+use hypercolor_types::scene::ZoneId;
 
 /// What kind of resource a domain error is about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -132,7 +134,7 @@ pub enum DomainError {
         /// Caller-actionable structured context (rejected control ids,
         /// cap violations, per-layer diagnostics). Rides the envelope's
         /// `error.details`; merges with `field` when both are present.
-        details: Option<serde_json::Value>,
+        details: Option<DomainErrorDetails>,
     },
     /// The request cannot be parsed at all — a header, path segment, or
     /// body fragment whose syntax is wrong, as distinct from a
@@ -148,7 +150,7 @@ pub enum DomainError {
         /// Human-readable description.
         message: String,
         /// Caller-actionable structured context.
-        details: Option<serde_json::Value>,
+        details: Option<DomainErrorDetails>,
     },
     /// A control write names keys an input binding already drives
     /// (Spec 78 §1.6). Recoverable in the same shape: the caller either
@@ -172,7 +174,7 @@ pub enum DomainError {
         message: String,
         /// Caller-actionable structured context (required tier,
         /// rejected client address, invalid allow-list rules).
-        details: Option<serde_json::Value>,
+        details: Option<DomainErrorDetails>,
     },
     /// The payload exceeds what the route accepts.
     #[error("payload exceeds the {limit_bytes} byte limit")]
@@ -222,7 +224,7 @@ pub enum DomainError {
         /// Human-readable description.
         message: String,
         /// Caller-actionable structured context.
-        details: Option<serde_json::Value>,
+        details: Option<DomainErrorDetails>,
     },
     /// Unexpected internal failure. Renders generically on the wire;
     /// the full chain goes to tracing.
@@ -263,11 +265,14 @@ impl DomainError {
     /// A semantic validation failure carrying structured context the
     /// caller needs in order to correct the request.
     #[must_use]
-    pub fn validation_details(message: impl Into<String>, details: serde_json::Value) -> Self {
+    pub fn validation_details(
+        message: impl Into<String>,
+        details: impl Into<DomainErrorDetails>,
+    ) -> Self {
         Self::Validation {
             message: message.into(),
             field: None,
-            details: Some(details),
+            details: Some(details.into()),
         }
     }
 
@@ -290,10 +295,13 @@ impl DomainError {
 
     /// A state conflict carrying structured context.
     #[must_use]
-    pub fn conflict_details(message: impl Into<String>, details: serde_json::Value) -> Self {
+    pub fn conflict_details(
+        message: impl Into<String>,
+        details: impl Into<DomainErrorDetails>,
+    ) -> Self {
         Self::Conflict {
             message: message.into(),
-            details: Some(details),
+            details: Some(details.into()),
         }
     }
 
@@ -316,10 +324,13 @@ impl DomainError {
 
     /// A refusal carrying structured context.
     #[must_use]
-    pub fn forbidden_details(message: impl Into<String>, details: serde_json::Value) -> Self {
+    pub fn forbidden_details(
+        message: impl Into<String>,
+        details: impl Into<DomainErrorDetails>,
+    ) -> Self {
         Self::Forbidden {
             message: message.into(),
-            details: Some(details),
+            details: Some(details.into()),
         }
     }
 
@@ -335,11 +346,11 @@ impl DomainError {
     #[must_use]
     pub fn service_unavailable_details(
         message: impl Into<String>,
-        details: serde_json::Value,
+        details: impl Into<DomainErrorDetails>,
     ) -> Self {
         Self::ServiceUnavailable {
             message: message.into(),
-            details: Some(details),
+            details: Some(details.into()),
         }
     }
 
@@ -372,6 +383,91 @@ impl DomainError {
             Self::Internal(_) => "internal error".to_owned(),
             other => other.to_string(),
         }
+    }
+}
+
+/// Structured recovery context a refusal carries beside its message.
+///
+/// Every domain shape is a named variant, so a service that raises one
+/// and a service that branches on one agree at compile time. Transport
+/// projections turn these into wire JSON; the domain never does.
+#[derive(Debug)]
+pub enum DomainErrorDetails {
+    /// A scene commit lost its race with a newer commit.
+    SceneCommitSuperseded {
+        /// The revision the commit was built against.
+        expected_revision: u64,
+        /// The revision the scene holds now.
+        current_revision: u64,
+    },
+    /// A persisted effect-id migration lost its race with newer state.
+    EffectIdMigrationSuperseded {
+        /// The revision the migration was built against.
+        expected_revision: u64,
+        /// The revision the scene holds now.
+        current_revision: u64,
+    },
+    /// Work resolved against a catalog generation the registry left.
+    EffectResolutionSuperseded {
+        /// The generation the request resolved against.
+        expected_generation: u64,
+        /// The generation the registry holds now.
+        current_generation: u64,
+    },
+    /// A scene candidate exceeds the configured media producer caps.
+    MediaAdmission(Box<crate::domain::scene::MediaAdmissionViolationDetails>),
+    /// The zone the request named.
+    Zone {
+        /// Which zone.
+        zone_id: ZoneId,
+    },
+    /// The layer the request named.
+    Layer {
+        /// Which layer.
+        layer_id: SceneLayerId,
+    },
+    /// The zone member the request named.
+    Member {
+        /// Which member.
+        member: String,
+    },
+    /// A placement naming a member the zone does not hold.
+    UnknownMember {
+        /// The member id that missed.
+        unknown_member: String,
+    },
+    /// A placement set whose size disagrees with the zone's membership.
+    MemberCount {
+        /// How many members the zone holds.
+        expected: usize,
+        /// How many placements the request named.
+        received: usize,
+    },
+    /// Per-item validation failures from a payload the domain rejected.
+    Errors {
+        /// One message per failure, in payload order.
+        errors: Vec<String>,
+    },
+    /// The segments a multi-segment device offers.
+    Segments {
+        /// Every assignable segment name.
+        segments: Vec<String>,
+    },
+    /// Control values the effect schema refused.
+    RejectedControls {
+        /// One message per rejected control.
+        rejected: Vec<String>,
+    },
+    /// Wire context an adapter shaped for its own transport.
+    ///
+    /// Domain modules cannot reach this variant: `serde_json` is fenced
+    /// out of their sources by `internal_api_surface_tests`.
+    Adapter(serde_json::Value),
+}
+
+impl From<serde_json::Value> for DomainErrorDetails {
+    fn from(details: serde_json::Value) -> Self {
+        Self::Adapter(details)
     }
 }
 

@@ -58,7 +58,7 @@ use crate::domain::effect::IdentityMigrationPersistence;
 use crate::domain::layout::LayoutContext;
 use crate::domain::output::OutputContext;
 use crate::domain::spatial::SpatialService;
-use crate::domain::{DomainError, ResourceKind};
+use crate::domain::{DomainError, DomainErrorDetails, ResourceKind};
 use crate::persistence::AtomicWriteOutcome;
 use crate::scene_store::{AdmittedSceneStoreSave, SceneStore, SceneStoreSave};
 use crate::scene_transactions::{LayoutTransactionRejection, LayoutUpdateGuard};
@@ -307,11 +307,10 @@ impl SceneService {
         if current_revision != migration.base_revision {
             return Err(DomainError::conflict_details(
                 "effect ID migration was superseded by newer scene state",
-                serde_json::json!({
-                    "kind": "effect_id_migration_superseded",
-                    "expected_revision": migration.base_revision,
-                    "current_revision": current_revision,
-                }),
+                DomainErrorDetails::EffectIdMigrationSuperseded {
+                    expected_revision: migration.base_revision,
+                    current_revision,
+                },
             ));
         }
 
@@ -438,11 +437,10 @@ impl SceneService {
                     format!(
                         "Scene state changed while applying this request; current revision is {current_revision}"
                     ),
-                    serde_json::json!({
-                        "kind": "scene_commit_superseded",
-                        "expected_revision": base_revision,
-                        "current_revision": current_revision,
-                    }),
+                    DomainErrorDetails::SceneCommitSuperseded {
+                        expected_revision: base_revision,
+                        current_revision,
+                    },
                 ));
             }
 
@@ -1721,12 +1719,8 @@ impl MediaAdmissionContext {
             return Ok(());
         };
         Err(DomainError::validation_details(
-            violation.message,
-            serde_json::json!({
-                "caps": violation.caps,
-                "counts": violation.counts,
-                "layers": violation.layers,
-            }),
+            violation.message.clone(),
+            DomainErrorDetails::MediaAdmission(Box::new(violation)),
         ))
     }
 
@@ -1781,12 +1775,8 @@ pub fn validate_scene_media_admission(
         return Ok(());
     };
     Err(DomainError::validation_details(
-        violation.message,
-        serde_json::json!({
-            "caps": violation.caps,
-            "counts": violation.counts,
-            "layers": violation.layers,
-        }),
+        violation.message.clone(),
+        DomainErrorDetails::MediaAdmission(Box::new(violation)),
     ))
 }
 
@@ -2341,13 +2331,13 @@ fn validate_replacement_identities(
             if !zone_ids.contains(&zone_id) {
                 return Err(DomainError::validation_details(
                     "supplied zone id does not belong to this scene",
-                    serde_json::json!({ "zone_id": zone_id }),
+                    DomainErrorDetails::Zone { zone_id },
                 ));
             }
             if !requested_zones.insert(zone_id) {
                 return Err(DomainError::validation_details(
                     "zone ids must be unique",
-                    serde_json::json!({ "zone_id": zone_id }),
+                    DomainErrorDetails::Zone { zone_id },
                 ));
             }
         }
@@ -2356,13 +2346,13 @@ fn validate_replacement_identities(
                 if !layer_ids.contains(&layer_id) {
                     return Err(DomainError::validation_details(
                         "supplied layer id does not belong to this scene",
-                        serde_json::json!({ "layer_id": layer_id }),
+                        DomainErrorDetails::Layer { layer_id },
                     ));
                 }
                 if !requested_layers.insert(layer_id) {
                     return Err(DomainError::validation_details(
                         "layer ids must be unique",
-                        serde_json::json!({ "layer_id": layer_id }),
+                        DomainErrorDetails::Layer { layer_id },
                     ));
                 }
             }
@@ -2456,13 +2446,17 @@ fn replacement_zone_layout(
         let Some(member) = members.get(member_id) else {
             return Err(DomainError::validation_details(
                 "layout placement names an unknown zone member",
-                serde_json::json!({ "member": member_id }),
+                DomainErrorDetails::Member {
+                    member: member_id.to_owned(),
+                },
             ));
         };
         if !placed.insert(member_id) {
             return Err(DomainError::validation_details(
                 "layout placements must name each zone member once",
-                serde_json::json!({ "member": member_id }),
+                DomainErrorDetails::Member {
+                    member: member_id.to_owned(),
+                },
             ));
         }
         let mut output = stored_outputs

@@ -35,7 +35,7 @@ use crate::domain::effect::EffectContext;
 use crate::domain::layout::LayoutContext;
 use crate::domain::output::OutputContext;
 use crate::domain::scene::SceneMutation;
-use crate::domain::{DomainError, MutationContext, ResourceKind};
+use crate::domain::{DomainError, DomainErrorDetails, MutationContext, ResourceKind};
 
 /// Live scene-tree authority shared by REST and MCP adapters.
 #[derive(Clone)]
@@ -775,7 +775,7 @@ pub(crate) fn layer_error(
         },
         LayerMutationError::InvalidLayer { errors } => DomainError::validation_details(
             "Layer payload is invalid",
-            serde_json::json!({ "errors": errors }),
+            DomainErrorDetails::Errors { errors },
         ),
         LayerMutationError::InvalidIndex { index, len } => DomainError::validation(format!(
             "Layer index {index} is out of range for stack length {len}"
@@ -861,10 +861,9 @@ fn scene_commit_was_superseded(error: &DomainError) -> bool {
     matches!(
         error,
         DomainError::Conflict {
-            details: Some(details),
+            details: Some(DomainErrorDetails::SceneCommitSuperseded { .. }),
             ..
-        } if details.get("kind").and_then(serde_json::Value::as_str)
-            == Some("scene_commit_superseded")
+        }
     )
 }
 
@@ -900,12 +899,12 @@ fn resolve_members(
             // unambiguous on single-segment hardware.
             _ => Err(DomainError::validation_details(
                 "this device has more than one segment; name the segments to assign",
-                serde_json::json!({
-                    "segments": candidates
+                DomainErrorDetails::Segments {
+                    segments: candidates
                         .iter()
                         .filter_map(|output| output.zone_name.clone())
-                        .collect::<Vec<_>>(),
-                }),
+                        .collect(),
+                },
             )),
         };
     }
@@ -969,13 +968,17 @@ fn layout_from_placements(
         else {
             return Err(DomainError::validation_details(
                 "layout placements must name exactly the zone's current members",
-                serde_json::json!({ "unknown_member": placement.member.0 }),
+                DomainErrorDetails::UnknownMember {
+                    unknown_member: placement.member.0,
+                },
             ));
         };
         if placement.topology != output.topology {
             return Err(DomainError::validation_details(
                 "layout placements cannot change a member's LED topology",
-                serde_json::json!({ "member": placement.member.0 }),
+                DomainErrorDetails::Member {
+                    member: placement.member.0,
+                },
             ));
         }
         output.position = placement.position;
@@ -989,10 +992,10 @@ fn layout_from_placements(
     if ordered.len() != stored.zones.len() {
         return Err(DomainError::validation_details(
             "layout placements must name exactly the zone's current members",
-            serde_json::json!({
-                "expected": stored.zones.len(),
-                "received": ordered.len(),
-            }),
+            DomainErrorDetails::MemberCount {
+                expected: stored.zones.len(),
+                received: ordered.len(),
+            },
         ));
     }
 
