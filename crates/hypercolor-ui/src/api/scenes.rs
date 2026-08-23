@@ -120,12 +120,11 @@ pub async fn rename_scene(scene_id: &str, name: &str) -> ApiResult<()> {
     .await?
     {
         client::MutationOutcome::Applied(_) => Ok(()),
-        client::MutationOutcome::Stale { current } => Err(ApiError::Http {
-            status: 412,
-            message: Some(format!(
+        client::MutationOutcome::Stale { current } => {
+            Err(ApiError::precondition_failed(format!(
                 "Scene changed while it was being renamed; reload revision {current}"
-            )),
-        }),
+            )))
+        }
     }
 }
 

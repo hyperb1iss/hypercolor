@@ -167,12 +167,11 @@ where
         client::MutationOutcome::Applied(response) => {
             effect_target_from_apply(effect_id, &response)
         }
-        client::MutationOutcome::Stale { current } => Err(ApiError::Http {
-            status: 412,
-            message: Some(format!(
+        client::MutationOutcome::Stale { current } => {
+            Err(ApiError::precondition_failed(format!(
                 "Scene changed from revision {expected_revision} to {current} before preset apply"
-            )),
-        }),
+            )))
+        }
     }
 }
 
@@ -214,13 +213,10 @@ pub async fn reset_effect_controls(
 ) -> ApiResult<EffectLayerTarget> {
     let scene: SceneDocument = client::fetch_json("/api/v1/scene").await?;
     if scene.revision != expected_revision {
-        return Err(ApiError::Http {
-            status: 412,
-            message: Some(format!(
-                "Scene changed from revision {expected_revision} to {} before controls reset",
-                scene.revision
-            )),
-        });
+        return Err(ApiError::precondition_failed(format!(
+            "Scene changed from revision {expected_revision} to {} before controls reset",
+            scene.revision
+        )));
     }
     let zone = scene
         .zones
@@ -280,12 +276,11 @@ pub async fn reset_effect_controls(
     .await?;
     match outcome {
         client::MutationOutcome::Applied(zone) => effect_target_from_zone(&target.effect_id, &zone),
-        client::MutationOutcome::Stale { current } => Err(ApiError::Http {
-            status: 412,
-            message: Some(format!(
+        client::MutationOutcome::Stale { current } => {
+            Err(ApiError::precondition_failed(format!(
                 "Scene changed from revision {expected_revision} to {current} before controls reset"
-            )),
-        }),
+            )))
+        }
     }
 }
 
@@ -396,7 +391,7 @@ pub async fn upload_effect(file: File) -> ApiResult<InstalledEffectResponse> {
                     .map(str::to_owned)
             })
             .filter(|message| !message.is_empty());
-        return Err(ApiError::Http { status, message });
+        return Err(ApiError::http(status, message));
     }
 
     response

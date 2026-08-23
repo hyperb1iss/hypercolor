@@ -100,16 +100,30 @@ pub async fn delete_layer(
 
 /// Patch one real effect layer. Control writes are unguarded by contract;
 /// a replacement fences stale writes by retiring the addressed layer id.
+///
+/// A key an input binding owns comes back `409 control_bound`, and the
+/// daemon names the offending keys in `error.details.bound`. Writing a
+/// control directly is the user taking manual command of it, so the same
+/// patch is resent with those bindings cleared: removal and the new values
+/// land in one atomic commit, which is exactly what `clear_bindings` exists
+/// for.
 pub async fn patch_layer_controls(
     zone_id: &str,
     layer_id: &str,
     controls: &std::collections::HashMap<String, ControlValue>,
 ) -> ApiResult<()> {
-    client::patch_json_discard(
-        &format!("/api/v1/scene/zones/{zone_id}/layers/{layer_id}/controls"),
-        &control_patch_request(controls, Vec::new()),
-    )
-    .await
+    let url = format!("/api/v1/scene/zones/{zone_id}/layers/{layer_id}/controls");
+    let error =
+        match client::patch_json_discard(&url, &control_patch_request(controls, Vec::new())).await {
+            Ok(()) => return Ok(()),
+            Err(error) => error,
+        };
+
+    let bound = error.bound_control_keys();
+    if bound.is_empty() {
+        return Err(error);
+    }
+    client::patch_json_discard(&url, &control_patch_request(controls, bound)).await
 }
 
 #[must_use]

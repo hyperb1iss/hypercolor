@@ -229,12 +229,9 @@ pub fn use_control_patch_session(config: ControlPatchConfig) -> ControlPatchSess
                             }
                             ReconcileAction::GiveUp { current } => {
                                 version.set(Some(current));
-                                return Err(ApiError::Http {
-                                    status: 412,
-                                    message: Some(format!(
-                                        "control state changed again at version {current}"
-                                    )),
-                                });
+                                return Err(ApiError::precondition_failed(format!(
+                                    "control state changed again at version {current}"
+                                )));
                             }
                         }
                     }

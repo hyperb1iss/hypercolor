@@ -8,7 +8,7 @@
 use std::{cell::RefCell, fmt};
 
 use gloo_net::http::{Method, RequestBuilder, Response};
-use hypercolor_types::api::{ApiResponse, ListResponse};
+use hypercolor_types::api::{ApiErrorBody, ApiResponse, ListResponse};
 use serde::{Serialize, de::DeserializeOwned};
 
 #[cfg(target_arch = "wasm32")]
@@ -53,9 +53,15 @@ pub enum ApiError {
     /// Transport-layer failure (socket, CORS, abort, DNS, etc.).
     Network(String),
     /// Non-2xx response from the server.
+    ///
+    /// `code` and `details` come from the daemon's canonical error
+    /// envelope, so callers can branch on the stable machine-readable code
+    /// instead of pattern-matching human prose.
     Http {
         status: u16,
+        code: Option<String>,
         message: Option<String>,
+        details: Option<serde_json::Value>,
     },
     /// Response body couldn't be deserialized into the expected envelope.
     Parse(String),
@@ -70,14 +76,79 @@ impl fmt::Display for ApiError {
             Self::Http {
                 status,
                 message: Some(message),
+                ..
             } => write!(f, "{message} (HTTP {status})"),
             Self::Http {
                 status,
                 message: None,
+                ..
             } => write!(f, "HTTP {status}"),
             Self::Parse(msg) => write!(f, "Parse error: {msg}"),
             Self::Serialize(msg) => write!(f, "Serialize error: {msg}"),
         }
+    }
+}
+
+impl ApiError {
+    /// A status failure the client itself raised, with no daemon error
+    /// envelope behind it.
+    #[must_use]
+    pub const fn http(status: u16, message: Option<String>) -> Self {
+        Self::Http {
+            status,
+            code: None,
+            message,
+            details: None,
+        }
+    }
+
+    /// A locally detected stale-revision failure, coded like the daemon's.
+    #[must_use]
+    pub fn precondition_failed(message: impl Into<String>) -> Self {
+        Self::Http {
+            status: 412,
+            code: Some("precondition_failed".to_owned()),
+            message: Some(message.into()),
+            details: None,
+        }
+    }
+
+    /// The daemon's stable `snake_case` error code, when the failure came
+    /// back as the canonical error envelope.
+    #[must_use]
+    pub fn code(&self) -> Option<&str> {
+        match self {
+            Self::Http { code, .. } => code.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// Control keys the daemon refused because an input binding owns them.
+    ///
+    /// Empty for every failure that is not `control_bound`.
+    #[must_use]
+    pub fn bound_control_keys(&self) -> Vec<String> {
+        let Self::Http {
+            code: Some(code),
+            details: Some(details),
+            ..
+        } = self
+        else {
+            return Vec::new();
+        };
+        if code != "control_bound" {
+            return Vec::new();
+        }
+        details
+            .get("bound")
+            .and_then(serde_json::Value::as_array)
+            .map(|keys| {
+                keys.iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .map(ToOwned::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 }
 
@@ -126,12 +197,44 @@ async fn ensure_success(resp: Response) -> ApiResult<Response> {
 
 async fn http_error(resp: Response) -> ApiError {
     let status = resp.status();
-    let message = resp
-        .json::<serde_json::Value>()
-        .await
-        .ok()
-        .and_then(|body| extract_error_message(&body));
-    ApiError::Http { status, message }
+    let Ok(body) = resp.json::<serde_json::Value>().await else {
+        return ApiError::Http {
+            status,
+            code: None,
+            message: None,
+            details: None,
+        };
+    };
+    http_error_from_body(status, &body)
+}
+
+/// Project the daemon's canonical error envelope onto [`ApiError::Http`].
+///
+/// Routes outside the envelope (Axum's own rejections, binary responses)
+/// still land here, so a body that does not deserialize degrades to the
+/// message pointer rather than losing the status.
+#[must_use]
+pub fn http_error_from_body(status: u16, body: &serde_json::Value) -> ApiError {
+    if let Ok(envelope) = serde_json::from_value::<ApiErrorBody>(body.clone()) {
+        let message = Some(envelope.error.message)
+            .map(|message| message.trim().to_owned())
+            .filter(|message| !message.is_empty());
+        return ApiError::Http {
+            status,
+            code: Some(envelope.error.code),
+            message,
+            details: envelope.error.details,
+        };
+    }
+    ApiError::Http {
+        status,
+        code: body
+            .pointer("/error/code")
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned),
+        message: extract_error_message(body),
+        details: body.pointer("/error/details").cloned(),
+    }
 }
 
 fn extract_error_message(body: &serde_json::Value) -> Option<String> {
@@ -640,10 +743,7 @@ mod tests {
 
     #[test]
     fn http_error_display_includes_server_message() {
-        let error = ApiError::Http {
-            status: 409,
-            message: Some("Scene is snapshot locked".to_owned()),
-        };
+        let error = ApiError::http(409, Some("Scene is snapshot locked".to_owned()));
 
         assert_eq!(error.to_string(), "Scene is snapshot locked (HTTP 409)");
     }

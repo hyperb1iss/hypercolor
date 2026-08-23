@@ -103,10 +103,9 @@ async fn apply_effect_layer(zone_id: &str, source: &LayerSource) -> api::ApiResu
     };
     match outcome {
         api::LayerStackOutcome::Applied(_) => Ok(()),
-        api::LayerStackOutcome::Stale { current } => Err(api::ApiError::Http {
-            status: 412,
-            message: Some(format!("Layer stack changed at revision {current}")),
-        }),
+        api::LayerStackOutcome::Stale { current } => Err(api::ApiError::precondition_failed(
+            format!("Layer stack changed at revision {current}"),
+        )),
     }
 }
 

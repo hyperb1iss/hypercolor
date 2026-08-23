@@ -47,7 +47,7 @@ pub async fn upload_asset(file: File) -> ApiResult<AssetUploadResponse> {
             .as_ref()
             .and_then(|value| value["error"]["message"].as_str())
             .map(str::to_owned);
-        return Err(ApiError::Http { status, message });
+        return Err(ApiError::http(status, message));
     }
 
     response
