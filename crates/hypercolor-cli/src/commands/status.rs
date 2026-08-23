@@ -105,7 +105,7 @@ pub(crate) fn exit_code_for_error(error: &anyhow::Error) -> Option<i32> {
 /// Returns an error if the daemon is unreachable.
 pub async fn execute(args: &StatusArgs, client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
     if args.watch {
-        return watch_status(args, client, ctx).await;
+        return Box::pin(watch_status(args, client, ctx)).await;
     }
 
     let response = status_from_system(client.get("/system").await?)?;
@@ -121,7 +121,13 @@ fn status_from_system(system: SystemResource) -> Result<SystemStatus> {
 }
 
 async fn watch_status(args: &StatusArgs, client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
-    watch_status_until(args, client, ctx, tokio::signal::ctrl_c()).await
+    Box::pin(watch_status_until(
+        args,
+        client,
+        ctx,
+        tokio::signal::ctrl_c(),
+    ))
+    .await
 }
 
 async fn watch_status_until<C, F>(
