@@ -996,7 +996,10 @@ async fn attachment_identify_separates_missing_slots_from_unusable_selections() 
     .await;
     assert_eq!(missing_slot.status(), StatusCode::NOT_FOUND);
     let missing_slot_json = body_json(missing_slot).await;
-    assert_eq!(missing_slot_json["error"]["code"], "not_found");
+    assert_eq!(
+        missing_slot_json["error"]["code"],
+        "attachment_slot_not_found"
+    );
     assert_eq!(
         missing_slot_json["error"]["message"],
         "attachment slot not found: no-such-slot"

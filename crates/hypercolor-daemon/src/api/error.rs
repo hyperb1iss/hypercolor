@@ -176,7 +176,7 @@ mod tests {
         let response = DomainError::not_found(ResourceKind::Scene, "sc_123").into_response();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
         let json = body_json(response).await;
-        assert_eq!(json["error"]["code"], "not_found");
+        assert_eq!(json["error"]["code"], "scene_not_found");
         assert_eq!(json["error"]["message"], "scene not found: sc_123");
         for key in ["api_version", "request_id", "timestamp"] {
             assert!(json["meta"][key].is_string(), "meta.{key} must be present");

@@ -382,7 +382,12 @@ async fn assert_canonical_route_404(response: axum::response::Response, path: &s
         "{path} should answer JSON, got content-type {content_type:?}"
     );
     let json = body_json(response).await;
-    assert_eq!(json["error"]["code"], "not_found", "{path} error code");
+    assert!(
+        json["error"]["code"]
+            .as_str()
+            .is_some_and(|code| code.ends_with("_not_found")),
+        "{path} error code"
+    );
     assert_eq!(
         json["error"]["message"],
         format!("route not found: {path}"),
@@ -5555,7 +5560,7 @@ async fn get_device_not_found() {
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 
     let json = body_json(response).await;
-    assert_eq!(json["error"]["code"], "not_found");
+    assert_eq!(json["error"]["code"], "device_not_found");
     assert!(json["meta"]["request_id"].is_string());
 }
 
@@ -5576,7 +5581,7 @@ async fn get_device_by_unknown_name_returns_not_found() {
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 
     let json = body_json(response).await;
-    assert_eq!(json["error"]["code"], "not_found");
+    assert_eq!(json["error"]["code"], "device_not_found");
 }
 
 #[tokio::test]
@@ -10198,7 +10203,7 @@ async fn error_responses_have_correct_envelope() {
     assert!(json["meta"].is_object(), "meta key should be an object");
 
     // Error object must have `code` and `message`.
-    assert_eq!(json["error"]["code"], "not_found");
+    assert_eq!(json["error"]["code"], "scene_not_found");
     assert!(
         json["error"]["message"].is_string(),
         "error.message should be a string"

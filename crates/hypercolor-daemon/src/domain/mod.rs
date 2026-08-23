@@ -80,6 +80,39 @@ pub enum ResourceKind {
     Route,
 }
 
+impl ResourceKind {
+    /// The stable error-code suffix for a miss on this resource kind.
+    #[must_use]
+    pub const fn not_found_code(self) -> &'static str {
+        match self {
+            Self::Scene => "scene_not_found",
+            Self::Zone => "zone_not_found",
+            Self::Layer => "layer_not_found",
+            Self::Effect => "effect_not_found",
+            Self::Device => "device_not_found",
+            Self::Display => "display_not_found",
+            Self::DisplayFrame => "display_frame_not_found",
+            Self::SimulatedDisplay => "simulated_display_not_found",
+            Self::Driver => "driver_not_found",
+            Self::AttachmentProfile => "attachment_profile_not_found",
+            Self::Layout => "layout_not_found",
+            Self::Preset => "preset_not_found",
+            Self::Playlist => "playlist_not_found",
+            Self::Favorite => "favorite_not_found",
+            Self::Asset => "asset_not_found",
+            Self::AttachmentTemplate => "attachment_template_not_found",
+            Self::AttachmentSlot => "attachment_slot_not_found",
+            Self::Control => "control_not_found",
+            Self::ControlSurface => "control_surface_not_found",
+            Self::Diagnostic => "diagnostic_not_found",
+            Self::Config => "config_not_found",
+            Self::ConfigKey => "config_key_not_found",
+            Self::Session => "session_not_found",
+            Self::Route => "route_not_found",
+        }
+    }
+}
+
 impl std::fmt::Display for ResourceKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let name = match self {
@@ -360,7 +393,7 @@ impl DomainError {
     #[must_use]
     pub const fn code(&self) -> &'static str {
         match self {
-            Self::NotFound { .. } => "not_found",
+            Self::NotFound { kind, .. } => kind.not_found_code(),
             Self::Validation { .. } => "validation_error",
             Self::Malformed { .. } => "malformed_request",
             Self::Conflict { .. } => "conflict",

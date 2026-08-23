@@ -52,7 +52,7 @@ error factory, one body shape, and one place a status is decided.
 
 ```json
 {
-  "error": { "code": "not_found", "message": "scene not found: …" },
+  "error": { "code": "scene_not_found", "message": "scene not found: …" },
   "meta": { "api_version": "1.0", "request_id": "req_…", "timestamp": "…" }
 }
 ```

@@ -426,7 +426,7 @@ async fn replacing_a_layer_mints_a_fresh_id_and_strands_the_old_one() {
         "a patch addressing a vanished layer 404s (Spec 78 §1.4)"
     );
     let body = body_json(stale).await;
-    assert_eq!(body["error"]["code"], "not_found");
+    assert_eq!(body["error"]["code"], "layer_not_found");
     assert!(
         body["error"]["message"]
             .as_str()
@@ -1248,7 +1248,7 @@ async fn an_unknown_zone_is_a_not_found_not_a_panic() {
         let response = send(&app, empty_request("GET", uri.clone())).await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND, "{uri}");
         let body = body_json(response).await;
-        assert_eq!(body["error"]["code"], "not_found");
+        assert_eq!(body["error"]["code"], "zone_not_found");
     }
 }
 

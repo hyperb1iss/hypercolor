@@ -104,7 +104,7 @@ The `code` is a `snake_case` string that maps to an HTTP status. The full set:
 | `malformed_request` | 400 |
 | `unauthorized` | 401 |
 | `forbidden` | 403 |
-| `not_found` | 404 |
+| `{resource}_not_found` (`scene_not_found`, `zone_not_found`, `layer_not_found`, `device_not_found`, `effect_not_found`, `layout_not_found`, `route_not_found`, and so on, one per resource kind) | 404 |
 | `conflict` | 409 |
 | `control_bound` | 409 |
 | `precondition_failed` | 412 |

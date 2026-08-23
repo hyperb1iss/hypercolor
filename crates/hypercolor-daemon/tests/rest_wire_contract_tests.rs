@@ -180,6 +180,20 @@ fn assert_envelope(body: &Value) {
 /// equality against the expected presence is what makes this a fence: a
 /// `details` block appearing where none was intended fails as loudly as one
 /// disappearing.
+/// A retired path may fall to the unmatched-route fallback or to a live
+/// route whose resource misses, so only the not-found family is pinned.
+fn assert_not_found_envelope(body: &Value) {
+    let code = body["error"]["code"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    assert!(
+        code.ends_with("_not_found"),
+        "error.code should be a not-found code, got {code:?}"
+    );
+    assert_error_envelope(body, &code);
+}
+
 fn assert_error_envelope(body: &Value, code: &str) {
     assert_keys(body, &["error", "meta"], "canonical error envelope");
     assert_meta(&body["meta"]);
@@ -532,7 +546,7 @@ async fn deleted_scene_singleton_routes_leave_nothing_behind() {
             StatusCode::NOT_FOUND,
             "{method} {path} should be absent"
         );
-        assert_error_envelope(&body_json(response).await, "not_found");
+        assert_not_found_envelope(&body_json(response).await);
     }
 }
 
@@ -576,7 +590,7 @@ async fn deleted_dead_resource_routes_leave_nothing_behind() {
             StatusCode::NOT_FOUND,
             "{method} {path} should be absent"
         );
-        assert_error_envelope(&body_json(response).await, "not_found");
+        assert_not_found_envelope(&body_json(response).await);
     }
 }
 
@@ -602,7 +616,7 @@ async fn config_key_reads_report_unknown_keys_through_the_error_envelope() {
     let response = send(&app, get("/api/v1/config/keys/nope.not.a.key")).await;
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    assert_error_envelope(&body_json(response).await, "not_found");
+    assert_error_envelope(&body_json(response).await, "config_key_not_found");
 }
 
 #[tokio::test]
@@ -671,7 +685,7 @@ async fn error_envelope_omits_details_when_the_error_carries_none() {
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
     let json = body_json(response).await;
-    assert_error_envelope(&json, "not_found");
+    assert_error_envelope(&json, "scene_not_found");
     assert_eq!(
         json["error"]["details"],
         Value::Null,
