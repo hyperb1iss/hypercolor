@@ -491,6 +491,68 @@ fn domain_errors_do_not_render_transport_responses() {
     );
 }
 
+/// The two domain modules still holding `serde_json`, and why.
+///
+/// `diagnostics.rs` pre-serializes the macOS screen parity report into
+/// its snapshot and `macos_screen_parity.rs` canonicalizes a layout to
+/// bytes before hashing it. Both lose their `serde_json` when the
+/// diagnostics report becomes a typed contract; until then they are
+/// named here rather than silently unfenced.
+const DOMAIN_JSON_EXEMPT: [&str; 2] = ["diagnostics.rs", "macos_screen_parity.rs"];
+
+/// `DomainErrorDetails::Adapter` is the one place a domain type names
+/// `serde_json::Value`: it carries whatever context a transport shaped
+/// for itself. Domain services cannot build one, because the ban below
+/// keeps `serde_json` out of every module that would.
+const DOMAIN_ADAPTER_DETAIL_LINES: [&str; 3] = [
+    "Adapter(serde_json::Value),",
+    "impl From<serde_json::Value> for DomainErrorDetails {",
+    "fn from(details: serde_json::Value) -> Self {",
+];
+
+#[test]
+fn domain_services_do_not_shape_wire_json() {
+    let offenders = daemon_sources()
+        .into_iter()
+        .filter(|(path, _)| {
+            path.components()
+                .any(|component| component.as_os_str() == "domain")
+                && !DOMAIN_JSON_EXEMPT
+                    .iter()
+                    .any(|exempt| path.ends_with(exempt))
+        })
+        .flat_map(|(path, source)| {
+            source
+                .lines()
+                .enumerate()
+                .filter(|(_, line)| {
+                    let line = line.trim();
+                    let hatch = path.ends_with("domain/mod.rs")
+                        && DOMAIN_ADAPTER_DETAIL_LINES.contains(&line);
+                    !line.starts_with("//")
+                        && (line.contains("serde_json::Value")
+                            || line.contains("serde_json::json!"))
+                        && !hatch
+                })
+                .map(|(index, line)| {
+                    format!(
+                        "{}:{} shapes wire JSON: {}",
+                        path.display(),
+                        index + 1,
+                        line.trim()
+                    )
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        offenders.is_empty(),
+        "domain modules must raise typed DomainErrorDetails, not JSON:\n{}",
+        offenders.join("\n")
+    );
+}
+
 #[test]
 fn output_has_one_brightness_percentage_projection() {
     let definitions = daemon_sources()
