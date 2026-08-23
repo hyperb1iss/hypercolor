@@ -1,6 +1,7 @@
 //! Subsystem initialization: bus, engines, managers, stores, and input sources.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::AtomicBool;
@@ -43,10 +44,13 @@ use hypercolor_core::input::screen::WaylandScreenCaptureInput;
 use hypercolor_core::input::screen::WindowsScreenCaptureInput;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", test))]
 use hypercolor_core::input::screen::{ScreenAdmissionCapacity, ScreenAnalysisResourcePlan};
-use hypercolor_core::input::{InputManager, SensorPoller, SourceStatusHandle};
+use hypercolor_core::input::{
+    InputManager, SensorPoller, SourceStatusHandle, SourceStatusRegistry,
+};
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_driver_support::CredentialStore;
+use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::audio::{AudioPipelineConfig, AudioSourceType};
 use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
@@ -59,8 +63,10 @@ use crate::domain::context::{
     RuntimeSessionProjection, RuntimeSessionService, SceneContext,
 };
 use crate::domain::effect::EffectIdentityResources;
-use crate::domain::layout::LayoutContext;
+use crate::domain::layout::{LayoutContext, LayoutContextResources};
 use crate::domain::output::OutputContext;
+use crate::domain::scene::SceneService;
+use crate::domain::spatial::SpatialService;
 use crate::driver_inventory::{DRIVER_INVENTORY_FILENAME, DriverInventoryStore};
 use crate::extensions::ExtensionRegistry;
 use crate::interaction_routing::InteractionRoutingControl;
@@ -650,48 +656,75 @@ impl DaemonState {
             )
             .context("failed to build driver module registry")?,
         );
-        let runtime_projection = RuntimeSessionProjection::new(
-            scene_manager.clone(),
-            spatial_engine.clone(),
-            output_power.clone(),
-        );
-        let layout = LayoutContext::new(
-            layout_resources,
-            spatial_engine.clone(),
-            scene_manager.clone(),
-            scene_transactions.clone(),
-            runtime_state_path.clone(),
-            runtime_projection.clone(),
-        );
-        let discovery_runtime = crate::discovery::DiscoveryRuntime {
-            device_registry: device_registry.clone(),
-            backend_manager: Arc::clone(&backend_manager),
-            lifecycle_manager: Arc::clone(&lifecycle_manager),
-            reconnect_tasks: Arc::clone(&reconnect_tasks),
-            event_bus: Arc::clone(&event_bus),
-            layout: layout.clone(),
-            logical_devices: Arc::clone(&logical_devices),
-            attachment_registry: Arc::clone(&attachment_registry),
-            attachment_profiles: Arc::clone(&attachment_profiles),
-            device_settings: device_settings.clone(),
-            runtime_state_path: runtime_state_path.clone(),
-            device_aliases_path: device_aliases_path.clone(),
-            usb_protocol_configs: usb_protocol_configs.clone(),
-            credential_store: Arc::clone(&credential_store),
-            in_progress: Arc::clone(&discovery_in_progress),
-            pending_scans: Arc::default(),
-            task_spawner: tokio::runtime::Handle::current(),
-        };
-        let driver_host = Arc::new(DaemonDriverHost::new(
-            discovery_runtime,
-            driver_inventory,
-            Arc::clone(&driver_registry),
-            Some(Arc::clone(&config_manager)),
-        ));
+        let library_path = ConfigManager::data_dir().join("library.json");
+        let (library_store, library_identity) =
+            open_persisted_library_store_with_effect_id_migrations(
+                &library_path,
+                &effect_id_migrations,
+            )?;
+        let playlist_runtime = Arc::new(Mutex::new(PlaylistRuntimeState::new()));
+        let start_time = Instant::now();
+        let AssembledDomains {
+            domains,
+            driver_host,
+        } = assemble_domains(
+            DomainAssemblyResources {
+                scene_manager: scene_manager.clone(),
+                spatial_engine: spatial_engine.clone(),
+                output_power: output_power.clone(),
+                layout_resources,
+                scene_transactions: scene_transactions.clone(),
+                runtime_state_path: runtime_state_path.clone(),
+                config_manager: Some(Arc::clone(&config_manager)),
+                driver_registry: Arc::clone(&driver_registry),
+                asset_library: Arc::clone(&asset_library),
+                render_loop: Arc::clone(&render_loop),
+                event_bus: Arc::clone(&event_bus),
+                performance: Arc::clone(&performance),
+                backend_manager: Arc::clone(&backend_manager),
+                preview_runtime: Arc::clone(&preview_runtime),
+                start_time,
+                input_status: input_status.clone(),
+                effect_registry: Arc::clone(&effect_registry),
+                effect_identity: EffectIdentityResources::new(
+                    Arc::clone(&display_preferences),
+                    Arc::clone(&library_identity),
+                    Arc::clone(&playlist_runtime),
+                ),
+            },
+            |layout| {
+                let discovery_runtime = crate::discovery::DiscoveryRuntime {
+                    device_registry: device_registry.clone(),
+                    backend_manager: Arc::clone(&backend_manager),
+                    lifecycle_manager: Arc::clone(&lifecycle_manager),
+                    reconnect_tasks: Arc::clone(&reconnect_tasks),
+                    event_bus: Arc::clone(&event_bus),
+                    layout: layout.clone(),
+                    logical_devices: Arc::clone(&logical_devices),
+                    attachment_registry: Arc::clone(&attachment_registry),
+                    attachment_profiles: Arc::clone(&attachment_profiles),
+                    device_settings: device_settings.clone(),
+                    runtime_state_path: runtime_state_path.clone(),
+                    device_aliases_path: device_aliases_path.clone(),
+                    usb_protocol_configs: usb_protocol_configs.clone(),
+                    credential_store: Arc::clone(&credential_store),
+                    in_progress: Arc::clone(&discovery_in_progress),
+                    pending_scans: Arc::default(),
+                    task_spawner: tokio::runtime::Handle::current(),
+                };
+                Ok(Arc::new(DaemonDriverHost::new(
+                    discovery_runtime,
+                    driver_inventory,
+                    Arc::clone(&driver_registry),
+                    Some(Arc::clone(&config_manager)),
+                )))
+            },
+        )?;
         info!(
             drivers = ?driver_registry.ids(),
             "Driver module registry ready"
         );
+        info!("All subsystems initialized");
 
         {
             // `initialize()` is invoked from `tokio::main` and `#[tokio::test]`,
@@ -715,65 +748,6 @@ impl DaemonState {
             .context("failed to register enabled device backends")?;
         }
         info!("Device backends registered");
-
-        let library_path = ConfigManager::data_dir().join("library.json");
-        let (library_store, library_identity) =
-            open_persisted_library_store_with_effect_id_migrations(
-                &library_path,
-                &effect_id_migrations,
-            )?;
-        let playlist_runtime = Arc::new(Mutex::new(PlaylistRuntimeState::new()));
-        let start_time = Instant::now();
-        let runtime_session = RuntimeSessionService::new(
-            runtime_state_path.clone(),
-            runtime_projection,
-            &driver_host,
-        );
-        let devices = DeviceContext::new(
-            Arc::clone(&driver_host),
-            Arc::clone(&driver_registry),
-            Some(Arc::clone(&config_manager)),
-        );
-        let scene = SceneContext::new(
-            scene_manager.clone(),
-            runtime_session.clone(),
-            Arc::clone(&asset_library),
-            Some(Arc::clone(&config_manager)),
-            Arc::clone(&render_loop),
-            layout.clone(),
-            devices.layout_runtime(),
-        );
-        let output = OutputContext::new(
-            output_power.clone(),
-            Arc::clone(&event_bus),
-            runtime_session.clone(),
-            Arc::clone(&performance),
-            Arc::clone(&render_loop),
-            spatial_engine.clone(),
-            Arc::clone(&backend_manager),
-            Arc::clone(&preview_runtime),
-            devices.clone(),
-            start_time,
-        );
-        let domains = DomainContexts::assemble(
-            runtime_session,
-            devices,
-            scene,
-            layout,
-            output,
-            PlatformContext::new(input_status.clone(), Some(Arc::clone(&config_manager))),
-            DomainContextResources {
-                effect_registry: Arc::clone(&effect_registry),
-                effect_identity: EffectIdentityResources::new(
-                    Arc::clone(&display_preferences),
-                    Arc::clone(&library_identity),
-                    Arc::clone(&playlist_runtime),
-                ),
-                spatial: spatial_engine.clone(),
-                event_bus: Arc::clone(&event_bus),
-            },
-        );
-        info!("All subsystems initialized");
 
         Ok(Self {
             domains,
@@ -1521,6 +1495,130 @@ fn audio_source_from_device(device: &str) -> AudioSourceType {
     } else {
         AudioSourceType::Named(normalized.to_owned())
     }
+}
+
+/// Authorities fixed before the daemon domain graph is assembled.
+///
+/// Both composition roots fill this in, so the graph can only ever be
+/// wired one way.
+pub(crate) struct DomainAssemblyResources {
+    pub scene_manager: SceneService,
+    pub spatial_engine: SpatialService,
+    pub output_power: OutputPower,
+    pub layout_resources: LayoutContextResources,
+    pub scene_transactions: SceneTransactionQueue,
+    pub runtime_state_path: PathBuf,
+    pub config_manager: Option<Arc<ConfigManager>>,
+    pub driver_registry: Arc<DriverModuleRegistry>,
+    pub asset_library: Arc<RwLock<AssetLibrary>>,
+    pub render_loop: Arc<RwLock<RenderLoop>>,
+    pub event_bus: Arc<HypercolorBus>,
+    pub performance: Arc<RwLock<PerformanceTracker>>,
+    pub backend_manager: Arc<Mutex<BackendManager>>,
+    pub preview_runtime: Arc<PreviewRuntime>,
+    pub start_time: Instant,
+    pub input_status: SourceStatusRegistry,
+    pub effect_registry: Arc<RwLock<EffectRegistry>>,
+    pub effect_identity: EffectIdentityResources,
+}
+
+/// The assembled domain graph and the driver host it was wired around.
+pub(crate) struct AssembledDomains {
+    pub domains: DomainContexts,
+    pub driver_host: Arc<DaemonDriverHost>,
+}
+
+/// Assemble the one domain graph every composition root shares.
+///
+/// The driver host is built through a callback because it needs the
+/// layout context assembled here, while each root reaches discovery
+/// with its own inventory and task spawner.
+pub(crate) fn assemble_domains(
+    resources: DomainAssemblyResources,
+    build_driver_host: impl FnOnce(&LayoutContext) -> Result<Arc<DaemonDriverHost>>,
+) -> Result<AssembledDomains> {
+    let DomainAssemblyResources {
+        scene_manager,
+        spatial_engine,
+        output_power,
+        layout_resources,
+        scene_transactions,
+        runtime_state_path,
+        config_manager,
+        driver_registry,
+        asset_library,
+        render_loop,
+        event_bus,
+        performance,
+        backend_manager,
+        preview_runtime,
+        start_time,
+        input_status,
+        effect_registry,
+        effect_identity,
+    } = resources;
+
+    let runtime_projection = RuntimeSessionProjection::new(
+        scene_manager.clone(),
+        spatial_engine.clone(),
+        output_power.clone(),
+    );
+    let layout = LayoutContext::new(
+        layout_resources,
+        spatial_engine.clone(),
+        scene_manager.clone(),
+        scene_transactions,
+        runtime_state_path.clone(),
+        runtime_projection.clone(),
+    );
+    let driver_host = build_driver_host(&layout)?;
+    let runtime_session =
+        RuntimeSessionService::new(runtime_state_path, runtime_projection, &driver_host);
+    let devices = DeviceContext::new(
+        Arc::clone(&driver_host),
+        driver_registry,
+        config_manager.clone(),
+    );
+    let scene = SceneContext::new(
+        scene_manager,
+        runtime_session.clone(),
+        asset_library,
+        config_manager.clone(),
+        Arc::clone(&render_loop),
+        layout.clone(),
+        devices.layout_runtime(),
+    );
+    let output = OutputContext::new(
+        output_power,
+        Arc::clone(&event_bus),
+        runtime_session.clone(),
+        performance,
+        render_loop,
+        spatial_engine.clone(),
+        backend_manager,
+        preview_runtime,
+        devices.clone(),
+        start_time,
+    );
+    let domains = DomainContexts::assemble(
+        runtime_session,
+        devices,
+        scene,
+        layout,
+        output,
+        PlatformContext::new(input_status, config_manager),
+        DomainContextResources {
+            effect_registry,
+            effect_identity,
+            spatial: spatial_engine,
+            event_bus,
+        },
+    );
+
+    Ok(AssembledDomains {
+        domains,
+        driver_host,
+    })
 }
 
 fn noise_gate_to_db(noise_gate: f32) -> f32 {

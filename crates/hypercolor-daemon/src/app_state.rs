@@ -40,13 +40,9 @@ use crate::device_metrics::{DeviceMetricsSnapshot, DeviceMetricsSnapshotStore};
 use crate::device_settings::{DeviceSettingsAccess, DeviceSettingsStore};
 use crate::display_frames::DisplayFrameRuntime;
 use crate::display_preferences::DisplayPreferencesStore;
-use crate::domain::context::{
-    DeviceContext, DomainContextResources, DomainContexts, PlatformContext,
-    RuntimeSessionProjection, RuntimeSessionService, SceneContext,
-};
+use crate::domain::context::DomainContexts;
 use crate::domain::effect::EffectIdentityResources;
-use crate::domain::layout::{LayoutContext, LayoutContextResources};
-use crate::domain::output::OutputContext;
+use crate::domain::layout::LayoutContextResources;
 use crate::domain::scene::SceneService;
 use crate::domain::spatial::SpatialService;
 use crate::driver_inventory::{DRIVER_INVENTORY_FILENAME, DriverInventoryStore};
@@ -67,6 +63,7 @@ use crate::scene_store::SceneStore;
 use crate::scene_transactions::LayoutPublicationTestExecutor;
 use crate::scene_transactions::SceneTransactionQueue;
 use crate::simulators::{SimulatedDisplayBackend, SimulatedDisplayRuntime, SimulatedDisplayStore};
+use crate::startup::services::{AssembledDomains, DomainAssemblyResources, assemble_domains};
 use crate::zone_layout_preview::ZoneLayoutPreviewStore;
 
 // ── AppState ─────────────────────────────────────────────────────────────
@@ -552,90 +549,6 @@ impl AppState {
                 .expect("default app state should build driver module registry"),
             )
         });
-        let runtime_projection = RuntimeSessionProjection::new(
-            scene_manager.clone(),
-            spatial_engine.clone(),
-            output_power.clone(),
-        );
-        let layout = LayoutContext::new(
-            LayoutContextResources::new(
-                layouts,
-                layouts_path,
-                layout_auto_exclusions,
-                layout_auto_exclusions_path,
-            ),
-            spatial_engine.clone(),
-            scene_manager.clone(),
-            scene_transactions.clone(),
-            runtime_state_path.clone(),
-            runtime_projection.clone(),
-        );
-        let discovery_runtime = crate::discovery::DiscoveryRuntime {
-            device_registry: device_registry.clone(),
-            backend_manager: Arc::clone(&backend_manager),
-            lifecycle_manager: Arc::clone(&lifecycle_manager),
-            reconnect_tasks: Arc::clone(&reconnect_tasks),
-            event_bus: Arc::clone(&event_bus),
-            layout: layout.clone(),
-            logical_devices: Arc::clone(&logical_devices),
-            attachment_registry: Arc::clone(&attachment_registry),
-            attachment_profiles: Arc::clone(&attachment_profiles),
-            device_settings: device_settings.clone(),
-            runtime_state_path: runtime_state_path.clone(),
-            device_aliases_path,
-            usb_protocol_configs: usb_protocol_configs.clone(),
-            credential_store: Arc::clone(&credential_store),
-            in_progress: Arc::clone(&discovery_in_progress),
-            pending_scans: Arc::default(),
-            task_spawner: test_constructor_task_spawner(),
-        };
-        let driver_host = Arc::new(DaemonDriverHost::new(
-            discovery_runtime,
-            driver_inventory,
-            Arc::clone(&driver_registry),
-            config_manager.clone(),
-        ));
-        {
-            let mut manager = backend_manager.try_lock().expect(
-                "default app state should register the simulator backend without contention",
-            );
-            manager.register_backend(Arc::new(SimulatedDisplayBackend::new(
-                Arc::clone(&simulated_displays),
-                Arc::clone(&simulated_display_runtime),
-            )));
-        }
-        let runtime_session = RuntimeSessionService::new(
-            runtime_state_path.clone(),
-            runtime_projection,
-            &driver_host,
-        );
-        let devices = DeviceContext::new(
-            Arc::clone(&driver_host),
-            Arc::clone(&driver_registry),
-            config_manager.clone(),
-        );
-        let scene = SceneContext::new(
-            scene_manager.clone(),
-            runtime_session.clone(),
-            Arc::clone(&asset_library),
-            config_manager.clone(),
-            Arc::clone(&render_loop),
-            layout.clone(),
-            devices.layout_runtime(),
-        );
-        let start_time = Instant::now();
-        let output = OutputContext::new(
-            output_power.clone(),
-            Arc::clone(&event_bus),
-            runtime_session.clone(),
-            Arc::clone(&performance),
-            Arc::clone(&render_loop),
-            spatial_engine.clone(),
-            Arc::clone(&backend_manager),
-            Arc::clone(&preview_runtime),
-            devices.clone(),
-            start_time,
-        );
         let AppStateLibrary {
             store: library_store,
             identity: library_identity,
@@ -646,24 +559,78 @@ impl AppState {
             AppStateLibrary { store, identity }
         });
         let playlist_runtime = Arc::new(Mutex::new(PlaylistRuntimeState::new()));
-        let domains = DomainContexts::assemble(
-            runtime_session,
-            devices,
-            scene,
-            layout,
-            output,
-            PlatformContext::new(input_status.clone(), config_manager.clone()),
-            DomainContextResources {
+        let start_time = Instant::now();
+        let AssembledDomains {
+            domains,
+            driver_host,
+        } = assemble_domains(
+            DomainAssemblyResources {
+                scene_manager: scene_manager.clone(),
+                spatial_engine: spatial_engine.clone(),
+                output_power: output_power.clone(),
+                layout_resources: LayoutContextResources::new(
+                    layouts,
+                    layouts_path,
+                    layout_auto_exclusions,
+                    layout_auto_exclusions_path,
+                ),
+                scene_transactions: scene_transactions.clone(),
+                runtime_state_path: runtime_state_path.clone(),
+                config_manager: config_manager.clone(),
+                driver_registry: Arc::clone(&driver_registry),
+                asset_library: Arc::clone(&asset_library),
+                render_loop: Arc::clone(&render_loop),
+                event_bus: Arc::clone(&event_bus),
+                performance: Arc::clone(&performance),
+                backend_manager: Arc::clone(&backend_manager),
+                preview_runtime: Arc::clone(&preview_runtime),
+                start_time,
+                input_status,
                 effect_registry: Arc::clone(&effect_registry),
                 effect_identity: EffectIdentityResources::new(
                     Arc::clone(&display_preferences),
                     Arc::clone(&library_identity),
                     Arc::clone(&playlist_runtime),
                 ),
-                spatial: spatial_engine.clone(),
-                event_bus: Arc::clone(&event_bus),
             },
-        );
+            |layout| {
+                let discovery_runtime = crate::discovery::DiscoveryRuntime {
+                    device_registry: device_registry.clone(),
+                    backend_manager: Arc::clone(&backend_manager),
+                    lifecycle_manager: Arc::clone(&lifecycle_manager),
+                    reconnect_tasks: Arc::clone(&reconnect_tasks),
+                    event_bus: Arc::clone(&event_bus),
+                    layout: layout.clone(),
+                    logical_devices: Arc::clone(&logical_devices),
+                    attachment_registry: Arc::clone(&attachment_registry),
+                    attachment_profiles: Arc::clone(&attachment_profiles),
+                    device_settings: device_settings.clone(),
+                    runtime_state_path: runtime_state_path.clone(),
+                    device_aliases_path,
+                    usb_protocol_configs: usb_protocol_configs.clone(),
+                    credential_store: Arc::clone(&credential_store),
+                    in_progress: Arc::clone(&discovery_in_progress),
+                    pending_scans: Arc::default(),
+                    task_spawner: test_constructor_task_spawner(),
+                };
+                Ok(Arc::new(DaemonDriverHost::new(
+                    discovery_runtime,
+                    driver_inventory,
+                    Arc::clone(&driver_registry),
+                    config_manager.clone(),
+                )))
+            },
+        )
+        .expect("default app state should assemble the domain graph");
+        {
+            let mut manager = backend_manager.try_lock().expect(
+                "default app state should register the simulator backend without contention",
+            );
+            manager.register_backend(Arc::new(SimulatedDisplayBackend::new(
+                Arc::clone(&simulated_displays),
+                Arc::clone(&simulated_display_runtime),
+            )));
+        }
 
         Self {
             domains,
