@@ -8,33 +8,6 @@ use hypercolor_types::layer::LayerAdjust;
 const LINEAR_ENCODE_LUT_SCALE: f32 = 65_535.0;
 const CHANNEL_PAIR_LUT_SIZE: usize = 256 * 256;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RgbaBlendMode {
-    Normal,
-    Add,
-    Screen,
-    Multiply,
-    Overlay,
-    SoftLight,
-    ColorDodge,
-    Difference,
-}
-
-impl From<PixelBlendMode> for RgbaBlendMode {
-    fn from(value: PixelBlendMode) -> Self {
-        match value {
-            PixelBlendMode::Normal => Self::Normal,
-            PixelBlendMode::Add => Self::Add,
-            PixelBlendMode::Screen => Self::Screen,
-            PixelBlendMode::Multiply => Self::Multiply,
-            PixelBlendMode::Overlay => Self::Overlay,
-            PixelBlendMode::SoftLight => Self::SoftLight,
-            PixelBlendMode::ColorDodge => Self::ColorDodge,
-            PixelBlendMode::Difference => Self::Difference,
-        }
-    }
-}
-
 /// The compositor encodes through a 16-bit quantization rather than the
 /// kernel's 12-bit one: two chained 8-bit channel LUTs index this table,
 /// and the finer grid is what keeps their products landing on the right
@@ -69,7 +42,7 @@ static DIFFERENCE_BLEND_LUT: LazyLock<Vec<u8>> = LazyLock::new(|| {
 pub fn blend_rgba_pixels_in_place(
     target_pixels: &mut [u8],
     source_pixels: &[u8],
-    mode: RgbaBlendMode,
+    mode: PixelBlendMode,
     opacity: f32,
 ) {
     let opacity = opacity.clamp(0.0, 1.0);
@@ -78,7 +51,7 @@ pub fn blend_rgba_pixels_in_place(
     }
 
     match mode {
-        RgbaBlendMode::Normal => {
+        PixelBlendMode::Normal => {
             let len = target_pixels.len().min(source_pixels.len());
             if opacity >= 1.0 {
                 let mut offset = 0;
@@ -109,7 +82,7 @@ pub fn blend_rgba_pixels_in_place(
                             source_pixels[offset + 2],
                             source_pixels[offset + 3],
                         ],
-                        RgbaBlendMode::Normal,
+                        PixelBlendMode::Normal,
                         opacity,
                     );
                     target_pixels[offset..offset + 4].copy_from_slice(&blended);
@@ -161,7 +134,7 @@ pub fn blend_rgba_pixels_in_place(
                             source_pixels[offset + 2],
                             source_pixels[offset + 3],
                         ],
-                        RgbaBlendMode::Normal,
+                        PixelBlendMode::Normal,
                         opacity,
                     );
                     target_pixels[offset..offset + 4].copy_from_slice(&blended);
@@ -169,14 +142,14 @@ pub fn blend_rgba_pixels_in_place(
                 }
             }
         }
-        RgbaBlendMode::Screen => {
+        PixelBlendMode::Screen => {
             blend_screen_rgba_pixels_in_place(target_pixels, source_pixels, opacity);
         }
-        RgbaBlendMode::Add
-        | RgbaBlendMode::Multiply
-        | RgbaBlendMode::Overlay
-        | RgbaBlendMode::SoftLight
-        | RgbaBlendMode::ColorDodge => {
+        PixelBlendMode::Add
+        | PixelBlendMode::Multiply
+        | PixelBlendMode::Overlay
+        | PixelBlendMode::SoftLight
+        | PixelBlendMode::ColorDodge => {
             for (dst_px, src_px) in target_pixels
                 .chunks_exact_mut(4)
                 .zip(source_pixels.chunks_exact(4))
@@ -190,7 +163,7 @@ pub fn blend_rgba_pixels_in_place(
                 dst_px.copy_from_slice(&blended);
             }
         }
-        RgbaBlendMode::Difference => {
+        PixelBlendMode::Difference => {
             blend_difference_rgba_pixels_in_place(target_pixels, source_pixels, opacity);
         }
     }
@@ -201,7 +174,7 @@ fn blend_screen_rgba_pixels_in_place(target_pixels: &mut [u8], source_pixels: &[
         blend_rgba_pixels_with_reference(
             target_pixels,
             source_pixels,
-            RgbaBlendMode::Screen,
+            PixelBlendMode::Screen,
             opacity,
         );
         return;
@@ -225,7 +198,7 @@ fn blend_screen_rgba_pixels_in_place(target_pixels: &mut [u8], source_pixels: &[
         let blended = blend_rgba_pixel(
             [dst_px[0], dst_px[1], dst_px[2], dst_px[3]],
             [src_px[0], src_px[1], src_px[2], src_px[3]],
-            RgbaBlendMode::Screen,
+            PixelBlendMode::Screen,
             opacity,
         );
         dst_px.copy_from_slice(&blended);
@@ -241,7 +214,7 @@ fn blend_difference_rgba_pixels_in_place(
         blend_rgba_pixels_with_reference(
             target_pixels,
             source_pixels,
-            RgbaBlendMode::Difference,
+            PixelBlendMode::Difference,
             opacity,
         );
         return;
@@ -265,7 +238,7 @@ fn blend_difference_rgba_pixels_in_place(
         let blended = blend_rgba_pixel(
             [dst_px[0], dst_px[1], dst_px[2], dst_px[3]],
             [src_px[0], src_px[1], src_px[2], src_px[3]],
-            RgbaBlendMode::Difference,
+            PixelBlendMode::Difference,
             opacity,
         );
         dst_px.copy_from_slice(&blended);
@@ -275,7 +248,7 @@ fn blend_difference_rgba_pixels_in_place(
 fn blend_rgba_pixels_with_reference(
     target_pixels: &mut [u8],
     source_pixels: &[u8],
-    mode: RgbaBlendMode,
+    mode: PixelBlendMode,
     opacity: f32,
 ) {
     for (dst_px, src_px) in target_pixels
@@ -310,7 +283,7 @@ pub fn blend_opaque_normal_rgba_pixels_in_place(
         return;
     }
     if opacity >= 1.0 {
-        blend_rgba_pixels_in_place(target_pixels, source_pixels, RgbaBlendMode::Normal, 1.0);
+        blend_rgba_pixels_in_place(target_pixels, source_pixels, PixelBlendMode::Normal, 1.0);
         return;
     }
 
@@ -396,7 +369,7 @@ pub fn apply_layer_adjust_rgba_pixels_in_place(pixels: &mut [u8], adjust: &Layer
 }
 
 #[must_use]
-pub fn blend_rgba_pixel(dst: [u8; 4], src: [u8; 4], mode: RgbaBlendMode, opacity: f32) -> [u8; 4] {
+pub fn blend_rgba_pixel(dst: [u8; 4], src: [u8; 4], mode: PixelBlendMode, opacity: f32) -> [u8; 4] {
     let source_alpha_channel = src[3];
     if source_alpha_channel == 0 || opacity <= 0.0 {
         return dst;
@@ -416,32 +389,32 @@ pub fn blend_rgba_pixel(dst: [u8; 4], src: [u8; 4], mode: RgbaBlendMode, opacity
     let src_blue = decode_srgb_channel(src[2]);
     let blend_channel = |dst_channel: f32, src_channel: f32| -> u8 {
         let blended = match mode {
-            RgbaBlendMode::Normal => src_channel,
-            RgbaBlendMode::Add => (dst_channel + src_channel).min(1.0),
-            RgbaBlendMode::Screen => screen_blend(dst_channel, src_channel),
-            RgbaBlendMode::Multiply => dst_channel * src_channel,
-            RgbaBlendMode::Overlay => {
+            PixelBlendMode::Normal => src_channel,
+            PixelBlendMode::Add => (dst_channel + src_channel).min(1.0),
+            PixelBlendMode::Screen => screen_blend(dst_channel, src_channel),
+            PixelBlendMode::Multiply => dst_channel * src_channel,
+            PixelBlendMode::Overlay => {
                 if dst_channel < 0.5 {
                     2.0 * dst_channel * src_channel
                 } else {
                     1.0 - 2.0 * (1.0 - dst_channel) * (1.0 - src_channel)
                 }
             }
-            RgbaBlendMode::SoftLight => {
+            PixelBlendMode::SoftLight => {
                 if src_channel < 0.5 {
                     dst_channel - (1.0 - 2.0 * src_channel) * dst_channel * (1.0 - dst_channel)
                 } else {
                     dst_channel + (2.0 * src_channel - 1.0) * (dst_channel.sqrt() - dst_channel)
                 }
             }
-            RgbaBlendMode::ColorDodge => {
+            PixelBlendMode::ColorDodge => {
                 if src_channel >= 1.0 {
                     1.0
                 } else {
                     (dst_channel / (1.0 - src_channel)).min(1.0)
                 }
             }
-            RgbaBlendMode::Difference => (dst_channel - src_channel).abs(),
+            PixelBlendMode::Difference => (dst_channel - src_channel).abs(),
         };
         encode_srgb_channel(dst_channel.mul_add(inverse_alpha, blended * source_alpha))
     };

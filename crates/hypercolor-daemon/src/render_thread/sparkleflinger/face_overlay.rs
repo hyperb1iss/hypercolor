@@ -1,7 +1,6 @@
 use hypercolor_color::LinearRgba;
 use hypercolor_core::blend_math::{
-    RgbaBlendMode, blend_rgba_pixels_in_place, decode_srgb_channel, encode_srgb_channel,
-    screen_blend,
+    blend_rgba_pixels_in_place, decode_srgb_channel, encode_srgb_channel, screen_blend,
 };
 use hypercolor_types::canvas::{Canvas, PublishedSurface, RenderSurfacePool, SurfaceDescriptor};
 use hypercolor_types::layer::BlendMode;
@@ -77,12 +76,7 @@ pub(super) fn blend_face_overlay_rgba(
             let Some(pixel_mode) = blend_mode.pixel_mode() else {
                 return;
             };
-            blend_rgba_pixels_in_place(
-                scene_rgba,
-                face_rgba,
-                RgbaBlendMode::from(pixel_mode),
-                opacity,
-            );
+            blend_rgba_pixels_in_place(scene_rgba, face_rgba, pixel_mode, opacity);
         }
     }
 

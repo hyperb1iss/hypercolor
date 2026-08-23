@@ -1,7 +1,6 @@
 use hypercolor_color::PixelBlendMode;
 use hypercolor_core::blend_math::{
-    RgbaBlendMode, blend_rgba_pixels_in_place, decode_srgb_channel, encode_srgb_channel,
-    screen_blend,
+    blend_rgba_pixels_in_place, decode_srgb_channel, encode_srgb_channel, screen_blend,
 };
 use hypercolor_types::canvas::{Canvas, PublishedSurface, Rgba};
 use hypercolor_types::config::RenderAccelerationMode;
@@ -138,12 +137,7 @@ fn legacy_face_overlay_rgba(
             let Some(pixel_mode) = blend_mode.pixel_mode() else {
                 return target_rgba;
             };
-            blend_rgba_pixels_in_place(
-                &mut target_rgba,
-                face.rgba_bytes(),
-                RgbaBlendMode::from(pixel_mode),
-                opacity,
-            );
+            blend_rgba_pixels_in_place(&mut target_rgba, face.rgba_bytes(), pixel_mode, opacity);
         }
     }
 

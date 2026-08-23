@@ -1,7 +1,6 @@
 use hypercolor_color::PixelBlendMode;
 use hypercolor_core::blend_math::{
-    RgbaBlendMode, blend_rgba_pixel, blend_rgba_pixels_in_place, decode_srgb_channel,
-    encode_srgb_channel,
+    blend_rgba_pixel, blend_rgba_pixels_in_place, decode_srgb_channel, encode_srgb_channel,
 };
 use hypercolor_types::canvas::Rgba;
 
@@ -17,22 +16,22 @@ fn single_pixel_blend_matches_canvas_reference() {
     let dst = [255, 0, 0, 255];
     let src = [0, 0, 255, 255];
 
-    for (rgba_mode, canvas_mode, opacity) in [
-        (RgbaBlendMode::Normal, PixelBlendMode::Normal, 0.25),
-        (RgbaBlendMode::Add, PixelBlendMode::Add, 1.0),
-        (RgbaBlendMode::Screen, PixelBlendMode::Screen, 1.0),
-        (RgbaBlendMode::Multiply, PixelBlendMode::Multiply, 1.0),
-        (RgbaBlendMode::Overlay, PixelBlendMode::Overlay, 1.0),
-        (RgbaBlendMode::SoftLight, PixelBlendMode::SoftLight, 1.0),
-        (RgbaBlendMode::ColorDodge, PixelBlendMode::ColorDodge, 1.0),
-        (RgbaBlendMode::Difference, PixelBlendMode::Difference, 1.0),
+    for (mode, opacity) in [
+        (PixelBlendMode::Normal, 0.25),
+        (PixelBlendMode::Add, 1.0),
+        (PixelBlendMode::Screen, 1.0),
+        (PixelBlendMode::Multiply, 1.0),
+        (PixelBlendMode::Overlay, 1.0),
+        (PixelBlendMode::SoftLight, 1.0),
+        (PixelBlendMode::ColorDodge, 1.0),
+        (PixelBlendMode::Difference, 1.0),
     ] {
         assert_eq!(
-            blend_rgba_pixel(dst, src, rgba_mode, opacity),
+            blend_rgba_pixel(dst, src, mode, opacity),
             expected_blend(
                 Rgba::new(dst[0], dst[1], dst[2], dst[3]),
                 Rgba::new(src[0], src[1], src[2], src[3]),
-                canvas_mode,
+                mode,
                 opacity,
             )
         );
@@ -44,7 +43,7 @@ fn slice_blend_updates_pixels_in_place() {
     let mut dst = vec![255, 0, 0, 255, 0, 255, 0, 255];
     let src = vec![0, 0, 255, 255, 255, 255, 255, 128];
 
-    blend_rgba_pixels_in_place(&mut dst, &src, RgbaBlendMode::Normal, 0.5);
+    blend_rgba_pixels_in_place(&mut dst, &src, PixelBlendMode::Normal, 0.5);
 
     assert_eq!(
         &dst[..4],
@@ -81,13 +80,13 @@ fn difference_slice_blend_matches_single_pixel_reference() {
             blend_rgba_pixel(
                 [dst_px[0], dst_px[1], dst_px[2], dst_px[3]],
                 [src_px[0], src_px[1], src_px[2], src_px[3]],
-                RgbaBlendMode::Difference,
+                PixelBlendMode::Difference,
                 1.0,
             )
         })
         .collect();
 
-    blend_rgba_pixels_in_place(&mut dst, &src, RgbaBlendMode::Difference, 1.0);
+    blend_rgba_pixels_in_place(&mut dst, &src, PixelBlendMode::Difference, 1.0);
 
     assert_eq!(dst, expected);
 }
@@ -107,13 +106,13 @@ fn screen_slice_blend_matches_single_pixel_reference() {
             blend_rgba_pixel(
                 [dst_px[0], dst_px[1], dst_px[2], dst_px[3]],
                 [src_px[0], src_px[1], src_px[2], src_px[3]],
-                RgbaBlendMode::Screen,
+                PixelBlendMode::Screen,
                 1.0,
             )
         })
         .collect();
 
-    blend_rgba_pixels_in_place(&mut dst, &src, RgbaBlendMode::Screen, 1.0);
+    blend_rgba_pixels_in_place(&mut dst, &src, PixelBlendMode::Screen, 1.0);
 
     assert_eq!(dst, expected);
 }
@@ -123,7 +122,7 @@ fn opaque_normal_slice_blend_copies_source_at_full_opacity() {
     let mut dst = vec![12, 34, 56, 255, 78, 90, 123, 255];
     let src = vec![210, 180, 140, 255, 1, 2, 3, 255];
 
-    blend_rgba_pixels_in_place(&mut dst, &src, RgbaBlendMode::Normal, 1.0);
+    blend_rgba_pixels_in_place(&mut dst, &src, PixelBlendMode::Normal, 1.0);
 
     assert_eq!(dst, src);
 }
