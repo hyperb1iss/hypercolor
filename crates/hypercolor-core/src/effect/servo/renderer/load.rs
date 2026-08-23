@@ -15,7 +15,7 @@ use super::super::telemetry::{
     record_servo_detached_destroy, record_servo_page_load, record_servo_renderer_load,
     record_servo_session_create,
 };
-use super::super::worker::{effect_is_audio_reactive, prepare_runtime_html_source};
+use super::super::worker::{cleanup_runtime_html_path, effect_is_audio_reactive};
 use super::super::worker_client::ServoProducerRole;
 use super::super::{ServoSessionHandle, SessionConfig, note_servo_session_error};
 use super::{
@@ -351,19 +351,6 @@ fn load_servo_session(
         )
     })?;
 
-    let (runtime_source, runtime_html_path) = prepare_runtime_html_source(
-        &resolved,
-        controls,
-        host_driven_animation,
-        display_descriptor,
-    )
-    .with_context(|| {
-        format!(
-            "failed to prepare runtime HTML source for '{}'",
-            resolved.display()
-        )
-    })?;
-
     let session_create_started = Instant::now();
     let mut session = match ServoSessionHandle::new_shared(SessionConfig {
         render_width: canvas_width,
@@ -377,20 +364,26 @@ fn load_servo_session(
         }
         Err(error) => {
             record_servo_session_create(session_create_started.elapsed(), false);
-            cleanup_runtime_html_option(runtime_html_path.as_ref());
             note_servo_session_error("Servo effect session creation failed", &error);
             return Err(error);
         }
     };
 
     let page_load_started = Instant::now();
-    if let Err(error) = session.load_html_file(&runtime_source) {
-        record_servo_page_load(page_load_started.elapsed(), false);
-        close_servo_session_detached(session, "Servo effect session after page-load failure");
-        cleanup_runtime_html_option(runtime_html_path.as_ref());
-        note_servo_session_error("Servo effect page load failed", &error);
-        return Err(error);
-    }
+    let (runtime_source, runtime_html_path) = match session.load_effect_html(
+        &resolved,
+        controls,
+        host_driven_animation,
+        display_descriptor,
+    ) {
+        Ok(paths) => paths,
+        Err(error) => {
+            record_servo_page_load(page_load_started.elapsed(), false);
+            close_servo_session_detached(session, "Servo effect session after page-load failure");
+            note_servo_session_error("Servo effect page load failed", &error);
+            return Err(error);
+        }
+    };
     record_servo_page_load(page_load_started.elapsed(), true);
 
     Ok(LoadedServoSession {
@@ -398,20 +391,4 @@ fn load_servo_session(
         runtime_source,
         runtime_html_path,
     })
-}
-
-fn cleanup_runtime_html_option(path: Option<&PathBuf>) {
-    if let Some(path) = path {
-        cleanup_runtime_html_path(path);
-    }
-}
-
-fn cleanup_runtime_html_path(path: &PathBuf) {
-    if let Err(error) = std::fs::remove_file(path) {
-        debug!(
-            path = %path.display(),
-            %error,
-            "Failed to remove temporary runtime HTML source"
-        );
-    }
 }

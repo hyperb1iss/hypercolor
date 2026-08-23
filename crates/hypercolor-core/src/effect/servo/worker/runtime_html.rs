@@ -7,6 +7,7 @@ use hypercolor_types::control::ControlValue;
 use hypercolor_types::display::DisplayDescriptor;
 use hypercolor_types::effect::{EffectCategory, EffectMetadata};
 use reqwest::Url;
+use tracing::debug;
 
 use crate::config::paths::cache_dir;
 use crate::effect::lightscript::control_js_literal;
@@ -28,12 +29,20 @@ pub(in crate::effect::servo) fn effect_is_audio_reactive(metadata: &EffectMetada
 }
 
 /// Prepare an HTML file with a runtime control preamble injected into `<head>`.
+///
+/// A session that did not ask for engine globals loads its page verbatim, so
+/// no preamble is built and no temporary file is written.
 pub(in crate::effect::servo) fn prepare_runtime_html_source(
     original_path: &Path,
     controls: &HashMap<String, ControlValue>,
     host_driven_animation: bool,
     display_descriptor: Option<&DisplayDescriptor>,
+    inject_engine_globals: bool,
 ) -> Result<(PathBuf, Option<PathBuf>)> {
+    if !inject_engine_globals {
+        return Ok((original_path.to_path_buf(), None));
+    }
+
     let html = std::fs::read_to_string(original_path).with_context(|| {
         format!(
             "failed to read HTML effect file while preparing runtime source: {}",
@@ -67,6 +76,17 @@ pub(in crate::effect::servo) fn prepare_runtime_html_source(
     })?;
 
     Ok((runtime_path.clone(), Some(runtime_path)))
+}
+
+/// Remove a temporary runtime HTML file once its page is done with.
+pub(in crate::effect::servo) fn cleanup_runtime_html_path(path: &Path) {
+    if let Err(error) = std::fs::remove_file(path) {
+        debug!(
+            path = %path.display(),
+            %error,
+            "Failed to remove temporary runtime HTML source"
+        );
+    }
 }
 
 fn build_control_preamble_script(
@@ -217,7 +237,7 @@ mod tests {
 
         let controls = HashMap::new();
         let (runtime_path, runtime_html_path) =
-            prepare_runtime_html_source(&html_path, &controls, true, None)
+            prepare_runtime_html_source(&html_path, &controls, true, None, true)
                 .expect("runtime html should build");
 
         assert_ne!(runtime_path, html_path);
@@ -254,7 +274,7 @@ mod tests {
         );
         let controls = HashMap::new();
         let (runtime_path, _) =
-            prepare_runtime_html_source(&html_path, &controls, true, Some(&descriptor))
+            prepare_runtime_html_source(&html_path, &controls, true, Some(&descriptor), true)
                 .expect("runtime html should build");
 
         let runtime_html =
@@ -280,12 +300,37 @@ mod tests {
             .expect("html write should work");
 
         let controls = HashMap::new();
-        let (runtime_path, _) = prepare_runtime_html_source(&html_path, &controls, false, None)
-            .expect("runtime html should build");
+        let (runtime_path, _) =
+            prepare_runtime_html_source(&html_path, &controls, false, None, true)
+                .expect("runtime html should build");
 
         let runtime_html =
             std::fs::read_to_string(&runtime_path).expect("runtime html should be readable");
         assert!(!runtime_html.contains("window.hypercolor.display"));
+    }
+
+    #[test]
+    fn prepare_runtime_html_source_loads_verbatim_without_engine_globals() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let html_path = temp.path().join("page.html");
+        let source = "<html><head></head><body></body></html>";
+        std::fs::write(&html_path, source).expect("html write should work");
+
+        let mut controls = HashMap::new();
+        controls.insert("speed".to_owned(), ControlValue::Float(0.5));
+        let (runtime_path, cleanup_path) =
+            prepare_runtime_html_source(&html_path, &controls, true, None, false)
+                .expect("verbatim load should succeed");
+
+        assert_eq!(runtime_path, html_path);
+        assert!(
+            cleanup_path.is_none(),
+            "a verbatim load writes no temporary runtime file"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&runtime_path).expect("source should be readable"),
+            source
+        );
     }
 
     #[test]

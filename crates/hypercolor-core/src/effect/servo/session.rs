@@ -1,13 +1,19 @@
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::TryRecvError;
 use std::time::Duration;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use hypercolor_types::canvas::Canvas;
+use hypercolor_types::control::ControlValue;
+use hypercolor_types::display::DisplayDescriptor;
 
 use crate::effect::traits::EffectRenderOutput;
 
-use super::worker::{acquire_servo_worker, poison_shared_servo_worker_if_fatal};
+use super::worker::{
+    acquire_servo_worker, cleanup_runtime_html_path, poison_shared_servo_worker_if_fatal,
+    prepare_runtime_html_source,
+};
 use super::worker_client::{
     PendingServoFrame, ServoFramePayload, ServoProducerRole, ServoRenderEnqueue, ServoRenderMode,
     ServoRenderReservation, ServoWorkerClient,
@@ -40,7 +46,6 @@ pub struct ServoSessionHandle {
     render_height: u32,
     pending_render: Option<PendingServoFrame>,
     last_canvas: Option<Canvas>,
-    #[allow(dead_code)]
     inject_engine_globals: bool,
 }
 
@@ -77,6 +82,43 @@ impl ServoSessionHandle {
     pub fn load_html_file(&mut self, path: &Path) -> Result<()> {
         self.worker
             .load_effect(self.session_id, path, self.render_width, self.render_height)
+    }
+
+    /// Load an effect page, injecting the runtime preamble when this session
+    /// asked for engine globals.
+    ///
+    /// Returns the path actually loaded and the temporary runtime file to
+    /// clean up once the page is done with, if one was written.
+    pub(crate) fn load_effect_html(
+        &mut self,
+        source: &Path,
+        controls: &HashMap<String, ControlValue>,
+        host_driven_animation: bool,
+        display_descriptor: Option<&DisplayDescriptor>,
+    ) -> Result<(PathBuf, Option<PathBuf>)> {
+        let (runtime_source, runtime_html_path) = prepare_runtime_html_source(
+            source,
+            controls,
+            host_driven_animation,
+            display_descriptor,
+            self.inject_engine_globals,
+        )
+        .with_context(|| {
+            format!(
+                "failed to prepare runtime HTML source for '{}'",
+                source.display()
+            )
+        })?;
+
+        match self.load_html_file(&runtime_source) {
+            Ok(()) => Ok((runtime_source, runtime_html_path)),
+            Err(error) => {
+                if let Some(path) = runtime_html_path.as_ref() {
+                    cleanup_runtime_html_path(path);
+                }
+                Err(error)
+            }
+        }
     }
 
     pub(crate) fn request_render_cpu(&mut self, scripts: Vec<String>) -> Result<ServoRenderStatus> {
