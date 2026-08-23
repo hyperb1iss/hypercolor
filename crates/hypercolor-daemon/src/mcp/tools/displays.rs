@@ -6,15 +6,14 @@ use super::{ToolDefinition, ToolError, output_schema, resolve_effect_selector, s
 use crate::api::publish_render_zone_changed;
 use crate::app_state::AppState;
 use crate::domain::display::{
-    ClearDisplayFace, SetDisplayFace, clear_display_face, remove_default_display_overlay,
-    set_display_face,
+    ClearDisplayFace, DisplaySurfaceInfo, SetDefaultDisplayFace, SetDisplayFace,
+    clear_display_face, display_face_layout, display_surface_info, set_display_face,
 };
-use crate::domain::display::{DisplaySurfaceInfo, display_face_layout, display_surface_info};
 use crate::mcp::results::{DisplayDeviceResult, DisplayFaceResult};
 use crate::mcp::selector::SelectorCandidate;
 use hypercolor_types::control::ControlValue;
 use hypercolor_types::device::{DeviceId, DeviceInfo};
-use hypercolor_types::effect::{EffectCategory, EffectMetadata};
+use hypercolor_types::effect::EffectMetadata;
 use hypercolor_types::event::ZoneChangeKind;
 use hypercolor_types::layer::BlendMode;
 use hypercolor_types::scene::DisplayFaceTarget;
@@ -114,25 +113,7 @@ pub(super) async fn handle_set_display_face_with_state(
         .get("effect_id")
         .and_then(Value::as_str)
         .ok_or_else(|| ToolError::MissingParam("effect_id".into()))?;
-    let effect = {
-        let effect = resolve_effect_selector(state, "effect_id", effect_lookup).await?;
-        if effect.category != EffectCategory::Display {
-            return Err(ToolError::InvalidParam {
-                param: "effect_id".into(),
-                reason: format!("effect '{}' is not a display face", effect.name),
-            });
-        }
-        if !matches!(
-            effect.source,
-            hypercolor_types::effect::EffectSource::Html { .. }
-        ) {
-            return Err(ToolError::InvalidParam {
-                param: "effect_id".into(),
-                reason: format!("effect '{}' is not an HTML display face", effect.name),
-            });
-        }
-        effect
-    };
+    let effect = resolve_effect_selector(state, "effect_id", effect_lookup).await?;
     let controls = parse_controls_map(params.get("controls"), &effect)?;
 
     // The face blends over the live effect by default; Replace is opt-in
@@ -170,21 +151,11 @@ async fn live_scope_payload(
     state: &AppState,
     device_id: DeviceId,
 ) -> Option<hypercolor_types::api::displays::DisplayFaceScope> {
-    let scene_assigned = {
-        let scene_manager = state.scene_manager.snapshot().await;
-        scene_manager
-            .active_scene()
-            .and_then(|scene| scene.display_zone_for(device_id))
-            .is_some_and(|zone| zone.effect_ids().next().is_some())
-    };
-    if scene_assigned {
+    let layers = state.domains.display.face_layers(device_id).await;
+    if layers.scene_assigned {
         return Some(hypercolor_types::api::displays::DisplayFaceScope::Scene);
     }
-    let default_assigned = {
-        let store = state.display_preferences.read().await;
-        store.get(device_id).is_some()
-    };
-    if default_assigned {
+    if layers.default_assigned {
         Some(hypercolor_types::api::displays::DisplayFaceScope::Default)
     } else {
         None
@@ -200,40 +171,16 @@ async fn handle_default_scope(
     clear: bool,
 ) -> Result<Value, ToolError> {
     if clear {
-        let removed = {
-            let mut store = state.display_preferences.write().await;
-            store
-                .remove(device_id)
-                .map_err(|error| ToolError::Internal(error.to_string()))?
-                .is_some()
-        };
-        let scene_assigned = {
-            let scene_manager = state.scene_manager.snapshot().await;
-            scene_manager
-                .active_scene()
-                .and_then(|scene| scene.display_zone_for(device_id))
-                .is_some_and(|zone| zone.effect_ids().next().is_some())
-        };
-        let cleared_zone = remove_default_display_overlay(&state.domains.scene, device_id).await?;
-        if removed
-            && !scene_assigned
-            && let Some(mut zone) = cleared_zone
-        {
-            zone.layers.clear();
-            let scene_id = {
-                let scene_manager = state.scene_manager.snapshot().await;
-                scene_manager
-                    .active_scene()
-                    .map_or(hypercolor_types::scene::SceneId::DEFAULT, |scene| scene.id)
-            };
-            publish_render_zone_changed(state, scene_id, &zone, ZoneChangeKind::Updated);
+        let cleared = state.domains.display.clear_default_face(device_id).await?;
+        if let Some(zone) = cleared.retracted.as_ref() {
+            publish_render_zone_changed(state, cleared.scene_id, zone, ZoneChangeKind::Updated);
         }
         let live_scope = live_scope_payload(state, device_id).await;
         return serialize_result(DisplayFaceResult {
             device: display_device_payload(info, surface),
             scope: hypercolor_types::api::displays::DisplayFaceScope::Default,
             live_scope,
-            cleared: removed,
+            cleared: cleared.removed,
             scene_id: None,
             effect: None,
             zone: None,
@@ -244,79 +191,44 @@ async fn handle_default_scope(
         .get("effect_id")
         .and_then(Value::as_str)
         .ok_or_else(|| ToolError::MissingParam("effect_id".into()))?;
-    let effect = {
-        let effect = resolve_effect_selector(state, "effect_id", effect_lookup).await?;
-        if effect.category != EffectCategory::Display {
-            return Err(ToolError::InvalidParam {
-                param: "effect_id".into(),
-                reason: format!("effect '{}' is not a display face", effect.name),
-            });
-        }
-        if !matches!(
-            effect.source,
-            hypercolor_types::effect::EffectSource::Html { .. }
-        ) {
-            return Err(ToolError::InvalidParam {
-                param: "effect_id".into(),
-                reason: format!("effect '{}' is not an HTML display face", effect.name),
-            });
-        }
-        effect
-    };
+    let effect = resolve_effect_selector(state, "effect_id", effect_lookup).await?;
     let controls = parse_controls_map(params.get("controls"), &effect)?;
 
-    let admitted = crate::domain::display::admit_display_face_controls(
-        &state.domains.effects,
-        effect,
-        &controls,
-    )
-    .await?;
-    let (effect, controls, admission) = admitted.into_parts();
-
-    {
-        let mut store = state.display_preferences.write().await;
-        store
-            .set(
+    // Blend over the live effect by default; Replace is opt-in via the REST
+    // composition endpoint for face-only looks.
+    let written = state
+        .domains
+        .display
+        .set_default_face(SetDefaultDisplayFace {
+            device_id,
+            effect,
+            controls,
+            target: DisplayFaceTarget {
+                blend_mode: BlendMode::Alpha,
                 device_id,
-                crate::display_preferences::DisplayPreference {
-                    // Blend over the live effect by default; Replace is opt-in
-                    // via the composition controls for face-only looks.
-                    blend_mode: hypercolor_types::layer::BlendMode::Alpha,
-                    controls,
-                    effect_id: effect.id,
-                    opacity: 1.0,
-                },
-            )
-            .map_err(|error| ToolError::Internal(error.to_string()))?;
-    }
-    drop(admission);
-    let Some(zone) =
-        crate::api::displays::apply_display_preference_overlay_checked(state, device_id).await
-    else {
-        return Err(ToolError::Internal(
-            "failed to install the default face overlay".into(),
-        ));
-    };
-    let live_scope = live_scope_payload(state, device_id).await;
-    if live_scope == Some(hypercolor_types::api::displays::DisplayFaceScope::Default) {
-        let scene_id = {
-            let scene_manager = state.scene_manager.snapshot().await;
-            scene_manager
-                .active_scene()
-                .map(|scene| scene.id)
-                .unwrap_or(hypercolor_types::scene::SceneId::DEFAULT)
-        };
-        publish_render_zone_changed(state, scene_id, &zone, ZoneChangeKind::Updated);
+                opacity: 1.0,
+            },
+        })
+        .await?;
+    if !written.scene_assigned {
+        publish_render_zone_changed(
+            state,
+            written.scene_id,
+            &written.zone,
+            ZoneChangeKind::Updated,
+        );
     }
 
     serialize_result(DisplayFaceResult {
         device: display_device_payload(info, surface),
         scope: hypercolor_types::api::displays::DisplayFaceScope::Default,
-        live_scope,
+        live_scope: live_scope_payload(state, device_id).await,
         cleared: false,
         scene_id: None,
-        effect: Some(crate::api::effects::effect_summary_with_details(&effect)),
-        zone: Some(crate::domain::scene_tree::zone_resource(&zone)),
+        effect: Some(crate::api::effects::effect_summary_with_details(
+            &written.effect,
+        )),
+        zone: Some(crate::domain::scene_tree::zone_resource(&written.zone)),
     })
 }
 

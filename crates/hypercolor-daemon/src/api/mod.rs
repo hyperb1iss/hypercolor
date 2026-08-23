@@ -84,7 +84,7 @@ pub(crate) async fn prune_scene_display_zones_for_device(
     // addressed through the displays API to clear one, so this must not
     // ride on whether the scene commit lands.
     let removed_preference = {
-        let mut store = state.display_preferences.write().await;
+        let mut store = state.domains.display.preferences().write().await;
         match store.remove(device_id) {
             Ok(removed) => removed.is_some(),
             Err(error) => {

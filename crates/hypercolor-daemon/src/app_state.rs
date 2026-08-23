@@ -198,9 +198,6 @@ pub struct AppState {
     /// Persistent per-device attachment profile store.
     pub attachment_profiles: Arc<RwLock<ComponentProfileStore>>,
 
-    /// Per-display default face preferences (spec 69 §3.6).
-    pub display_preferences: Arc<RwLock<DisplayPreferencesStore>>,
-
     /// Persistent per-device user settings store.
     pub device_settings: DeviceSettingsAccess,
 
@@ -209,9 +206,6 @@ pub struct AppState {
 
     /// Latest captured simulator frames for inspection surfaces.
     pub simulated_display_runtime: Arc<RwLock<SimulatedDisplayRuntime>>,
-
-    /// Latest composited display frames captured per device for preview surfaces.
-    pub display_frames: Arc<RwLock<DisplayFrameRuntime>>,
 
     /// Narrow host adapter shared with built-in driver modules.
     driver_host: Arc<DaemonDriverHost>,
@@ -581,6 +575,8 @@ impl AppState {
                     Arc::clone(&library_identity),
                     Arc::clone(&playlist_runtime),
                 ),
+                display_preferences: Arc::clone(&display_preferences),
+                display_frames: Arc::clone(&display_frames),
             },
             |layout| {
                 let discovery_runtime = crate::discovery::DiscoveryRuntime {
@@ -656,11 +652,9 @@ impl AppState {
             discovery_in_progress,
             attachment_registry,
             attachment_profiles,
-            display_preferences,
             device_settings,
             simulated_displays,
             simulated_display_runtime,
-            display_frames,
             driver_host,
             driver_registry,
             logical_devices,
@@ -763,11 +757,9 @@ impl AppState {
             discovery_in_progress: Arc::clone(&daemon.discovery_in_progress),
             attachment_registry: Arc::clone(&daemon.attachment_registry),
             attachment_profiles: Arc::clone(&daemon.attachment_profiles),
-            display_preferences: Arc::clone(&daemon.display_preferences),
             device_settings: daemon.device_settings.clone(),
             simulated_displays: Arc::clone(&daemon.simulated_displays),
             simulated_display_runtime: Arc::clone(&daemon.simulated_display_runtime),
-            display_frames: Arc::clone(&daemon.display_frames),
             driver_host,
             driver_registry,
             logical_devices: Arc::clone(&daemon.logical_devices),

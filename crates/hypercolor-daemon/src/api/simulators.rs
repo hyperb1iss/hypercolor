@@ -208,7 +208,13 @@ async fn delete_simulated_display_workflow(state: Arc<AppState>, device_id: Devi
         .write()
         .await
         .remove(device_id);
-    state.display_frames.write().await.remove(device_id);
+    state
+        .domains
+        .display
+        .frames()
+        .write()
+        .await
+        .remove(device_id);
     crate::api::prune_scene_display_zones_for_device(&state, device_id).await;
     #[cfg(feature = "persistence-test-hooks")]
     state
@@ -254,7 +260,7 @@ pub async fn get_simulated_display_frame(
         return jpeg_response(Bytes::from_owner(OwnedDisplayJpeg(frame.jpeg_data)));
     }
 
-    if let Some(frame) = state.display_frames.read().await.frame(device_id) {
+    if let Some(frame) = state.domains.display.frames().read().await.frame(device_id) {
         return jpeg_response(Bytes::from_owner(OwnedDisplayJpeg(Arc::clone(
             &frame.jpeg_data,
         ))));

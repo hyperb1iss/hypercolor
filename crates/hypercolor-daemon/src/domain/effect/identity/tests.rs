@@ -160,7 +160,9 @@ async fn late_migration_fixture(temp: &TempDir) -> LateMigrationFixture {
         .expect("legacy scene should commit");
 
     state
-        .display_preferences
+        .domains
+        .display
+        .preferences()
         .write()
         .await
         .set(
@@ -538,7 +540,9 @@ async fn late_rescan_migrates_every_live_and_durable_reference_before_publicatio
     assert_eq!(
         fixture
             .state
-            .display_preferences
+            .domains
+            .display
+            .preferences()
             .read()
             .await
             .get(fixture.device_id)
@@ -655,7 +659,9 @@ async fn identity_publication_blocks_every_observer_until_registry_assignment() 
     let display_state = Arc::clone(&state);
     let mut display_observer = tokio::spawn(async move {
         display_state
-            .display_preferences
+            .domains
+            .display
+            .preferences()
             .read()
             .await
             .get(device_id)
@@ -909,7 +915,9 @@ async fn publication_conflict_reprepares_inside_the_same_rescan() {
 
     barrier.wait_until_entered().await;
     state
-        .display_preferences
+        .domains
+        .display
+        .preferences()
         .write()
         .await
         .set(
@@ -930,7 +938,9 @@ async fn publication_conflict_reprepares_inside_the_same_rescan() {
         .expect("the original rescan should reprepare and converge");
     assert_eq!(
         state
-            .display_preferences
+            .domains
+            .display
+            .preferences()
             .read()
             .await
             .get(fixture.device_id)
@@ -1218,7 +1228,10 @@ async fn default_overlay_reconciliation_holds_admission_through_scene_commit() {
     let barrier = state.domains.effects.pause_next_resolution_for_test();
     let overlay_state = Arc::clone(&state);
     let overlay = tokio::spawn(async move {
-        crate::api::displays::apply_display_preference_overlay(overlay_state.as_ref(), device_id)
+        overlay_state
+            .domains
+            .display
+            .apply_preference_overlay(device_id)
             .await
     });
 
@@ -1256,7 +1269,10 @@ async fn rejected_default_overlay_holds_admission_through_retraction() {
     let barrier = state.domains.effects.pause_next_resolution_for_test();
     let overlay_state = Arc::clone(&state);
     let overlay = tokio::spawn(async move {
-        crate::api::displays::apply_display_preference_overlay(overlay_state.as_ref(), device_id)
+        overlay_state
+            .domains
+            .display
+            .apply_preference_overlay(device_id)
             .await
     });
 
@@ -1295,13 +1311,16 @@ async fn default_overlay_reconciliation_retries_a_replaced_preference() {
     let barrier = state.domains.effects.pause_next_resolution_for_test();
     let overlay_state = Arc::clone(&state);
     let overlay = tokio::spawn(async move {
-        crate::api::displays::apply_display_preference_overlay(overlay_state.as_ref(), device_id)
+        overlay_state
+            .domains
+            .display
+            .apply_preference_overlay(device_id)
             .await
     });
 
     barrier.wait_until_entered().await;
     {
-        let mut store = state.display_preferences.write().await;
+        let mut store = state.domains.display.preferences().write().await;
         let mut replacement = store
             .get(device_id)
             .cloned()

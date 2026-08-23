@@ -143,8 +143,12 @@ impl PreparedDaemon {
             &daemon_state,
             macos_daemon_session_attestation.as_ref(),
         ));
-        api::displays::sync_connected_display_surfaces(&app_state).await;
-        api::displays::sync_display_preference_overlays(&app_state).await;
+        daemon_state.domains.display.sync_connected_surfaces().await;
+        daemon_state
+            .domains
+            .display
+            .sync_preference_overlays()
+            .await;
         if let Err(error) = notify_api_ready_extensions(&daemon_state, &app_state).await {
             if let Err(shutdown_error) = daemon_state.shutdown().await {
                 warn!(%shutdown_error, "Failed to roll back daemon after API-ready hook failure");

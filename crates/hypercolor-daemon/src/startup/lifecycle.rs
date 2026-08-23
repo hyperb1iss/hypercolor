@@ -12,7 +12,6 @@ use hypercolor_types::config::{EffectErrorFallbackPolicy, HypercolorConfig};
 use hypercolor_types::event::{HypercolorEvent, SceneChangeReason};
 use hypercolor_types::scene::SceneId;
 
-use crate::app_state::AppState;
 use crate::device_metrics::spawn_device_metrics_collector;
 use crate::discovery::{self, DiscoveryTarget};
 use crate::display_output::{
@@ -677,8 +676,8 @@ impl DaemonState {
     /// Reconcile native display geometry and default-face overlays whenever a
     /// display connects.
     fn spawn_display_preference_sync_worker(&mut self) {
-        let state = Arc::new(AppState::from_daemon_state(self));
-        let mut event_rx = state.event_bus.subscribe_all();
+        let display = self.domains.display.clone();
+        let mut event_rx = self.event_bus.subscribe_all();
 
         self.display_preference_sync_task = Some(tokio::spawn(async move {
             loop {
@@ -686,15 +685,15 @@ impl DaemonState {
                     Ok(event) => event,
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
                         warn!(skipped, "Display reconciliation worker lagged");
-                        crate::api::displays::sync_connected_display_surfaces(&state).await;
-                        crate::api::displays::sync_display_preference_overlays(&state).await;
+                        display.sync_connected_surfaces().await;
+                        display.sync_preference_overlays().await;
                         continue;
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 };
                 if matches!(event.event, HypercolorEvent::DeviceConnected { .. }) {
-                    crate::api::displays::sync_connected_display_surfaces(&state).await;
-                    crate::api::displays::sync_display_preference_overlays(&state).await;
+                    display.sync_connected_surfaces().await;
+                    display.sync_preference_overlays().await;
                 }
             }
         }));
@@ -722,8 +721,11 @@ impl DaemonState {
     }
 
     fn spawn_effect_error_fallback_worker(&mut self) {
-        let state = Arc::new(AppState::from_daemon_state(self));
-        let mut event_rx = state.event_bus.subscribe_all();
+        let effects = self.domains.effects.clone();
+        let config_manager = Arc::clone(&self.config_manager);
+        let event_bus = Arc::clone(&self.event_bus);
+        let performance = Arc::clone(&self.performance);
+        let mut event_rx = self.event_bus.subscribe_all();
 
         self.effect_error_fallback_task = Some(tokio::spawn(async move {
             info!("Effect-error fallback worker active");
@@ -754,32 +756,25 @@ impl DaemonState {
                 }
 
                 {
-                    let mut performance = state.performance.write().await;
-                    performance.record_effect_error();
+                    let mut tracker = performance.write().await;
+                    tracker.record_effect_error();
                 }
 
-                let Some(config_manager) = state.config_manager.as_ref() else {
-                    continue;
-                };
                 let policy = config_manager.get().effect_engine.effect_error_fallback;
                 if matches!(policy, EffectErrorFallbackPolicy::None) {
                     continue;
                 }
 
-                match crate::domain::effect::apply_error_fallback(
-                    &state.domains.effects,
-                    &effect_id,
-                    policy,
-                )
-                .await
+                match crate::domain::effect::apply_error_fallback(&effects, &effect_id, policy)
+                    .await
                 {
                     Ok(Some(applied)) => {
                         {
-                            let mut performance = state.performance.write().await;
-                            performance.record_effect_fallback_applied();
+                            let mut tracker = performance.write().await;
+                            tracker.record_effect_fallback_applied();
                         }
                         if let Some(fallback_label) = policy.event_label() {
-                            state.event_bus.publish(HypercolorEvent::EffectError {
+                            event_bus.publish(HypercolorEvent::EffectError {
                                 effect_id: effect_id.clone(),
                                 error: error.clone(),
                                 fallback: Some(fallback_label.to_owned()),

@@ -111,7 +111,7 @@ async fn publish_display_frame(
     config: &SimulatedDisplayConfig,
     jpeg: Vec<u8>,
 ) {
-    state.display_frames.write().await.set_frame(
+    state.domains.display.frames().write().await.set_frame(
         config.id,
         DisplayFrameSnapshot {
             jpeg_data: Arc::new(jpeg),
@@ -607,7 +607,16 @@ async fn simulated_display_crud_routes_update_runtime_state() {
             .get(device_id)
             .is_none()
     );
-    assert!(state.display_frames.read().await.frame(device_id).is_none());
+    assert!(
+        state
+            .domains
+            .display
+            .frames()
+            .read()
+            .await
+            .frame(device_id)
+            .is_none()
+    );
     assert!(
         state
             .domains

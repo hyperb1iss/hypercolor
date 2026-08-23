@@ -121,6 +121,7 @@ fn scene_domain_source_uses_zone_vocabulary() {
         "api/ws/session.rs",
         "api/mod.rs",
         "api/displays.rs",
+        "domain/display.rs",
         "mcp/tools/displays.rs",
     ] {
         for term in retired {
@@ -314,9 +315,11 @@ fn output_static_hold_lifecycle_uses_output_context_directly() {
         .expect("static hold worker should remain structurally visible");
 
     assert!(startup.contains("self.domains.output.reconcile_static_hold().await;"));
-    assert!(!startup.contains("AppState::from_daemon_state"));
     assert!(worker.contains("let output = self.domains.output.clone();"));
-    assert!(!worker.contains("AppState::from_daemon_state"));
+    assert!(
+        !lifecycle.contains("AppState"),
+        "daemon lifecycle workers must enter through the domain graph"
+    );
 }
 
 #[test]
@@ -1143,13 +1146,17 @@ fn effect_mutations_require_generation_qualified_admission() {
     assert!(effect_api.contains("resolve_for_mutation(&id)"));
     let display_api = source("api/displays.rs");
     assert!(display_api.contains("resolve_for_mutation(&body.effect_id)"));
-    assert!(
-        display_api.contains("apply_display_preference_overlay_checked(state.as_ref(), device_id)")
-    );
+    assert!(display_api.contains(".set_default_face(SetDefaultDisplayFace {"));
     let mcp_tools = source("mcp/tools/mod.rs");
     assert!(mcp_tools.contains("all_for_mutation()"));
     let mcp_displays = source("mcp/tools/displays.rs");
-    assert!(mcp_displays.contains("apply_display_preference_overlay_checked(state, device_id)"));
+    assert!(mcp_displays.contains(".set_default_face(SetDefaultDisplayFace {"));
+    for adapter in [display_api, mcp_displays] {
+        assert!(
+            !adapter.contains("display_preferences.write()"),
+            "display adapters must write preferences through DisplayContext"
+        );
+    }
 
     let layer_domain = source("domain/layer.rs");
     assert!(layer_domain.contains("admit_layer_sources"));
@@ -1162,16 +1169,70 @@ fn effect_mutations_require_generation_qualified_admission() {
     assert!(scene_api.contains("insert_layer(&state.domains.effects"));
     assert!(!scene_api.contains("insert_layer(&state.domains.scene"));
 
-    let preference = display_api
-        .find("state.display_preferences.read().await")
-        .expect("display overlay should read the preference");
-    let admission = display_api[preference..]
-        .find("admit_current_display_face_controls")
-        .expect("display overlay should admit preference controls");
-    let scene_commit = display_api[preference..]
-        .find("domain::display::set_default_display_overlay")
+    let overlay = display_domain
+        .split_once("async fn apply_preference_overlay")
+        .map(|(_, body)| body)
+        .expect("default overlay reconciliation should remain structurally visible");
+    let admission = overlay
+        .find("resolve_display_face_controls_under_admission")
+        .expect("display overlay should resolve controls under admission");
+    let scene_commit = overlay
+        .find("set_default_display_overlay(&self.scene")
         .expect("display overlay should commit under effect admission");
     assert!(admission < scene_commit);
+}
+
+#[test]
+fn display_default_face_has_one_domain_home() {
+    let sources = daemon_sources();
+    let source = |suffix: &str| {
+        sources
+            .iter()
+            .find(|(path, _)| path.ends_with(suffix))
+            .map(|(_, source)| source.as_str())
+            .unwrap_or_else(|| panic!("missing daemon source {suffix}"))
+    };
+
+    let display_domain = source("domain/display.rs");
+    for capability in [
+        "pub struct DisplayContext",
+        "pub async fn set_default_face(",
+        "pub async fn clear_default_face(",
+        "pub async fn apply_preference_overlay(",
+        "pub async fn sync_preference_overlays(",
+        "pub async fn sync_connected_surfaces(",
+        "pub fn normalize_display_face_target(",
+    ] {
+        assert!(
+            display_domain.contains(capability),
+            "display domain lacks {capability}"
+        );
+    }
+
+    let contexts = source("domain/context.rs");
+    assert!(contexts.contains("pub display: DisplayContext"));
+
+    let app_state = source("app_state.rs");
+    for retired_field in ["pub display_preferences:", "pub display_frames:"] {
+        assert!(!app_state.contains(retired_field), "found {retired_field}");
+    }
+
+    let strays = sources
+        .iter()
+        .filter(|(path, _)| !path.ends_with("domain/display.rs"))
+        .filter(|(_, source)| {
+            source.contains("apply_display_preference_overlay")
+                || source.contains("sync_display_preference_overlays")
+                || source.contains("sync_connected_display_surfaces")
+                || source.contains("build_default_display_zone")
+        })
+        .map(|(path, _)| path.display().to_string())
+        .collect::<Vec<_>>();
+    assert!(
+        strays.is_empty(),
+        "default-face orchestration escaped the display domain:\n{}",
+        strays.join("\n")
+    );
 }
 
 #[test]

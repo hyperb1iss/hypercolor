@@ -344,7 +344,7 @@ async fn control_patches_route_to_the_default_layer_when_it_is_live() {
     assert_eq!(payload["data"]["live_scope"], "default");
 
     // The stored preference carries the merged control.
-    let store = state.display_preferences.read().await;
+    let store = state.domains.display.preferences().read().await;
     let preference = store.get(device_id).expect("preference should exist");
     assert!(preference.controls.contains_key("accent"));
 }
@@ -527,7 +527,7 @@ async fn deleting_a_display_prunes_its_default_face_and_preference() {
     );
     drop(scene_manager);
 
-    let store = state.display_preferences.read().await;
+    let store = state.domains.display.preferences().read().await;
     assert!(
         store.get(device_id).is_none(),
         "deleted display must not keep a stored default-face preference"

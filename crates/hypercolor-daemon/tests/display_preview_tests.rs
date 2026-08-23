@@ -61,7 +61,7 @@ async fn publish_frame(
     frame_number: u64,
     captured_at: SystemTime,
 ) {
-    state.display_frames.write().await.set_frame(
+    state.domains.display.frames().write().await.set_frame(
         device_id,
         DisplayFrameSnapshot {
             jpeg_data: Arc::new(jpeg),

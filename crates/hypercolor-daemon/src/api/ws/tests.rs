@@ -801,7 +801,7 @@ async fn metrics_message_includes_latest_frame_timeline() {
         });
     }
     {
-        let mut display_frames = state.display_frames.write().await;
+        let mut display_frames = state.domains.display.frames().write().await;
         display_frames.record_write_attempt(false);
         display_frames.record_write_success();
         display_frames.record_write_attempt(true);

@@ -3005,7 +3005,13 @@ pub(super) async fn build_metrics_message(
     let screen_canvas_demand = state.preview_runtime.screen_canvas_demand();
     let web_viewport_canvas_demand = state.preview_runtime.web_viewport_canvas_demand();
     let zone_preview_demand = state.preview_runtime.zone_preview_demand();
-    let display_output = state.display_frames.read().await.metrics_snapshot();
+    let display_output = state
+        .domains
+        .display
+        .frames()
+        .read()
+        .await
+        .metrics_snapshot();
     let health = render_health_counts();
     let servo_health = health.servo;
     let pipeline_health = health.pipeline;

@@ -13,21 +13,26 @@
 //! before either layer can mutate authoritative state.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use hypercolor_types::control::ControlValue;
 use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceTopologyHint};
-use hypercolor_types::effect::{EffectCategory, EffectMetadata, EffectSource};
+use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
 use hypercolor_types::event::ZoneChangeKind;
-use hypercolor_types::layer::BlendMode;
-use hypercolor_types::scene::{DisplayFaceTarget, SceneId, Zone, ZoneId};
+use hypercolor_types::layer::{BlendMode, SceneLayer, SceneLayerId};
+use hypercolor_types::scene::{DisplayFaceTarget, SceneId, Zone, ZoneId, ZoneRole};
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
+use tokio::sync::RwLock;
 
-use crate::domain::DomainError;
+use crate::display_frames::DisplayFrameRuntime;
+use crate::display_preferences::{DisplayPreference, DisplayPreferencesStore};
 use crate::domain::commit::SceneCommit;
-use crate::domain::context::SceneContext;
+use crate::domain::context::{DeviceContext, SceneContext};
 use crate::domain::effect::{
     AdmittedEffectControls, EffectContext, EffectMutationAdmission, ResolvedEffect,
 };
+use crate::domain::layout::LayoutContext;
+use crate::domain::{DomainError, ResourceKind};
 
 /// Native display surface geometry resolved from one tracked device.
 #[derive(Debug, Clone, Copy)]
@@ -558,4 +563,477 @@ fn scene_display_zone(
         .active_scene()?
         .display_zone_for(device_id)
         .cloned()
+}
+
+// ── Default-face context ─────────────────────────────────────────────────
+
+/// Which layers currently carry a face for one display.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DisplayFaceLayers {
+    /// The active scene's display zone carries an assignment.
+    pub scene_assigned: bool,
+    /// The preference store carries a default face.
+    pub default_assigned: bool,
+}
+
+/// Assign the default face a display keeps across scene switches.
+#[derive(Debug, Clone)]
+pub struct SetDefaultDisplayFace {
+    /// Which display gets the face.
+    pub device_id: DeviceId,
+    /// The face resolved against one catalog generation.
+    pub effect: ResolvedEffect,
+    /// Control overrides to store with the preference.
+    pub controls: HashMap<String, ControlValue>,
+    /// How the face composes over the effect layer beneath it.
+    pub target: DisplayFaceTarget,
+}
+
+/// The outcome of writing a display's default face.
+#[derive(Debug)]
+pub struct DefaultDisplayFaceWritten {
+    /// The face as the catalog admitted it.
+    pub effect: EffectMetadata,
+    /// The runtime overlay zone the preference materialized into.
+    pub zone: Zone,
+    /// The scene the overlay renders alongside.
+    pub scene_id: SceneId,
+    /// Whether the active scene's own assignment still wins the display.
+    pub scene_assigned: bool,
+}
+
+/// The outcome of dropping a display's default face.
+#[derive(Debug)]
+pub struct DefaultDisplayFaceCleared {
+    /// Whether a stored preference was actually removed.
+    pub removed: bool,
+    /// The retracted overlay zone, present only when the display now shows
+    /// nothing and render observers have to be told.
+    pub retracted: Option<Zone>,
+    /// The scene the retraction applies to.
+    pub scene_id: SceneId,
+}
+
+/// Clamp a face's composition to what the renderer can honor.
+///
+/// A face that does not blend covers the layer beneath it outright, so a
+/// partial opacity would describe a composite that never happens.
+#[must_use]
+pub fn normalize_display_face_target(target: DisplayFaceTarget) -> DisplayFaceTarget {
+    let mut target = target.normalized();
+    if !target.clone().blends_with_effect() {
+        target.opacity = 1.0;
+    }
+    target
+}
+
+/// Default-face authority for displays.
+///
+/// The default layer lives in the preference store and materializes each
+/// run into a runtime overlay zone. Every transport enters here, so an
+/// assignment reaches the store, the catalog guard, and the scene in one
+/// order no adapter can reorder.
+#[derive(Clone)]
+pub struct DisplayContext {
+    preferences: Arc<RwLock<DisplayPreferencesStore>>,
+    frames: Arc<RwLock<DisplayFrameRuntime>>,
+    scene: SceneContext,
+    effects: EffectContext,
+    layout: LayoutContext,
+    devices: DeviceContext,
+}
+
+impl DisplayContext {
+    pub(crate) const fn new(
+        preferences: Arc<RwLock<DisplayPreferencesStore>>,
+        frames: Arc<RwLock<DisplayFrameRuntime>>,
+        scene: SceneContext,
+        effects: EffectContext,
+        layout: LayoutContext,
+        devices: DeviceContext,
+    ) -> Self {
+        Self {
+            preferences,
+            frames,
+            scene,
+            effects,
+            layout,
+            devices,
+        }
+    }
+
+    /// Latest composited frame per display, for preview surfaces.
+    #[must_use]
+    pub const fn frames(&self) -> &Arc<RwLock<DisplayFrameRuntime>> {
+        &self.frames
+    }
+
+    /// Persisted per-display default face preferences.
+    #[must_use]
+    pub const fn preferences(&self) -> &Arc<RwLock<DisplayPreferencesStore>> {
+        &self.preferences
+    }
+
+    /// Whether a display carries a stored default face.
+    pub async fn has_default_face(&self, device_id: DeviceId) -> bool {
+        self.preferences.read().await.get(device_id).is_some()
+    }
+
+    /// Resolve both assignment layers for a display.
+    pub async fn face_layers(&self, device_id: DeviceId) -> DisplayFaceLayers {
+        let scene_assigned = {
+            let scenes = self.scene.snapshot().await;
+            scenes
+                .active_scene()
+                .and_then(|scene| scene.display_zone_for(device_id))
+                .is_some_and(display_zone_has_face_assignment)
+        };
+        DisplayFaceLayers {
+            scene_assigned,
+            default_assigned: self.has_default_face(device_id).await,
+        }
+    }
+
+    async fn active_scene_id(&self) -> SceneId {
+        let scenes = self.scene.snapshot().await;
+        scenes
+            .active_scene()
+            .map_or(SceneId::DEFAULT, |scene| scene.id)
+    }
+
+    /// Write a display's default face and materialize its overlay.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Validation`] when the effect is not an HTML display
+    /// face or a control value fails admission, and
+    /// [`DomainError::Internal`] when the preference cannot be persisted
+    /// or the overlay refuses to install.
+    pub async fn set_default_face(
+        &self,
+        command: SetDefaultDisplayFace,
+    ) -> Result<DefaultDisplayFaceWritten, DomainError> {
+        let SetDefaultDisplayFace {
+            device_id,
+            effect,
+            controls,
+            target,
+        } = command;
+        let target = normalize_display_face_target(target);
+        let admitted = admit_display_face_controls(&self.effects, effect, &controls).await?;
+        let (effect, controls, admission) = admitted.into_parts();
+        {
+            let mut store = self.preferences.write().await;
+            store
+                .set(
+                    device_id,
+                    DisplayPreference {
+                        blend_mode: target.blend_mode,
+                        controls,
+                        effect_id: effect.id,
+                        opacity: target.opacity,
+                    },
+                )
+                .map_err(|error| {
+                    DomainError::Internal(anyhow::anyhow!(
+                        "Failed to prepare display preference persistence: {error}"
+                    ))
+                })?;
+        }
+        drop(admission);
+
+        let Some(zone) = self.apply_preference_overlay(device_id).await else {
+            return Err(DomainError::Internal(anyhow::anyhow!(
+                "Failed to install the default face overlay"
+            )));
+        };
+        let layers = self.face_layers(device_id).await;
+
+        Ok(DefaultDisplayFaceWritten {
+            effect,
+            zone,
+            scene_id: self.active_scene_id().await,
+            scene_assigned: layers.scene_assigned,
+        })
+    }
+
+    /// Drop a display's default face and retract its overlay.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Internal`] when the preference store cannot be
+    /// written, and [`DomainError::Conflict`] when a concurrent scene
+    /// mutation lands first.
+    pub async fn clear_default_face(
+        &self,
+        device_id: DeviceId,
+    ) -> Result<DefaultDisplayFaceCleared, DomainError> {
+        let removed = {
+            let mut store = self.preferences.write().await;
+            store
+                .remove(device_id)
+                .map_err(|error| {
+                    DomainError::Internal(anyhow::anyhow!(
+                        "Failed to prepare display preference persistence: {error}"
+                    ))
+                })?
+                .is_some()
+        };
+        let layers = self.face_layers(device_id).await;
+        let cleared = remove_default_display_overlay(&self.scene, device_id).await?;
+        let retracted = if removed && !layers.scene_assigned {
+            cleared.map(|mut zone| {
+                zone.layers.clear();
+                zone
+            })
+        } else {
+            None
+        };
+
+        Ok(DefaultDisplayFaceCleared {
+            removed,
+            retracted,
+            scene_id: self.active_scene_id().await,
+        })
+    }
+
+    /// Update how a display's default face composes with the layer below.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::NotFound`] when the display carries no default face,
+    /// and [`DomainError::Internal`] when the preference cannot be
+    /// persisted.
+    pub async fn patch_default_composition(
+        &self,
+        device_id: DeviceId,
+        blend_mode: Option<BlendMode>,
+        opacity: Option<f32>,
+    ) -> Result<(), DomainError> {
+        let mut store = self.preferences.write().await;
+        let Some(mut updated) = store.get(device_id).cloned() else {
+            return Err(DomainError::not_found(
+                ResourceKind::Zone,
+                format!("default-face:{device_id}"),
+            ));
+        };
+        let target = normalize_display_face_target(DisplayFaceTarget {
+            blend_mode: blend_mode.unwrap_or(updated.blend_mode),
+            device_id,
+            opacity: opacity.unwrap_or(updated.opacity),
+        });
+        updated.blend_mode = target.blend_mode;
+        updated.opacity = target.opacity;
+        store.set(device_id, updated).map_err(|error| {
+            DomainError::Internal(anyhow::anyhow!(
+                "Failed to prepare display preference persistence: {error}"
+            ))
+        })
+    }
+
+    /// Merge control overrides into a display's stored default face.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::NotFound`] when the display carries no default face,
+    /// [`DomainError::Validation`] when a control value fails admission,
+    /// and [`DomainError::Internal`] when the preference cannot be
+    /// persisted.
+    pub async fn merge_default_controls(
+        &self,
+        device_id: DeviceId,
+        controls: &HashMap<String, ControlValue>,
+    ) -> Result<(), DomainError> {
+        loop {
+            let preference = {
+                let store = self.preferences.read().await;
+                let Some(preference) = store.get(device_id).cloned() else {
+                    return Err(DomainError::not_found(
+                        ResourceKind::Zone,
+                        format!("default-face:{device_id}"),
+                    ));
+                };
+                preference
+            };
+            let admitted =
+                admit_current_display_face_controls(&self.effects, preference.effect_id, controls)
+                    .await?;
+            let (_effect, normalized_controls, admission) = admitted.into_parts();
+            let updated = {
+                let mut store = self.preferences.write().await;
+                store.merge_controls_if_unchanged(device_id, &preference, &normalized_controls)
+            };
+            drop(admission);
+            match updated {
+                Ok(true) => return Ok(()),
+                Ok(false) => {}
+                Err(error) => {
+                    return Err(DomainError::Internal(anyhow::anyhow!(
+                        "Failed to prepare display preference persistence: {error}"
+                    )));
+                }
+            }
+        }
+    }
+
+    /// Install (or refresh) the runtime default zone for one display from
+    /// its stored preference.
+    ///
+    /// Removes the overlay when the preference is gone or its effect no
+    /// longer resolves. Returns the installed zone, if any.
+    pub async fn apply_preference_overlay(&self, device_id: DeviceId) -> Option<Zone> {
+        loop {
+            let admission = self.effects.admit_current().await;
+            let candidate = {
+                let store = self.preferences.read().await;
+                store.get(device_id).cloned()
+            };
+            let Some(mut preference) = candidate else {
+                let store = self.preferences.read().await;
+                if store.get(device_id).is_some() {
+                    continue;
+                }
+                let retracted = self.retract_preference_overlay(device_id).await;
+                drop(store);
+                drop(admission);
+                return retracted;
+            };
+
+            let registry = self.devices.device_registry();
+            let tracked = registry.get(&device_id).await;
+            let surface = tracked
+                .as_ref()
+                .and_then(|tracked| display_surface_info(&tracked.info));
+            let resolved = resolve_display_face_controls_under_admission(
+                &self.effects,
+                &admission,
+                preference.effect_id,
+                &preference.controls,
+            )
+            .await;
+            let store = self.preferences.read().await;
+            if store.get(device_id) != Some(&preference) {
+                drop(store);
+                drop(admission);
+                continue;
+            }
+            let (Some(tracked), Some(surface)) = (tracked, surface) else {
+                let retracted = self.retract_preference_overlay(device_id).await;
+                drop(store);
+                drop(admission);
+                return retracted;
+            };
+            let (effect, controls) = match resolved {
+                Ok(resolved) => resolved,
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        %device_id,
+                        effect_id = %preference.effect_id,
+                        "Default display face is no longer admissible; skipping overlay"
+                    );
+                    let retracted = self.retract_preference_overlay(device_id).await;
+                    drop(store);
+                    drop(admission);
+                    return retracted;
+                }
+            };
+            preference.controls = controls;
+
+            let zone = build_default_display_zone(
+                device_id,
+                tracked.info.name.as_str(),
+                effect.id,
+                &preference,
+                display_face_layout(device_id, tracked.info.name.as_str(), surface),
+            );
+            let installed = set_default_display_overlay(&self.scene, device_id, zone).await;
+            drop(store);
+            drop(admission);
+            return match installed {
+                Ok(installed) => installed,
+                Err(error) => {
+                    tracing::warn!(%error, %device_id, "Failed to install the default face overlay");
+                    None
+                }
+            };
+        }
+    }
+
+    /// Drop a display's runtime default overlay, reporting `None` either
+    /// way so the caller reads it as "no overlay is installed".
+    async fn retract_preference_overlay(&self, device_id: DeviceId) -> Option<Zone> {
+        if let Err(error) = remove_default_display_overlay(&self.scene, device_id).await {
+            tracing::warn!(%error, %device_id, "Failed to retract the default face overlay");
+        }
+        None
+    }
+
+    /// Reconcile every stored default-face overlay with the preference
+    /// store, so defaults follow devices as they appear.
+    pub async fn sync_preference_overlays(&self) {
+        let device_ids = {
+            let store = self.preferences.read().await;
+            store
+                .iter()
+                .map(|(device_id, _)| device_id)
+                .collect::<Vec<_>>()
+        };
+        for device_id in device_ids {
+            self.apply_preference_overlay(device_id).await;
+        }
+    }
+
+    /// Refresh native geometry for every connected display's scene zone.
+    pub async fn sync_connected_surfaces(&self) {
+        let displays = self
+            .layout
+            .connected_display_surface_layouts(&self.devices.layout_runtime())
+            .await;
+        if let Err(error) = hydrate_existing_display_surfaces(&self.scene, displays).await {
+            tracing::warn!(%error, "Failed to hydrate connected display surfaces");
+        }
+    }
+}
+
+/// Build the runtime-only default zone a preference materializes into.
+fn build_default_display_zone(
+    device_id: DeviceId,
+    device_name: &str,
+    effect_id: EffectId,
+    preference: &DisplayPreference,
+    layout: SpatialLayout,
+) -> Zone {
+    Zone {
+        id: ZoneId::new(),
+        name: format!("{device_name} Face"),
+        description: Some(format!("Default face for {device_name}")),
+        layers: vec![SceneLayer::from_effect(
+            SceneLayerId::new(),
+            effect_id,
+            preference.controls.clone(),
+            HashMap::new(),
+            None,
+        )],
+        layout,
+        brightness: 1.0,
+        enabled: true,
+        color: None,
+        display_target: Some(
+            DisplayFaceTarget {
+                blend_mode: preference.blend_mode,
+                device_id,
+                opacity: preference.opacity,
+            }
+            .normalized(),
+        ),
+        role: ZoneRole::Display,
+        controls_version: 0,
+        layers_version: 0,
+    }
+}
+
+/// Whether a display zone carries a face assignment at all.
+fn display_zone_has_face_assignment(zone: &Zone) -> bool {
+    zone.effect_ids().next().is_some()
 }

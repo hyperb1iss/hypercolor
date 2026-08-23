@@ -215,7 +215,13 @@ pub(crate) async fn collect_diagnostics(
     let render_elapsed_ms = state.start_time.elapsed().as_secs_f64() * 1000.0;
     let performance = state.performance.read().await.snapshot();
     let usb_actor_metrics = usb_actor_metrics_snapshot();
-    let display_output_metrics = state.display_frames.read().await.metrics_snapshot();
+    let display_output_metrics = state
+        .domains
+        .display
+        .frames()
+        .read()
+        .await
+        .metrics_snapshot();
     let device_metrics = state.device_metrics.load_full();
     let input = input_status_snapshot(&state.domains.platform);
     let mut snapshot = build_diagnose_snapshot(

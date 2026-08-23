@@ -58,6 +58,8 @@ use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 use crate::attachment_profiles::ComponentProfileStore;
 use crate::device_metrics::DeviceMetricsSnapshot;
 use crate::device_settings::DeviceSettingsStore;
+use crate::display_frames::DisplayFrameRuntime;
+use crate::display_preferences::DisplayPreferencesStore;
 use crate::domain::context::{
     DeviceContext, DomainContextResources, DomainContexts, PlatformContext,
     RuntimeSessionProjection, RuntimeSessionService, SceneContext,
@@ -664,6 +666,7 @@ impl DaemonState {
             )?;
         let playlist_runtime = Arc::new(Mutex::new(PlaylistRuntimeState::new()));
         let start_time = Instant::now();
+        let display_frames = Arc::new(RwLock::new(DisplayFrameRuntime::new()));
         let AssembledDomains {
             domains,
             driver_host,
@@ -691,6 +694,8 @@ impl DaemonState {
                     Arc::clone(&library_identity),
                     Arc::clone(&playlist_runtime),
                 ),
+                display_preferences: Arc::clone(&display_preferences),
+                display_frames: Arc::clone(&display_frames),
             },
             |layout| {
                 let discovery_runtime = crate::discovery::DiscoveryRuntime {
@@ -793,9 +798,7 @@ impl DaemonState {
             device_settings,
             simulated_displays,
             simulated_display_runtime,
-            display_frames: Arc::new(RwLock::new(
-                crate::display_frames::DisplayFrameRuntime::new(),
-            )),
+            display_frames,
             runtime_state_path,
             device_aliases_path,
             startup_device_aliases: Some(startup_device_aliases),
@@ -1520,6 +1523,8 @@ pub(crate) struct DomainAssemblyResources {
     pub input_status: SourceStatusRegistry,
     pub effect_registry: Arc<RwLock<EffectRegistry>>,
     pub effect_identity: EffectIdentityResources,
+    pub display_preferences: Arc<RwLock<DisplayPreferencesStore>>,
+    pub display_frames: Arc<RwLock<DisplayFrameRuntime>>,
 }
 
 /// The assembled domain graph and the driver host it was wired around.
@@ -1556,6 +1561,8 @@ pub(crate) fn assemble_domains(
         input_status,
         effect_registry,
         effect_identity,
+        display_preferences,
+        display_frames,
     } = resources;
 
     let runtime_projection = RuntimeSessionProjection::new(
@@ -1612,6 +1619,8 @@ pub(crate) fn assemble_domains(
             effect_identity,
             spatial: spatial_engine,
             event_bus,
+            display_preferences,
+            display_frames,
         },
     );
 

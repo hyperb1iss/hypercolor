@@ -8,6 +8,7 @@ use std::time::Duration;
 use hypercolor_core::asset::AssetLibrary;
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::config::ConfigManager;
+use hypercolor_core::device::DeviceRegistry;
 use hypercolor_core::effect::EffectRegistry;
 use hypercolor_core::engine::RenderLoop;
 use hypercolor_core::input::{SourceStatusRegistry, SourceStatusRegistrySnapshot};
@@ -19,8 +20,11 @@ use hypercolor_types::scene::{Scene, SceneId};
 use tokio::sync::{OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
 
 use crate::discovery;
+use crate::display_frames::DisplayFrameRuntime;
+use crate::display_preferences::DisplayPreferencesStore;
 use crate::domain::DomainError;
 use crate::domain::commit::SceneCommit;
+use crate::domain::display::DisplayContext;
 use crate::domain::effect::{EffectContext, EffectIdentityResources};
 use crate::domain::layout::{LayoutContext, LayoutRuntime};
 use crate::domain::output::OutputContext;
@@ -50,6 +54,8 @@ pub struct DomainContexts {
     pub output: OutputContext,
     /// Platform input health and live configuration authority.
     pub platform: PlatformContext,
+    /// Display default-face and preview-frame authority.
+    pub display: DisplayContext,
     /// Effect catalog, validation, and activation authority.
     pub effects: EffectContext,
     /// Live scene-tree mutation authority.
@@ -63,6 +69,8 @@ pub(crate) struct DomainContextResources {
     pub effect_identity: EffectIdentityResources,
     pub spatial: SpatialService,
     pub event_bus: Arc<HypercolorBus>,
+    pub display_preferences: Arc<RwLock<DisplayPreferencesStore>>,
+    pub display_frames: Arc<RwLock<DisplayFrameRuntime>>,
 }
 
 impl DomainContexts {
@@ -96,6 +104,14 @@ impl DomainContexts {
             output.clone(),
             resources.event_bus,
         );
+        let display = DisplayContext::new(
+            resources.display_preferences,
+            resources.display_frames,
+            scene.clone(),
+            effects.clone(),
+            layout.clone(),
+            devices.clone(),
+        );
         Self {
             runtime_session,
             devices,
@@ -103,6 +119,7 @@ impl DomainContexts {
             layout,
             output,
             platform,
+            display,
             effects,
             scene_tree,
             scene_library,
@@ -740,6 +757,12 @@ impl DeviceContext {
             self.driver_host.discovery_runtime(),
             Arc::clone(&self.driver_host),
         )
+    }
+
+    /// The live device registry every discovery lane writes through.
+    #[must_use]
+    pub fn device_registry(&self) -> DeviceRegistry {
+        self.driver_host.discovery_runtime().device_registry
     }
 
     /// Schedule discovery after released output ownership becomes available.

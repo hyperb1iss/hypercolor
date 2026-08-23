@@ -1703,7 +1703,9 @@ async fn malformed_declared_arguments_never_reach_mutating_handlers() {
         .await;
         assert!(
             state
-                .display_preferences
+                .domains
+                .display
+                .preferences()
                 .read()
                 .await
                 .get(display_id)
@@ -2671,6 +2673,114 @@ fn prompt_definitions_and_messages_are_valid() {
 }
 
 #[tokio::test]
+async fn display_face_assignment_agrees_across_rest_and_mcp() {
+    let (rest_state, _rest_tmp) = isolated_state_with_tempdir();
+    let rest_state = Arc::new(rest_state);
+    let rest_display = insert_test_display_device(&rest_state, "Pump LCD").await;
+    let rest_face = insert_test_display_face_effect(&rest_state, "System Monitor").await;
+
+    let (client, base) = spawn_router(api::build_router(Arc::clone(&rest_state), None)).await;
+    let response = client
+        .put(format!("{base}/api/v1/displays/{rest_display}/face"))
+        .json(&json!({
+            "effect_id": rest_face.id.to_string(),
+            "scope": "default",
+        }))
+        .send()
+        .await
+        .expect("REST default-face assignment should send");
+    assert_eq!(
+        response.status().as_u16(),
+        200,
+        "REST default-face assignment should succeed"
+    );
+    let rest_body: Value = response
+        .json()
+        .await
+        .expect("REST face response should be JSON");
+    let rest_face_payload = &rest_body["data"];
+
+    let (mcp_state, _mcp_tmp) = isolated_state_with_tempdir();
+    let mcp_state = Arc::new(mcp_state);
+    let mcp_display = insert_test_display_device(&mcp_state, "Pump LCD").await;
+    let mcp_face = insert_test_display_face_effect(&mcp_state, "System Monitor").await;
+    let mcp_face_payload = execute_tool_with_state(
+        "set_display_face",
+        &json!({
+            "device": mcp_display.to_string(),
+            "effect_id": mcp_face.id.to_string(),
+        }),
+        mcp_state.as_ref(),
+    )
+    .await
+    .expect("MCP default-face assignment should succeed");
+
+    let rest_preference = rest_state
+        .domains
+        .display
+        .preferences()
+        .read()
+        .await
+        .get(rest_display)
+        .cloned()
+        .expect("REST assignment should store a preference");
+    let mcp_preference = mcp_state
+        .domains
+        .display
+        .preferences()
+        .read()
+        .await
+        .get(mcp_display)
+        .cloned()
+        .expect("MCP assignment should store a preference");
+    assert_eq!(rest_preference.blend_mode, mcp_preference.blend_mode);
+    assert!((rest_preference.opacity - mcp_preference.opacity).abs() <= f32::EPSILON);
+    assert_eq!(rest_preference.controls, mcp_preference.controls);
+    assert_eq!(rest_preference.effect_id, rest_face.id);
+    assert_eq!(mcp_preference.effect_id, mcp_face.id);
+
+    assert_eq!(
+        rest_face_payload["live_scope"],
+        mcp_face_payload["live_scope"]
+    );
+    for field in ["role", "brightness", "enabled"] {
+        assert_eq!(
+            rest_face_payload["zone"][field], mcp_face_payload["zone"][field],
+            "overlay zone field {field} diverged between REST and MCP"
+        );
+    }
+    for field in ["blend_mode", "opacity"] {
+        assert_eq!(
+            rest_face_payload["zone"]["display_target"][field],
+            mcp_face_payload["zone"]["display_target"][field],
+            "overlay composition field {field} diverged between REST and MCP"
+        );
+    }
+
+    let rest_zones = rest_state
+        .scene_manager
+        .snapshot()
+        .await
+        .resolved_zones()
+        .iter()
+        .filter(|zone| zone.has_effect(rest_face.id))
+        .count();
+    let mcp_zones = mcp_state
+        .scene_manager
+        .snapshot()
+        .await
+        .resolved_zones()
+        .iter()
+        .filter(|zone| zone.has_effect(mcp_face.id))
+        .count();
+    assert_eq!(
+        rest_zones, mcp_zones,
+        "both transports should materialize the same overlay zone count"
+    );
+    assert_eq!(rest_zones, 1);
+}
+
+#[tokio::test]
 async fn stateful_display_face_tool_defaults_to_the_persistent_scope() {
     let (state, _tmp) = isolated_state_with_tempdir();
     let state = Arc::new(state);
@@ -2698,7 +2808,9 @@ async fn stateful_display_face_tool_defaults_to_the_persistent_scope() {
     // The preference persists and the overlay reaches the render zones.
     assert!(
         state
-            .display_preferences
+            .domains
+            .display
+            .preferences()
             .read()
             .await
             .get(display_id)
@@ -2729,7 +2841,9 @@ async fn stateful_display_face_tool_defaults_to_the_persistent_scope() {
     assert!(clear_result["live_scope"].is_null());
     assert!(
         state
-            .display_preferences
+            .domains
+            .display
+            .preferences()
             .read()
             .await
             .get(display_id)
