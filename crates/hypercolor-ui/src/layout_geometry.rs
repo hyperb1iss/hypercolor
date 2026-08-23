@@ -149,11 +149,28 @@ pub fn resize_zone_from_handle(
     let (local_start, local_current) =
         rotate_mouse_to_local(start_mouse, current_mouse, start_center, rotation);
 
-    if keep_aspect_ratio {
+    let (local_center, size) = if keep_aspect_ratio {
         resize_zone_locked(start_center, start_size, handle, local_current)
     } else {
         resize_zone_unlocked(start_center, start_size, local_start, handle, local_current)
+    };
+    // The rect was solved in zone-local space, so its center is a local
+    // offset from the pivot; rotate that offset back out so the opposite
+    // corner stays anchored on screen instead of the box sliding sideways.
+    (rotate_about(local_center, start_center, rotation), size)
+}
+
+fn rotate_about(point: NormalizedPosition, pivot: NormalizedPosition, rotation: f32) -> NormalizedPosition {
+    if rotation.abs() < GRID_EPSILON {
+        return point;
     }
+    let (sin_r, cos_r) = rotation.sin_cos();
+    let dx = point.x - pivot.x;
+    let dy = point.y - pivot.y;
+    NormalizedPosition::new(
+        (pivot.x + dx * cos_r - dy * sin_r).clamp(0.0, 1.0),
+        (pivot.y + dx * sin_r + dy * cos_r).clamp(0.0, 1.0),
+    )
 }
 
 /// Rotate two mouse positions from viewport space into zone-local (unrotated)
@@ -240,7 +257,14 @@ fn resize_zone_unlocked(
     handle: ResizeHandle,
     current_mouse: NormalizedPosition,
 ) -> (NormalizedPosition, NormalizedPosition) {
-    let min_size = axis_minimums_for_aspect(zone_aspect_ratio(start_size), RESIZE_MIN_SIZE);
+    // A box already smaller than the resize floor (attachment seeds start at
+    // 2%) keeps its own size as the floor; otherwise a flush-edge box would
+    // hand `clamp` an inverted range and abort the whole UI.
+    let floor = axis_minimums_for_aspect(zone_aspect_ratio(start_size), RESIZE_MIN_SIZE);
+    let min_size = NormalizedPosition::new(
+        floor.x.min(start_size.x).max(GRID_EPSILON),
+        floor.y.min(start_size.y).max(GRID_EPSILON),
+    );
     let start_left = start_center.x - start_size.x * 0.5;
     let start_right = start_center.x + start_size.x * 0.5;
     let start_top = start_center.y - start_size.y * 0.5;
@@ -459,16 +483,21 @@ fn clamp_strip_size(
 }
 
 fn clamp_zone_center(position: NormalizedPosition, size: NormalizedPosition) -> NormalizedPosition {
-    NormalizedPosition::new(
-        position.x.clamp(
-            size.x.mul_add(0.5, 0.0).min(1.0),
-            (1.0 - size.x * 0.5).max(0.0),
-        ),
-        position.y.clamp(
-            size.y.mul_add(0.5, 0.0).min(1.0),
-            (1.0 - size.y * 0.5).max(0.0),
-        ),
-    )
+    let (min_x, max_x) = zone_center_range(size.x);
+    let (min_y, max_y) = zone_center_range(size.y);
+    NormalizedPosition::new(position.x.clamp(min_x, max_x), position.y.clamp(min_y, max_y))
+}
+
+/// The centers that keep a box of `extent` inside the canvas on one axis.
+/// A box wider than the canvas can only be centered, so the range collapses
+/// to the midpoint instead of inverting.
+pub(crate) fn zone_center_range(extent: f32) -> (f32, f32) {
+    let half = extent.max(0.0) * 0.5;
+    if half >= 0.5 {
+        (0.5, 0.5)
+    } else {
+        (half, 1.0 - half)
+    }
 }
 
 fn available_axis_span(center: f32) -> f32 {

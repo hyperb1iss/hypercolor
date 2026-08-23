@@ -2,7 +2,7 @@ use std::f32::consts::PI;
 
 use hypercolor_types::spatial::{NormalizedPosition, SpatialLayout};
 
-use super::{GRID_EPSILON, clamp_zone_center, normalize_rotation};
+use super::{GRID_EPSILON, clamp_zone_center, normalize_rotation, zone_center_range};
 
 // ── Compound geometry ────────────────────────────────────────────────────
 
@@ -47,19 +47,20 @@ pub fn compound_bounding_box(
     })
 }
 
-/// Translate all zones by a delta from their initial positions, clamping each to canvas bounds.
+/// Translate all zones by a delta from their initial positions as one rigid
+/// body: the delta is clamped so the outermost member stops at the canvas
+/// edge and every other member stops with it, so a compound never squashes
+/// against the edge.
 pub fn translate_zones(
     layout: &mut SpatialLayout,
     initial_positions: &[(String, NormalizedPosition)],
     delta: NormalizedPosition,
 ) -> bool {
+    let delta = rigid_delta(layout, initial_positions, delta);
     let mut changed = false;
     for (id, initial_pos) in initial_positions {
         if let Some(zone) = layout.zones.iter_mut().find(|z| z.id == *id) {
-            let desired = NormalizedPosition::new(
-                (initial_pos.x + delta.x).clamp(0.0, 1.0),
-                (initial_pos.y + delta.y).clamp(0.0, 1.0),
-            );
+            let desired = NormalizedPosition::new(initial_pos.x + delta.x, initial_pos.y + delta.y);
             let clamped = clamp_zone_center(desired, zone.size);
             if zone.position != clamped {
                 zone.position = clamped;
@@ -68,6 +69,39 @@ pub fn translate_zones(
         }
     }
     changed
+}
+
+fn rigid_delta(
+    layout: &SpatialLayout,
+    initial_positions: &[(String, NormalizedPosition)],
+    delta: NormalizedPosition,
+) -> NormalizedPosition {
+    let mut min_dx = f32::NEG_INFINITY;
+    let mut max_dx = f32::INFINITY;
+    let mut min_dy = f32::NEG_INFINITY;
+    let mut max_dy = f32::INFINITY;
+    for (id, initial) in initial_positions {
+        let Some(zone) = layout.zones.iter().find(|z| z.id == *id) else {
+            continue;
+        };
+        let (lo_x, hi_x) = zone_center_range(zone.size.x);
+        let (lo_y, hi_y) = zone_center_range(zone.size.y);
+        min_dx = min_dx.max(lo_x - initial.x);
+        max_dx = max_dx.min(hi_x - initial.x);
+        min_dy = min_dy.max(lo_y - initial.y);
+        max_dy = max_dy.min(hi_y - initial.y);
+    }
+    let clamp_axis = |value: f32, lo: f32, hi: f32| {
+        if lo.is_finite() && hi.is_finite() && lo <= hi {
+            value.clamp(lo, hi)
+        } else {
+            value
+        }
+    };
+    NormalizedPosition::new(
+        clamp_axis(delta.x, min_dx, max_dx),
+        clamp_axis(delta.y, min_dy, max_dy),
+    )
 }
 
 // ── Group transforms ─────────────────────────────────────────────────────

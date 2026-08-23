@@ -7,6 +7,8 @@ pub(super) struct ZoneRenderData {
     pub(super) position_style: String,
     /// Counter-rotation for the identity readout so it stays upright.
     pub(super) label_style: String,
+    /// Hover readout sits under the box when the box hugs the top edge.
+    pub(super) label_below: bool,
     pub(super) primary_rgb: String,
     pub(super) secondary_rgb: String,
     pub(super) name: String,

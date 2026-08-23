@@ -569,3 +569,28 @@ fn mirror_compound_single_zone_is_noop() {
     // Rotation preserved
     assert!((a.rotation - std::f32::consts::FRAC_PI_4).abs() < 0.01);
 }
+
+#[test]
+fn compound_drag_stops_as_one_body_at_the_canvas_edge() {
+    let mut layout = simple_layout(vec![
+        plain_zone("big", "dev", 0.5, 0.3, 0.4, 0.4),
+        plain_zone("small", "dev", 0.5, 0.6, 0.05, 0.05),
+    ]);
+    let initial = vec![
+        ("big".to_owned(), NormalizedPosition::new(0.5, 0.3)),
+        ("small".to_owned(), NormalizedPosition::new(0.5, 0.6)),
+    ];
+    // Push far past the top edge: the big box can only rise 0.1 before it
+    // hits the canvas, so the small one must rise exactly 0.1 too.
+    layout_geometry::translate_zones(&mut layout, &initial, NormalizedPosition::new(0.0, -0.5));
+    let pos = |id: &str| {
+        layout
+            .zones
+            .iter()
+            .find(|z| z.id == id)
+            .map(|z| z.position)
+            .expect("zone")
+    };
+    assert!((pos("big").y - 0.2).abs() < 1e-4, "{:?}", pos("big"));
+    assert!((pos("small").y - 0.5).abs() < 1e-4, "{:?}", pos("small"));
+}

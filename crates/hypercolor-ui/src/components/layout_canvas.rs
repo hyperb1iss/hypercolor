@@ -86,6 +86,10 @@ pub fn LayoutCanvas() -> impl IntoView {
     // along inside reactive `move ||` closures.
     let drag_runtime: StoredValue<Option<DragRuntime>, LocalStorage> = StoredValue::new_local(None);
 
+    // Set when a drag or resize actually moved something, so the `click`
+    // the browser synthesizes on release does not clear the selection.
+    let swallow_next_click: StoredValue<bool, LocalStorage> = StoredValue::new_local(false);
+
     // Reactive flag exposing which zone (if any) is being interacted with.
     // Used purely to toggle a CSS class that disables zone transitions.
     let interacting_zone_id = RwSignal::new(None::<String>);
@@ -285,6 +289,7 @@ pub fn LayoutCanvas() -> impl IntoView {
             let final_zones = std::mem::take(&mut runtime.current_zones);
             let committed = set_layout.commit_zones(final_zones);
             set_layout.finish_interaction();
+            swallow_next_click.set_value(true);
             if committed {
                 set_is_dirty.set(true);
                 if let Some(snapshot) = layout_signal.get_untracked() {
@@ -347,6 +352,12 @@ pub fn LayoutCanvas() -> impl IntoView {
                     node_ref=viewport_ref
                     style=move || viewport_style.get()
                     on:click=move |_| {
+                        // The browser dispatches `click` on the common ancestor of
+                        // the press and release targets, so a drag released off
+                        // its box lands here; that is not a request to deselect.
+                        if swallow_next_click.try_update_value(|flag| std::mem::replace(flag, false)).unwrap_or(false) {
+                            return;
+                        }
                         set_selected_zone_ids.set(std::collections::HashSet::new());
                         set_compound_depth.set(CompoundDepth::Root);
                     }
@@ -477,6 +488,9 @@ pub fn LayoutCanvas() -> impl IntoView {
                                         Some(ZoneRenderData {
                                             position_style,
                                             label_style: upright_label_style(rotation),
+                                            // The viewport clips, so a box hugging the top edge
+                                            // shows its hover readout below itself instead.
+                                            label_below: zone.position.y - zone.size.y * 0.5 < 0.06,
                                             primary_rgb: primary,
                                             secondary_rgb: secondary,
                                             name: display.label,
@@ -638,14 +652,11 @@ pub fn LayoutCanvas() -> impl IntoView {
                                             (ids, different)
                                         });
 
-                                        // Reset depth if clicked outside entered compound
-                                        if clicked_different_device {
-                                            set_compound_depth.set(CompoundDepth::Root);
-                                        }
-
                                         let is_shift = ev.shift_key();
                                         if is_shift {
-                                            // Shift+click: toggle compound in/out of selection (no drag)
+                                            // Shift+click: toggle compound in/out of selection (no
+                                            // drag). Adding from another device keeps the depth you
+                                            // are at; only a plain click on it steps out.
                                             let mut current = selected_zone_ids.get_untracked();
                                             for id in &ids {
                                                 if !current.remove(id) {
@@ -654,6 +665,11 @@ pub fn LayoutCanvas() -> impl IntoView {
                                             }
                                             set_selected_zone_ids.set(current);
                                             return; // Don't start drag on shift+click
+                                        }
+
+                                        // Reset depth if clicked outside entered compound
+                                        if clicked_different_device {
+                                            set_compound_depth.set(CompoundDepth::Root);
                                         }
                                         set_selected_zone_ids.set(ids);
 
@@ -791,9 +807,11 @@ pub fn LayoutCanvas() -> impl IntoView {
 
                                     // Zone label — glass micro-panel (hover)
                                     <div
-                                        class="absolute -top-6 left-0 text-[9px] font-mono whitespace-nowrap
+                                        class="absolute left-0 text-[9px] font-mono whitespace-nowrap
                                                 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none
                                                 px-2 py-0.5 rounded glass-subtle"
+                                        class=("-top-6", move || !zone_style.get().is_some_and(|zd| zd.label_below))
+                                        class=("-bottom-6", move || zone_style.get().is_some_and(|zd| zd.label_below))
                                         style=move || {
                                             zone_style.get()
                                                 .map(|zd| format!("color: rgba({}, 0.9)", zd.primary_rgb))

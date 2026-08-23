@@ -29,6 +29,10 @@ pub(super) struct DragRuntime {
     pub(super) last_preview_push_ms: Cell<f64>,
 }
 
+/// Pointer travel (normalized canvas units, about 3 px on a 640-wide
+/// canvas) before a press turns into a drag.
+const DRAG_THRESHOLD: f32 = 0.005;
+
 pub(super) enum InteractionKind {
     Drag {
         primary_zone_id: String,
@@ -69,6 +73,22 @@ impl DragRuntime {
                 offset_y,
                 initial_positions,
             } => {
+                // A press that has not travelled yet is a click, not a drag:
+                // the second press of a double-click must not nudge the box.
+                if !self.moved.get() {
+                    let press = initial_positions
+                        .iter()
+                        .find(|(id, _)| id == primary_zone_id)
+                        .map(|(_, pos)| NormalizedPosition::new(pos.x + offset_x, pos.y + offset_y));
+                    let travelled = press.is_some_and(|press| {
+                        (mouse.x - press.x).abs() >= DRAG_THRESHOLD
+                            || (mouse.y - press.y).abs() >= DRAG_THRESHOLD
+                    });
+                    if !travelled {
+                        self.current_zones = working.zones;
+                        return false;
+                    }
+                }
                 if initial_positions.len() > 1 {
                     let primary_initial = initial_positions
                         .iter()

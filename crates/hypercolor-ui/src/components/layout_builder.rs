@@ -108,7 +108,7 @@ impl LayoutWriteHandle {
         self.set_removed_zone_cache.set(removed_zone_cache);
     }
 
-    fn in_interaction(self) -> bool {
+    pub fn in_interaction(self) -> bool {
         self.history
             .with_untracked(LayoutHistoryState::is_interactive)
     }
@@ -256,6 +256,11 @@ pub(crate) fn LayoutWorkspace(
                 return;
             }
             if ev.alt_key() || !(ev.ctrl_key() || ev.meta_key()) {
+                return;
+            }
+            // A drag in flight owns the layout until release; undoing under
+            // it would be overwritten by the commit and leave history armed.
+            if write.in_interaction() {
                 return;
             }
             match ev.key().as_str() {

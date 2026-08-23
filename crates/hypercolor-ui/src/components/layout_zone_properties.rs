@@ -589,6 +589,7 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                                 }
                                         });
                                         set_selected_zone_ids.set(std::collections::HashSet::new());
+                                        editor.set_compound_depth.set(crate::compound_selection::CompoundDepth::Root);
                                         set_is_dirty.set(true);
                                     }
                                 >
