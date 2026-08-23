@@ -4,7 +4,6 @@
 //! interfaces directly, which keeps input devices such as mice and keyboards
 //! usable while Hypercolor sends lighting commands.
 
-use std::cmp::min;
 use std::ffi::{CStr, CString};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -15,7 +14,7 @@ use hidapi::{HidApi, HidDevice};
 use tracing::{debug, trace};
 
 use crate::registry::HidRawReportMode;
-use crate::transport::{Transport, TransportError};
+use crate::transport::{Transport, TransportError, format_hex_preview};
 
 #[cfg(target_os = "linux")]
 use std::path::Path;
@@ -789,27 +788,6 @@ fn normalize_usb_path(path: &str) -> Option<String> {
     let (bus, ports) = path.split_once('-')?;
     let bus = bus.parse::<u16>().ok()?;
     Some(format!("{bus}-{ports}"))
-}
-
-fn format_hex_preview(bytes: &[u8], max_bytes: usize) -> String {
-    let preview_len = min(bytes.len(), max_bytes);
-    let mut rendered = bytes
-        .iter()
-        .take(preview_len)
-        .map(|byte| format!("{byte:02X}"))
-        .collect::<Vec<_>>()
-        .join(" ");
-
-    if bytes.len() > preview_len {
-        use std::fmt::Write;
-        let _ = write!(rendered, " ... (+{} bytes)", bytes.len() - preview_len);
-    }
-
-    if rendered.is_empty() {
-        "<empty>".to_owned()
-    } else {
-        rendered
-    }
 }
 
 #[cfg(test)]

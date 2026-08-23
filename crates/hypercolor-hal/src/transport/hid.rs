@@ -13,7 +13,9 @@ use tokio::sync::Mutex as AsyncMutex;
 use tracing::{debug, trace};
 
 use crate::protocol::TransferType;
-use crate::transport::{Transport, TransportError, spawn_blocking_transport_io};
+use crate::transport::{
+    Transport, TransportError, format_hex_preview, spawn_blocking_transport_io,
+};
 
 const DEFAULT_IO_TIMEOUT: Duration = Duration::from_secs(1);
 const HID_REPORT_SIZE: usize = 65;
@@ -491,26 +493,5 @@ fn map_transfer_error(error: TransferError, timeout: Duration) -> TransportError
         _ => TransportError::IoError {
             detail: error.to_string(),
         },
-    }
-}
-
-fn format_hex_preview(bytes: &[u8], max_bytes: usize) -> String {
-    let preview_len = bytes.len().min(max_bytes);
-    let mut rendered = bytes
-        .iter()
-        .take(preview_len)
-        .map(|byte| format!("{byte:02X}"))
-        .collect::<Vec<_>>()
-        .join(" ");
-
-    if bytes.len() > preview_len {
-        use std::fmt::Write;
-        let _ = write!(rendered, " ... (+{} bytes)", bytes.len() - preview_len);
-    }
-
-    if rendered.is_empty() {
-        "<empty>".to_owned()
-    } else {
-        rendered
     }
 }

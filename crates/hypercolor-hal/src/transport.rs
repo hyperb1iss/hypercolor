@@ -17,6 +17,30 @@ pub mod serial;
 pub mod smbus;
 pub mod vendor;
 
+/// Render a byte slice as spaced uppercase hex for trace logging, truncating
+/// past `max_bytes`.
+pub(crate) fn format_hex_preview(bytes: &[u8], max_bytes: usize) -> String {
+    use std::fmt::Write as _;
+
+    let preview_len = bytes.len().min(max_bytes);
+    let mut rendered = bytes
+        .iter()
+        .take(preview_len)
+        .map(|byte| format!("{byte:02X}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    if bytes.len() > preview_len {
+        let _ = write!(rendered, " ... (+{} bytes)", bytes.len() - preview_len);
+    }
+
+    if rendered.is_empty() {
+        "<empty>".to_owned()
+    } else {
+        rendered
+    }
+}
+
 pub(crate) async fn spawn_blocking_transport_io<F, T>(
     operation_name: &'static str,
     operation: F,

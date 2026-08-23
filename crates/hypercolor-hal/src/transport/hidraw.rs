@@ -4,7 +4,6 @@
 //! through `/dev/hidraw*` via `async-hid`, avoiding exclusive USB interface
 //! claims while still using native Linux HID APIs.
 
-use std::cmp::min;
 use std::path::Path;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -19,7 +18,7 @@ use futures_util::StreamExt;
 use tracing::{debug, trace};
 
 use crate::registry::HidRawReportMode;
-use crate::transport::{Transport, TransportError};
+use crate::transport::{Transport, TransportError, format_hex_preview};
 
 const DEFAULT_MAX_PACKET_LEN: usize = 90;
 
@@ -680,27 +679,6 @@ fn report_mode_payload_includes_report_id(report_mode: HidRawReportMode) -> bool
         report_mode,
         HidRawReportMode::FeatureReportWithReportId | HidRawReportMode::OutputReportWithReportId
     )
-}
-
-fn format_hex_preview(bytes: &[u8], max_bytes: usize) -> String {
-    let preview_len = min(bytes.len(), max_bytes);
-    let mut rendered = bytes
-        .iter()
-        .take(preview_len)
-        .map(|byte| format!("{byte:02X}"))
-        .collect::<Vec<_>>()
-        .join(" ");
-
-    if bytes.len() > preview_len {
-        use std::fmt::Write;
-        let _ = write!(rendered, " ... (+{} bytes)", bytes.len() - preview_len);
-    }
-
-    if rendered.is_empty() {
-        "<empty>".to_owned()
-    } else {
-        rendered
-    }
 }
 
 #[cfg(test)]
