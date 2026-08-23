@@ -74,7 +74,8 @@ interface PresetTemplate {
 
 interface EffectDetail extends EffectSummary {
     controls: unknown[]
-    presets: PresetTemplate[]
+    // The daemon omits `presets` entirely for effects that ship none.
+    presets?: PresetTemplate[]
 }
 
 interface Variant {
@@ -498,9 +499,10 @@ function buildVariants(detail: EffectDetail, opts: CliOptions): Variant[] {
         variants.push({ key: 'default', label: 'default', presetName: null })
     }
     if (!opts.noPresets) {
-        const presetCount = Math.min(detail.presets.length, MAX_PRESETS_PER_EFFECT)
+        const presets = detail.presets ?? []
+        const presetCount = Math.min(presets.length, MAX_PRESETS_PER_EFFECT)
         for (let index = 0; index < presetCount; index += 1) {
-            const preset = detail.presets[index]
+            const preset = presets[index]
             if (!preset) continue
             const key = slugify(preset.name)
             if (!key) continue
@@ -518,7 +520,7 @@ async function captureVariant(opts: CliOptions, effect: EffectDetail, variant: V
     const presetControls =
         variant.presetName === null
             ? null
-            : (effect.presets.find((p) => p.name === variant.presetName)?.controls ?? null)
+            : ((effect.presets ?? []).find((p) => p.name === variant.presetName)?.controls ?? null)
 
     await applyEffect(opts.daemon, effect.id, presetControls)
     await sleep(opts.warmupMs)
