@@ -34,7 +34,7 @@ Errors use:
 ```json
 {
   "error": {
-    "code": "not_found",
+    "code": "preset_not_found",
     "message": "preset not found: foo"
   },
   "meta": {}

@@ -1057,8 +1057,10 @@ extension sections, and the include list survive the reset.
 {% <api_endpoint method="GET" path="/api/v1/config/schema"> %}
 Describe every configuration key: how a change applies (`live` with a section,
 `live_on_read`, `next_scan`, `restart`, or `inert`), how it renders on read
-surfaces, and whether the daemon validates it beyond type checking. Clients
-derive their live and restart affordances from this table.
+surfaces, whether the daemon validates it beyond type checking, and which
+writes need a protected-control credential (`protection`: `open`,
+`section_root`, or `tree`). Clients derive their live and restart
+affordances from this table.
 {% </api_endpoint> %}
 
 ## Diagnostics

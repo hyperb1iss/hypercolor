@@ -673,8 +673,10 @@ impl DisplayContext {
 
     /// Tell render observers that a default-face overlay zone changed.
     ///
-    /// Overlay zones live outside the scene tree, so the scene commit path
-    /// never announces them; the display domain does it at every write.
+    /// The scene commit announces the structural install or removal; this
+    /// explicit event carries the overlay's content change (face, controls,
+    /// composition), and the domain publishes it at every write so the two
+    /// transports cannot diverge on when observers hear about an overlay.
     fn publish_overlay_change(&self, scene_id: SceneId, zone: &Zone, kind: ZoneChangeKind) {
         self.authorities
             .event_bus
