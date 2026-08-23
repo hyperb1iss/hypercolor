@@ -13,4 +13,4 @@ pub use devices::{
     VID_WCH, VID_ZSA, descriptors,
 };
 pub use protocol::{QmkKeyboardConfig, QmkProtocol};
-pub use types::{Command, PACKET_SIZE, ProtocolRevision, QmkMode, USAGE_ID, USAGE_PAGE};
+pub use types::{Command, PACKET_SIZE, ProtocolRevision, USAGE_ID, USAGE_PAGE};

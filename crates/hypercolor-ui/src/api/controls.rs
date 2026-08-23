@@ -1,5 +1,4 @@
 //! Dynamic driver and device control-surface endpoints.
-#![allow(dead_code)]
 
 use std::collections::BTreeMap;
 
@@ -16,7 +15,7 @@ use hypercolor_types::controls::{
 };
 
 /// Fetch surfaces selected by device, driver, or both.
-pub async fn fetch_control_surfaces(
+async fn fetch_control_surfaces(
     query: ControlSurfaceListQuery,
 ) -> ApiResult<Vec<ControlSurfaceDocument>> {
     let response: Option<ControlSurfaceListResponse> =
@@ -44,24 +43,6 @@ pub async fn fetch_control_surface(surface_id: &str) -> ApiResult<ControlSurface
     client::fetch_json(&format!(
         "/api/v1/control-surfaces/{}",
         path_segment(surface_id)
-    ))
-    .await
-}
-
-/// Fetch one driver-level control surface.
-pub async fn fetch_driver_control_surface(driver_id: &str) -> ApiResult<ControlSurfaceDocument> {
-    client::fetch_json(&format!(
-        "/api/v1/drivers/{}/controls",
-        path_segment(driver_id)
-    ))
-    .await
-}
-
-/// Fetch one device-level control surface.
-pub async fn fetch_device_control_surface(device_id: &str) -> ApiResult<ControlSurfaceDocument> {
-    client::fetch_json(&format!(
-        "/api/v1/devices/{}/controls",
-        path_segment(device_id)
     ))
     .await
 }
