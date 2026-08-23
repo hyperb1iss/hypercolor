@@ -8,6 +8,7 @@ use super::defaults;
 
 /// Renderer selection, hot-reload, and effect directory config.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EffectEngineConfig {
     #[serde(default = "defaults::auto_string")]
     pub preferred_renderer: String,

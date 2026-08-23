@@ -6,6 +6,7 @@ use super::defaults;
 
 /// User media decoder policy and resource caps.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MediaConfig {
     #[serde(default = "defaults::max_video_producers")]
     pub max_video_producers: u8,

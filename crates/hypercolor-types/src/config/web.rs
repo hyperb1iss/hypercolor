@@ -6,6 +6,7 @@ use super::defaults;
 
 /// Embedded web UI and WebSocket preview server.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WebConfig {
     #[serde(default = "defaults::bool_true")]
     pub enabled: bool,

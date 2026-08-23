@@ -6,6 +6,7 @@ use super::defaults;
 
 /// Terminal UI preferences: theme, frame rate, keybindings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TuiConfig {
     #[serde(default = "defaults::tui_theme")]
     pub theme: String,

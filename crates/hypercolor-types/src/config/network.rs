@@ -37,6 +37,7 @@ impl Default for NetworkClientScope {
 
 /// Network discovery and remote access settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NetworkConfig {
     #[serde(default = "defaults::network_access_mode")]
     pub access_mode: NetworkAccessMode,

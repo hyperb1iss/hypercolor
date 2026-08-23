@@ -1,8 +1,9 @@
 //! Configuration types -- daemon, audio, web, TUI, discovery, and feature flag settings.
 //!
-//! All config structs derive `Serialize`/`Deserialize` with `#[serde(default)]` on
-//! every optional section for forward/backward compatibility. A fresh install with
-//! zero config files boots the daemon entirely from compile-time defaults.
+//! Optional fields use Serde defaults so a fresh install can boot entirely from
+//! compile-time values. Closed nested sections reject unknown keys before a
+//! whole-file rewrite can silently delete them; the root and driver maps retain
+//! explicit extension doors.
 
 mod audio;
 mod capture;

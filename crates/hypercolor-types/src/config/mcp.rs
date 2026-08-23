@@ -6,6 +6,7 @@ use super::defaults;
 
 /// Model Context Protocol server settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct McpConfig {
     #[serde(default = "defaults::bool_false")]
     pub enabled: bool,

@@ -6,6 +6,7 @@ use super::defaults;
 
 /// Audio capture and FFT analysis settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AudioConfig {
     #[serde(default = "defaults::bool_true")]
     pub enabled: bool,

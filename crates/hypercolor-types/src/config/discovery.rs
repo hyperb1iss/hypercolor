@@ -6,6 +6,7 @@ use super::defaults;
 
 /// Network device discovery: mDNS, WLED, Hue, and blocksd.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct DiscoveryConfig {
     /// Run startup, hotplug, and periodic background discovery.

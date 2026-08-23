@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 /// Opt-in experimental features (all default to `false`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FeatureFlags {
     #[serde(default)]
     pub wasm_plugins: bool,

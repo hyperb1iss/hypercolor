@@ -6,6 +6,7 @@ use super::defaults;
 
 /// Core daemon settings: networking, render loop, lifecycle.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DaemonConfig {
     #[serde(default = "defaults::listen_address")]
     pub listen_address: String,

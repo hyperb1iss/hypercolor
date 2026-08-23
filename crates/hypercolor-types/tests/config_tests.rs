@@ -173,11 +173,13 @@ fn capture_platform_matches_build_target() {
 }
 
 #[test]
-fn capture_config_tolerates_legacy_monitor_key() {
-    let parsed: CaptureConfig =
-        toml::from_str("enabled = true\nmonitor = 2\n").expect("legacy capture config parses");
-    assert!(parsed.enabled);
-    assert_eq!(parsed.grid_cols, 8);
+fn capture_config_rejects_retired_monitor_key() {
+    let error = toml::from_str::<CaptureConfig>("enabled = true\nmonitor = 2\n")
+        .expect_err("retired monitor key must be rejected");
+    assert!(
+        error.to_string().contains("unknown field `monitor`"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -768,7 +770,7 @@ fn effect_engine_compositor_acceleration_mode_toml_roundtrip() {
 }
 
 #[test]
-fn unknown_fields_ignored() {
+fn closed_nested_config_sections_reject_unknown_fields() {
     let toml_with_future_field = r#"
 schema_version = 5
 
@@ -776,10 +778,61 @@ schema_version = 5
 port = 9420
 some_future_field = "hello from the future"
 "#;
-    let config: HypercolorConfig =
-        toml::from_str(toml_with_future_field).expect("deserialize with unknown fields");
-    assert_eq!(config.schema_version, 5);
-    assert_eq!(config.daemon.port, 9420);
+    let error = toml::from_str::<HypercolorConfig>(toml_with_future_field)
+        .expect_err("unknown nested field must be rejected");
+    assert!(
+        error
+            .to_string()
+            .contains("unknown field `some_future_field`"),
+        "{error}"
+    );
+}
+
+#[test]
+fn every_closed_root_section_rejects_unknown_fields() {
+    for section in [
+        "audio",
+        "capture",
+        "daemon",
+        "dbus",
+        "discovery",
+        "display",
+        "effect_engine",
+        "features",
+        "input",
+        "mcp",
+        "media",
+        "network",
+        "rendering",
+        "session",
+        "tui",
+        "web",
+    ] {
+        let source = format!("schema_version = 5\n[{section}]\nunrecognized_config_key = true\n");
+        let error = toml::from_str::<HypercolorConfig>(&source)
+            .expect_err("closed config section must reject unknown fields");
+        assert!(
+            error
+                .to_string()
+                .contains("unknown field `unrecognized_config_key`"),
+            "section {section}: {error}"
+        );
+    }
+
+    let nested = r"
+schema_version = 5
+
+[rendering.servo_gpu_import]
+unrecognized_config_key = true
+";
+    let error = toml::from_str::<HypercolorConfig>(nested)
+        .expect_err("closed nested config object must reject unknown fields");
+    assert!(
+        error
+            .to_string()
+            .contains("unknown field `unrecognized_config_key`"),
+        "{error}"
+    );
 }
 
 #[test]

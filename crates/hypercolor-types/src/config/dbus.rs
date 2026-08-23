@@ -6,6 +6,7 @@ use super::defaults;
 
 /// D-Bus integration settings (Linux desktop integration).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DbusConfig {
     #[serde(default = "defaults::bool_true")]
     pub enabled: bool,
