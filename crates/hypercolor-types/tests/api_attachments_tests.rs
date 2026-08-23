@@ -1,10 +1,7 @@
 //! Attachment-template catalog contract tests.
 //!
-//! These pin the client-tolerance the shared types inherited from the
-//! hand-rolled web UI mirrors they replaced. The mirrors declared
-//! `origin` as an `Option<ComponentOrigin>`, so an explicit `null`
-//! decoded fine; promoting the field to an unconditional
-//! `ComponentOrigin` must not make that JSON stop parsing.
+//! These pin the canonical contract emitted by the daemon and consumed
+//! by every client.
 
 use hypercolor_types::api::attachments::{TemplateDetail, TemplateListResponse, TemplateSummary};
 use hypercolor_types::attachment::{ComponentCategory, ComponentOrigin};
@@ -47,23 +44,18 @@ fn detail_json(origin: Option<serde_json::Value>) -> serde_json::Value {
     value
 }
 
-// ── Deserialization tolerance ───────────────────────────────────────────
+// ── Canonical deserialization ────────────────────────────────────────
 
 #[test]
-fn template_summary_decodes_an_explicit_null_origin_as_built_in() {
-    let summary: TemplateSummary =
-        serde_json::from_value(summary_json(Some(serde_json::Value::Null)))
-            .expect("an explicit null origin must still decode");
-
-    assert_eq!(summary.origin, ComponentOrigin::BuiltIn);
+fn template_summary_rejects_an_explicit_null_origin() {
+    serde_json::from_value::<TemplateSummary>(summary_json(Some(serde_json::Value::Null)))
+        .expect_err("an explicit null origin must be rejected");
 }
 
 #[test]
-fn template_summary_decodes_an_absent_origin_as_built_in() {
-    let summary: TemplateSummary =
-        serde_json::from_value(summary_json(None)).expect("an absent origin must still decode");
-
-    assert_eq!(summary.origin, ComponentOrigin::BuiltIn);
+fn template_summary_rejects_an_absent_origin() {
+    serde_json::from_value::<TemplateSummary>(summary_json(None))
+        .expect_err("an absent origin must be rejected");
 }
 
 #[test]
@@ -75,19 +67,15 @@ fn template_summary_keeps_an_explicit_origin() {
 }
 
 #[test]
-fn template_detail_decodes_an_explicit_null_origin_as_built_in() {
-    let detail: TemplateDetail = serde_json::from_value(detail_json(Some(serde_json::Value::Null)))
-        .expect("an explicit null origin must still decode");
-
-    assert_eq!(detail.origin, ComponentOrigin::BuiltIn);
+fn template_detail_rejects_an_explicit_null_origin() {
+    serde_json::from_value::<TemplateDetail>(detail_json(Some(serde_json::Value::Null)))
+        .expect_err("an explicit null origin must be rejected");
 }
 
 #[test]
-fn template_detail_decodes_an_absent_origin_as_built_in() {
-    let detail: TemplateDetail =
-        serde_json::from_value(detail_json(None)).expect("an absent origin must still decode");
-
-    assert_eq!(detail.origin, ComponentOrigin::BuiltIn);
+fn template_detail_rejects_an_absent_origin() {
+    serde_json::from_value::<TemplateDetail>(detail_json(None))
+        .expect_err("an absent origin must be rejected");
 }
 
 #[test]
@@ -102,9 +90,8 @@ fn template_detail_keeps_an_explicit_origin() {
 
 #[test]
 fn template_summary_always_serializes_origin() {
-    // The tolerance above is deserialize-only. The daemon still writes
-    // the key unconditionally, including for the default variant, so a
-    // `skip_serializing_if` creeping in would be a wire change.
+    // The daemon writes the key unconditionally, including for the
+    // default variant, so a `skip_serializing_if` would be a wire change.
     let summary = TemplateSummary {
         id: "ll-sl-inf".to_owned(),
         name: "SL Infinity".to_owned(),
@@ -126,14 +113,11 @@ fn template_summary_always_serializes_origin() {
 }
 
 #[test]
-fn template_summary_round_trips_through_a_null_origin() {
-    let decoded: TemplateSummary =
-        serde_json::from_value(summary_json(Some(serde_json::Value::Null)))
-            .expect("null origin decodes");
+fn template_summary_round_trips_with_a_canonical_origin() {
+    let decoded: TemplateSummary = serde_json::from_value(summary_json(Some(json!("built_in"))))
+        .expect("canonical origin decodes");
     let reencoded = serde_json::to_value(&decoded).expect("summary must serialize");
 
-    // Re-encoding resolves the null to the concrete default, which is
-    // the shape the daemon would have sent in the first place.
     assert_eq!(reencoded["origin"], json!("built_in"));
 
     let again: TemplateSummary = serde_json::from_value(reencoded).expect("re-decode");
@@ -142,9 +126,11 @@ fn template_summary_round_trips_through_a_null_origin() {
 
 #[test]
 fn complete_template_listing_omits_page_state() {
-    let listing: TemplateListResponse =
-        serde_json::from_value(json!({ "items": [summary_json(None)], "total": 1 }))
-            .expect("a complete listing without page state must decode");
+    let listing: TemplateListResponse = serde_json::from_value(json!({
+        "items": [summary_json(Some(json!("built_in")))],
+        "total": 1
+    }))
+    .expect("a complete listing without page state must decode");
 
     assert_eq!(listing.items.len(), 1);
     assert_eq!(listing.total, 1);
