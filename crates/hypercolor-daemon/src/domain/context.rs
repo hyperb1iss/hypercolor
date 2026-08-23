@@ -108,7 +108,7 @@ impl DomainContexts {
             effects.clone(),
             layout.clone(),
             output.clone(),
-            resources.event_bus,
+            Arc::clone(&resources.event_bus),
         );
         let display = DisplayContext::new(
             resources.display_preferences,
@@ -117,6 +117,7 @@ impl DomainContexts {
             effects.clone(),
             layout.clone(),
             devices.clone(),
+            resources.event_bus,
         );
         let diagnostics = DiagnosticsContext::new(
             platform.clone(),

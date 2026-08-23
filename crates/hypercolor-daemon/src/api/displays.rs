@@ -16,13 +16,11 @@ use hypercolor_types::api::displays::{
 use hypercolor_types::api::scene::PatchControlsRequest;
 use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceTopologyHint, DisplayFrameFormat};
 use hypercolor_types::display::{DisplayDescriptor, DisplayPixelFormat};
-use hypercolor_types::event::ZoneChangeKind;
 use hypercolor_types::layer::BlendMode;
 use hypercolor_types::scene::{DisplayFaceTarget, Zone};
 
 use crate::api::devices;
 use crate::api::envelope;
-use crate::api::publish_render_zone_changed;
 use crate::app_state::AppState;
 use crate::display_frames::DisplayFrameSnapshot;
 use crate::domain::display::{
@@ -201,14 +199,6 @@ pub async fn set_display_face(
             Ok(written) => written,
             Err(error) => return error.into_response(),
         };
-        if !written.scene_assigned {
-            publish_render_zone_changed(
-                state.as_ref(),
-                written.scene_id,
-                &written.zone,
-                ZoneChangeKind::Updated,
-            );
-        }
 
         return envelope::ok(DisplayFaceResponse {
             default_assigned: true,
@@ -287,20 +277,7 @@ pub async fn patch_display_face_composition(
             return error.into_response();
         }
         return match current_default_face_assignment(state.as_ref(), device_id).await {
-            Ok(response) => {
-                let scene_id = response
-                    .scene_id
-                    .parse::<uuid::Uuid>()
-                    .map(hypercolor_types::scene::SceneId)
-                    .unwrap_or(hypercolor_types::scene::SceneId::DEFAULT);
-                publish_render_zone_changed(
-                    state.as_ref(),
-                    scene_id,
-                    &response.zone,
-                    ZoneChangeKind::Updated,
-                );
-                envelope::ok(response)
-            }
+            Ok(response) => envelope::ok(response),
             Err(error) => error.into_response(),
         };
     }
@@ -360,14 +337,6 @@ pub async fn delete_display_face(
             Ok(cleared) => cleared,
             Err(error) => return error.into_response(),
         };
-        if let Some(zone) = cleared.retracted.as_ref() {
-            publish_render_zone_changed(
-                state.as_ref(),
-                cleared.scene_id,
-                zone,
-                ZoneChangeKind::Updated,
-            );
-        }
 
         return envelope::ok(DeleteDisplayFaceResponse {
             device_id: device_id.to_string(),
@@ -453,20 +422,7 @@ pub async fn patch_display_face_controls(
             return error.into_response();
         }
         return match current_default_face_assignment(state.as_ref(), device_id).await {
-            Ok(response) => {
-                let scene_id = response
-                    .scene_id
-                    .parse::<uuid::Uuid>()
-                    .map(hypercolor_types::scene::SceneId)
-                    .unwrap_or(hypercolor_types::scene::SceneId::DEFAULT);
-                publish_render_zone_changed(
-                    state.as_ref(),
-                    scene_id,
-                    &response.zone,
-                    ZoneChangeKind::ControlsPatched,
-                );
-                envelope::ok(response)
-            }
+            Ok(response) => envelope::ok(response),
             Err(error) => error.into_response(),
         };
     }

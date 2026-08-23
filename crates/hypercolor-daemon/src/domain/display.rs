@@ -15,10 +15,11 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use hypercolor_core::bus::HypercolorBus;
 use hypercolor_types::control::ControlValue;
 use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceTopologyHint};
 use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
-use hypercolor_types::event::ZoneChangeKind;
+use hypercolor_types::event::{HypercolorEvent, ZoneChangeKind};
 use hypercolor_types::layer::{BlendMode, SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{DisplayFaceTarget, SceneId, Zone, ZoneId, ZoneRole};
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
@@ -639,6 +640,7 @@ struct DisplayAuthorities {
     effects: EffectContext,
     layout: LayoutContext,
     devices: DeviceContext,
+    event_bus: Arc<HypercolorBus>,
 }
 
 #[derive(Clone)]
@@ -654,6 +656,7 @@ impl DisplayContext {
         effects: EffectContext,
         layout: LayoutContext,
         devices: DeviceContext,
+        event_bus: Arc<HypercolorBus>,
     ) -> Self {
         Self {
             authorities: Arc::new(DisplayAuthorities {
@@ -663,8 +666,24 @@ impl DisplayContext {
                 effects,
                 layout,
                 devices,
+                event_bus,
             }),
         }
+    }
+
+    /// Tell render observers that a default-face overlay zone changed.
+    ///
+    /// Overlay zones live outside the scene tree, so the scene commit path
+    /// never announces them; the display domain does it at every write.
+    fn publish_overlay_change(&self, scene_id: SceneId, zone: &Zone, kind: ZoneChangeKind) {
+        self.authorities
+            .event_bus
+            .publish(HypercolorEvent::ZoneChanged {
+                scene_id,
+                zone_id: zone.id,
+                role: zone.role,
+                kind,
+            });
     }
 
     /// Latest composited frame per display, for preview surfaces.
@@ -759,11 +778,15 @@ impl DisplayContext {
             )));
         };
         let layers = self.face_layers(device_id).await;
+        let scene_id = self.active_scene_id().await;
+        if !layers.scene_assigned {
+            self.publish_overlay_change(scene_id, &zone, ZoneChangeKind::Updated);
+        }
 
         Ok(DefaultDisplayFaceWritten {
             effect,
             zone,
-            scene_id: self.active_scene_id().await,
+            scene_id,
             scene_assigned: layers.scene_assigned,
         })
     }
@@ -801,10 +824,15 @@ impl DisplayContext {
             None
         };
 
+        let scene_id = self.active_scene_id().await;
+        if let Some(zone) = retracted.as_ref() {
+            self.publish_overlay_change(scene_id, zone, ZoneChangeKind::Updated);
+        }
+
         Ok(DefaultDisplayFaceCleared {
             removed,
             retracted,
-            scene_id: self.active_scene_id().await,
+            scene_id,
         })
     }
 
@@ -839,7 +867,14 @@ impl DisplayContext {
             DomainError::Internal(anyhow::anyhow!(
                 "Failed to prepare display preference persistence: {error}"
             ))
-        })
+        })?;
+        drop(store);
+
+        if let Some(zone) = self.apply_preference_overlay(device_id).await {
+            let scene_id = self.active_scene_id().await;
+            self.publish_overlay_change(scene_id, &zone, ZoneChangeKind::Updated);
+        }
+        Ok(())
     }
 
     /// Merge control overrides into a display's stored default face.
@@ -879,7 +914,17 @@ impl DisplayContext {
             };
             drop(admission);
             match updated {
-                Ok(true) => return Ok(()),
+                Ok(true) => {
+                    if let Some(zone) = self.apply_preference_overlay(device_id).await {
+                        let scene_id = self.active_scene_id().await;
+                        self.publish_overlay_change(
+                            scene_id,
+                            &zone,
+                            ZoneChangeKind::ControlsPatched,
+                        );
+                    }
+                    return Ok(());
+                }
                 Ok(false) => {}
                 Err(error) => {
                     return Err(DomainError::Internal(anyhow::anyhow!(

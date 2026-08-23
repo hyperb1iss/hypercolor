@@ -45,28 +45,12 @@ use utoipa_axum::router::OpenApiRouter;
 use self::openapi::OperationDoc;
 use hypercolor_types::config::{McpConfig, WebConfig};
 use hypercolor_types::device::DeviceId;
-use hypercolor_types::event::{HypercolorEvent, ZoneChangeKind};
-use hypercolor_types::scene::{SceneId, Zone};
 
 pub(crate) async fn persist_simulated_displays(state: &Arc<AppState>) {
     let store = state.simulated_displays.read().await;
     if let Err(error) = store.save() {
         warn!(%error, "Failed to persist simulated display store");
     }
-}
-
-pub(crate) fn publish_render_zone_changed(
-    state: &AppState,
-    scene_id: SceneId,
-    zone: &Zone,
-    kind: ZoneChangeKind,
-) {
-    state.event_bus.publish(HypercolorEvent::ZoneChanged {
-        scene_id,
-        zone_id: zone.id,
-        role: zone.role,
-        kind,
-    });
 }
 
 /// Remove every display assignment a deleted device leaves behind: its

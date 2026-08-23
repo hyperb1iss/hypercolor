@@ -3,7 +3,6 @@
 use serde_json::{Value, json};
 
 use super::{ToolDefinition, ToolError, output_schema, resolve_effect_selector, serialize_result};
-use crate::api::publish_render_zone_changed;
 use crate::app_state::AppState;
 use crate::domain::display::{
     ClearDisplayFace, DisplaySurfaceInfo, SetDefaultDisplayFace, SetDisplayFace,
@@ -14,7 +13,6 @@ use crate::mcp::selector::SelectorCandidate;
 use hypercolor_types::control::ControlValue;
 use hypercolor_types::device::{DeviceId, DeviceInfo};
 use hypercolor_types::effect::EffectMetadata;
-use hypercolor_types::event::ZoneChangeKind;
 use hypercolor_types::layer::BlendMode;
 use hypercolor_types::scene::DisplayFaceTarget;
 
@@ -174,9 +172,6 @@ async fn handle_default_scope(
 ) -> Result<Value, ToolError> {
     if clear {
         let cleared = state.domains.display.clear_default_face(device_id).await?;
-        if let Some(zone) = cleared.retracted.as_ref() {
-            publish_render_zone_changed(state, cleared.scene_id, zone, ZoneChangeKind::Updated);
-        }
         let live_scope = live_scope_payload(state, device_id).await;
         return serialize_result(DisplayFaceResult {
             device: display_device_payload(info, surface),
@@ -212,14 +207,6 @@ async fn handle_default_scope(
             },
         })
         .await?;
-    if !written.scene_assigned {
-        publish_render_zone_changed(
-            state,
-            written.scene_id,
-            &written.zone,
-            ZoneChangeKind::Updated,
-        );
-    }
 
     serialize_result(DisplayFaceResult {
         device: display_device_payload(info, surface),
