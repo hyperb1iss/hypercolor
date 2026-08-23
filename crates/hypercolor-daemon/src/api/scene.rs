@@ -365,7 +365,7 @@ pub async fn create_layer(
             with_revision(
                 (
                     StatusCode::CREATED,
-                    envelope::ok(scene_tree::zone_resource(written.zone())),
+                    envelope::ok(scene_tree::zone_resource(&written.zone)),
                 )
                     .into_response(),
                 revision,
@@ -528,7 +528,7 @@ fn layer_stack_response(
         Ok(Ok(written)) => {
             let revision = written.commit.revision();
             with_revision(
-                envelope::ok(scene_tree::zone_resource(written.zone())),
+                envelope::ok(scene_tree::zone_resource(&written.zone)),
                 revision,
             )
         }

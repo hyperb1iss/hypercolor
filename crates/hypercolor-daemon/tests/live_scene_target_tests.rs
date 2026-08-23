@@ -197,7 +197,7 @@ async fn active_targets_follow_the_candidate_scene_for_every_deferred_service() 
     .expect("layer insertion should be admitted");
     assert!(
         inserted
-            .zone()
+            .zone
             .layers
             .iter()
             .any(|layer| layer.id == inserted_layer_id)
@@ -214,7 +214,7 @@ async fn active_targets_follow_the_candidate_scene_for_every_deferred_service() 
     .expect("layer reorder should be admitted");
     assert_eq!(
         reordered
-            .zone()
+            .zone
             .layers
             .iter()
             .map(|layer| layer.id)
@@ -233,7 +233,7 @@ async fn active_targets_follow_the_candidate_scene_for_every_deferred_service() 
     .expect("layer deletion should be admitted");
     assert!(
         removed
-            .zone()
+            .zone
             .layers
             .iter()
             .all(|layer| layer.id != shared_layer_ids[1])

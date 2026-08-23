@@ -1,6 +1,6 @@
 //! Layer-stack domain services (Spec 76 §2.2, §2.3).
 //!
-//! Every zone owns an ordered layer stack, and each of these six
+//! Every zone owns an ordered layer stack, and each of these four
 //! transactions moves it: insert, remove, reorder, and control patch.
 //! All of them are persisted scene content guarded by the scene revision,
 //! and all of them publish the same
@@ -31,23 +31,10 @@ use crate::domain::{DomainError, ResourceKind};
 /// The outcome of a layer-stack mutation.
 #[derive(Debug)]
 pub struct LayerStackWritten {
-    /// Every zone the mutation touched, in the order it touched them.
-    pub zones: Vec<Zone>,
+    /// The zone changed by the mutation.
+    pub zone: Zone,
     /// The commit receipt.
     pub commit: SceneCommit,
-}
-
-impl LayerStackWritten {
-    /// The single zone a one-zone mutation reports.
-    ///
-    /// # Panics
-    ///
-    /// Never in practice: only the batch insert produces more than one
-    /// zone, and every mutation produces at least one.
-    #[must_use]
-    pub fn zone(&self) -> &Zone {
-        self.zones.first().expect("a mutation touches one zone")
-    }
 }
 
 /// A layer-stack mutation that either lands or is refused by the stack.
@@ -86,7 +73,7 @@ pub async fn insert_layer(
             .ok_or_else(|| DomainError::not_found(ResourceKind::Scene, scene_id))?;
         media_admission.validate(scene)?;
     }
-    finish(ctx, mutation, vec![zone]).await
+    finish(ctx, mutation, zone).await
 }
 
 /// Drop one layer out of a zone's stack.
@@ -108,7 +95,7 @@ pub async fn remove_layer(
         Ok(zone) => zone,
         Err(refusal) => return Ok(Err(refusal)),
     };
-    finish(ctx, mutation, vec![zone]).await
+    finish(ctx, mutation, zone).await
 }
 
 /// Rewrite a zone's layer order.
@@ -130,7 +117,7 @@ pub async fn reorder_layers(
         Ok(zone) => zone,
         Err(refusal) => return Ok(Err(refusal)),
     };
-    finish(ctx, mutation, vec![zone]).await
+    finish(ctx, mutation, zone).await
 }
 
 pub(crate) async fn validate_candidate_media_admission(
@@ -165,7 +152,7 @@ pub async fn patch_layer_controls(
         Ok(zone) => zone,
         Err(refusal) => return Ok(Err(refusal)),
     };
-    finish(ctx, mutation, vec![zone]).await
+    finish(ctx, mutation, zone).await
 }
 
 /// Record both events every layer mutation publishes, commit, and record
@@ -173,10 +160,10 @@ pub async fn patch_layer_controls(
 async fn finish(
     ctx: &SceneContext,
     mutation: SceneMutation,
-    zones: Vec<Zone>,
+    zone: Zone,
 ) -> Result<LayerResult, DomainError> {
     let commit = ctx.commit(mutation).await?;
     ctx.save_runtime_session().await;
 
-    Ok(Ok(LayerStackWritten { zones, commit }))
+    Ok(Ok(LayerStackWritten { zone, commit }))
 }
