@@ -50,10 +50,7 @@ The root `HypercolorConfig` struct has these sections:
 | `[discovery]`     | mDNS, scan interval, ROLI Blocks                         |
 | `[network]`       | Remote access modes and client scope                     |
 | `[drivers.<id>]`  | Per-driver enable/settings (keyed by driver ID)          |
-| `[dbus]`          | D-Bus session bus integration (Linux)                    |
-| `[tui]`           | Terminal UI theme, preview FPS, keybindings              |
 | `[session]`       | Idle, lock, suspend, and lid lighting behavior (Linux)   |
-| `[features]`      | Opt-in experimental flags                                |
 
 ---
 
@@ -381,31 +378,6 @@ Driver IDs correspond to the names registered in the driver registry. Available 
 
 ---
 
-## `[dbus]`
-
-D-Bus integration for Linux desktop session events (screen lock, media players, power events).
-
-```toml
-[dbus]
-enabled  = true
-bus_name = "tech.hyperbliss.hypercolor1"
-```
-
----
-
-## `[tui]`
-
-Terminal UI preferences.
-
-```toml
-[tui]
-theme        = "silkcircuit"  # "silkcircuit" | "default" | "minimal"
-preview_fps  = 15             # LED preview refresh rate in the TUI canvas
-keybindings  = "default"      # "default" | "vim" | path to a custom keymap file
-```
-
----
-
 ## `[session]`
 
 Desktop session and power awareness: idle dimming, screen lock, suspend, and laptop lid behavior. Session events fire on Linux only today; on Windows and macOS these settings are inert.
@@ -452,19 +424,6 @@ off_output_color    = "#000000"   # Frame held when off_output_behavior = "stati
 ```
 
 `static` holds a solid color frame (black by default) on the device; `release` disconnects and lets the device return to its native firmware behavior.
-
----
-
-## `[features]`
-
-Opt-in experimental features. All default to `false`.
-
-```toml
-[features]
-wasm_plugins     = false  # Experimental WASM effect plugin system
-hue_entertainment = false  # Philips Hue Entertainment API (low-latency streaming)
-midi_input       = false  # MIDI controller input for effect control
-```
 
 ---
 

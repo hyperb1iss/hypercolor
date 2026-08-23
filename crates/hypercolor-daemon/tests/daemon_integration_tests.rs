@@ -445,23 +445,10 @@ async fn config_loading_all_sub_configs_have_defaults() {
     assert!(config.drivers["hue"].enabled);
     assert!(config.drivers["nanoleaf"].enabled);
 
-    // Feature flags default to false
-    assert!(!config.features.wasm_plugins);
-    assert!(!config.features.hue_entertainment);
-    assert!(!config.features.midi_input);
-
     assert_eq!(
         config.effect_engine.compositor_acceleration_mode,
         RenderAccelerationMode::Auto
     );
-
-    // TUI config defaults
-    assert_eq!(config.tui.theme, "silkcircuit");
-    assert_eq!(config.tui.preview_fps, 15);
-
-    // D-Bus config defaults
-    assert!(config.dbus.enabled);
-    assert_eq!(config.dbus.bus_name, "tech.hyperbliss.hypercolor1");
 }
 
 #[tokio::test]
@@ -502,7 +489,6 @@ wasm_plugins = true
     assert_eq!(config.daemon.port, 8888);
     assert!(!config.audio.enabled);
     assert_eq!(config.audio.fft_size, 2048);
-    assert!(config.features.wasm_plugins);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

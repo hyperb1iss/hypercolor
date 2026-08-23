@@ -34,6 +34,14 @@ and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   behavior through canonical resources.
 - Remove the profile REST routes, CLI commands, shared types, WebSocket fields
   and events, MCP `set_profile` tool, and `hypercolor://profiles` resource.
+- Remove the `[dbus]`, `[tui]`, and `[features]` config sections and the
+  top-level `include` key. None of the four reached a consumer: `[dbus]` named
+  a service the daemon never published (its D-Bus use is client-side, for
+  MPRIS and session events, and is unchanged), the TUI reads its theme from
+  its own `tui.toml`, no feature flag gated any code, and `include` never
+  merged a file. Existing config files keep loading, and the retired keys are
+  preserved verbatim through the extension catch-all rather than deleted on
+  the next save.
 
 ### Breaking Changes
 

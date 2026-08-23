@@ -587,15 +587,13 @@ async fn reset_config_state(
 /// Build the whole-config reset result: defaults, plus the sections the
 /// daemon does not author.
 ///
-/// `drivers` entries carry credentials written by driver pairing flows, the
+/// `drivers` entries carry credentials written by driver pairing flows and the
 /// flattened `extensions` sections belong to out-of-tree crates that share
-/// this file, and `include` names files only the user knows about; none of
-/// it is recoverable once a save drops it. The copy has to be explicit
-/// because normalization only inserts missing defaults, so it can seed a
-/// driver entry but never reconstruct its settings.
+/// this file; neither is recoverable once a save drops it. The copy has to be
+/// explicit because normalization only inserts missing defaults, so it can
+/// seed a driver entry but never reconstruct its settings.
 fn full_reset_config(current: &HypercolorConfig) -> HypercolorConfig {
     let mut reset = HypercolorConfig {
-        include: current.include.clone(),
         drivers: current.drivers.clone(),
         extensions: current.extensions.clone(),
         ..HypercolorConfig::default()

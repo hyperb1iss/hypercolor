@@ -5,9 +5,9 @@ use serde::{Deserialize, Serialize};
 use crate::session::SessionConfig;
 
 use super::{
-    AudioConfig, CaptureConfig, DaemonConfig, DbusConfig, DiscoveryConfig, DisplayConfig,
-    DriverConfigs, EffectEngineConfig, FeatureFlags, InputConfig, McpConfig, MediaConfig,
-    NetworkConfig, RenderingConfig, TuiConfig, WebConfig, default_driver_configs,
+    AudioConfig, CaptureConfig, DaemonConfig, DiscoveryConfig, DisplayConfig, DriverConfigs,
+    EffectEngineConfig, InputConfig, McpConfig, MediaConfig, NetworkConfig, RenderingConfig,
+    WebConfig, default_driver_configs,
 };
 
 // ─── Top-Level Config ────────────────────────────────────────────────────────
@@ -17,10 +17,6 @@ use super::{
 pub struct HypercolorConfig {
     /// Schema version for migration tracking.
     pub schema_version: u32,
-
-    /// Additional TOML files to merge (relative paths).
-    #[serde(default)]
-    pub include: Vec<String>,
 
     #[serde(default)]
     pub daemon: DaemonConfig,
@@ -62,16 +58,7 @@ pub struct HypercolorConfig {
     pub drivers: DriverConfigs,
 
     #[serde(default)]
-    pub dbus: DbusConfig,
-
-    #[serde(default)]
-    pub tui: TuiConfig,
-
-    #[serde(default)]
     pub session: SessionConfig,
-
-    #[serde(default)]
-    pub features: FeatureFlags,
 
     /// Top-level sections this build does not model, preserved verbatim.
     ///
@@ -90,7 +77,6 @@ impl Default for HypercolorConfig {
     fn default() -> Self {
         Self {
             schema_version: CURRENT_SCHEMA_VERSION,
-            include: Vec::new(),
             daemon: DaemonConfig::default(),
             web: WebConfig::default(),
             mcp: McpConfig::default(),
@@ -104,10 +90,7 @@ impl Default for HypercolorConfig {
             discovery: DiscoveryConfig::default(),
             network: NetworkConfig::default(),
             drivers: default_driver_configs(),
-            dbus: DbusConfig::default(),
-            tui: TuiConfig::default(),
             session: SessionConfig::default(),
-            features: FeatureFlags::default(),
             extensions: BTreeMap::new(),
         }
     }
@@ -147,5 +130,38 @@ connect_on_start = true
             parsed.extensions.get("cloud"),
             "a persist rewrite must not delete extension config"
         );
+    }
+
+    #[test]
+    fn retired_sections_load_and_survive_a_persist_rewrite() {
+        let source = r#"
+schema_version = 5
+include = ["local.toml"]
+
+[daemon]
+port = 9420
+
+[dbus]
+enabled = true
+bus_name = "tech.hyperbliss.hypercolor1"
+
+[tui]
+theme = "silkcircuit"
+
+[features]
+wasm_plugins = true
+"#;
+        let parsed: HypercolorConfig = toml::from_str(source).expect("an old config still loads");
+        assert_eq!(parsed.daemon.port, 9420);
+        for retired in ["include", "dbus", "tui", "features"] {
+            assert!(
+                parsed.extensions.contains_key(retired),
+                "[{retired}] should land in the catch-all"
+            );
+        }
+
+        let rewritten = toml::to_string_pretty(&parsed).expect("serializes");
+        let reparsed: HypercolorConfig = toml::from_str(&rewritten).expect("reparses");
+        assert_eq!(reparsed.extensions, parsed.extensions);
     }
 }

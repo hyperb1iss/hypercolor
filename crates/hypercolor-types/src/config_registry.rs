@@ -218,7 +218,6 @@ config_key_registry! {
         // schema_version is migration-managed; hand edits take effect
         // only through the migration path at next load.
         "schema_version" => ApplyPolicy::Restart, Redaction::Plain;
-        "include" => ApplyPolicy::Inert, Redaction::Plain;
         "daemon" => ApplyPolicy::Restart, Redaction::Plain;
         "web" => ApplyPolicy::Restart, Redaction::Plain;
         "mcp" => ApplyPolicy::Restart, Redaction::Plain;
@@ -237,10 +236,7 @@ config_key_registry! {
         // the section until the HTTP layer re-reads.
         "discovery" => ApplyPolicy::NextScan, Redaction::Plain;
         "network" => ApplyPolicy::Restart, Redaction::Plain;
-        "dbus" => ApplyPolicy::Inert, Redaction::Plain;
-        "tui" => ApplyPolicy::Inert, Redaction::Plain;
         "session" => ApplyPolicy::LiveOnRead, Redaction::Plain;
-        "features" => ApplyPolicy::Inert, Redaction::Plain;
     ]
     exact: [
         "daemon.target_fps" => ApplyPolicy::Live(LiveSection::Render);

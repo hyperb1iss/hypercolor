@@ -828,7 +828,6 @@ wasm_plugins = true
     );
     assert_eq!(config.drivers["wled"].settings["dedup_threshold"], 0);
     assert!(config.drivers["nollie"].enabled);
-    assert!(config.features.wasm_plugins);
 }
 
 #[test]
@@ -913,7 +912,7 @@ fn default_config_has_sane_values() {
     assert!(config.drivers["wled"].settings.is_empty());
     assert!(config.drivers["asus"].enabled);
     assert!(config.drivers["nollie"].enabled);
-    assert!(config.include.is_empty());
+    assert!(config.extensions.is_empty());
 }
 
 #[test]

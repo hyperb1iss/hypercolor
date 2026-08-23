@@ -1,4 +1,4 @@
-//! Configuration types -- daemon, audio, web, TUI, discovery, and feature flag settings.
+//! Configuration types -- daemon, audio, web, capture, discovery, and driver settings.
 //!
 //! Optional fields use Serde defaults so a fresh install can boot entirely from
 //! compile-time values. Closed nested sections reject unknown keys before a
@@ -8,37 +8,31 @@
 mod audio;
 mod capture;
 mod daemon;
-mod dbus;
 mod discovery;
 mod display;
 mod drivers;
 mod effect_engine;
-mod features;
 mod input;
 mod mcp;
 mod media;
 mod network;
 mod rendering;
 mod root;
-mod tui;
 mod web;
 
 pub use audio::*;
 pub use capture::*;
 pub use daemon::*;
-pub use dbus::*;
 pub use discovery::*;
 pub use display::*;
 pub use drivers::*;
 pub use effect_engine::*;
-pub use features::*;
 pub use input::*;
 pub use mcp::*;
 pub use media::*;
 pub use network::*;
 pub use rendering::*;
 pub use root::*;
-pub use tui::*;
 pub use web::*;
 
 // ─── Default Value Functions ─────────────────────────────────────────────────
@@ -190,22 +184,6 @@ mod defaults {
     pub fn network_client_scope() -> super::NetworkClientScope {
         super::NetworkClientScope::LocalSubnets
     }
-    // D-Bus
-    pub fn bus_name() -> String {
-        "tech.hyperbliss.hypercolor1".into()
-    }
-
-    // TUI
-    pub fn tui_theme() -> String {
-        "silkcircuit".into()
-    }
-    pub fn preview_fps() -> u32 {
-        15
-    }
-    pub fn keybindings() -> String {
-        "default".into()
-    }
-
     // Effect engine
     pub fn auto_string() -> String {
         "auto".into()

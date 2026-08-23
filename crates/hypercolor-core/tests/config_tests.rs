@@ -24,7 +24,6 @@ fn load_minimal_toml() {
     assert_eq!(config.daemon.port, 9420);
     assert_eq!(config.daemon.target_fps, 30);
     assert!(config.web.enabled);
-    assert!(!config.features.wasm_plugins);
     assert_eq!(config.input.daemon_route, InteractionRoutePolicy::Host);
     assert_eq!(config.input.preview_route, InteractionRoutePolicy::Browser);
 }
@@ -190,15 +189,15 @@ fn load_full_toml_with_overrides() {
     assert_eq!(config.web.websocket_fps, 15);
     assert_eq!(config.audio.device, "pulse-monitor");
     assert_eq!(config.audio.fft_size, 2048);
-    assert!(config.features.wasm_plugins);
-    assert!(config.features.midi_input);
-    assert!(!config.features.hue_entertainment);
     assert!(!config.drivers["openrgb"].enabled);
     assert_eq!(
         config.drivers["openrgb"].settings["socket"],
         "/run/openrgb.sock"
     );
-    assert_eq!(config.include, vec!["local.toml"]);
+    assert!(
+        config.extensions.contains_key("include"),
+        "a retired top-level key is preserved verbatim"
+    );
 }
 
 #[test]
