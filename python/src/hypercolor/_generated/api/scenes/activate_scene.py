@@ -9,13 +9,13 @@ from ...client import AuthenticatedClient, Client
 from ...models.activate_scene_request import ActivateSceneRequest
 from ...models.activate_scene_response_200 import ActivateSceneResponse200
 from ...models.api_error_body import ApiErrorBody
-from ...types import Response
+from ...types import UNSET, Response, Unset
 
 
 def _get_kwargs(
     id: str,
     *,
-    body: ActivateSceneRequest,
+    body: ActivateSceneRequest | Unset = UNSET,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
 
@@ -26,7 +26,8 @@ def _get_kwargs(
         ),
     }
 
-    _kwargs["json"] = body.to_dict()
+    if not isinstance(body, Unset):
+        _kwargs["json"] = body.to_dict()
 
     headers["Content-Type"] = "application/json"
 
@@ -108,13 +109,13 @@ def sync_detailed(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-    body: ActivateSceneRequest,
+    body: ActivateSceneRequest | Unset = UNSET,
 ) -> Response[ActivateSceneResponse200 | ApiErrorBody]:
     """Activate scene
 
     Args:
         id (str):
-        body (ActivateSceneRequest): Request for `POST /api/v1/scenes/{id}/activate`.
+        body (ActivateSceneRequest | Unset): Request for `POST /api/v1/scenes/{id}/activate`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -140,13 +141,13 @@ def sync(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-    body: ActivateSceneRequest,
+    body: ActivateSceneRequest | Unset = UNSET,
 ) -> ActivateSceneResponse200 | ApiErrorBody | None:
     """Activate scene
 
     Args:
         id (str):
-        body (ActivateSceneRequest): Request for `POST /api/v1/scenes/{id}/activate`.
+        body (ActivateSceneRequest | Unset): Request for `POST /api/v1/scenes/{id}/activate`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -167,13 +168,13 @@ async def asyncio_detailed(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-    body: ActivateSceneRequest,
+    body: ActivateSceneRequest | Unset = UNSET,
 ) -> Response[ActivateSceneResponse200 | ApiErrorBody]:
     """Activate scene
 
     Args:
         id (str):
-        body (ActivateSceneRequest): Request for `POST /api/v1/scenes/{id}/activate`.
+        body (ActivateSceneRequest | Unset): Request for `POST /api/v1/scenes/{id}/activate`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -197,13 +198,13 @@ async def asyncio(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-    body: ActivateSceneRequest,
+    body: ActivateSceneRequest | Unset = UNSET,
 ) -> ActivateSceneResponse200 | ApiErrorBody | None:
     """Activate scene
 
     Args:
         id (str):
-        body (ActivateSceneRequest): Request for `POST /api/v1/scenes/{id}/activate`.
+        body (ActivateSceneRequest | Unset): Request for `POST /api/v1/scenes/{id}/activate`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
