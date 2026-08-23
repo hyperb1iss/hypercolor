@@ -10,7 +10,7 @@ A layout tells the engine where each light sits on the canvas. The effect paints
 This is the single most common "my effect runs but nothing lights up" cause. If a zone glows in the live preview yet your hardware is black, the fix is almost always here: drag the device's outputs onto the canvas and hit Save.
 
 {% <callout type="info" title="Where the editor lives"> %}
-In Studio, the layout editor **is** the Stage for a Light. Select a Light zone in the left tree and the canvas fills the center, with the live effect rendering under the device boxes. There is no Preview/Layout toggle. The standalone `/layout` page edits a separate, legacy layouts library and is being retired. Treat the Studio Stage as the canonical place to build a zone's layout.
+In Studio, the layout editor **is** the Stage for a Light. Select a Light zone in the left tree and the canvas fills the center, with the live effect rendering under the device boxes. There is no Preview/Layout toggle. The Studio Stage is the canonical place to build a zone's layout.
 {% </callout> %}
 
 {{< img path="img/ui/studio.webp" alt="Studio with the spatial layout editor filling the Stage" />}}
@@ -35,8 +35,6 @@ A device output lives in exactly one zone's layout at a time. Adding it to anoth
 ## Placing outputs on the canvas
 
 In Studio, every output assigned to the selected Light zone already appears on its canvas. Use the device-grouping controls (covered in [Device grouping](@/studio/device-grouping.md)) to add a device's outputs to the zone, and they show up as draggable boxes.
-
-On the standalone `/layout` page, a device palette runs down the left side and you drag devices onto the canvas. The Studio Stage hides that permanent palette to keep the canvas as the hero, but the same editor drives both.
 
 {% <callout type="warning" title="Generic ARGB channels need a component first"> %}
 An unattached generic ARGB controller channel does not draw on the canvas until you attach a component (a strip, a fan, an LED area) to it. The channel is just raw wiring until then. Fixed devices like keyboards and AIO coolers always render, because they have meaningful LEDs without any component setup.
