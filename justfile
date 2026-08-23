@@ -342,6 +342,7 @@ fmt:
 [unix]
 fmt-check:
     cargo fmt --all -- --check
+    cargo fmt --manifest-path crates/hypercolor-ui/Cargo.toml -- --check
 
 [windows]
 fmt-check:
