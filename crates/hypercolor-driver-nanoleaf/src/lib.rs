@@ -169,7 +169,7 @@ fn nanoleaf_pair_device_key(info: &NanoleafDeviceInfo) -> String {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct NanoleafPairResponse {
-    #[serde(alias = "auth_token")]
+    #[serde(rename = "auth_token")]
     auth_token: Option<String>,
 }
 
@@ -924,5 +924,23 @@ fn nanoleaf_pairing_descriptor() -> PairingDescriptor {
             .collect(),
         action_label: "Pair Device".to_owned(),
         fields: Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::NanoleafPairResponse;
+
+    #[test]
+    fn pairing_response_accepts_only_vendor_token_key() {
+        let canonical =
+            serde_json::from_str::<NanoleafPairResponse>(r#"{"auth_token":"token"}"#)
+                .expect("vendor pairing response should decode");
+        assert_eq!(canonical.auth_token.as_deref(), Some("token"));
+
+        let speculative =
+            serde_json::from_str::<NanoleafPairResponse>(r#"{"authToken":"token"}"#)
+                .expect("unknown pairing fields remain ignorable");
+        assert_eq!(speculative.auth_token, None);
     }
 }
