@@ -108,6 +108,26 @@ fn application_state_reuses_one_domain_graph() {
 }
 
 #[test]
+fn output_static_hold_lifecycle_uses_output_context_directly() {
+    let sources = daemon_sources();
+    let lifecycle = sources
+        .iter()
+        .find(|(path, _)| path.ends_with("startup/lifecycle.rs"))
+        .map(|(_, source)| source.as_str())
+        .expect("startup lifecycle source should exist");
+    let worker = lifecycle
+        .split("fn spawn_output_static_hold_worker")
+        .nth(1)
+        .and_then(|source| source.split("fn spawn_effect_error_fallback_worker").next())
+        .expect("static hold worker should remain structurally visible");
+
+    assert!(lifecycle.contains("self.domains.output.reconcile_static_hold().await;"));
+    assert!(worker.contains("let output = self.domains.output.clone();"));
+    assert!(!worker.contains("AppState::from_daemon_state"));
+    assert!(!lifecycle.contains("startup_output_state"));
+}
+
+#[test]
 fn transports_use_the_effect_domain_authority() {
     let offenders = daemon_sources()
         .into_iter()

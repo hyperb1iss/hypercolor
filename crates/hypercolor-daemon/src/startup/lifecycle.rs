@@ -200,12 +200,7 @@ impl DaemonState {
             display_frames: Arc::clone(&self.display_frames),
             face_fps_cap: config.display.effective_face_fps_cap(),
         }));
-        let startup_output_state = AppState::from_daemon_state(self);
-        startup_output_state
-            .domains
-            .output
-            .reconcile_static_hold()
-            .await;
+        self.domains.output.reconcile_static_hold().await;
         self.device_metrics_collector_task = Some(spawn_device_metrics_collector(
             Arc::clone(&self.device_metrics),
             Arc::clone(&self.backend_manager),
@@ -732,19 +727,19 @@ impl DaemonState {
     }
 
     fn spawn_output_static_hold_worker(&mut self) {
-        let state = Arc::new(AppState::from_daemon_state(self));
-        let mut event_rx = state.event_bus.subscribe_all();
+        let output = self.domains.output.clone();
+        let mut event_rx = self.event_bus.subscribe_all();
 
         self.output_static_hold_task = Some(tokio::spawn(async move {
             loop {
                 match event_rx.recv().await {
                     Ok(event) if matches!(event.event, HypercolorEvent::DeviceConnected { .. }) => {
-                        state.domains.output.reconcile_static_hold().await;
+                        output.reconcile_static_hold().await;
                     }
                     Ok(_) => {}
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
                         warn!(skipped, "Static output hold worker lagged");
-                        state.domains.output.reconcile_static_hold().await;
+                        output.reconcile_static_hold().await;
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
