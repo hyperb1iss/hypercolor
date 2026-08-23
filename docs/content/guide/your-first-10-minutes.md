@@ -181,7 +181,7 @@ hypercolor scenes snapshot "Work" --description "Cool whites for focus"
 
 By default the daemon restores your last scene on startup (`start_scene = "last"` in your config), so the scene you left active comes back after a reboot.
 
-See [Scenes and snapshots](@/guide/profiles-and-scenes.md) for live and snapshot mutation modes, boot restore, and external automation.
+See [Scenes and snapshots](@/guide/scenes-and-snapshots.md) for live and snapshot mutation modes, boot restore, and external automation.
 
 ---
 
@@ -234,6 +234,6 @@ If you hit a wall, [Common issues](@/troubleshooting/common-issues.md) covers po
 
 - [Finding devices](@/guide/finding-devices.md): USB permissions, network discovery, pairing network devices
 - [Audio setup](@/guide/audio-setup.md): configuring an audio loopback source for audio-reactive effects
-- [Scenes and snapshots](@/guide/profiles-and-scenes.md): reusable rig state and external automation
+- [Scenes and snapshots](@/guide/scenes-and-snapshots.md): reusable rig state and external automation
 - [Studio](@/studio/overview.md): the full zone editor for per-LED spatial control
 - [Effects](@/effects/_index.md): the built-in library and every effect authoring path

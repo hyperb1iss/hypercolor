@@ -1,11 +1,11 @@
-//! Contract tests for the Studio device-grouping logic.
+//! Contract tests for the Studio device-assignment logic.
 
 use hypercolor_types::api::scene::{MemberPlacement, ZoneLayoutResource, ZoneMember, ZoneMemberId};
 use hypercolor_types::scene::{ZoneId, ZoneRole};
 use hypercolor_types::spatial::{LedTopology, NormalizedPosition, Output, StripDirection};
 
 use hypercolor_ui::api::ZoneResource;
-use hypercolor_ui::pages::studio::device_grouping::{
+use hypercolor_ui::pages::studio::device_assignment::{
     DeviceMeta, device_rows_for_zone, sort_device_rows, unassigned_device_rows,
 };
 

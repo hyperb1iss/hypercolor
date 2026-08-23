@@ -34,7 +34,7 @@ A device output lives in exactly one zone's layout at a time. Adding it to anoth
 
 ## Placing outputs on the canvas
 
-In Studio, every output assigned to the selected Light zone already appears on its canvas. Use the device-grouping controls (covered in [Device grouping](@/studio/device-grouping.md)) to add a device's outputs to the zone, and they show up as draggable boxes.
+In Studio, every output assigned to the selected Light zone already appears on its canvas. Use the device-assignment controls (covered in [Device assignment](@/studio/device-assignment.md)) to add a device's outputs to the zone, and they show up as draggable boxes.
 
 {% <callout type="warning" title="Generic ARGB channels need a component first"> %}
 An unattached generic ARGB controller channel does not draw on the canvas until you attach a component (a strip, a fan, an LED area) to it. The channel is just raw wiring until then. Fixed devices like keyboards and AIO coolers always render, because they have meaningful LEDs without any component setup.
@@ -111,6 +111,6 @@ If the output is not on the canvas, the sampler has no position to read for it, 
 ## Where to go next
 
 - [Zones](@/studio/zones.md): how a zone partitions the canvas and why each one owns a layout.
-- [Device grouping](@/studio/device-grouping.md): adding device outputs to a zone so they appear on its canvas.
+- [Device assignment](@/studio/device-assignment.md): adding device outputs to a zone so they appear on its canvas.
 - [Layers](@/studio/layers.md): stacking the effects, faces, and media that paint the canvas you are mapping onto.
 - [Multi-zone walkthrough](@/studio/multi-zone-walkthrough.md): building a second zone and splitting outputs across zones end to end.

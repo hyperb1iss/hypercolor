@@ -1,5 +1,5 @@
 +++
-title = "Device grouping"
+title = "Device assignment"
 description = "Add and move devices between Studio zones, read the device card, hide/identify/remove outputs, and assign at output level in multi-zone scenes."
 weight = 50
 +++

@@ -79,7 +79,7 @@ it is ready to accept zone creation, so on a freshly started daemon it may take
 a moment to show up.
 
 A new zone starts empty. Add hardware to it from the
-[device grouping](@/studio/device-grouping.md) flow, then arrange those devices
+[device assignment](@/studio/device-assignment.md) flow, then arrange those devices
 on its [layout canvas](@/studio/layouts.md).
 
 ## Zone settings: rename, color, enable
@@ -164,7 +164,7 @@ the current policy in plain words as a read-only value rather than a picker.
 
 The cleanest fix for unclaimed hardware is usually to assign it. Use the
 zone-assignment panel beneath the canvas to move those outputs into a real zone.
-See [device grouping](@/studio/device-grouping.md) for the assignment flow.
+See [device assignment](@/studio/device-assignment.md) for the assignment flow.
 
 ## How zone edits stay safe under concurrent changes
 
@@ -185,7 +185,7 @@ The full revision model, REST routes, and stale-retry semantics live in
 
 ## Where to go next
 
-- [Device grouping](@/studio/device-grouping.md) puts hardware into your zones
+- [Device assignment](@/studio/device-assignment.md) puts hardware into your zones
   and splits outputs across them.
 - [Layouts](@/studio/layouts.md) arranges each zone's devices on its own spatial
   canvas.

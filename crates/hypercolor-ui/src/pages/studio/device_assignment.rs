@@ -1,4 +1,4 @@
-//! Leptos-free grouping of a zone's members by physical device.
+//! Leptos-free assignment of a zone's members to their physical devices.
 //!
 //! A multi-segment controller contributes several members. The Studio
 //! zone tree shows each physical device once under its zone, so this
@@ -7,7 +7,7 @@
 //! group: devices the scene assigns to no zone at all.
 //!
 //! Deliberately free of `leptos` and `crate::` paths so the contract is
-//! exercisable from `tests/studio_device_grouping_tests.rs` via a
+//! exercisable from `tests/studio_device_assignment_tests.rs` via a
 //! `#[path]` include, mirroring `surface.rs`.
 
 use std::collections::HashSet;

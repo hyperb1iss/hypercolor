@@ -417,7 +417,7 @@ hypercolor scenes active
 hypercolor scenes delete "Old Scene" --yes
 ```
 
-For live and snapshot mutation modes, boot restore, and external automation, see [Scenes and snapshots](@/guide/profiles-and-scenes.md).
+For live and snapshot mutation modes, boot restore, and external automation, see [Scenes and snapshots](@/guide/scenes-and-snapshots.md).
 
 {% <callout type="tip"> %}
 Studio is the visual authoring surface for scenes. The Studio workspace lets you build multi-zone scenes with per-zone effects, inspect the composition in a live canvas preview, and manage scene groups without writing JSON. See [Studio scenes](@/studio/scenes.md) and [Studio zones](@/studio/zones.md).
@@ -482,7 +482,7 @@ Exit with `q` or Ctrl-C.
 
 You now have a fully configured Hypercolor setup. Where to go from here:
 
-- [Scenes and snapshots](@/guide/profiles-and-scenes.md): conceptual guide and full CLI/API reference for saved configurations
+- [Scenes and snapshots](@/guide/scenes-and-snapshots.md): conceptual guide and full CLI/API reference for saved configurations
 - [Audio setup](@/guide/audio-setup.md): configure monitor or loopback sources for audio-reactive effects
 - [Studio overview](@/studio/overview.md): multi-zone authoring, scene groups, the visual zone canvas, and the Studio workspace tour
 - [Creating effects](@/effects/creating-effects.md): write custom effects with the TypeScript SDK and see them appear in the effect browser immediately

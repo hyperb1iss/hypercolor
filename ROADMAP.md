@@ -16,7 +16,7 @@ The foundation works on Linux, Windows, and macOS today.
 - Face SDK: 7 display faces for LCD panels (clocks, sensors, now-playing, spectrum) with the `face()` declarative API
 - Interactive input pipeline: consent-gated keyboard/mouse capture (evdev on Linux, Raw Input on Windows, polling bridge on macOS) driving interactive effects like Keystrike
 - Screen capture: Desktop Duplication on Windows (GPU path, on by default), Wayland portal + PipeWire on Linux (opt-in), with byte-admission capacity control
-- Hardware: 179 supported devices across 12 driver families (Razer, Corsair, ASUS, Lian Li, Nollie, PrismRGB, QMK, Ableton Push 2, Hue, Nanoleaf, WLED, Govee), plus the opt-in OpenRGB SDK bridge as a fallback for anything OpenRGB drives
+- Hardware: 179 supported devices across 12 driver families (Razer, Corsair, ASUS, Lian Li, Nollie, PrismRGB, QMK, Ableton Push 2, Hue, Nanoleaf, WLED, Govee), plus a thirteenth family, Dygma, whose driver ships but stays dark until firmware allows it, and two opt-in bridges: the OpenRGB SDK bridge for anything OpenRGB drives and the `blocksd` bridge for ROLI Blocks
 - Portable device identity: devices survive cable moves, IP churn, and BIOS renumbering; layouts rebind after hardware swaps
 - Web UI: effects browser, live canvas preview, Studio multi-zone workspace, viewport designer, spatial layout editor, scene management, mobile-responsive shell
 - Terminal UI (TUI): true-color LED preview, audio spectrum, fullscreen mode

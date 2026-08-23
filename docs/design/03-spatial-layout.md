@@ -917,6 +917,13 @@ because the living room's effect is phase-shifted.
 
 ### Cross-Space Effect Continuity
 
+> **Deleted, 2026-08-22.** `SpaceDefinition`, `RoomDimensions`, `RoomAdjacency`,
+> `Wall`, and `SpatialLayout.spaces` shipped into `hypercolor-types` and were
+> never read by anything, so they were removed. Layouts are flat: every output
+> lives on one canvas. Nothing below this line describing multi-room state
+> reflects the tree.
+
+
 For the unified canvas mode to feel right, the spatial engine needs to understand adjacency:
 
 ```rust

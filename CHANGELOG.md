@@ -64,6 +64,20 @@ and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `device-aliases.json` schema version 1 remains untouched but is no longer
   loaded. Back up and remove that file, then rescan devices to rebuild the
   schema version 2 alias overlay from the unchanged portable keys.
+- **SDK: `InputData.available` is removed.** The deprecation in 0.3.1 named
+  SDK 0.4.0 as the removal point; it happens here instead. Read `routed` and
+  `healthy`, the two authoritative lifecycle facts the runtime wire already
+  carried. `mouse.coordinatesAvailable` is unrelated and stays.
+- **SDK: the `dev` CLI command is removed.** It had already been reduced to a
+  message saying it was gone, so the help surface disagreed with the commands
+  that worked. Use the Bun workspace `dev` script for package watch builds.
+- **Python: the `Layout` alias is removed.** Layout endpoints have always
+  returned `SpatialLayout`; import that name from the shared spatial contract.
+- **Python: handwritten resource mirrors are removed.** `get_state`, the legacy
+  device properties, the handwritten `Scene`, `Zone`, and `Effect` models, and
+  the `surface.id` alias are gone. Both facades build requests and decode
+  responses with the generated OpenAPI types, and filter names and response
+  shapes now match the daemon exactly.
 - `SpatialLayout` no longer carries `spaces`, and the `SpaceDefinition`,
   `RoomDimensions`, `RoomAdjacency`, and `Wall` schemas are gone from the API
   and the generated clients. Stored layouts that still carry a `spaces` key
@@ -231,6 +245,7 @@ A cross-platform input and capture release. Host keyboard and mouse capture land
 - Bound Windows Raw Input payload reads to the record rather than the buffer, and bound the record walk to the union arm actually read (`40175f83`, `ba5e963f`)
 - Close Raw Input lifecycle races and stop delivering every batch to core twice (`5040d66b`, `cef4cd05`)
 - Never capture screen content for screen-mirroring effects when generating cover artwork (`003a5794`)
+- `getInputData()` reports input declaration, routing, health, freshness, and degradation independently. Recent keyboard or mouse activity no longer implies source availability.
 - Route conduct and security reports through GitHub's private reporting flow (`6c047eb2`)
 
 ### Removed
@@ -238,6 +253,11 @@ A cross-platform input and capture release. Host keyboard and mouse capture land
 - Remove the legacy Displays, Assets, and Layout pages along with their feature flag; Studio is the only workspace (`d753a927`)
 - Remove the simulator UI journey E2E suite and `crates/hypercolor-app/src/resources.rs` with its tests (`d7fc98a9`, `d753a927`)
 - Remove the legacy SDK canvas resolution warning (`3eebfcd9`)
+
+### Deprecated
+
+- `InputData.available` now means `routed && healthy` and remains as a
+  compatibility alias. Read the explicit lifecycle fields instead.
 
 ### Breaking Changes
 
@@ -252,22 +272,6 @@ A cross-platform input and capture release. Host keyboard and mouse capture land
 - Files Changed: 819
 - Insertions: +188,678
 - Deletions: -15,247
-<!-- -------------------------------------------------------------- -->
-
-## [Unreleased]
-
-### Changed
-
-- `getInputData()` now reports input declaration, routing, health, freshness,
-  and degradation independently. Recent keyboard or mouse activity no longer
-  implies source availability.
-
-### Deprecated
-
-- `InputData.available` now means `routed && healthy` and remains as a
-  compatibility alias through SDK 0.3.x. Read the explicit lifecycle fields
-  instead; the alias will be removed in SDK 0.4.0.
-
 ## [0.2.1] - 2026-07-15
 
 First public release of Hypercolor, a cross-platform RGB LED orchestration daemon with a GPU-accelerated render pipeline, multi-vendor hardware support, and a full effect authoring SDK.
@@ -348,3 +352,8 @@ First public release of Hypercolor, a cross-platform RGB LED orchestration daemo
 - Files Changed: 2,591
 - Insertions: +720,254
 - Deletions: -2,397
+
+[Unreleased]: https://github.com/hyperb1iss/hypercolor/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/hyperb1iss/hypercolor/compare/v0.3.1...v0.3.2
+[0.3.1]: https://github.com/hyperb1iss/hypercolor/compare/v0.2.1...v0.3.1
+[0.2.1]: https://github.com/hyperb1iss/hypercolor/releases/tag/v0.2.1

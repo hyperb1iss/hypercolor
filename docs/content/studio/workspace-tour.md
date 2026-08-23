@@ -47,7 +47,7 @@ Each zone card has three interactive regions:
 
 A zone that has a failed or asset-missing layer shows a red warning triangle next to its name, so trouble is visible without opening the zone.
 
-Below the device list, each zone offers a way to add hardware. In a single-zone scene, devices that belong to no zone fold in here as one-tap "Available" rows; tap the plus to add one. See [Device grouping](@/studio/device-grouping.md) for the device card, channels, and output-level assignment.
+Below the device list, each zone offers a way to add hardware. In a single-zone scene, devices that belong to no zone fold in here as one-tap "Available" rows; tap the plus to add one. See [Device assignment](@/studio/device-assignment.md) for the device card, channels, and output-level assignment.
 
 An always-present **New zone** control sits at the bottom of the Zones section when the daemon supports zone creation.
 
@@ -131,7 +131,7 @@ Tapping **Zones** slides the tree in from the left over a dark scrim. Picking a 
 - [Studio overview](@/studio/overview.md): the Scene → Zone → Layers + Layout model.
 - [Scenes](@/studio/scenes.md): switch, create, rename, and delete whole-rig configs.
 - [Zones](@/studio/zones.md): create, color, enable, make-default, and delete partitions.
-- [Device grouping](@/studio/device-grouping.md): the device card, channels, and assignment.
+- [Device assignment](@/studio/device-assignment.md): the device card, channels, and assignment.
 - [Layers](@/studio/layers.md): the layer stack, blend modes, and health.
 - [Layouts](@/studio/layouts.md): the spatial canvas, drag, resize, and save.
 - [Multi-zone walkthrough](@/studio/multi-zone-walkthrough.md): build a second zone end to end.

@@ -98,7 +98,7 @@ pub const DEFAULT_CANVAS_WIDTH: u32 = 640;
 pub const DEFAULT_CANVAS_HEIGHT: u32 = 480;
 ```
 
-At 640x480 the buffer is roughly 1.17 MB per frame. Effects render in normalized `[0.0, 1.0]` spatial coordinates and remain resolution-independent; tune `daemon.canvas_width` / `daemon.canvas_height` in your config for your hardware density without touching effect code. Canvas dimensions retune at frame boundaries via `SceneTransaction::ResizeCanvas`; never hardcode pixel dimensions in effects or drivers.
+At 640x480 the buffer is roughly 1.17 MB per frame. Effects render in normalized `[0.0, 1.0]` spatial coordinates and remain resolution-independent; tune `daemon.canvas_width` / `daemon.canvas_height` in your config for your hardware density without touching effect code. Canvas dimensions retune at frame boundaries; never hardcode pixel dimensions in effects or drivers.
 
 Sampling from the canvas to LED positions supports three interpolation strategies: nearest-neighbor, bilinear (the default), and area averaging. Bilinear reads 4 surrounding pixels and blends by distance; it is gamma-correct via precomputed sRGB LUTs, which makes it essentially free in the hot path.
 

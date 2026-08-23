@@ -3,7 +3,7 @@
 //!
 //! Kept `crate::`- and leptos-free (icondata + std only) so the contract
 //! tests can `#[path]`-include it directly, mirroring
-//! `pages/studio/device_grouping.rs`. The leptos card and player components
+//! `pages/studio/device_assignment.rs`. The leptos card and player components
 //! and the catalog page all draw their vocabulary from here so the three
 //! cannot drift.
 

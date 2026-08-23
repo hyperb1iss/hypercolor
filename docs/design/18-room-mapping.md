@@ -2,6 +2,20 @@
 
 > From a single LED strip to an entire house -- Hypercolor's spatial intelligence system.
 
+**Status: unshipped design, retained for its coordinate model.** The multi-room
+layout types this document proposes (`SpaceDefinition`, `RoomDimensions`,
+`RoomAdjacency`, `Wall`, and `SpatialLayout.spaces`) were added to
+`hypercolor-types` but never read by anything, and have since been deleted.
+Nothing here describes shipped behavior.
+
+What is still load-bearing is the coordinate model, the `Path` topology, and the
+projections, which spec 06 (§§2-5, 7) and spec 66 consume. Read it for those.
+
+The vocabulary authority (`docs/content/studio/vocabulary-and-naming.md`) bans
+"room" on every shipped surface: the hierarchy is Scene -> Zone -> {Layer,
+Layout -> Output}. This document predates that ruling and keeps its original
+vocabulary so its cited sections stay quotable; do not carry the naming forward.
+
 ---
 
 ## 1. Scale Levels

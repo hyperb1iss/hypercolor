@@ -7,7 +7,7 @@
 
 mod composition_panel;
 mod device_card;
-pub mod device_grouping;
+pub mod device_assignment;
 mod face_composition;
 mod scene_selector;
 mod stage;

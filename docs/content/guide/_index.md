@@ -65,7 +65,7 @@ This section takes you from zero to a fully configured rig.
 - [The TUI](@/guide/tui.md): terminal dashboard with LED preview, audio spectrum, and fullscreen mode
 - [Finding devices](@/guide/finding-devices.md): USB discovery, network mDNS, pairing Hue and Nanoleaf, udev permission fixes
 - [Audio setup](@/guide/audio-setup.md): configure an audio loopback source for audio-reactive effects
-- [Scenes and snapshots](@/guide/profiles-and-scenes.md): save full rig state and connect external automation
+- [Scenes and snapshots](@/guide/scenes-and-snapshots.md): save full rig state and connect external automation
 - [Configuration](@/guide/configuration.md): full config reference for `hypercolor.toml`
 - [Desktop app](@/guide/desktop-app.md): the Tauri shell: tray menu, autostart, diagnostics, window controls
 

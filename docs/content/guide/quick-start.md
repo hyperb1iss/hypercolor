@@ -157,6 +157,6 @@ curl -X POST http://localhost:9420/api/v1/scene/clear \
 - [Your first 10 minutes](@/guide/your-first-10-minutes.md): an opinionated golden path through the web UI
 - [First session](@/guide/first-session.md): a longer hands-on walkthrough of devices, layouts, and scenes
 - [Audio setup](@/guide/audio-setup.md): configure an audio loopback source so reactive effects respond to your music
-- [Scenes and snapshots](@/guide/profiles-and-scenes.md): save your lighting state and switch between setups
+- [Scenes and snapshots](@/guide/scenes-and-snapshots.md): save your lighting state and switch between setups
 - [Effect catalog](@/effects/_index.md): browse every built-in effect with parameters and previews
 - [Configuration](@/guide/configuration.md): tune FPS, canvas size, network access, and more

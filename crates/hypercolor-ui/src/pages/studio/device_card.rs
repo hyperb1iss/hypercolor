@@ -26,7 +26,7 @@ use crate::layout_utils;
 use crate::toasts;
 use crate::vendors::{VendorMark, VendorMarkSize};
 
-use super::device_grouping::ZoneDeviceRow;
+use super::device_assignment::ZoneDeviceRow;
 use super::zone_add_device::{assign_device_to_zone, zone_display_name};
 use super::{StudioContext, hidden_outputs_storage_key};
 

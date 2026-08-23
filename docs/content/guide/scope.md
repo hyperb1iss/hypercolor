@@ -33,6 +33,13 @@ Hypercolor drives hardware through two transport layers.
 | `wled` | DDP / E1.31 sACN | mDNS (`_wled._tcp`) |
 | `govee` | Govee LAN UDP | UDP multicast scan (LAN control must be enabled in the Govee Home app first) |
 
+**Bridged devices** reach Hypercolor through another process rather than a driver of its own, and both bridges are off by default:
+
+| Bridge | Protocol | Enable with |
+|---|---|---|
+| OpenRGB SDK | TCP to a running OpenRGB server | the OpenRGB driver's config entry ([OpenRGB fallback](@/hardware/openrgb-fallback.md)) |
+| ROLI Blocks | Unix socket to `blocksd` (Lightpad, LUMI Keys, Seaboard) | `discovery.blocks_scan`; Unix only |
+
 For the full list with every supported PID and device note, see the [compatibility matrix](@/hardware/compatibility.md).
 
 ## What Hypercolor does NOT control (yet)

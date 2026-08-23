@@ -13,7 +13,7 @@ between zones, and decide what happens to any output you leave behind.
 {{< img path="img/ui/studio.webp" alt="Hypercolor Studio with the zone tree, the live Stage canvas, and the composition panel" />}}
 
 This is the end-to-end version of the focused pages. If you want the model
-first, read [Zones](@/studio/zones.md), [Device grouping](@/studio/device-grouping.md),
+first, read [Zones](@/studio/zones.md), [Device assignment](@/studio/device-assignment.md),
 and [Layers](@/studio/layers.md), then come back here to put it together.
 
 {% <callout type="info"> %}
@@ -202,7 +202,7 @@ whenever you want it back.
 
 - [Zones](@/studio/zones.md): the full zone lifecycle: rename, color, enable,
   make-default, delete.
-- [Device grouping](@/studio/device-grouping.md): the device card, channels,
+- [Device assignment](@/studio/device-assignment.md): the device card, channels,
   hide, identify, and remove.
 - [Scenes](@/studio/scenes.md): saving and switching whole-rig configurations.
 - [Zone API and concurrency](@/studio/zone-api-and-concurrency.md): the REST

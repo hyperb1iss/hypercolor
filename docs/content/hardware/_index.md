@@ -107,9 +107,10 @@ The full device list lives in the [compatibility matrix](@/hardware/compatibilit
 | **WLED** | Network / UDP | DDP and E1.31/sACN; RGB and RGBW; no authentication | Supported |
 | **Govee** | Network / UDP + Cloud | LAN UDP control; optional cloud API fallback | Supported |
 | **OpenRGB bridge** | Network / TCP | Fallback for any hardware OpenRGB supports | Supported (opt-in) |
+| **ROLI Blocks bridge** | Unix socket / blocksd | Lightpad, LUMI Keys, and Seaboard Blocks as pixel-addressable surfaces; Unix only | Supported (opt-in) |
 | **Dygma Defy** | USB Serial | Driver ready; lighting gated by firmware, not yet enabled | Blocked |
 
-The OpenRGB bridge is disabled in config by default and is not counted among the 12 native driver families; enable it explicitly per [OpenRGB fallback](@/hardware/openrgb-fallback.md).
+Neither bridge is counted among the 12 driver families with shipping device support, and both are off by default. Enable the OpenRGB one per [OpenRGB fallback](@/hardware/openrgb-fallback.md) and the ROLI one with `discovery.blocks_scan`. Dygma is the thirteenth family implemented in the tree; it is excluded from the twelve because no Dygma device lights up yet.
 
 {% <callout type="warning"> %}
 If another RGB manager (OpenRGB, Aura Sync, openrazer daemon, iCUE via Wine) has a USB device open, Hypercolor cannot claim it. The device will appear in `lsusb` but not in `hypercolor devices list`. Close or disable the conflicting tool first. See [conflicting software](@/hardware/conflicting-software.md).

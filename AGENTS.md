@@ -141,7 +141,8 @@ both the web UI and the TUI decode with it. Never hand-roll those frame layouts.
 
 `hypercolor-types::api` is the single definition of the REST request/response
 contracts for the devices, scenes, zones, and effects domains (plus the shared
-`Pagination`); the daemon serializes these types and both UIs deserialize them.
+`ListResponse<T>` envelope and its optional `PageInfo`); the daemon serializes
+these types and both UIs deserialize them.
 Diagnostic telemetry (system status internals, metrics) deliberately stays
 daemon-local; clients consume tolerant subsets. When adding or changing an
 endpoint in a shared domain, change the type in `hypercolor-types::api`, never
@@ -191,9 +192,12 @@ Rule of thumb: events are broadcast, data streams are watch.
 
 ### AppState
 
-The daemon's shared state is `Arc`-wrapped and injected into every Axum handler. Key detail:
-`EffectEngine` is behind `Mutex` (not `RwLock`) because `dyn EffectRenderer` is `Send` but
-NOT `Sync`. Read-heavy subsystems (EffectRegistry, SceneManager, SpatialEngine) use `RwLock`.
+The daemon's shared state is `Arc`-wrapped and injected into every Axum handler. Subsystems
+that own a `!Sync` renderer or a serialized device path sit behind `Mutex` (`BackendManager`,
+`DeviceLifecycleManager`, `InputManager`); `EffectRegistry` is read-heavy and uses `RwLock`.
+Scene, layout, effect, and spatial state is not reached through raw locks at all: it lives
+behind the domain services in `AppState::domains` (`SceneService`, `SpatialService`, and the
+rest of `DomainContexts`), which own their own commit ordering and event publication.
 
 ## UI Crate
 
@@ -306,8 +310,9 @@ Response envelope: `{ data: T, meta: { api_version, request_id, timestamp } }`.
   Servo's renderer is single-threaded.
 - **Canvas defaults to 640x480 but is configurable.** Flow dimensions from `daemon.canvas_width`
   and `daemon.canvas_height` through the engine; never hardcode. Both canvas size and target
-  FPS retune live via `SceneTransaction::ResizeCanvas` (frame-boundary) and `RenderLoop::set_tier`
-  respectively. Spatial coordinates are normalized `[0.0, 1.0]`, so effects stay resolution-
+  FPS retune live: the frame executor notices new dimensions at the top of a frame and runs
+  `RenderPipeline::prepare_canvas_resize` then `commit_canvas_resize`, and `RenderLoop::set_tier`
+  retunes the tier. Spatial coordinates are normalized `[0.0, 1.0]`, so effects stay resolution-
   independent. LED positions are generated once from topology and cached; call `update_layout()`
   to regenerate.
 - **Watch vs broadcast.** Don't use broadcast for high-frequency data (frame colors, spectrum).

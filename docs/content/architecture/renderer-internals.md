@@ -169,7 +169,7 @@ pub struct FrameInput<'a> {
 
 The default canvas dimensions are **640×480** (`DEFAULT_CANVAS_WIDTH` /
 `DEFAULT_CANVAS_HEIGHT` in `hypercolor-types::canvas`). Both values are configurable
-and can change live via `SceneTransaction::ResizeCanvas`. Never hardcode them.
+and can change live at a frame boundary. Never hardcode them.
 
 Animate against `delta_secs` or `time_secs`, not `frame_number`: the render loop
 runs at adaptive FPS across five tiers (10 / 20 / 30 / 45 / 60). The integer frame

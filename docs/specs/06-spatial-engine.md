@@ -83,11 +83,8 @@ pub struct SpatialLayout {
 
     // ── Multi-Room (Optional) ─────────────────────────────────────────
 
-    /// Space hierarchy for multi-room layouts.
-    /// When `None`, all zones live in a flat canvas (device/desk scale).
-    /// When `Some`, zones are grouped into named spaces with physical
-    /// dimensions for room-aware rendering.
-    pub spaces: Option<Vec<SpaceDefinition>>,
+    // The `spaces` field described below was deleted; see the note in
+    // "SpaceDefinition (Multi-Room)".
 
     // ── Metadata ──────────────────────────────────────────────────────
 
@@ -127,6 +124,13 @@ fn default_edge_behavior() -> EdgeBehavior {
 The daemon holds a `tokio::sync::watch::Sender<SpatialLayout>` so the sampler task can detect layout changes without polling.
 
 ### SpaceDefinition (Multi-Room)
+
+> **Deleted, 2026-08-22.** `SpaceDefinition`, `RoomDimensions`, `RoomAdjacency`,
+> `Wall`, and `SpatialLayout.spaces` shipped into `hypercolor-types` and were
+> never read by anything, so they were removed. Layouts are flat: every output
+> lives on one canvas. Nothing below this line describing multi-room state
+> reflects the tree.
+
 
 ```rust
 /// A physical space (room) containing a subset of zones.

@@ -32,7 +32,7 @@ Load-bearing consequences of the hierarchy:
 
 - **A scene owns everything.** Pick a scene and you have its zones, their layers, and their device placement. Nothing meaningful exists outside a scene. See [Scenes](@/studio/scenes.md).
 - **Each zone owns its own layout.** A zone's layout is its own spatial canvas; switching zones switches the canvas. See [Layouts](@/studio/layouts.md).
-- **A device output lives in exactly one zone's layout at a time.** Adding it to another zone removes it from the first. See [Device grouping](@/studio/device-grouping.md).
+- **A device output lives in exactly one zone's layout at a time.** Adding it to another zone removes it from the first. See [Device assignment](@/studio/device-assignment.md).
 - **The default zone is just a zone.** A fresh scene has one, holding every device, named "Default zone." The user can rename it. There is no "All Lights." See [Zones](@/studio/zones.md).
 - **There is no standalone "layouts library."** A saved arrangement is part of a scene. What the user picks is a scene.
 

@@ -35,7 +35,7 @@ The unit of assignment is a device **output**, not a whole physical device. A mu
 Zone creation and device assignment light up only when the running daemon advertises the matching capabilities. On a single-zone setup you will see just the Default zone, which is the complete, working baseline rather than a stripped-down mode.
 {% </callout> %}
 
-For the full zone lifecycle (create, rename, color, enable, make-default, delete, and the Unassigned entry), see [zones](@/studio/zones.md). For moving devices between zones, see [device grouping](@/studio/device-grouping.md).
+For the full zone lifecycle (create, rename, color, enable, make-default, delete, and the Unassigned entry), see [zones](@/studio/zones.md). For moving devices between zones, see [device assignment](@/studio/device-assignment.md).
 
 ## Layers and layout are what a zone holds
 
