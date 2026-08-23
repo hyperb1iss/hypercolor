@@ -176,33 +176,14 @@ pub fn load_segments(path: &Path) -> anyhow::Result<HashMap<String, LogicalDevic
     Ok(out)
 }
 
-/// Persist user-defined logical segment devices to disk.
+/// Reserve a logical-device snapshot before releasing its mutation lock.
 ///
 /// Default logical devices are ephemeral and are not persisted.
-pub fn save_segments(path: &Path, store: &HashMap<String, LogicalDevice>) -> anyhow::Result<()> {
-    let pending = reserve_save_segments(path, store)?;
-    save_reserved_segments(pending).map(|_| ())
-}
-
-/// Reserve a logical-device snapshot before releasing its mutation lock.
 pub fn reserve_save_segments(
     path: &Path,
     store: &HashMap<String, LogicalDevice>,
 ) -> anyhow::Result<LogicalDeviceSave> {
     let writer = AtomicFileWriter::new(path)?;
-    reserve_save_segments_with(&writer, store)
-}
-
-/// Initialize a logical-device writer before its owning mutation begins.
-pub fn writer(path: &Path) -> Result<AtomicFileWriter, PersistenceError> {
-    AtomicFileWriter::new(path)
-}
-
-/// Serialize and admit logical segments while their mutation lock is held.
-pub fn reserve_save_segments_with(
-    writer: &AtomicFileWriter,
-    store: &HashMap<String, LogicalDevice>,
-) -> anyhow::Result<LogicalDeviceSave> {
     let mut entries: Vec<LogicalDevice> = store
         .values()
         .filter(|entry| entry.kind == LogicalDeviceKind::Segment)
@@ -236,7 +217,10 @@ mod tests {
 
     use tempfile::TempDir;
 
-    use super::{LogicalDevice, LogicalDeviceKind, load_segments, save_segments};
+    use super::{
+        LogicalDevice, LogicalDeviceKind, load_segments, reserve_save_segments,
+        save_reserved_segments,
+    };
     use crate::logical_devices::ensure_default_logical_device;
     use hypercolor_types::device::DeviceId;
 
@@ -302,7 +286,9 @@ mod tests {
             },
         );
 
-        save_segments(&path, &store).expect("save logical device store");
+        let pending =
+            reserve_save_segments(&path, &store).expect("reserve logical device snapshot");
+        save_reserved_segments(pending).expect("save logical device store");
         let loaded = load_segments(&path).expect("load logical device store");
 
         assert!(loaded.contains_key("driver:canonical:left"));

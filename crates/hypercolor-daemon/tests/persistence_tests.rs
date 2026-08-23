@@ -746,8 +746,12 @@ fn failed_logical_device_delete_does_not_resurrect_after_reload() {
         enabled: true,
         kind: LogicalDeviceKind::Segment,
     };
-    logical_devices::save_segments(&path, &HashMap::from([("segment".to_owned(), entry)]))
-        .expect("seed logical devices");
+    let seed = logical_devices::reserve_save_segments(
+        &path,
+        &HashMap::from([("segment".to_owned(), entry)]),
+    )
+    .expect("reserve logical device seed");
+    logical_devices::save_reserved_segments(seed).expect("seed logical devices");
     let writer = AtomicFileWriter::new(&path).expect("atomic writer");
     writer.set_injected_replace_failures(usize::MAX);
 

@@ -191,15 +191,34 @@ async fn delete_simulated_display_workflow(state: Arc<AppState>, device_id: Devi
         .into_response();
     }
 
-    {
+    let pending_logical_devices = {
         let mut store = state.logical_devices.write().await;
+        let before = store.len();
         store.retain(|_, entry| entry.physical_device_id != device_id);
-        if let Err(error) = logical_devices::save_segments(&state.logical_devices_path, &store) {
+        if store.len() == before {
+            None
+        } else {
+            match logical_devices::reserve_save_segments(&state.logical_devices_path, &store) {
+                Ok(pending) => Some(pending),
+                Err(error) => {
+                    return DomainError::Internal(anyhow::anyhow!(
+                        "Failed to persist logical devices: {error}"
+                    ))
+                    .into_response();
+                }
+            }
+        }
+    };
+
+    if let Some(pending) = pending_logical_devices {
+        if let Err(error) = logical_devices::save_reserved_segments(pending) {
             return DomainError::Internal(anyhow::anyhow!(
                 "Failed to persist logical devices: {error}"
             ))
             .into_response();
         }
+    } else if let Err(error) = logical_devices::kick_pending(&state.logical_devices_path) {
+        warn!("Failed to wake the logical-device retry worker: {error}");
     }
 
     let _ = state.device_registry.remove(&device_id).await;
