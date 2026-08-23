@@ -9,9 +9,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use hypercolor_types::canvas::{
-    BYTES_PER_PIXEL, Canvas, ColorFormat, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, LinearRgba,
-    Oklab, Oklch, PublishedSurface, RenderSurfacePool, Rgb, Rgba, SamplingMethod,
-    SurfaceDescriptor, SurfaceResourceError, SurfaceState, linear_to_srgb, srgb_to_linear,
+    BYTES_PER_PIXEL, Canvas, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, LinearRgba, Oklab, Oklch,
+    PublishedSurface, RenderSurfacePool, Rgb, Rgba, SamplingMethod, SurfaceDescriptor,
+    SurfaceResourceError, SurfaceState, linear_to_srgb, srgb_to_linear,
 };
 
 // ── Kernel re-export identity ──────────────────────────────────────────────
@@ -1013,21 +1013,6 @@ fn sample_clamps_oob_coords() {
     // Should not panic, coords are clamped
     let _ = c.sample(-1.0, -1.0, SamplingMethod::Nearest);
     let _ = c.sample(2.0, 2.0, SamplingMethod::Bilinear);
-}
-
-// ── ColorFormat ──
-
-#[test]
-fn color_format_default_is_rgb() {
-    assert_eq!(ColorFormat::default(), ColorFormat::Rgb);
-}
-
-#[test]
-fn color_format_serde() {
-    let json = serde_json::to_string(&ColorFormat::RgbW16).expect("serialize");
-    assert_eq!(json, "\"rgb_w16\"");
-    let back: ColorFormat = serde_json::from_str(&json).expect("deserialize");
-    assert_eq!(back, ColorFormat::RgbW16);
 }
 
 // ── SamplingMethod ─────────────────────────────────────────────────────────

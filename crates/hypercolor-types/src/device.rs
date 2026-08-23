@@ -831,10 +831,6 @@ impl fmt::Display for DeviceState {
 ///
 /// Backends apply the conversion in `push_frame` before writing bytes to
 /// the transport.
-///
-/// This is the *device-side* format hint (2 variants). For the richer
-/// canvas-level color format (including `RgbW16`), see
-/// [`canvas::ColorFormat`](crate::canvas::ColorFormat).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DeviceColorFormat {
     /// Standard RGB byte order (WLED, Prism S, Prism Mini).

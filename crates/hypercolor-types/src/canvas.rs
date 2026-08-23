@@ -99,24 +99,6 @@ pub use hypercolor_color::{
     LinearRgba, Oklab, Oklch, Rgb, Rgba, linear_to_output_u8, linear_to_srgb, srgb_to_linear,
 };
 
-// ── ColorFormat ────────────────────────────────────────────────────────────
-
-/// Wire color format for device backends.
-///
-/// Different hardware speaks different pixel formats. The spatial sampler
-/// produces [`Rgb`], and backends convert to their native format.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum ColorFormat {
-    /// Standard 8-bit RGB (3 bytes per LED).
-    #[default]
-    Rgb,
-    /// RGBW with a dedicated white channel (4 bytes per LED).
-    Rgbw,
-    /// RGBW with 16-bit white for high-dynamic-range whites (5 bytes per LED).
-    RgbW16,
-}
-
 // ── SamplingMethod ─────────────────────────────────────────────────────────
 
 /// Interpolation strategy for canvas sampling.
