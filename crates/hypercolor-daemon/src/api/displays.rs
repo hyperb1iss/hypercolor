@@ -9,6 +9,11 @@ use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use hypercolor_types::api::displays::{
+    DeleteDisplayFaceResponse, DisplayFaceResponse, DisplayFaceScope, DisplayFaceScopeQuery,
+    DisplaySummary, SetDisplayFaceRequest, UpdateDisplayFaceCompositionRequest,
+};
+use hypercolor_types::api::scene::PatchControlsRequest;
 use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceTopologyHint, DisplayFrameFormat};
 use hypercolor_types::display::{DisplayDescriptor, DisplayPixelFormat};
 use hypercolor_types::effect::{EffectCategory, EffectSource};
@@ -24,16 +29,8 @@ use crate::api::envelope;
 use crate::api::publish_render_zone_changed;
 use crate::app_state::AppState;
 use crate::display_frames::DisplayFrameSnapshot;
-pub(crate) use crate::domain::display::{
-    DisplaySurfaceInfo, display_face_layout, display_surface_info,
-};
+use crate::domain::display::{display_face_layout, display_surface_info};
 use crate::domain::{DomainError, ResourceKind};
-
-pub use hypercolor_types::api::displays::{
-    DeleteDisplayFaceResponse, DisplayFaceResponse, DisplayFaceScope, DisplayFaceScopeQuery,
-    DisplaySummary, SetDisplayFaceRequest, UpdateDisplayFaceCompositionRequest,
-};
-use hypercolor_types::api::scene::PatchControlsRequest;
 
 struct OwnedDisplayJpeg(Arc<Vec<u8>>);
 

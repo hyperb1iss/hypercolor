@@ -2372,7 +2372,7 @@ pub(super) async fn relay_display_preview(
                     .get(&device_id)
                     .await
                     .is_some_and(|tracked| {
-                        crate::api::displays::display_surface_info(&tracked.info).is_some()
+                        crate::domain::display::display_surface_info(&tracked.info).is_some()
                     });
             if !known_display_device {
                 continue;
@@ -2547,7 +2547,7 @@ async fn follow_display_preview(
                 .get(&device_id)
                 .await
                 .is_some_and(|tracked| {
-                    crate::api::displays::display_surface_info(&tracked.info).is_some()
+                    crate::domain::display::display_surface_info(&tracked.info).is_some()
                 });
         if !still_previewable {
             return;

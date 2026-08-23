@@ -3,13 +3,13 @@
 use serde_json::{Value, json};
 
 use super::{ToolDefinition, ToolError, output_schema, resolve_effect_selector, serialize_result};
-use crate::api::displays::{DisplaySurfaceInfo, display_face_layout, display_surface_info};
 use crate::api::publish_render_zone_changed;
 use crate::app_state::AppState;
 use crate::domain::display::{
     ClearDisplayFace, SetDisplayFace, clear_display_face, remove_default_display_overlay,
     set_display_face,
 };
+use crate::domain::display::{DisplaySurfaceInfo, display_face_layout, display_surface_info};
 use crate::mcp::results::{DisplayDeviceResult, DisplayFaceResult};
 use crate::mcp::selector::SelectorCandidate;
 use hypercolor_types::control::ControlValue;
@@ -73,8 +73,8 @@ pub(super) async fn handle_set_display_face_with_state(
         .and_then(Value::as_bool)
         .unwrap_or(false);
     let scope = match params.get("scope").and_then(Value::as_str) {
-        None | Some("default") => crate::api::displays::DisplayFaceScope::Default,
-        Some("scene") => crate::api::displays::DisplayFaceScope::Scene,
+        None | Some("default") => hypercolor_types::api::displays::DisplayFaceScope::Default,
+        Some("scene") => hypercolor_types::api::displays::DisplayFaceScope::Scene,
         Some(other) => {
             return Err(ToolError::InvalidParam {
                 param: "scope".into(),
@@ -84,7 +84,7 @@ pub(super) async fn handle_set_display_face_with_state(
     };
     let (device_id, info, surface) = resolve_display_device(state, raw_device).await?;
 
-    if scope == crate::api::displays::DisplayFaceScope::Default {
+    if scope == hypercolor_types::api::displays::DisplayFaceScope::Default {
         return handle_default_scope(state, params, device_id, &info, surface, clear).await;
     }
 
@@ -157,7 +157,7 @@ pub(super) async fn handle_set_display_face_with_state(
     serialize_result(DisplayFaceResult {
         device: display_device_payload(&info, surface),
         scope,
-        live_scope: Some(crate::api::displays::DisplayFaceScope::Scene),
+        live_scope: Some(hypercolor_types::api::displays::DisplayFaceScope::Scene),
         cleared: false,
         scene_id: Some(written.scene_id.to_string()),
         effect: Some(crate::api::effects::effect_summary_with_details(&effect)),
@@ -169,7 +169,7 @@ pub(super) async fn handle_set_display_face_with_state(
 async fn live_scope_payload(
     state: &AppState,
     device_id: DeviceId,
-) -> Option<crate::api::displays::DisplayFaceScope> {
+) -> Option<hypercolor_types::api::displays::DisplayFaceScope> {
     let scene_assigned = {
         let scene_manager = state.scene_manager.snapshot().await;
         scene_manager
@@ -178,14 +178,14 @@ async fn live_scope_payload(
             .is_some_and(|zone| zone.effect_ids().next().is_some())
     };
     if scene_assigned {
-        return Some(crate::api::displays::DisplayFaceScope::Scene);
+        return Some(hypercolor_types::api::displays::DisplayFaceScope::Scene);
     }
     let default_assigned = {
         let store = state.display_preferences.read().await;
         store.get(device_id).is_some()
     };
     if default_assigned {
-        Some(crate::api::displays::DisplayFaceScope::Default)
+        Some(hypercolor_types::api::displays::DisplayFaceScope::Default)
     } else {
         None
     }
@@ -231,7 +231,7 @@ async fn handle_default_scope(
         let live_scope = live_scope_payload(state, device_id).await;
         return serialize_result(DisplayFaceResult {
             device: display_device_payload(info, surface),
-            scope: crate::api::displays::DisplayFaceScope::Default,
+            scope: hypercolor_types::api::displays::DisplayFaceScope::Default,
             live_scope,
             cleared: removed,
             scene_id: None,
@@ -298,7 +298,7 @@ async fn handle_default_scope(
         ));
     };
     let live_scope = live_scope_payload(state, device_id).await;
-    if live_scope == Some(crate::api::displays::DisplayFaceScope::Default) {
+    if live_scope == Some(hypercolor_types::api::displays::DisplayFaceScope::Default) {
         let scene_id = {
             let scene_manager = state.scene_manager.snapshot().await;
             scene_manager
@@ -311,7 +311,7 @@ async fn handle_default_scope(
 
     serialize_result(DisplayFaceResult {
         device: display_device_payload(info, surface),
-        scope: crate::api::displays::DisplayFaceScope::Default,
+        scope: hypercolor_types::api::displays::DisplayFaceScope::Default,
         live_scope,
         cleared: false,
         scene_id: None,

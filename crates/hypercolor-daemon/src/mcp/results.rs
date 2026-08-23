@@ -10,7 +10,7 @@ use hypercolor_types::sensor::{SensorReading, SystemSnapshot};
 use serde::Serialize;
 use utoipa::ToSchema;
 
-use crate::api::displays::DisplayFaceScope;
+use hypercolor_types::api::displays::DisplayFaceScope;
 
 #[derive(Debug, Serialize, ToSchema)]
 pub(crate) struct EffectCatalogResult {
