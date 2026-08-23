@@ -2066,10 +2066,10 @@ pub fn monitor_count() -> usize {
 
 /// One attached display output, in capture index order.
 ///
-/// New callers persist `id`; `index` remains for ordering and legacy configs.
+/// Callers persist `id`; `index` remains for ordering and low-level selection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MonitorInfo {
-    /// Legacy zero-based enumeration index for display ordering.
+    /// Zero-based enumeration index for display ordering.
     pub index: usize,
     /// Stable source id used for persisted selection and capture epochs.
     pub id: String,
@@ -2098,7 +2098,7 @@ pub enum MonitorSelector {
     Auto,
     /// Follow one output across enumeration reorder by its stable id.
     StableId(String),
-    /// Legacy adapter/output enumeration index.
+    /// Adapter/output enumeration index for low-level callers.
     Index(usize),
 }
 
@@ -2112,32 +2112,16 @@ impl MonitorSelector {
         }
 
         if let Some(value) = source.strip_prefix("monitor:") {
-            let value = value.trim();
-            return value
-                .parse::<usize>()
-                .map_or_else(|_| Self::StableId(value.to_owned()), Self::Index);
+            return Self::StableId(value.trim().to_owned());
         }
-        if let Some(value) = source.strip_prefix("display:")
-            && let Ok(index) = value.trim().parse::<usize>()
-        {
-            return Self::Index(index);
-        }
-        source
-            .parse::<usize>()
-            .map_or_else(|_| Self::StableId(source.to_owned()), Self::Index)
-    }
-
-    /// Convert a resolved legacy index into its stable persisted form.
-    #[must_use]
-    pub fn canonical_source(&self, resolved_source_id: &str) -> Option<String> {
-        matches!(self, Self::Index(_)).then(|| format!("monitor:{resolved_source_id}"))
+        Self::StableId(source.to_owned())
     }
 
     /// Resolve this selection against one topology snapshot.
     ///
     /// # Errors
     ///
-    /// Returns [`CaptureError::MonitorNotFound`] for a legacy index outside
+    /// Returns [`CaptureError::MonitorNotFound`] for an index outside
     /// the snapshot, or [`CaptureError::SourceNotFound`] for an absent stable
     /// id. `Auto` resolves the primary output even when it is not index zero.
     pub fn resolve<'a>(&self, monitors: &'a [MonitorInfo]) -> CaptureResult<&'a MonitorInfo> {

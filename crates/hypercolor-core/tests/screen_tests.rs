@@ -1232,19 +1232,20 @@ fn disabling_letterbox_live_clears_stale_bars() {
 // ─── Monitor selection ───────────────────────────────────────────────────────
 
 #[test]
-fn monitor_source_accepts_prefixed_and_bare_indices() {
+fn monitor_source_strings_are_never_reinterpreted_as_indices() {
+    use hypercolor_windows_capture::MonitorSelector;
+
     for (source, expected) in [
-        ("monitor:0", 0),
-        ("monitor:1", 1),
-        ("monitor:11", 11),
-        ("display:2", 2),
-        ("3", 3),
-        ("  monitor: 2  ", 2),
+        ("monitor:0", "0"),
+        ("monitor:11", "11"),
+        ("display:2", "display:2"),
+        ("3", "3"),
+        ("  monitor: 2  ", "2"),
     ] {
         assert_eq!(
             hypercolor_core::input::screen::monitor_selector_from_source(source),
-            hypercolor_windows_capture::MonitorSelector::Index(expected),
-            "source {source:?} should select monitor {expected}"
+            MonitorSelector::StableId(expected.to_owned()),
+            "source {source:?} must retain string identity"
         );
     }
 }

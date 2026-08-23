@@ -40,9 +40,7 @@ use hypercolor_core::input::screen::MacosScreenCaptureInput;
 #[cfg(target_os = "linux")]
 use hypercolor_core::input::screen::WaylandScreenCaptureInput;
 #[cfg(target_os = "windows")]
-use hypercolor_core::input::screen::{
-    CaptureSourceSink, ResolvedCaptureSource, WindowsScreenCaptureInput,
-};
+use hypercolor_core::input::screen::WindowsScreenCaptureInput;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", test))]
 use hypercolor_core::input::screen::{ScreenAdmissionCapacity, ScreenAnalysisResourcePlan};
 use hypercolor_core::input::{InputManager, SensorPoller, SourceStatusHandle};
@@ -1048,12 +1046,7 @@ fn build_platform_screen_capture_source_with_persistence(
     capacity: ScreenAdmissionCapacity,
 ) -> Result<Box<dyn hypercolor_core::input::InputSource>> {
     #[cfg(target_os = "windows")]
-    let source = build_windows_screen_capture_source(
-        capture,
-        persistence.clone(),
-        admission_coordinator,
-        capacity,
-    )?;
+    let source = build_windows_screen_capture_source(capture, admission_coordinator, capacity)?;
     #[cfg(target_os = "linux")]
     let source = build_screen_capture_source(
         capture,
@@ -1101,21 +1094,23 @@ impl Drop for CaptureConfigPersistenceInner {
 }
 
 struct CaptureConfigPersistenceState {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     committed: bool,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     revoked: bool,
     epoch: CapturePersistenceEpoch,
     source_status: Option<SourceStatusHandle>,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pending: Option<CaptureConfigPersistenceUpdate>,
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 enum CaptureConfigPersistenceUpdate {
     #[cfg(target_os = "macos")]
     MacosSource {
         configured: String,
         resolved: String,
     },
-    #[cfg(target_os = "windows")]
-    WindowsSource(ResolvedCaptureSource),
     #[cfg(target_os = "linux")]
     RestoreToken {
         configured: Option<String>,
@@ -1140,10 +1135,13 @@ impl CaptureConfigPersistenceGate {
             inner: Arc::new(CaptureConfigPersistenceInner {
                 config_manager,
                 state: StdMutex::new(CaptureConfigPersistenceState {
+                    #[cfg(any(target_os = "linux", target_os = "macos"))]
                     committed,
+                    #[cfg(any(target_os = "linux", target_os = "macos"))]
                     revoked: false,
                     epoch,
                     source_status: None,
+                    #[cfg(any(target_os = "linux", target_os = "macos"))]
                     pending: None,
                 }),
             }),
@@ -1195,7 +1193,7 @@ impl CaptureConfigPersistenceGate {
         source_identity(&state)
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn publish(&self, update: CaptureConfigPersistenceUpdate) {
         let persistence = {
             let mut state = self
@@ -1208,31 +1206,17 @@ impl CaptureConfigPersistenceGate {
             } else if !state.committed {
                 state.pending = Some(update);
                 None
-            } else if !requires_source_identity(&update) {
-                // A newer update supersedes anything parked earlier.
-                state.pending = None;
-                Some((state.epoch, None, update))
-            } else if let Some(source) = source_identity(&state) {
-                state.pending = None;
-                Some((state.epoch, Some(source), update))
             } else {
-                // The status snapshot has not caught up with the live
-                // session yet. Losing the update here replays stale
-                // state on the next reconnect; park it until an
-                // identity-bearing publish or commit can flush it.
-                warn!(
-                    "capture persistence update parked: source identity \
-                     not yet observable"
-                );
-                state.pending = Some(update);
-                None
+                state.pending = None;
+                Some((state.epoch, update))
             }
         };
-        if let Some((epoch, source, update)) = persistence {
-            self.persist(epoch, source, update, false);
+        if let Some((epoch, update)) = persistence {
+            self.persist(epoch, update, false);
         }
     }
 
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(crate) fn commit(&self) {
         let persistence = {
             let mut state = self
@@ -1244,35 +1228,18 @@ impl CaptureConfigPersistenceGate {
                 return;
             }
             state.committed = true;
-            let identity = match state.pending.as_ref() {
-                Some(update) if !requires_source_identity(update) => Some(None),
-                Some(_) => source_identity(&state).map(Some),
-                None => None,
-            };
-            if let Some(source) = identity {
-                state
-                    .pending
-                    .take()
-                    .map(|update| (state.epoch, source, update))
-            } else {
-                // Keep the parked update: taking it here without an
-                // identity would silently drop a freshly rotated restore
-                // token and force re-consent on the next reconnect.
-                if state.pending.is_some() {
-                    warn!(
-                        "capture persistence commit deferred: source \
-                         identity not yet observable"
-                    );
-                }
-                None
-            }
+            state.pending.take().map(|update| (state.epoch, update))
         };
-        if let Some((epoch, source, update)) = persistence {
-            self.persist(epoch, source, update, true);
+        if let Some((epoch, update)) = persistence {
+            self.persist(epoch, update, true);
         }
     }
 
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    pub(crate) const fn commit(&self) {}
+
     pub(crate) fn revoke(&self) {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         let epoch = {
             let mut state = self
                 .inner
@@ -1280,17 +1247,21 @@ impl CaptureConfigPersistenceGate {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             state.revoked = true;
-            state.pending = None;
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            {
+                state.pending = None;
+            }
             state.epoch
         };
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        let epoch = self.epoch();
         self.inner.config_manager.revoke_capture_persistence(epoch);
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn persist(
         &self,
         epoch: CapturePersistenceEpoch,
-        source: Option<CapturePersistenceSource>,
         update: CaptureConfigPersistenceUpdate,
         deferred: bool,
     ) {
@@ -1302,10 +1273,6 @@ impl CaptureConfigPersistenceGate {
             #[cfg(target_os = "macos")]
             CaptureConfigPersistenceUpdate::MacosSource { configured, .. } => {
                 snapshot.capture.source == *configured
-            }
-            #[cfg(target_os = "windows")]
-            CaptureConfigPersistenceUpdate::WindowsSource(resolved) => {
-                snapshot.capture.source == resolved.configured_source
             }
             #[cfg(target_os = "linux")]
             CaptureConfigPersistenceUpdate::RestoreToken {
@@ -1329,19 +1296,12 @@ impl CaptureConfigPersistenceGate {
             CaptureConfigPersistenceUpdate::MacosSource { resolved, .. } => {
                 capture.source = resolved;
             }
-            #[cfg(target_os = "windows")]
-            CaptureConfigPersistenceUpdate::WindowsSource(resolved) => {
-                capture.source = resolved.stable_source;
-            }
             #[cfg(target_os = "linux")]
             CaptureConfigPersistenceUpdate::RestoreToken { resolved, .. } => {
                 capture.restore_token = resolved;
             }
         };
-        let result = match source {
-            Some(source) => config_manager.modify_capture_if_authorized(epoch, source, mutate),
-            None => config_manager.modify_capture_if_epoch_current(epoch, mutate),
-        };
+        let result = config_manager.modify_capture_if_epoch_current(epoch, mutate);
         match result {
             Ok(Some(_)) => {}
             // A rejection here is a stale epoch or a superseded source, and
@@ -1355,17 +1315,6 @@ impl CaptureConfigPersistenceGate {
                 warn!(%error, "Failed to persist resolved screen capture identity");
             }
         }
-    }
-
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-    fn persist(
-        &self,
-        _epoch: CapturePersistenceEpoch,
-        _source: Option<CapturePersistenceSource>,
-        update: CaptureConfigPersistenceUpdate,
-        _deferred: bool,
-    ) {
-        match update {}
     }
 }
 
@@ -1381,41 +1330,9 @@ fn source_identity(state: &CaptureConfigPersistenceState) -> Option<CapturePersi
     ))
 }
 
-/// Whether an update's authorization must pin a source identity.
-///
-/// Restore tokens authorize by persistence epoch because their session
-/// generations legitimately advance across reconnects. macOS picker updates
-/// also authorize by epoch: the observer is bound to one exact status handle
-/// and accepts only the first strictly newer native selection revision, even
-/// while capture has no active session generation.
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-fn requires_source_identity(update: &CaptureConfigPersistenceUpdate) -> bool {
-    match update {
-        #[cfg(target_os = "macos")]
-        CaptureConfigPersistenceUpdate::MacosSource { .. } => false,
-        #[cfg(target_os = "windows")]
-        CaptureConfigPersistenceUpdate::WindowsSource(_) => true,
-        #[cfg(target_os = "linux")]
-        CaptureConfigPersistenceUpdate::RestoreToken { .. } => false,
-    }
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-const fn requires_source_identity(_update: &CaptureConfigPersistenceUpdate) -> bool {
-    false
-}
-
-#[cfg(target_os = "windows")]
-fn windows_capture_source_sink(persistence: CaptureConfigPersistenceGate) -> CaptureSourceSink {
-    Arc::new(move |resolved: ResolvedCaptureSource| {
-        persistence.publish(CaptureConfigPersistenceUpdate::WindowsSource(resolved));
-    })
-}
-
 #[cfg(target_os = "windows")]
 pub(crate) fn build_windows_screen_capture_source(
     capture: &hypercolor_types::config::CaptureConfig,
-    persistence: CaptureConfigPersistenceGate,
     admission_coordinator: hypercolor_core::input::screen::ScreenByteAdmissionCoordinator,
     capacity: ScreenAdmissionCapacity,
 ) -> Result<Box<dyn hypercolor_core::input::InputSource>> {
@@ -1423,8 +1340,7 @@ pub(crate) fn build_windows_screen_capture_source(
         WindowsScreenCaptureInput::with_admission_coordinator(
             windows_screen_capture_config_from(capture, capacity)?,
             admission_coordinator,
-        )
-        .with_capture_source_sink(windows_capture_source_sink(persistence)),
+        ),
     ))
 }
 

@@ -161,7 +161,7 @@ pub use wayland::WaylandScreenCaptureInput;
 #[cfg(all(target_os = "windows", feature = "windows-capture-fixtures"))]
 pub use windows::WindowsScreenCaptureFixture;
 #[cfg(target_os = "windows")]
-pub use windows::{CaptureSourceSink, ResolvedCaptureSource, WindowsScreenCaptureInput};
+pub use windows::WindowsScreenCaptureInput;
 
 use crate::input::traits::{InputData, InputSource, ScreenData, ScreenZoneColors};
 use crate::input::{SourceKind, SourceStatusHandle, SourceStatusReporter};

@@ -94,18 +94,6 @@ static WINDOWS_GPU_PREPARATION_GATES: OnceLock<Mutex<HashMap<GpuAdapterLuid, Arc
 /// user cannot act on.
 const REOPEN_BACKOFF: Duration = Duration::from_secs(2);
 
-/// Persists a legacy monitor selector after its stable output id is known.
-pub type CaptureSourceSink = Arc<dyn Fn(ResolvedCaptureSource) + Send + Sync>;
-
-/// A successfully opened legacy source and the stable value it resolved to.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ResolvedCaptureSource {
-    /// Exact configured value used to open the capture session.
-    pub configured_source: String,
-    /// Stable source value suitable for persistence.
-    pub stable_source: String,
-}
-
 /// Settings shared between the input source handle and the capture worker.
 struct SharedSettings {
     config: Mutex<VersionedCaptureConfig>,
@@ -623,7 +611,6 @@ pub struct WindowsScreenCaptureInput {
     worker: Option<CaptureWorker>,
     status: SourceStatusReporter,
     status_session: SourceSessionSlot,
-    source_sink: Option<CaptureSourceSink>,
     #[cfg(feature = "windows-capture-fixtures")]
     fixture: Option<Arc<WindowsScreenCaptureFixtureState>>,
 }
@@ -944,7 +931,6 @@ impl WindowsScreenCaptureInput {
                 false,
             ),
             status_session: SourceSessionSlot::new(),
-            source_sink: None,
             #[cfg(feature = "windows-capture-fixtures")]
             fixture: None,
         }
@@ -992,13 +978,6 @@ impl WindowsScreenCaptureInput {
         Ok((source, fixture))
     }
 
-    /// Attach a callback that persists resolved legacy monitor selections.
-    #[must_use]
-    pub fn with_capture_source_sink(mut self, sink: CaptureSourceSink) -> Self {
-        self.source_sink = Some(sink);
-        self
-    }
-
     fn spawn_worker(&mut self) -> anyhow::Result<()> {
         self.observe_worker_exit(false);
         if self.worker.is_some() {
@@ -1017,7 +996,6 @@ impl WindowsScreenCaptureInput {
         #[cfg(test)]
         let processed_activity_generation = Arc::clone(&worker_processed_activity_generation);
         let status_session = self.status_session.clone();
-        let source_sink = self.source_sink.clone();
         let session_generation = self
             .settings
             .session_generation
@@ -1036,7 +1014,6 @@ impl WindowsScreenCaptureInput {
                     &worker_processed_activity_generation,
                     status_session,
                     session_generation,
-                    source_sink,
                     ready_tx,
                 );
                 let _ = exit_tx.send(());
@@ -3389,7 +3366,6 @@ fn run_worker(
     processed_activity_generation: &AtomicU64,
     status_session: SourceSessionSlot,
     session_generation: u64,
-    source_sink: Option<CaptureSourceSink>,
     ready: mpsc::SyncSender<std::result::Result<(), String>>,
 ) {
     let initial_settings = settings.snapshot();
@@ -3597,8 +3573,7 @@ fn run_worker(
         let session = if let Some(session) = duplicator.as_mut() {
             session
         } else {
-            let configured_source = config.source.clone();
-            let selector = super::monitor_selector_from_source(&configured_source);
+            let selector = super::monitor_selector_from_source(&config.source);
             let requested_extent = demand
                 .requested_extent()
                 .expect("active Windows capture demand carries an extent");
@@ -3606,20 +3581,11 @@ fn run_worker(
                 coordinator: settings.admission_coordinator.clone(),
             });
             match DesktopDuplicator::open_with_resource_admission(
-                selector.clone(),
+                selector,
                 native_capture_extent(requested_extent),
                 resource_admission,
             ) {
                 Ok(session) => {
-                    if let Some(source) = selector.canonical_source(session.source_id()) {
-                        if let Some(sink) = source_sink.as_ref() {
-                            sink(ResolvedCaptureSource {
-                                configured_source,
-                                stable_source: source.clone(),
-                            });
-                        }
-                        config.source = source;
-                    }
                     let (width, height) = session.native_extent();
                     info!(
                         source = session.source_id(),
