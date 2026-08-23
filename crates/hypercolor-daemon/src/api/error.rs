@@ -158,6 +158,9 @@ mod tests {
     use axum::body::to_bytes;
     use serde_json::json;
 
+    use hypercolor_types::control::ControlValue;
+    use hypercolor_types::controls::{ControlApplyError, RejectedControlChange};
+
     use super::*;
     use crate::domain::ResourceKind;
 
@@ -227,12 +230,16 @@ mod tests {
             message: "no valid controls to apply".to_owned(),
             field: Some("controls".to_owned()),
             details: Some(DomainErrorDetails::RejectedControls {
-                rejected: vec!["speed".to_owned()],
+                rejected: vec![RejectedControlChange {
+                    field_id: "speed".to_owned(),
+                    attempted_value: ControlValue::Float(9.0),
+                    error: ControlApplyError::OutOfRange,
+                }],
             }),
         };
         let json = body_json(error.into_response()).await;
         assert_eq!(json["error"]["details"]["field"], "controls");
-        assert_eq!(json["error"]["details"]["rejected"][0], "speed");
+        assert_eq!(json["error"]["details"]["rejected"][0]["field_id"], "speed");
     }
 
     #[tokio::test]

@@ -44,6 +44,7 @@ pub mod scene_tree;
 pub mod spatial;
 pub mod zone;
 
+use hypercolor_types::controls::RejectedControlChange;
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::event::ChangeTrigger;
 use hypercolor_types::layer::SceneLayerId;
@@ -455,8 +456,8 @@ pub enum DomainErrorDetails {
     },
     /// Control values the effect schema refused.
     RejectedControls {
-        /// One message per rejected control.
-        rejected: Vec<String>,
+        /// One typed rejection per refused control.
+        rejected: Vec<RejectedControlChange>,
     },
     /// Wire context an adapter shaped for its own transport.
     ///

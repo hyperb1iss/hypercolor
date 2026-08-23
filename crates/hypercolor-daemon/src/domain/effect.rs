@@ -29,6 +29,9 @@ use tempfile::NamedTempFile;
 use hypercolor_types::api::scene::SideEffectOutcome;
 use hypercolor_types::config::EffectErrorFallbackPolicy;
 use hypercolor_types::control::ControlValue;
+use hypercolor_types::control::EffectJsonValueError;
+use hypercolor_types::controls::{ControlApplyError, RejectedControlChange};
+use hypercolor_types::effect::ControlValidationError;
 use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
 use hypercolor_types::event::{EffectRef, EffectStopReason, HypercolorEvent, ZoneChangeKind};
 use hypercolor_types::layer::LayerSource;
@@ -1365,37 +1368,58 @@ pub fn effect_ref(metadata: &EffectMetadata) -> EffectRef {
 pub fn normalize_control_values<'a>(
     metadata: &EffectMetadata,
     control_values: impl IntoIterator<Item = (&'a String, &'a ControlValue)>,
-) -> (HashMap<String, ControlValue>, Vec<String>) {
+) -> (HashMap<String, ControlValue>, Vec<RejectedControlChange>) {
     let mut normalized = HashMap::new();
     let mut rejected = Vec::new();
 
     for (name, value) in control_values {
-        let result: Result<ControlValue, String> = metadata.control_by_id(name).map_or_else(
-            || {
-                value
-                    .try_to_effect_json()
-                    .map_err(|error| error.to_string())?;
-                Ok(value.clone())
-            },
-            |control| {
-                let normalized = control
-                    .validate_value(value)
-                    .map_err(|error| error.to_string())?;
-                normalized
-                    .try_to_effect_json()
-                    .map_err(|error| error.to_string())?;
-                Ok(normalized)
-            },
-        );
+        let result: Result<ControlValue, ControlApplyError> =
+            metadata.control_by_id(name).map_or_else(
+                || {
+                    value.try_to_effect_json().map_err(effect_json_rejection)?;
+                    Ok(value.clone())
+                },
+                |control| {
+                    let normalized = control.validate_value(value).map_err(|error| {
+                        if matches!(error, ControlValidationError::NumericOutOfRange { .. }) {
+                            ControlApplyError::OutOfRange
+                        } else {
+                            ControlApplyError::InvalidValue {
+                                message: error.to_string(),
+                            }
+                        }
+                    })?;
+                    normalized
+                        .try_to_effect_json()
+                        .map_err(effect_json_rejection)?;
+                    Ok(normalized)
+                },
+            );
         match result {
             Ok(control_value) => {
                 normalized.insert(name.clone(), control_value);
             }
-            Err(error) => rejected.push(format!("{name} ({error})")),
+            Err(error) => rejected.push(RejectedControlChange {
+                field_id: name.clone(),
+                attempted_value: value.clone(),
+                error,
+            }),
         }
     }
 
     (normalized, rejected)
+}
+
+/// Why a value the effect runtime cannot carry was refused.
+fn effect_json_rejection(error: EffectJsonValueError) -> ControlApplyError {
+    match error {
+        EffectJsonValueError::FloatOutOfRange | EffectJsonValueError::IntegerOutOfRange => {
+            ControlApplyError::OutOfRange
+        }
+        other => ControlApplyError::InvalidValue {
+            message: other.to_string(),
+        },
+    }
 }
 
 fn validate_control_values<'a>(
