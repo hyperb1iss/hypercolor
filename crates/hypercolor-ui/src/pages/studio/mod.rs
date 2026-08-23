@@ -250,12 +250,18 @@ pub fn StudioPage() -> impl IntoView {
 
     // Rail-driven canvas highlight state. Switching surfaces clears it so a
     // stale highlight from the previous zone never lingers on the new one.
+    // Only a genuine switch clears: a card click re-asserts the surface it
+    // already lives in, and `set` notifies on equal values, so comparing
+    // against the previous id is what keeps that click's selection alive.
     let selected_output_ids = RwSignal::new(HashSet::<String>::new());
     let hovered_output_ids = RwSignal::new(HashSet::<String>::new());
-    Effect::new(move |_| {
-        let _ = selected_surface_id.get();
-        selected_output_ids.set(HashSet::new());
-        hovered_output_ids.set(HashSet::new());
+    Effect::new(move |previous: Option<Option<String>>| {
+        let current = selected_surface_id.get();
+        if previous.is_some_and(|previous| previous != current) {
+            selected_output_ids.set(HashSet::new());
+            hovered_output_ids.set(HashSet::new());
+        }
+        current
     });
 
     let (device_search, set_device_search) = signal(String::new());

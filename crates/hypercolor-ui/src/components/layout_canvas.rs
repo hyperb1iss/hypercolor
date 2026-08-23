@@ -39,7 +39,7 @@ use interaction::{
     update_canvas_slot_size,
 };
 use overlays::{CanvasDepthBreadcrumb, CompoundBoundingBoxOutline};
-use render::{ZoneRenderData, ring_inner_style, rotated_cursor, zone_shape_style};
+use render::{ZoneRenderData, ring_inner_style, rotated_cursor, upright_label_style, zone_shape_style};
 
 /// Throttle the in-drag preview push to the daemon. Matches the existing
 /// debounce we use outside drags so the spatial engine isn't recomputed at
@@ -470,6 +470,7 @@ pub fn LayoutCanvas() -> impl IntoView {
 
                                         Some(ZoneRenderData {
                                             position_style,
+                                            label_style: upright_label_style(rotation),
                                             primary_rgb: primary,
                                             secondary_rgb: secondary,
                                             name: display.label,
@@ -654,6 +655,10 @@ pub fn LayoutCanvas() -> impl IntoView {
                                             return;
                                         };
                                         let viewport_el: web_sys::HtmlElement = (*viewport).clone();
+                                        // prevent_default above also stops the browser moving
+                                        // focus, so hand it to the viewport by hand: Escape and
+                                        // the nudge keys are bound there.
+                                        let _ = viewport_el.focus();
                                         let Some(mouse_norm) = pointer_to_normalized(
                                             &viewport_el,
                                             ev.client_x(),
@@ -970,23 +975,28 @@ pub fn LayoutCanvas() -> impl IntoView {
                                         style="background: radial-gradient(ellipse at center, rgba(0,0,0,0.55) 0%, rgba(0,0,0,0.2) 60%, transparent 100%)"
                                     >
                                         <div
-                                            class="text-[11px] font-semibold leading-tight tracking-tight text-center max-w-full select-none break-words line-clamp-2 shrink-0"
-                                            style=move || {
-                                                zone_style.get()
-                                                    .map(|zd| format!(
-                                                        "color: rgba({}, 0.96); text-shadow: 0 1px 2px rgba(0,0,0,0.85), 0 0 10px rgba({}, 0.4)",
-                                                        zd.primary_rgb, zd.primary_rgb
-                                                    ))
-                                                    .unwrap_or_default()
-                                            }
+                                            class="flex flex-col items-center max-w-full"
+                                            style=move || zone_style.get().map(|zd| zd.label_style).unwrap_or_default()
                                         >
-                                            {move || zone_style.get().map(|zd| zd.name.clone()).unwrap_or_default()}
-                                        </div>
-                                        <div
-                                            class="text-[9px] font-mono select-none tabular-nums mt-1 shrink min-h-0 overflow-hidden"
-                                            style="color: rgba(255, 255, 255, 0.68); text-shadow: 0 1px 2px rgba(0,0,0,0.7)"
-                                        >
-                                            {move || zone_style.get().map(|zd| format!("{} LEDs", zd.led_count)).unwrap_or_default()}
+                                            <div
+                                                class="text-[11px] font-semibold leading-tight tracking-tight text-center max-w-full select-none break-words line-clamp-2 shrink-0"
+                                                style=move || {
+                                                    zone_style.get()
+                                                        .map(|zd| format!(
+                                                            "color: rgba({}, 0.96); text-shadow: 0 1px 2px rgba(0,0,0,0.85), 0 0 10px rgba({}, 0.4)",
+                                                            zd.primary_rgb, zd.primary_rgb
+                                                        ))
+                                                        .unwrap_or_default()
+                                                }
+                                            >
+                                                {move || zone_style.get().map(|zd| zd.name.clone()).unwrap_or_default()}
+                                            </div>
+                                            <div
+                                                class="text-[9px] font-mono select-none tabular-nums mt-1 shrink min-h-0 overflow-hidden"
+                                                style="color: rgba(255, 255, 255, 0.68); text-shadow: 0 1px 2px rgba(0,0,0,0.7)"
+                                            >
+                                                {move || zone_style.get().map(|zd| format!("{} LEDs", zd.led_count)).unwrap_or_default()}
+                                            </div>
                                         </div>
                                     </div>
                                 </div>
