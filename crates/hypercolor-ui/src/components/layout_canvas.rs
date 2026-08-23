@@ -22,6 +22,8 @@ use crate::app::{DevicesContext, WsContext};
 use crate::components::canvas_preview::CanvasPreview;
 use crate::components::device_card::{DeviceClass, classify_device};
 use crate::compound_selection::{self, CompoundDepth};
+use crate::render_canvas;
+
 use crate::layout_geometry::{self, ResizeHandle};
 use crate::layout_utils;
 use crate::style_utils::device_accent_colors;
@@ -30,6 +32,7 @@ use hypercolor_types::spatial::{NormalizedPosition, Output, ZoneShape};
 mod interaction;
 mod overlays;
 mod render;
+pub(crate) mod stacking;
 
 use interaction::{
     DragRuntime, InteractionKind, collect_zone_elements, pointer_to_normalized,
@@ -160,6 +163,35 @@ pub fn LayoutCanvas() -> impl IntoView {
         })
     });
 
+    // Base stacking order: the largest box sits lowest so a big fan or
+    // matrix never blankets the small strips inside its footprint. Ties
+    // keep display_order so the saved order still breaks equal areas.
+    let stacking_rank: Memo<HashMap<String, usize>> = Memo::new(move |_| {
+        layout
+            .with(|current| {
+                current.as_ref().map(|l| stacking::rank_by_area(&l.zones))
+            })
+            .unwrap_or_default()
+    });
+
+    // The zone the pointer last pressed on. It stays on top of the rest of
+    // its compound until the selection moves on, so a click on a member of
+    // a dense device always reveals the box that was clicked.
+    let primary_zone_id = RwSignal::new(None::<String>);
+    Effect::new(move |_| {
+        let selected = selected_zone_ids.get();
+        let stale = primary_zone_id
+            .with_untracked(|primary| primary.as_ref().is_some_and(|id| !selected.contains(id)));
+        if stale {
+            primary_zone_id.set(None);
+        }
+    });
+
+    // The box under the pointer on the canvas itself. Lifts only the
+    // stacking order, never the focus dimming, so sweeping across a dense
+    // canvas reads each box without the rest flickering.
+    let pointer_zone_id = RwSignal::new(None::<String>);
+
     // Per-id zone lookup memo — lets every per-zone style closure resolve
     // its zone in O(1). Replaces the O(N) `zones.iter().find(|z| z.id == zid)`
     // scan that ran inside each `zone_style` derive.
@@ -183,7 +215,10 @@ pub fn LayoutCanvas() -> impl IntoView {
                     f64::from(layout.canvas_width.max(1)) / f64::from(layout.canvas_height.max(1))
                 })
             })
-            .unwrap_or(320.0 / 200.0)
+            .unwrap_or_else(|| {
+                let (w, h) = render_canvas::DEFAULT_RENDER_CANVAS;
+                f64::from(w) / f64::from(h)
+            })
     });
     let viewport_style = Signal::derive(move || {
         let ratio = layout_ratio.get();
@@ -200,17 +235,12 @@ pub fn LayoutCanvas() -> impl IntoView {
         }
     });
     let preview_aspect_ratio = Signal::derive(move || {
-        layout
-            .with(|current| {
-                current.as_ref().map(|layout| {
-                    format!(
-                        "{} / {}",
-                        layout.canvas_width.max(1),
-                        layout.canvas_height.max(1)
-                    )
-                })
-            })
-            .unwrap_or_else(|| "320 / 200".to_string())
+        layout.with(|current| {
+            current
+                .as_ref()
+                .map(|layout| render_canvas::aspect_ratio_css((layout.canvas_width, layout.canvas_height)))
+                .unwrap_or_else(|| render_canvas::aspect_ratio_css(render_canvas::DEFAULT_RENDER_CANVAS))
+        })
     });
 
     let has_zones = Signal::derive(move || !zone_ids.get().is_empty());
@@ -352,7 +382,7 @@ pub fn LayoutCanvas() -> impl IntoView {
                             fps=preview_fps
                             fps_target=preview_target_fps
                             show_fps=false
-                            aspect_ratio=preview_aspect_ratio.get_untracked()
+                            aspect_ratio=preview_aspect_ratio
                         />
                     </div>
 
@@ -362,11 +392,7 @@ pub fn LayoutCanvas() -> impl IntoView {
                     // Zone overlays — keyed on zone IDs sorted by display_order
                     {move || {
                         let ids = zone_ids.get();
-                        let zone_count = ids.len();
-                        ids.into_iter().enumerate().map(|(render_index, zone_id)| {
-                        let base_z_index = render_index + 10;
-                        let elevated_z_index = zone_count + 100; // selected zone always on top
-                        let _ = base_z_index; // used below in style closure
+                        ids.into_iter().map(|zone_id| {
                             let zid = zone_id.clone();
                             let zid_select = zone_id.clone();
                             let zid_dblclick = zone_id.clone();
@@ -476,6 +502,34 @@ pub fn LayoutCanvas() -> impl IntoView {
                                 }))
                             };
 
+                            let is_primary = {
+                                let zid = zid.clone();
+                                Signal::derive(move || primary_zone_id.with(|primary| {
+                                    primary.as_deref() == Some(&zid)
+                                }))
+                            };
+
+                            let is_under_pointer = {
+                                let zid = zid.clone();
+                                Signal::derive(move || pointer_zone_id.with(|under| {
+                                    under.as_deref() == Some(&zid)
+                                }))
+                            };
+
+                            let stacking_z = {
+                                let zid = zid.clone();
+                                Signal::derive(move || {
+                                    let rank = stacking_rank.with(|ranks| ranks.get(&zid).copied().unwrap_or(0));
+                                    stacking::z_index(stacking::Tier {
+                                        primary: is_primary.get(),
+                                        under_pointer: is_under_pointer.get(),
+                                        lifted: is_selected.get() || is_hovered.get(),
+                                    }, rank)
+                                })
+                            };
+                            let zid_enter = zid.clone();
+                            let zid_leave = zid.clone();
+
                             view! {
                                 <div
                                     data-zone-id=zid.clone()
@@ -531,7 +585,7 @@ pub fn LayoutCanvas() -> impl IntoView {
                                                 .to_string()
                                         };
                                         let shape = zone_shape_style(&zd.shape);
-                                        let z = if selected || hovered { elevated_z_index } else { base_z_index };
+                                        let z = stacking_z.get();
                                         // A box not in focus while something else is recedes,
                                         // so a dense canvas reads around the selection/hover.
                                         let dimmed_by_focus = has_focus.get() && !selected && !hovered;
@@ -547,9 +601,16 @@ pub fn LayoutCanvas() -> impl IntoView {
                                             zd.position_style, border, bg, shadow, shape, visibility
                                         )
                                     }
+                                    on:mouseenter=move |_| pointer_zone_id.set(Some(zid_enter.clone()))
+                                    on:mouseleave=move |_| {
+                                        if pointer_zone_id.with_untracked(|under| under.as_deref() == Some(zid_leave.as_str())) {
+                                            pointer_zone_id.set(None);
+                                        }
+                                    }
                                     on:mousedown=move |ev| {
                                         ev.stop_propagation();
                                         ev.prevent_default();
+                                        primary_zone_id.set(Some(zid_select.clone()));
 
                                         // Compound-aware selection
                                         let depth = compound_depth.get_untracked();

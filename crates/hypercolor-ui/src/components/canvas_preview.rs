@@ -271,7 +271,7 @@ pub fn CanvasPreview(
     #[prop(into)] fps_target: Signal<u32>,
     #[prop(default = "100%".to_string())] max_width: String,
     #[prop(default = "pixelated".to_string())] image_rendering: String,
-    #[prop(optional)] aspect_ratio: Option<String>,
+    #[prop(into, optional)] aspect_ratio: MaybeProp<String>,
     #[prop(default = "Live effect canvas preview".to_string())] aria_label: String,
     #[prop(default = true)] register_main_preview_consumer: bool,
     #[prop(default = false)] report_presenter_telemetry: bool,
@@ -848,7 +848,7 @@ pub fn CanvasPreview(
         })
     });
     let resolved_aspect_ratio = Memo::new(move |_| {
-        aspect_ratio.clone().unwrap_or_else(|| {
+        aspect_ratio.get().unwrap_or_else(|| {
             frame_dimensions
                 .get()
                 .map(|(width, height)| format!("{width} / {height}"))

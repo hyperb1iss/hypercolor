@@ -488,6 +488,7 @@ pub(crate) fn ZoneLayoutProvider(
 ) -> impl IntoView {
     let devices_ctx = expect_context::<DevicesContext>();
     let ws_ctx = expect_context::<WsContext>();
+    let render_canvas_size = crate::render_canvas::use_render_canvas_size();
 
     let session = LayoutEditorSession::new(false);
     let layout = session.layout;
@@ -582,7 +583,10 @@ pub(crate) fn ZoneLayoutProvider(
             })
         });
         match loaded {
-            Some(layout) => {
+            Some(mut layout) => {
+                let (canvas_width, canvas_height) = render_canvas_size.get_untracked();
+                layout.canvas_width = canvas_width;
+                layout.canvas_height = canvas_height;
                 let layout = layout_geometry::normalize_layout_for_editor(layout);
                 set_saved_layout.set(Some(layout.clone()));
                 set_layout.set(Some(layout));
@@ -591,6 +595,28 @@ pub(crate) fn ZoneLayoutProvider(
                 set_layout.set(None);
                 set_saved_layout.set(None);
             }
+        }
+    });
+
+    // The daemon can retune its canvas live (and config lands after the
+    // first scene paint), so the extent follows it without a reload. This
+    // is not an edit: no history entry, no dirty flag.
+    Effect::new(move |_| {
+        let (canvas_width, canvas_height) = render_canvas_size.get();
+        let stamp = |layout: &mut Option<SpatialLayout>| {
+            if let Some(layout) = layout.as_mut() {
+                layout.canvas_width = canvas_width;
+                layout.canvas_height = canvas_height;
+            }
+        };
+        let stale = layout.with_untracked(|current| {
+            current
+                .as_ref()
+                .is_some_and(|l| (l.canvas_width, l.canvas_height) != (canvas_width, canvas_height))
+        });
+        if stale {
+            set_layout.update_without_history(stamp);
+            set_saved_layout.update(stamp);
         }
     });
 

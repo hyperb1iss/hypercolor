@@ -75,9 +75,19 @@ fn SurfaceStage() -> impl IntoView {
     // the matching boxes; the eye toggle dims them (it used to write a
     // `hidden_outputs` signal nothing consumed — a no-op control).
     Effect::new(move |_| {
-        editor
-            .set_selected_zone_ids
-            .set(studio.selected_output_ids.get());
+        let next = studio.selected_output_ids.get();
+        if editor.selected_zone_ids.with_untracked(|current| *current != next) {
+            editor.set_selected_zone_ids.set(next);
+        }
+    });
+    // And back: a click on the canvas selects a device compound, so the
+    // rail highlights the same cards the canvas lifted. The equality guards
+    // on both directions are what stop the two effects ping-ponging.
+    Effect::new(move |_| {
+        let next = editor.selected_zone_ids.get();
+        if studio.selected_output_ids.with_untracked(|current| *current != next) {
+            studio.selected_output_ids.set(next);
+        }
     });
     Effect::new(move |_| {
         editor
