@@ -281,19 +281,19 @@ impl ControlValue {
         match self {
             Self::Null => ControlValueKind::Null,
             Self::Bool(_) => ControlValueKind::Bool,
-            Self::Int(_) => ControlValueKind::Integer,
+            Self::Int(_) => ControlValueKind::Int,
             Self::Float(_) => ControlValueKind::Float,
-            Self::Text(_) => ControlValueKind::String,
+            Self::Text(_) => ControlValueKind::Text,
             Self::SecretRef(_) => ControlValueKind::SecretRef,
             Self::ColorRgb(_) => ControlValueKind::ColorRgb,
             Self::ColorRgba(_) => ControlValueKind::ColorRgba,
-            Self::Ip(_) => ControlValueKind::IpAddress,
-            Self::Mac(_) => ControlValueKind::MacAddress,
-            Self::Duration(_) => ControlValueKind::DurationMs,
+            Self::Ip(_) => ControlValueKind::Ip,
+            Self::Mac(_) => ControlValueKind::Mac,
+            Self::Duration(_) => ControlValueKind::Duration,
             Self::Enum(_) => ControlValueKind::Enum,
             Self::Flags(_) => ControlValueKind::Flags,
             Self::List(_) => ControlValueKind::List,
-            Self::Map(_) => ControlValueKind::Object,
+            Self::Map(_) => ControlValueKind::Map,
             Self::ColorLinear(_) => ControlValueKind::ColorLinear,
             Self::Gradient(_) => ControlValueKind::Gradient,
             Self::Rect(_) => ControlValueKind::Rect,
@@ -312,39 +312,93 @@ pub enum ControlValueKind {
     /// Boolean value.
     Bool,
     /// Integer value.
-    Integer,
+    Int,
     /// Float value.
     Float,
-    /// String value.
-    String,
+    /// Text value.
+    Text,
     /// Secret reference.
     SecretRef,
+    /// IP address.
+    Ip,
+    /// MAC address.
+    Mac,
+    /// Duration in milliseconds.
+    Duration,
     /// RGB color.
     ColorRgb,
     /// RGBA color.
     ColorRgba,
     /// Linear-light RGBA color.
     ColorLinear,
-    /// IP address.
-    IpAddress,
-    /// MAC address.
-    MacAddress,
-    /// Duration in milliseconds.
-    DurationMs,
+    /// Effect gradient value.
+    Gradient,
+    /// Effect rectangle value.
+    Rect,
     /// Enum value.
     Enum,
     /// Flag values.
     Flags,
     /// List value.
     List,
-    /// Object value.
-    Object,
-    /// Effect gradient value.
-    Gradient,
-    /// Effect rectangle value.
-    Rect,
+    /// Keyed map value.
+    Map,
     /// Explicit unsupported value sentinel.
     Unknown,
+}
+
+impl ControlValueKind {
+    /// Every kind, in the order `ControlValue` declares its variants.
+    pub const ALL: [Self; Self::COUNT] = [
+        Self::Null,
+        Self::Bool,
+        Self::Int,
+        Self::Float,
+        Self::Text,
+        Self::SecretRef,
+        Self::Ip,
+        Self::Mac,
+        Self::Duration,
+        Self::ColorRgb,
+        Self::ColorRgba,
+        Self::ColorLinear,
+        Self::Gradient,
+        Self::Rect,
+        Self::Enum,
+        Self::Flags,
+        Self::List,
+        Self::Map,
+        Self::Unknown,
+    ];
+
+    /// Number of distinct control value kinds.
+    pub const COUNT: usize = 19;
+
+    /// The `kind` tag a value of this kind carries on the wire.
+    #[must_use]
+    pub const fn wire_tag(self) -> &'static str {
+        match self {
+            Self::Null => "null",
+            Self::Bool => "bool",
+            Self::Int => "int",
+            Self::Float => "float",
+            Self::Text => "text",
+            Self::SecretRef => "secret_ref",
+            Self::Ip => "ip",
+            Self::Mac => "mac",
+            Self::Duration => "duration",
+            Self::ColorRgb => "color_rgb",
+            Self::ColorRgba => "color_rgba",
+            Self::ColorLinear => "color_linear",
+            Self::Gradient => "gradient",
+            Self::Rect => "rect",
+            Self::Enum => "enum",
+            Self::Flags => "flags",
+            Self::List => "list",
+            Self::Map => "map",
+            Self::Unknown => "unknown",
+        }
+    }
 }
 
 /// Stable enum option.

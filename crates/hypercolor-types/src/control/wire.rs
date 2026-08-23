@@ -7,32 +7,23 @@ use serde_json::{Value, json};
 #[cfg(feature = "schema")]
 use utoipa::{PartialSchema, ToSchema};
 
+use crate::controls::ControlValueKind;
 use crate::effect::GradientStop;
 use crate::spatial::NormalizedRect;
 
 use super::{ControlValue, ControlValueInvalid, IpText, MacText, SecretRef};
 
-const CONTROL_VALUE_KINDS: &[&str] = &[
-    "null",
-    "bool",
-    "int",
-    "float",
-    "text",
-    "secret_ref",
-    "ip",
-    "mac",
-    "duration",
-    "color_rgb",
-    "color_rgba",
-    "color_linear",
-    "gradient",
-    "rect",
-    "enum",
-    "flags",
-    "list",
-    "map",
-    "unknown",
-];
+const CONTROL_VALUE_KINDS: [&str; ControlValueKind::COUNT] = control_value_kinds();
+
+const fn control_value_kinds() -> [&'static str; ControlValueKind::COUNT] {
+    let mut kinds = [""; ControlValueKind::COUNT];
+    let mut index = 0;
+    while index < ControlValueKind::COUNT {
+        kinds[index] = ControlValueKind::ALL[index].wire_tag();
+        index += 1;
+    }
+    kinds
+}
 
 fn is_control_value_kind(kind: &str) -> bool {
     CONTROL_VALUE_KINDS.contains(&kind)
@@ -320,7 +311,7 @@ impl<'de> Deserialize<'de> for ControlValue {
             other => {
                 return Err(serde::de::Error::unknown_variant(
                     other,
-                    CONTROL_VALUE_KINDS,
+                    &CONTROL_VALUE_KINDS,
                 ));
             }
         };

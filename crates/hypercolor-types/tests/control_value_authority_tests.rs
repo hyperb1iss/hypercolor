@@ -1,9 +1,13 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+use hypercolor_types::controls::ControlValueKind;
+
 const CANONICAL_DEFINITION: &str = "hypercolor-types/src/control/mod.rs";
 const CANONICAL_CONTROL_SURFACE_LIST_QUERY: &str = "hypercolor-types/src/api/controls.rs";
 const CANONICAL_CONTROL_SURFACE_LIST_RESPONSE: &str = "hypercolor-types/src/api/controls.rs";
+const CANONICAL_WIRE: &str = "hypercolor-types/src/control/wire.rs";
+const CANONICAL_KIND: &str = "hypercolor-types/src/controls.rs";
 const FENCE_SOURCE: &str = "hypercolor-types/tests/control_value_authority_tests.rs";
 
 fn workspace_root() -> PathBuf {
@@ -652,4 +656,115 @@ fn authority_fence_detects_renamed_mirrors_and_manual_parsers() {
     let mapper_violations = python_mapper_violations(permissive_python_mapper);
     assert!(mapper_violations.contains(&"permissive tagged envelope copying"));
     assert!(mapper_violations.contains(&"bare four-number color guessing"));
+}
+
+// ── Variant-space parity ────────────────────────────────────────────────────
+
+/// The four Rust enumerations that must enumerate the same variant space.
+const PARITY_ENUMS: [(&str, &str); 4] = [
+    (CANONICAL_DEFINITION, "ControlValue"),
+    (CANONICAL_WIRE, "ControlValueRef"),
+    (CANONICAL_WIRE, "ControlValueWire"),
+    (CANONICAL_KIND, "ControlValueKind"),
+];
+
+fn enum_variant_names(source: &str, wanted: &str) -> Vec<String> {
+    let declaration = declarations_after(source, "enum")
+        .into_iter()
+        .find_map(|(name, declaration)| (name == wanted).then_some(declaration))
+        .unwrap_or_else(|| panic!("{wanted} is declared where the fence expects it"));
+
+    let open = declaration.find('{').expect("an enum body opens");
+    let body = &declaration[open + 1..declaration.len() - 1];
+
+    let mut variants = Vec::new();
+    let mut depth = 0_usize;
+    let mut at_variant_start = true;
+    let mut cursor = 0;
+    let bytes = body.as_bytes();
+    while cursor < bytes.len() {
+        let rest = &body[cursor..];
+        if depth == 0 && rest.starts_with("//") {
+            cursor += rest.find('\n').map_or(rest.len(), |offset| offset + 1);
+            continue;
+        }
+        let character = body[cursor..].chars().next().expect("cursor stays aligned");
+        match character {
+            '{' | '(' | '[' => depth += 1,
+            '}' | ')' | ']' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => at_variant_start = true,
+            '#' if depth == 0 => {
+                // Skip an attribute and whatever bracketed payload follows it.
+                cursor += 1;
+                continue;
+            }
+            _ if depth == 0 && at_variant_start && character.is_ascii_uppercase() => {
+                let end = body[cursor..]
+                    .find(|candidate: char| !is_identifier_character(candidate))
+                    .map_or(body.len(), |offset| cursor + offset);
+                variants.push(body[cursor..end].to_owned());
+                at_variant_start = false;
+                cursor = end;
+                continue;
+            }
+            _ if depth == 0 && !character.is_whitespace() => at_variant_start = false,
+            _ => {}
+        }
+        cursor += character.len_utf8();
+    }
+
+    variants
+}
+
+#[test]
+fn every_control_value_enumeration_carries_the_same_variants() {
+    let sources = rust_sources();
+    let source_for = |wanted: &str| {
+        sources
+            .iter()
+            .find_map(|(path, source)| (path == wanted).then_some(source.as_str()))
+            .unwrap_or_else(|| panic!("{wanted} is readable"))
+    };
+
+    let canonical = enum_variant_names(source_for(CANONICAL_DEFINITION), "ControlValue");
+    assert_eq!(
+        canonical.len(),
+        ControlValueKind::COUNT,
+        "ControlValue declares {} variants but ControlValueKind::COUNT is {}",
+        canonical.len(),
+        ControlValueKind::COUNT
+    );
+
+    for (path, name) in PARITY_ENUMS {
+        assert_eq!(
+            enum_variant_names(source_for(path), name),
+            canonical,
+            "{name} in {path} drifted from the ControlValue variant space"
+        );
+    }
+
+    let declared_tags: Vec<String> = canonical.iter().map(|name| snake_case(name)).collect();
+    let wire_tags: Vec<String> = ControlValueKind::ALL
+        .iter()
+        .map(|kind| kind.wire_tag().to_owned())
+        .collect();
+    assert_eq!(
+        wire_tags, declared_tags,
+        "ControlValueKind::wire_tag disagrees with the serde snake_case tags"
+    );
+}
+
+fn snake_case(name: &str) -> String {
+    let mut out = String::with_capacity(name.len() + 2);
+    for (index, character) in name.chars().enumerate() {
+        if character.is_ascii_uppercase() {
+            if index > 0 {
+                out.push('_');
+            }
+            out.push(character.to_ascii_lowercase());
+        } else {
+            out.push(character);
+        }
+    }
+    out
 }
