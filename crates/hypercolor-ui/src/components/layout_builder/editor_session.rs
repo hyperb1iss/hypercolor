@@ -38,6 +38,9 @@ pub(crate) struct LayoutEditorContext {
     /// host header drive its undo / redo buttons off this same context.
     pub can_undo: Signal<bool>,
     pub can_redo: Signal<bool>,
+    /// The zone box under the pointer on the canvas itself. The canvas
+    /// writes it; hosts (the Studio rail) read it to mirror the hover.
+    pub pointer_zone_id: RwSignal<Option<String>>,
 }
 
 #[derive(Clone, Copy)]
@@ -85,6 +88,7 @@ pub(super) struct LayoutEditorSession {
     pub(super) can_undo: Signal<bool>,
     pub(super) can_redo: Signal<bool>,
     pub(super) is_dirty: Signal<bool>,
+    pub(super) pointer_zone_id: RwSignal<Option<String>>,
 }
 
 impl LayoutEditorSession {
@@ -98,6 +102,7 @@ impl LayoutEditorSession {
         let (hovered_zone_ids, set_hovered_zone_ids) = signal(HashSet::<String>::new());
         let (removed_zone_cache, set_removed_zone_cache) = signal(RemovedOutputCache::new());
         let (dirty, set_is_dirty) = signal(false);
+        let pointer_zone_id = RwSignal::new(None::<String>);
         let history = RwSignal::new(LayoutHistoryState::default());
         let write = LayoutWriteHandle {
             layout,
@@ -133,6 +138,7 @@ impl LayoutEditorSession {
             can_undo: Signal::derive(move || history.get().can_undo()),
             can_redo: Signal::derive(move || history.get().can_redo()),
             is_dirty: Signal::derive(move || dirty.get()),
+            pointer_zone_id,
         }
     }
 
@@ -156,6 +162,7 @@ impl LayoutEditorSession {
             push_preview,
             can_undo: self.can_undo,
             can_redo: self.can_redo,
+            pointer_zone_id: self.pointer_zone_id,
         });
     }
 }

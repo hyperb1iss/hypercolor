@@ -3,6 +3,7 @@
 use hypercolor_leptos_ext::events::{Change, Input};
 use leptos::prelude::*;
 use leptos_icons::Icon;
+use wasm_bindgen::JsCast;
 
 use crate::app::DevicesContext;
 use crate::async_helpers::spawn_identify;
@@ -115,7 +116,10 @@ pub fn LayoutZoneProperties() -> impl IntoView {
             current
                 .as_ref()
                 .map(|l| (l.canvas_width.max(1) as f32, l.canvas_height.max(1) as f32))
-                .unwrap_or((320.0, 200.0))
+                .unwrap_or_else(|| {
+                    let (w, h) = crate::render_canvas::DEFAULT_RENDER_CANVAS;
+                    (w as f32, h as f32)
+                })
         })
     });
 
@@ -150,10 +154,13 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                     && let Some(zone) = layout.zones.iter_mut().find(|z| z.id == zone_id)
                 {
                     updater(zone);
+                    let (canvas_w, canvas_h) = (layout.canvas_width, layout.canvas_height);
                     zone.size = layout_geometry::normalize_zone_size_for_editor(
                         zone.position,
                         zone.size,
                         &zone.topology,
+                        zone.shape.as_ref(),
+                        layout_geometry::canvas_pixel_aspect(canvas_w, canvas_h),
                     );
                 }
             });
@@ -166,10 +173,13 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                 let changed =
                     layout_geometry::set_zone_rotation(layout, &zone_id, rotation_radians);
                 if changed && let Some(zone) = layout.zones.iter_mut().find(|z| z.id == zone_id) {
+                    let (canvas_w, canvas_h) = (layout.canvas_width, layout.canvas_height);
                     zone.size = layout_geometry::normalize_zone_size_for_editor(
                         zone.position,
                         zone.size,
                         &zone.topology,
+                        zone.shape.as_ref(),
+                        layout_geometry::canvas_pixel_aspect(canvas_w, canvas_h),
                     );
                 }
             }
@@ -187,8 +197,42 @@ pub fn LayoutZoneProperties() -> impl IntoView {
             set_is_dirty.set(true);
         };
 
+    // A slider drag is one edit, not one per pixel: the press on a range
+    // input opens an interaction and the release (anywhere) closes it, so
+    // undo steps back over the whole drag. Keyboard nudges on a slider
+    // still record per step, which is what a keyboard user expects.
+    let slider_interaction = StoredValue::new(false);
+    let close_slider_interaction = move || {
+        if slider_interaction.get_value() {
+            slider_interaction.set_value(false);
+            set_layout.finish_interaction();
+        }
+    };
+    let release = window_event_listener(leptos::ev::pointerup, move |_| close_slider_interaction());
+    // A cancelled pointer (touch pan, window switch) never sends pointerup,
+    // so it must close the interaction too or history stays suspended.
+    let cancel = window_event_listener(leptos::ev::pointercancel, move |_| {
+        close_slider_interaction()
+    });
+    on_cleanup(move || {
+        release.remove();
+        cancel.remove();
+    });
+
     view! {
-        <div class="h-full px-5 py-2.5 overflow-y-auto">
+        <div
+            class="h-full px-5 py-2.5 overflow-y-auto"
+            on:pointerdown=move |ev: web_sys::PointerEvent| {
+                let is_range = ev
+                    .target()
+                    .and_then(|target| target.dyn_into::<web_sys::HtmlInputElement>().ok())
+                    .is_some_and(|input| input.type_() == "range");
+                if is_range {
+                    slider_interaction.set_value(true);
+                    set_layout.begin_interaction();
+                }
+            }
+        >
             {move || {
                 let ids = selected_zone_ids.get();
                 if ids.len() > 1 {
@@ -546,7 +590,7 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                         let (canvas_width, canvas_height) = layout.with_untracked(|current| {
                                             current.as_ref()
                                                 .map(|l| (l.canvas_width.max(1), l.canvas_height.max(1)))
-                                                .unwrap_or((320, 200))
+                                                .unwrap_or(crate::render_canvas::DEFAULT_RENDER_CANVAS)
                                         });
                                         let defaults = crate::layout_geometry::default_zone_visuals(
                                             &dname,
@@ -563,6 +607,8 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                                         zone.position,
                                                         defaults.size,
                                                         &defaults.topology,
+                                                        defaults.shape.as_ref(),
+                                                        crate::layout_geometry::canvas_pixel_aspect(canvas_width, canvas_height),
                                                     );
                                                     zone.rotation = 0.0;
                                                     zone.scale = 1.0;
@@ -589,6 +635,7 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                                 }
                                         });
                                         set_selected_zone_ids.set(std::collections::HashSet::new());
+                                        editor.set_compound_depth.set(crate::compound_selection::CompoundDepth::Root);
                                         set_is_dirty.set(true);
                                     }
                                 >

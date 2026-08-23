@@ -75,14 +75,41 @@ fn SurfaceStage() -> impl IntoView {
     // the matching boxes; the eye toggle dims them (it used to write a
     // `hidden_outputs` signal nothing consumed — a no-op control).
     Effect::new(move |_| {
-        editor
-            .set_selected_zone_ids
-            .set(studio.selected_output_ids.get());
+        let next = studio.selected_output_ids.get();
+        if editor
+            .selected_zone_ids
+            .with_untracked(|current| *current != next)
+        {
+            editor.set_selected_zone_ids.set(next);
+        }
+    });
+    // And back: a click on the canvas selects a device compound, so the
+    // rail highlights the same cards the canvas lifted. The equality guards
+    // on both directions are what stop the two effects ping-ponging.
+    Effect::new(move |_| {
+        let next = editor.selected_zone_ids.get();
+        if studio
+            .selected_output_ids
+            .with_untracked(|current| *current != next)
+        {
+            studio.selected_output_ids.set(next);
+        }
     });
     Effect::new(move |_| {
         editor
             .set_hovered_zone_ids
             .set(studio.hovered_output_ids.get());
+    });
+    // Mirror the canvas's box-under-pointer out to the rail, so hovering
+    // a box softly highlights the card that owns it.
+    Effect::new(move |_| {
+        let next = editor.pointer_zone_id.get();
+        if studio
+            .pointer_output_id
+            .with_untracked(|current| *current != next)
+        {
+            studio.pointer_output_id.set(next);
+        }
     });
     Effect::new(move |_| {
         let hidden = match (studio.active_scene.get(), studio.selected_surface_id.get()) {
@@ -570,7 +597,7 @@ fn UnassignedStage() -> impl IntoView {
                         </div>
                     </div>
                     <div class="mt-3 text-[12px] leading-5 text-fg-tertiary/65">
-                        "Assign these outputs to a zone with the zone-assignment panel below the canvas."
+                        "Use the + on each device card in the rail to add it to a zone."
                     </div>
                 </div>
             </div>

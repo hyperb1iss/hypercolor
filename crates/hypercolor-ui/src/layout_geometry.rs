@@ -6,7 +6,9 @@
 
 use std::f32::consts::{PI, TAU};
 
-use hypercolor_types::spatial::{LedTopology, NormalizedPosition, SpatialLayout, StripDirection};
+use hypercolor_types::spatial::{
+    LedTopology, NormalizedPosition, SpatialLayout, StripDirection, ZoneShape,
+};
 
 #[path = "layout_geometry/compounds.rs"]
 mod compounds;
@@ -46,25 +48,66 @@ pub enum ResizeHandle {
 }
 
 pub(crate) fn normalize_layout_for_editor(mut layout: SpatialLayout) -> SpatialLayout {
+    let aspect = canvas_pixel_aspect(layout.canvas_width, layout.canvas_height);
     for zone in &mut layout.zones {
-        zone.size = normalize_zone_size_for_editor(zone.position, zone.size, &zone.topology);
+        zone.size = normalize_zone_size_for_editor(
+            zone.position,
+            zone.size,
+            &zone.topology,
+            zone.shape.as_ref(),
+            aspect,
+        );
     }
     layout
+}
+
+/// Whether a zone renders and samples as a circle. The explicit shape
+/// wins when present; a bare Ring topology is circular by default. This
+/// is THE circularity predicate: locked resize, release normalization,
+/// and the canvas CSS all key off it so they can never disagree.
+pub fn is_circular_zone(shape: Option<&ZoneShape>, topology: &LedTopology) -> bool {
+    match shape {
+        Some(ZoneShape::Ring | ZoneShape::Arc { .. }) => true,
+        Some(_) => false,
+        None => matches!(topology, LedTopology::Ring { .. }),
+    }
+}
+
+/// Pixel aspect (width / height) of a canvas extent.
+pub(crate) fn canvas_pixel_aspect(canvas_width: u32, canvas_height: u32) -> f32 {
+    #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
+    let ratio = canvas_width.max(1) as f32 / canvas_height.max(1) as f32;
+    ratio.max(GRID_EPSILON)
 }
 
 pub fn normalize_zone_size_for_editor(
     position: NormalizedPosition,
     size: NormalizedPosition,
     topology: &LedTopology,
+    shape: Option<&ZoneShape>,
+    canvas_aspect: f32,
 ) -> NormalizedPosition {
+    if is_circular_zone(shape, topology) {
+        return pixel_square_size(size, canvas_aspect);
+    }
     match topology {
         LedTopology::Strip { direction, .. } => clamp_strip_size(position, size, *direction),
-        LedTopology::Ring { .. } => {
-            let side = size.x.min(size.y).max(RESIZE_MIN_SIZE);
-            NormalizedPosition::new(side, side)
-        }
         _ => size,
     }
+}
+
+/// Square in canvas *pixels*, matching both the CSS (`aspect-ratio: 1`)
+/// and the sampled LED circle, which lives in the zone's pixel rect. A
+/// normalized square on a non-square canvas is an ellipse in both.
+fn pixel_square_size(size: NormalizedPosition, canvas_aspect: f32) -> NormalizedPosition {
+    let aspect = canvas_aspect.max(GRID_EPSILON);
+    let mut width = size.x.min(size.y / aspect).max(RESIZE_MIN_SIZE);
+    let mut height = width * aspect;
+    if height > 1.0 {
+        height = 1.0;
+        width = height / aspect;
+    }
+    NormalizedPosition::new(width, height)
 }
 
 pub(crate) fn drag_zone_to_position(
@@ -149,11 +192,32 @@ pub fn resize_zone_from_handle(
     let (local_start, local_current) =
         rotate_mouse_to_local(start_mouse, current_mouse, start_center, rotation);
 
-    if keep_aspect_ratio {
+    let (local_center, size) = if keep_aspect_ratio {
         resize_zone_locked(start_center, start_size, handle, local_current)
     } else {
         resize_zone_unlocked(start_center, start_size, local_start, handle, local_current)
+    };
+    // The rect was solved in zone-local space, so its center is a local
+    // offset from the pivot; rotate that offset back out so the opposite
+    // corner stays anchored on screen instead of the box sliding sideways.
+    (rotate_about(local_center, start_center, rotation), size)
+}
+
+fn rotate_about(
+    point: NormalizedPosition,
+    pivot: NormalizedPosition,
+    rotation: f32,
+) -> NormalizedPosition {
+    if rotation.abs() < GRID_EPSILON {
+        return point;
     }
+    let (sin_r, cos_r) = rotation.sin_cos();
+    let dx = point.x - pivot.x;
+    let dy = point.y - pivot.y;
+    NormalizedPosition::new(
+        (pivot.x + dx * cos_r - dy * sin_r).clamp(0.0, 1.0),
+        (pivot.y + dx * sin_r + dy * cos_r).clamp(0.0, 1.0),
+    )
 }
 
 /// Rotate two mouse positions from viewport space into zone-local (unrotated)
@@ -240,7 +304,14 @@ fn resize_zone_unlocked(
     handle: ResizeHandle,
     current_mouse: NormalizedPosition,
 ) -> (NormalizedPosition, NormalizedPosition) {
-    let min_size = axis_minimums_for_aspect(zone_aspect_ratio(start_size), RESIZE_MIN_SIZE);
+    // A box already smaller than the resize floor (attachment seeds start at
+    // 2%) keeps its own size as the floor; otherwise a flush-edge box would
+    // hand `clamp` an inverted range and abort the whole UI.
+    let floor = axis_minimums_for_aspect(zone_aspect_ratio(start_size), RESIZE_MIN_SIZE);
+    let min_size = NormalizedPosition::new(
+        floor.x.min(start_size.x).max(GRID_EPSILON),
+        floor.y.min(start_size.y).max(GRID_EPSILON),
+    );
     let start_left = start_center.x - start_size.x * 0.5;
     let start_right = start_center.x + start_size.x * 0.5;
     let start_top = start_center.y - start_size.y * 0.5;
@@ -459,16 +530,24 @@ fn clamp_strip_size(
 }
 
 fn clamp_zone_center(position: NormalizedPosition, size: NormalizedPosition) -> NormalizedPosition {
+    let (min_x, max_x) = zone_center_range(size.x);
+    let (min_y, max_y) = zone_center_range(size.y);
     NormalizedPosition::new(
-        position.x.clamp(
-            size.x.mul_add(0.5, 0.0).min(1.0),
-            (1.0 - size.x * 0.5).max(0.0),
-        ),
-        position.y.clamp(
-            size.y.mul_add(0.5, 0.0).min(1.0),
-            (1.0 - size.y * 0.5).max(0.0),
-        ),
+        position.x.clamp(min_x, max_x),
+        position.y.clamp(min_y, max_y),
     )
+}
+
+/// The centers that keep a box of `extent` inside the canvas on one axis.
+/// A box wider than the canvas can only be centered, so the range collapses
+/// to the midpoint instead of inverting.
+pub(crate) fn zone_center_range(extent: f32) -> (f32, f32) {
+    let half = extent.max(0.0) * 0.5;
+    if half >= 0.5 {
+        (0.5, 0.5)
+    } else {
+        (half, 1.0 - half)
+    }
 }
 
 fn available_axis_span(center: f32) -> f32 {

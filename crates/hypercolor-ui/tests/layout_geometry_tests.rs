@@ -408,6 +408,7 @@ fn seeded_attachment_layout_arranges_multi_fan_slots_into_horizontal_rows() {
             ),
         ],
         7,
+        640.0 / 480.0,
     );
 
     assert_eq!(seeded.zones.len(), 3);
@@ -436,6 +437,7 @@ fn seeded_attachment_layout_handles_single_slot_attachments() {
             },
         )],
         3,
+        640.0 / 480.0,
     );
 
     assert_eq!(seeded.zones.len(), 1);
@@ -451,6 +453,8 @@ fn editor_normalization_gives_horizontal_strips_visible_height() {
             count: 60,
             direction: StripDirection::LeftToRight,
         },
+        None,
+        640.0 / 480.0,
     );
 
     assert!((size.x - 0.24).abs() < 0.001);
@@ -467,6 +471,8 @@ fn editor_normalization_gives_vertical_strips_visible_width() {
             count: 60,
             direction: StripDirection::TopToBottom,
         },
+        None,
+        640.0 / 480.0,
     );
 
     assert!((size.x - 0.03).abs() < 0.001);
@@ -545,4 +551,120 @@ fn locked_resize_can_shrink_long_strip_below_old_aspect_floor() {
 
     assert!((size.x - 0.05).abs() < 0.001);
     assert!((size.y - (0.05 / 60.0)).abs() < 0.0002);
+}
+
+#[test]
+fn resizing_a_flush_edge_box_below_the_floor_does_not_panic() {
+    // A 2% attachment seed pinned to the left edge: start_right (0.02) is
+    // below the 4% resize floor, which used to hand `clamp` an inverted
+    // range and abort the UI.
+    let start_center = NormalizedPosition::new(0.01, 0.5);
+    let start_size = NormalizedPosition::new(0.02, 0.02);
+    let (position, size) = layout_geometry::resize_zone_from_handle(
+        start_center,
+        start_size,
+        NormalizedPosition::new(0.0, 0.49),
+        ResizeHandle::NorthWest,
+        NormalizedPosition::new(0.05, 0.52),
+        false,
+        0.0,
+    );
+    assert!(size.x > 0.0 && size.y > 0.0);
+    assert!((0.0..=1.0).contains(&position.x));
+}
+
+#[test]
+fn resizing_a_rotated_box_keeps_the_opposite_corner_anchored() {
+    // A box turned a quarter turn: dragging its (local) south-east handle
+    // must leave the (local) north-west corner where it was on screen.
+    let rotation = std::f32::consts::FRAC_PI_2;
+    let start_center = NormalizedPosition::new(0.5, 0.5);
+    let start_size = NormalizedPosition::new(0.2, 0.1);
+    let world = |local: NormalizedPosition, center: NormalizedPosition| {
+        let (sin, cos) = rotation.sin_cos();
+        let dx = local.x - center.x;
+        let dy = local.y - center.y;
+        NormalizedPosition::new(
+            center.x + dx * cos - dy * sin,
+            center.y + dx * sin + dy * cos,
+        )
+    };
+    let local_nw = NormalizedPosition::new(0.4, 0.45);
+    let anchor_before = world(local_nw, start_center);
+    let local_se = NormalizedPosition::new(0.6, 0.55);
+    let start_mouse = world(local_se, start_center);
+    let current_mouse = world(NormalizedPosition::new(0.7, 0.6), start_center);
+
+    let (position, size) = layout_geometry::resize_zone_from_handle(
+        start_center,
+        start_size,
+        start_mouse,
+        ResizeHandle::SouthEast,
+        current_mouse,
+        false,
+        rotation,
+    );
+    let new_local_nw =
+        NormalizedPosition::new(position.x - size.x * 0.5, position.y - size.y * 0.5);
+    // The new rect's local NW corner, expressed relative to the new center,
+    // rotated about the new center, must land on the old anchor.
+    let anchor_after = world(new_local_nw, position);
+    assert!((size.x - 0.3).abs() < 1e-3, "width {}", size.x);
+    assert!((size.y - 0.15).abs() < 1e-3, "height {}", size.y);
+    assert!(
+        (anchor_after.x - anchor_before.x).abs() < 1e-3,
+        "{anchor_after:?} vs {anchor_before:?}"
+    );
+    assert!(
+        (anchor_after.y - anchor_before.y).abs() < 1e-3,
+        "{anchor_after:?} vs {anchor_before:?}"
+    );
+}
+
+#[test]
+fn circular_zones_normalize_to_a_pixel_square() {
+    // 640x480 canvas: a pixel square must be taller in normalized units
+    // (height fraction = width fraction * 4/3), matching both the CSS
+    // aspect-ratio: 1 box and the sampled LED circle.
+    let size = layout_geometry::normalize_zone_size_for_editor(
+        NormalizedPosition::new(0.5, 0.5),
+        NormalizedPosition::new(0.2, 0.2),
+        &LedTopology::Ring {
+            count: 20,
+            start_angle: 0.0,
+            direction: hypercolor_types::spatial::Winding::Clockwise,
+        },
+        Some(&ZoneShape::Ring),
+        640.0 / 480.0,
+    );
+    assert!((size.y - size.x * (640.0 / 480.0)).abs() < 1e-4, "{size:?}");
+    // The smaller pixel extent wins: 0.2 of height is the pixel-smaller side.
+    assert!((size.y - 0.2).abs() < 1e-4, "{size:?}");
+}
+
+#[test]
+fn explicit_rectangle_shape_overrides_ring_topology_circularity() {
+    assert!(layout_geometry::is_circular_zone(
+        None,
+        &LedTopology::Ring {
+            count: 8,
+            start_angle: 0.0,
+            direction: hypercolor_types::spatial::Winding::Clockwise,
+        },
+    ));
+    assert!(!layout_geometry::is_circular_zone(
+        Some(&ZoneShape::Rectangle),
+        &LedTopology::Ring {
+            count: 8,
+            start_angle: 0.0,
+            direction: hypercolor_types::spatial::Winding::Clockwise,
+        },
+    ));
+    assert!(layout_geometry::is_circular_zone(
+        Some(&ZoneShape::Ring),
+        &LedTopology::Strip {
+            count: 8,
+            direction: StripDirection::LeftToRight,
+        },
+    ));
 }

@@ -42,6 +42,7 @@ pub mod optimistic_controls;
 pub mod pages;
 pub mod preferences;
 pub mod preview_telemetry;
+pub mod render_canvas;
 pub mod render_presets;
 pub mod route_ui;
 pub mod settings_audio_devices;

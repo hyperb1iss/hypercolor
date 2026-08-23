@@ -108,7 +108,7 @@ impl LayoutWriteHandle {
         self.set_removed_zone_cache.set(removed_zone_cache);
     }
 
-    fn in_interaction(self) -> bool {
+    pub fn in_interaction(self) -> bool {
         self.history
             .with_untracked(LayoutHistoryState::is_interactive)
     }
@@ -256,6 +256,11 @@ pub(crate) fn LayoutWorkspace(
                 return;
             }
             if ev.alt_key() || !(ev.ctrl_key() || ev.meta_key()) {
+                return;
+            }
+            // A drag in flight owns the layout until release; undoing under
+            // it would be overwritten by the commit and leave history armed.
+            if write.in_interaction() {
                 return;
             }
             match ev.key().as_str() {
@@ -488,13 +493,13 @@ pub(crate) fn ZoneLayoutProvider(
 ) -> impl IntoView {
     let devices_ctx = expect_context::<DevicesContext>();
     let ws_ctx = expect_context::<WsContext>();
+    let render_canvas_size = crate::render_canvas::use_render_canvas_size();
 
     let session = LayoutEditorSession::new(false);
     let layout = session.layout;
     let saved_layout = session.saved_layout;
     let set_saved_layout = session.set_saved_layout;
     let set_selected_zone_ids = session.set_selected_zone_ids;
-    let set_hidden_zones = session.set_hidden_zones;
     let set_compound_depth = session.set_compound_depth;
     let set_layout = session.write;
     let is_dirty = session.is_dirty;
@@ -564,7 +569,6 @@ pub(crate) fn ZoneLayoutProvider(
     Effect::new(move |_| {
         set_layout.reset_history();
         set_selected_zone_ids.set(std::collections::HashSet::new());
-        set_hidden_zones.set(std::collections::HashSet::new());
         set_compound_depth.set(crate::compound_selection::CompoundDepth::Root);
 
         let Some((zone_id, _)) = zone_signature.get() else {
@@ -582,7 +586,10 @@ pub(crate) fn ZoneLayoutProvider(
             })
         });
         match loaded {
-            Some(layout) => {
+            Some(mut layout) => {
+                let (canvas_width, canvas_height) = render_canvas_size.get_untracked();
+                layout.canvas_width = canvas_width;
+                layout.canvas_height = canvas_height;
                 let layout = layout_geometry::normalize_layout_for_editor(layout);
                 set_saved_layout.set(Some(layout.clone()));
                 set_layout.set(Some(layout));
@@ -592,6 +599,56 @@ pub(crate) fn ZoneLayoutProvider(
                 set_saved_layout.set(None);
             }
         }
+    });
+
+    // The daemon can retune its canvas live (and config lands after the
+    // first scene paint), so the extent follows it without a reload. This
+    // is not an edit: no history entry, no dirty flag.
+    Effect::new(move |_| {
+        let (canvas_width, canvas_height) = render_canvas_size.get();
+        // Circular zones are normalized against the pixel aspect, so a live
+        // extent change re-normalizes them for the new canvas too.
+        let stamp = |layout: &mut Option<SpatialLayout>| {
+            if let Some(layout) = layout.as_mut() {
+                layout.canvas_width = canvas_width;
+                layout.canvas_height = canvas_height;
+                let aspect = layout_geometry::canvas_pixel_aspect(canvas_width, canvas_height);
+                for zone in &mut layout.zones {
+                    zone.size = layout_geometry::normalize_zone_size_for_editor(
+                        zone.position,
+                        zone.size,
+                        &zone.topology,
+                        zone.shape.as_ref(),
+                        aspect,
+                    );
+                }
+            }
+        };
+        let stale = layout.with_untracked(|current| {
+            current
+                .as_ref()
+                .is_some_and(|l| (l.canvas_width, l.canvas_height) != (canvas_width, canvas_height))
+        });
+        if stale {
+            set_layout.update_without_history(stamp);
+            set_saved_layout.update(stamp);
+        }
+    });
+
+    // Every unsaved edit previews on the hardware, not just canvas drags:
+    // a rotation, scale, align, or undo from the properties panel lands on
+    // the LEDs the same way a drag does. Only a dirty layout pushes, so a
+    // load, a revert, or a save never re-arms a preview.
+    Effect::new(move |previous: Option<Option<Vec<Output>>>| {
+        let snapshot = layout.with(|current| current.as_ref().map(|l| l.zones.clone()));
+        let changed = previous.is_some_and(|previous| previous != snapshot);
+        if changed
+            && is_dirty.get_untracked()
+            && let Some(current) = layout.get_untracked()
+        {
+            push_preview.run(current);
+        }
+        snapshot
     });
 
     let save = Callback::new(move |()| {

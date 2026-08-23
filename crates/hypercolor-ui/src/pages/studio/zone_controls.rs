@@ -31,7 +31,19 @@ use super::surface::Surface;
 pub fn ZoneControls(surface: Surface) -> impl IntoView {
     let studio = expect_context::<StudioContext>();
     let zone_id = surface.id.clone();
-    let renaming = RwSignal::new(false);
+    // The draft (and with it, "renaming") lives in StudioContext keyed by
+    // zone id, so a rail rebuild mid-typing keeps the field and the text.
+    // A Memo, not Signal::derive: it dedupes, so keystrokes that update
+    // the draft text do not re-render (and re-create) the input mid-typing.
+    let renaming = {
+        let zone_id = zone_id.clone();
+        Memo::new(move |_| {
+            studio
+                .zone_rename_draft
+                .with(|draft| draft.as_ref().is_some_and(|(id, _)| *id == zone_id))
+        })
+    };
+    let stop_renaming = move || studio.zone_rename_draft.set(None);
     let confirm_delete = RwSignal::new(false);
     let deletable = surface.is_deletable_zone();
 
@@ -49,38 +61,60 @@ pub fn ZoneControls(surface: Surface) -> impl IntoView {
                 move || {
                     if renaming.get() {
                         let zone_id = zone_id.clone();
+                        let seed = studio
+                            .zone_rename_draft
+                            .with_untracked(|draft| {
+                                draft.as_ref().map(|(_, text)| text.clone())
+                            })
+                            .unwrap_or_else(|| name_for_input.clone());
+                        let draft_id = zone_id.clone();
                         view! {
                             <input
                                 class="min-w-0 flex-1 rounded-md border border-edge-subtle/70 bg-surface-sunken/60 px-2 py-1 text-[12px] text-fg-primary outline-none focus:border-accent-muted"
-                                prop:value=name_for_input.clone()
+                                prop:value=seed
                                 autofocus
+                                on:input=move |ev| {
+                                    studio
+                                        .zone_rename_draft
+                                        .set(Some((draft_id.clone(), event_target_value(&ev))));
+                                }
                                 on:keydown={
                                     let zone_id = zone_id.clone();
                                     move |ev| {
                                         if ev.key() == "Enter" {
                                             let value = event_target_value(&ev);
                                             commit_zone_rename(studio, &zone_id, &value);
-                                            renaming.set(false);
+                                            stop_renaming();
                                         } else if ev.key() == "Escape" {
-                                            renaming.set(false);
+                                            stop_renaming();
                                         }
                                     }
                                 }
                                 on:blur=move |ev| {
                                     let value = event_target_value(&ev);
                                     commit_zone_rename(studio, &zone_id, &value);
-                                    renaming.set(false);
+                                    stop_renaming();
                                 }
                             />
                         }
                             .into_any()
                     } else {
+                        let rename_start_id = zone_id.clone();
+                        let rename_start_name = name_for_input.clone();
                         view! {
                             <button
                                 type="button"
                                 class="chip-interactive inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] text-fg-tertiary hover:text-fg-secondary"
                                 title="Rename zone"
-                                on:click=move |_| renaming.set(true)
+                                on:click={
+                                    let zone_id = rename_start_id.clone();
+                                    let seed_name = rename_start_name.clone();
+                                    move |_| {
+                                        studio
+                                            .zone_rename_draft
+                                            .set(Some((zone_id.clone(), seed_name.clone())));
+                                    }
+                                }
                             >
                                 <Icon icon=LuPencil width="11px" height="11px" />
                                 "Rename"
@@ -199,7 +233,14 @@ pub fn NewZoneControl() -> impl IntoView {
                                 creating.set(false);
                             }
                         }
-                        on:blur=move |_| creating.set(false)
+                        // Blur commits a typed name, like the scene and rename
+                        // fields; only Escape (or an empty field) discards.
+                        on:blur=move |ev| {
+                            let value = event_target_value(&ev);
+                            if value.trim().is_empty() || create_zone_from(studio, &value) {
+                                creating.set(false);
+                            }
+                        }
                     />
                 }
                     .into_any()

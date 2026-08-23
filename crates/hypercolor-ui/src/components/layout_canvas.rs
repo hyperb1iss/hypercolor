@@ -22,21 +22,26 @@ use crate::app::{DevicesContext, WsContext};
 use crate::components::canvas_preview::CanvasPreview;
 use crate::components::device_card::{DeviceClass, classify_device};
 use crate::compound_selection::{self, CompoundDepth};
+use crate::render_canvas;
+
 use crate::layout_geometry::{self, ResizeHandle};
 use crate::layout_utils;
 use crate::style_utils::device_accent_colors;
-use hypercolor_types::spatial::{NormalizedPosition, Output, ZoneShape};
+use hypercolor_types::spatial::{NormalizedPosition, Output};
 
 mod interaction;
 mod overlays;
 mod render;
+pub(crate) mod stacking;
 
 use interaction::{
     DragRuntime, InteractionKind, collect_zone_elements, pointer_to_normalized,
     update_canvas_slot_size,
 };
 use overlays::{CanvasDepthBreadcrumb, CompoundBoundingBoxOutline};
-use render::{ZoneRenderData, ring_inner_style, rotated_cursor, zone_shape_style};
+use render::{
+    ZoneRenderData, ring_inner_style, rotated_cursor, upright_label_style, zone_shape_style,
+};
 
 /// Throttle the in-drag preview push to the daemon. Matches the existing
 /// debounce we use outside drags so the spatial engine isn't recomputed at
@@ -82,6 +87,10 @@ pub fn LayoutCanvas() -> impl IntoView {
     // `StoredValue` handle itself stays `Copy + Send + Sync` so it can ride
     // along inside reactive `move ||` closures.
     let drag_runtime: StoredValue<Option<DragRuntime>, LocalStorage> = StoredValue::new_local(None);
+
+    // Set when a drag or resize actually moved something, so the `click`
+    // the browser synthesizes on release does not clear the selection.
+    let swallow_next_click: StoredValue<bool, LocalStorage> = StoredValue::new_local(false);
 
     // Reactive flag exposing which zone (if any) is being interacted with.
     // Used purely to toggle a CSS class that disables zone transitions.
@@ -160,6 +169,34 @@ pub fn LayoutCanvas() -> impl IntoView {
         })
     });
 
+    // Base stacking order: the largest box sits lowest so a big fan or
+    // matrix never blankets the small strips inside its footprint. Ties
+    // keep display_order so the saved order still breaks equal areas.
+    let stacking_rank: Memo<HashMap<String, usize>> = Memo::new(move |_| {
+        layout
+            .with(|current| current.as_ref().map(|l| stacking::rank_by_area(&l.zones)))
+            .unwrap_or_default()
+    });
+
+    // The zone the pointer last pressed on. It stays on top of the rest of
+    // its compound until the selection moves on, so a click on a member of
+    // a dense device always reveals the box that was clicked.
+    let primary_zone_id = RwSignal::new(None::<String>);
+    Effect::new(move |_| {
+        let selected = selected_zone_ids.get();
+        let stale = primary_zone_id
+            .with_untracked(|primary| primary.as_ref().is_some_and(|id| !selected.contains(id)));
+        if stale {
+            primary_zone_id.set(None);
+        }
+    });
+
+    // The box under the pointer on the canvas itself. Lifts only the
+    // stacking order, never the focus dimming, so sweeping across a dense
+    // canvas reads each box without the rest flickering. Lives in the
+    // editor context so the host rail can mirror the hover.
+    let pointer_zone_id = editor.pointer_zone_id;
+
     // Per-id zone lookup memo — lets every per-zone style closure resolve
     // its zone in O(1). Replaces the O(N) `zones.iter().find(|z| z.id == zid)`
     // scan that ran inside each `zone_style` derive.
@@ -183,7 +220,10 @@ pub fn LayoutCanvas() -> impl IntoView {
                     f64::from(layout.canvas_width.max(1)) / f64::from(layout.canvas_height.max(1))
                 })
             })
-            .unwrap_or(320.0 / 200.0)
+            .unwrap_or_else(|| {
+                let (w, h) = render_canvas::DEFAULT_RENDER_CANVAS;
+                f64::from(w) / f64::from(h)
+            })
     });
     let viewport_style = Signal::derive(move || {
         let ratio = layout_ratio.get();
@@ -200,17 +240,16 @@ pub fn LayoutCanvas() -> impl IntoView {
         }
     });
     let preview_aspect_ratio = Signal::derive(move || {
-        layout
-            .with(|current| {
-                current.as_ref().map(|layout| {
-                    format!(
-                        "{} / {}",
-                        layout.canvas_width.max(1),
-                        layout.canvas_height.max(1)
-                    )
+        layout.with(|current| {
+            current
+                .as_ref()
+                .map(|layout| {
+                    render_canvas::aspect_ratio_css((layout.canvas_width, layout.canvas_height))
                 })
-            })
-            .unwrap_or_else(|| "320 / 200".to_string())
+                .unwrap_or_else(|| {
+                    render_canvas::aspect_ratio_css(render_canvas::DEFAULT_RENDER_CANVAS)
+                })
+        })
     });
 
     let has_zones = Signal::derive(move || !zone_ids.get().is_empty());
@@ -229,7 +268,6 @@ pub fn LayoutCanvas() -> impl IntoView {
     // when the pointer is released or leaves the canvas slot. Idempotent:
     // safe to call when no runtime is active.
     let finish_interaction = {
-        let layout_signal = layout;
         move || {
             let Some(mut runtime) = drag_runtime.try_update_value(Option::take).flatten() else {
                 return;
@@ -243,23 +281,30 @@ pub fn LayoutCanvas() -> impl IntoView {
                 return;
             }
 
-            // Apply size normalization (strip aspect / ring squaring) once
-            // at release. Doing this mid-drag would fight the pointer.
+            // Apply size normalization (strip aspect / circle squaring)
+            // once at release. Doing this mid-drag would fight the pointer.
+            let aspect = layout.with_untracked(|current| {
+                current.as_ref().map_or(1.0, |l| {
+                    layout_geometry::canvas_pixel_aspect(l.canvas_width, l.canvas_height)
+                })
+            });
             for zone in &mut runtime.current_zones {
                 zone.size = layout_geometry::normalize_zone_size_for_editor(
                     zone.position,
                     zone.size,
                     &zone.topology,
+                    zone.shape.as_ref(),
+                    aspect,
                 );
             }
             let final_zones = std::mem::take(&mut runtime.current_zones);
             let committed = set_layout.commit_zones(final_zones);
             set_layout.finish_interaction();
+            swallow_next_click.set_value(true);
             if committed {
+                // The provider's layout-change effect pushes the committed
+                // (normalized) zones to the daemon from here.
                 set_is_dirty.set(true);
-                if let Some(snapshot) = layout_signal.get_untracked() {
-                    push_preview.run(snapshot);
-                }
             }
         }
     };
@@ -273,6 +318,7 @@ pub fn LayoutCanvas() -> impl IntoView {
             node_ref=canvas_slot_ref
             class="relative w-full h-full overflow-hidden"
             style="background: var(--color-surface-base)"
+            on:mousedown=move |_| swallow_next_click.set_value(false)
             on:mouseup=move |_| finish_for_mouseup()
             on:mouseleave=move |_| finish_for_leave()
             on:mousemove=move |ev| {
@@ -317,6 +363,12 @@ pub fn LayoutCanvas() -> impl IntoView {
                     node_ref=viewport_ref
                     style=move || viewport_style.get()
                     on:click=move |_| {
+                        // The browser dispatches `click` on the common ancestor of
+                        // the press and release targets, so a drag released off
+                        // its box lands here; that is not a request to deselect.
+                        if swallow_next_click.try_update_value(|flag| std::mem::replace(flag, false)).unwrap_or(false) {
+                            return;
+                        }
                         set_selected_zone_ids.set(std::collections::HashSet::new());
                         set_compound_depth.set(CompoundDepth::Root);
                     }
@@ -333,9 +385,15 @@ pub fn LayoutCanvas() -> impl IntoView {
                                         }
                                     });
                                 }
-                                CompoundDepth::Device { .. } => {
+                                CompoundDepth::Device { device_id } => {
+                                    // Stepping out keeps the device you were inside as
+                                    // the selection, mirroring the slot → device step.
                                     set_compound_depth.set(CompoundDepth::Root);
-                                    set_selected_zone_ids.set(std::collections::HashSet::new());
+                                    layout.with_untracked(|l| {
+                                        if let Some(l) = l.as_ref() {
+                                            set_selected_zone_ids.set(compound_selection::device_compound_ids(l, &device_id));
+                                        }
+                                    });
                                 }
                                 CompoundDepth::Root => {
                                     set_selected_zone_ids.set(std::collections::HashSet::new());
@@ -352,7 +410,7 @@ pub fn LayoutCanvas() -> impl IntoView {
                             fps=preview_fps
                             fps_target=preview_target_fps
                             show_fps=false
-                            aspect_ratio=preview_aspect_ratio.get_untracked()
+                            aspect_ratio=preview_aspect_ratio
                         />
                     </div>
 
@@ -362,11 +420,7 @@ pub fn LayoutCanvas() -> impl IntoView {
                     // Zone overlays — keyed on zone IDs sorted by display_order
                     {move || {
                         let ids = zone_ids.get();
-                        let zone_count = ids.len();
-                        ids.into_iter().enumerate().map(|(render_index, zone_id)| {
-                        let base_z_index = render_index + 10;
-                        let elevated_z_index = zone_count + 100; // selected zone always on top
-                        let _ = base_z_index; // used below in style closure
+                        ids.into_iter().map(|zone_id| {
                             let zid = zone_id.clone();
                             let zid_select = zone_id.clone();
                             let zid_dblclick = zone_id.clone();
@@ -426,9 +480,9 @@ pub fn LayoutCanvas() -> impl IntoView {
                                         // For Ring/Arc zones, omit explicit height and use
                                         // aspect-ratio: 1 so the browser enforces a perfect
                                         // circle regardless of canvas aspect ratio.
-                                        let is_circular = matches!(
-                                            zone.shape,
-                                            Some(ZoneShape::Ring) | Some(ZoneShape::Arc { .. })
+                                        let is_circular = layout_geometry::is_circular_zone(
+                                            zone.shape.as_ref(),
+                                            &zone.topology,
                                         );
                                         let position_style = if is_circular {
                                             format!(
@@ -444,6 +498,10 @@ pub fn LayoutCanvas() -> impl IntoView {
 
                                         Some(ZoneRenderData {
                                             position_style,
+                                            label_style: upright_label_style(rotation),
+                                            // The viewport clips, so a box hugging the top edge
+                                            // shows its hover readout below itself instead.
+                                            label_below: zone.position.y - zone.size.y * 0.5 < 0.06,
                                             primary_rgb: primary,
                                             secondary_rgb: secondary,
                                             name: display.label,
@@ -475,6 +533,34 @@ pub fn LayoutCanvas() -> impl IntoView {
                                     active.as_deref() == Some(&zid)
                                 }))
                             };
+
+                            let is_primary = {
+                                let zid = zid.clone();
+                                Signal::derive(move || primary_zone_id.with(|primary| {
+                                    primary.as_deref() == Some(&zid)
+                                }))
+                            };
+
+                            let is_under_pointer = {
+                                let zid = zid.clone();
+                                Signal::derive(move || pointer_zone_id.with(|under| {
+                                    under.as_deref() == Some(&zid)
+                                }))
+                            };
+
+                            let stacking_z = {
+                                let zid = zid.clone();
+                                Signal::derive(move || {
+                                    let rank = stacking_rank.with(|ranks| ranks.get(&zid).copied().unwrap_or(0));
+                                    stacking::z_index(stacking::Tier {
+                                        primary: is_primary.get(),
+                                        under_pointer: is_under_pointer.get(),
+                                        lifted: is_selected.get() || is_hovered.get(),
+                                    }, rank)
+                                })
+                            };
+                            let zid_enter = zid.clone();
+                            let zid_leave = zid.clone();
 
                             view! {
                                 <div
@@ -531,7 +617,7 @@ pub fn LayoutCanvas() -> impl IntoView {
                                                 .to_string()
                                         };
                                         let shape = zone_shape_style(&zd.shape);
-                                        let z = if selected || hovered { elevated_z_index } else { base_z_index };
+                                        let z = stacking_z.get();
                                         // A box not in focus while something else is recedes,
                                         // so a dense canvas reads around the selection/hover.
                                         let dimmed_by_focus = has_focus.get() && !selected && !hovered;
@@ -547,9 +633,17 @@ pub fn LayoutCanvas() -> impl IntoView {
                                             zd.position_style, border, bg, shadow, shape, visibility
                                         )
                                     }
+                                    on:mouseenter=move |_| pointer_zone_id.set(Some(zid_enter.clone()))
+                                    on:mouseleave=move |_| {
+                                        if pointer_zone_id.with_untracked(|under| under.as_deref() == Some(zid_leave.as_str())) {
+                                            pointer_zone_id.set(None);
+                                        }
+                                    }
                                     on:mousedown=move |ev| {
                                         ev.stop_propagation();
                                         ev.prevent_default();
+                                        swallow_next_click.set_value(false);
+                                        primary_zone_id.set(Some(zid_select.clone()));
 
                                         // Compound-aware selection
                                         let depth = compound_depth.get_untracked();
@@ -570,14 +664,20 @@ pub fn LayoutCanvas() -> impl IntoView {
                                             (ids, different)
                                         });
 
-                                        // Reset depth if clicked outside entered compound
-                                        if clicked_different_device {
-                                            set_compound_depth.set(CompoundDepth::Root);
-                                        }
+                                        // prevent_default above also stops the browser moving
+                                        // focus; hand it to the viewport before any early return
+                                        // so Escape works after shift-clicks too.
+                                        let Some(viewport) = viewport_ref.try_get_untracked().flatten() else {
+                                            return;
+                                        };
+                                        let viewport_el: web_sys::HtmlElement = (*viewport).clone();
+                                        let _ = viewport_el.focus();
 
                                         let is_shift = ev.shift_key();
                                         if is_shift {
-                                            // Shift+click: toggle compound in/out of selection (no drag)
+                                            // Shift+click: toggle compound in/out of selection (no
+                                            // drag). Adding from another device keeps the depth you
+                                            // are at; only a plain click on it steps out.
                                             let mut current = selected_zone_ids.get_untracked();
                                             for id in &ids {
                                                 if !current.remove(id) {
@@ -587,12 +687,13 @@ pub fn LayoutCanvas() -> impl IntoView {
                                             set_selected_zone_ids.set(current);
                                             return; // Don't start drag on shift+click
                                         }
+
+                                        // Reset depth if clicked outside entered compound
+                                        if clicked_different_device {
+                                            set_compound_depth.set(CompoundDepth::Root);
+                                        }
                                         set_selected_zone_ids.set(ids);
 
-                                        let Some(viewport) = viewport_ref.try_get_untracked().flatten() else {
-                                            return;
-                                        };
-                                        let viewport_el: web_sys::HtmlElement = (*viewport).clone();
                                         let Some(mouse_norm) = pointer_to_normalized(
                                             &viewport_el,
                                             ev.client_x(),
@@ -696,6 +797,10 @@ pub fn LayoutCanvas() -> impl IntoView {
                                     }
                                     on:click=move |ev| {
                                         ev.stop_propagation();
+                                        // The release landed on the box, so the viewport never
+                                        // sees this click; disarm here or the next empty-canvas
+                                        // click would be eaten.
+                                        swallow_next_click.set_value(false);
                                     }
                                 >
                                     {move || {
@@ -719,9 +824,11 @@ pub fn LayoutCanvas() -> impl IntoView {
 
                                     // Zone label — glass micro-panel (hover)
                                     <div
-                                        class="absolute -top-6 left-0 text-[9px] font-mono whitespace-nowrap
+                                        class="absolute left-0 text-[9px] font-mono whitespace-nowrap
                                                 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none
                                                 px-2 py-0.5 rounded glass-subtle"
+                                        class=("-top-6", move || !zone_style.get().is_some_and(|zd| zd.label_below))
+                                        class=("-bottom-6", move || zone_style.get().is_some_and(|zd| zd.label_below))
                                         style=move || {
                                             zone_style.get()
                                                 .map(|zd| format!("color: rgba({}, 0.9)", zd.primary_rgb))
@@ -909,23 +1016,28 @@ pub fn LayoutCanvas() -> impl IntoView {
                                         style="background: radial-gradient(ellipse at center, rgba(0,0,0,0.55) 0%, rgba(0,0,0,0.2) 60%, transparent 100%)"
                                     >
                                         <div
-                                            class="text-[11px] font-semibold leading-tight tracking-tight text-center max-w-full select-none break-words line-clamp-2 shrink-0"
-                                            style=move || {
-                                                zone_style.get()
-                                                    .map(|zd| format!(
-                                                        "color: rgba({}, 0.96); text-shadow: 0 1px 2px rgba(0,0,0,0.85), 0 0 10px rgba({}, 0.4)",
-                                                        zd.primary_rgb, zd.primary_rgb
-                                                    ))
-                                                    .unwrap_or_default()
-                                            }
+                                            class="flex flex-col items-center max-w-full"
+                                            style=move || zone_style.get().map(|zd| zd.label_style).unwrap_or_default()
                                         >
-                                            {move || zone_style.get().map(|zd| zd.name.clone()).unwrap_or_default()}
-                                        </div>
-                                        <div
-                                            class="text-[9px] font-mono select-none tabular-nums mt-1 shrink min-h-0 overflow-hidden"
-                                            style="color: rgba(255, 255, 255, 0.68); text-shadow: 0 1px 2px rgba(0,0,0,0.7)"
-                                        >
-                                            {move || zone_style.get().map(|zd| format!("{} LEDs", zd.led_count)).unwrap_or_default()}
+                                            <div
+                                                class="text-[11px] font-semibold leading-tight tracking-tight text-center max-w-full select-none break-words line-clamp-2 shrink-0"
+                                                style=move || {
+                                                    zone_style.get()
+                                                        .map(|zd| format!(
+                                                            "color: rgba({}, 0.96); text-shadow: 0 1px 2px rgba(0,0,0,0.85), 0 0 10px rgba({}, 0.4)",
+                                                            zd.primary_rgb, zd.primary_rgb
+                                                        ))
+                                                        .unwrap_or_default()
+                                                }
+                                            >
+                                                {move || zone_style.get().map(|zd| zd.name.clone()).unwrap_or_default()}
+                                            </div>
+                                            <div
+                                                class="text-[9px] font-mono select-none tabular-nums mt-1 shrink min-h-0 overflow-hidden"
+                                                style="color: rgba(255, 255, 255, 0.68); text-shadow: 0 1px 2px rgba(0,0,0,0.7)"
+                                            >
+                                                {move || zone_style.get().map(|zd| format!("{} LEDs", zd.led_count)).unwrap_or_default()}
+                                            </div>
                                         </div>
                                     </div>
                                 </div>

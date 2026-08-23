@@ -5,6 +5,7 @@
 //! now-playing chip is clicked, hosts the shared [`LayerPanel`], and
 //! dismisses on a scrim click, the close button, or `Escape`.
 
+use hypercolor_leptos_ext::events::target_is_text_entry;
 use leptos::ev;
 use leptos::prelude::*;
 use leptos_icons::Icon;
@@ -57,12 +58,16 @@ pub fn CompositionPanel(
             .map(|target| target.device_id.to_string())
     });
 
-    // Escape closes the panel while it is open.
-    let _keydown = window_event_listener(ev::keydown, move |event| {
-        if open.get_untracked() && event.key() == "Escape" {
+    // Escape closes the panel while it is open, unless a text field owns
+    // the key (a rename in the rail cancels with Escape too). The handle
+    // is removed with the page so the listener never outlives its signals.
+    let keydown = window_event_listener(ev::keydown, move |event| {
+        if open.get_untracked() && event.key() == "Escape" && !target_is_text_entry(event.target())
+        {
             open.set(false);
         }
     });
+    on_cleanup(move || keydown.remove());
 
     view! {
         <div
@@ -131,8 +136,8 @@ fn UnassignedNote() -> impl IntoView {
                 <div class="text-sm font-medium text-fg-secondary">"No layer stack"</div>
                 <div class="mt-1.5 text-[12px] leading-5 text-fg-tertiary/70">
                     "Unassigned lights belong to no zone, so there is nothing to
-                     compose here. Assign their outputs to a zone in the Layout
-                     view to give them a layer stack."
+                     compose here. Use the + on a device card in the rail to add it
+                     to a zone, and it follows that zone's layers."
                 </div>
             </div>
         </div>

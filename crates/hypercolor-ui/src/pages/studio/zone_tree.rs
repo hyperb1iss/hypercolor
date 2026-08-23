@@ -132,6 +132,7 @@ pub fn ZoneTree() -> impl IntoView {
                     .iter()
                     .find(|zone| zone.id.to_string() == surface.id)
                     .map_or_else(Vec::new, |zone| device_rows_for_zone(zone, &metas));
+                let device_total = base_rows.len();
                 sort_device_rows(&mut base_rows);
                 retain_by_search(&mut base_rows, &search);
                 let rows = base_rows
@@ -141,7 +142,7 @@ pub fn ZoneTree() -> impl IntoView {
                         (row, device)
                     })
                     .collect::<Vec<_>>();
-                (surface, rows)
+                (surface, device_total, rows)
             })
             .collect::<Vec<_>>()
     });
@@ -198,7 +199,7 @@ pub fn ZoneTree() -> impl IntoView {
                         } else {
                             rows.into_iter()
                                 .enumerate()
-                                .map(|(index, (surface, devices))| {
+                                .map(|(index, (surface, device_total, devices))| {
                                     let available = if index == 0 {
                                         available_rows.clone()
                                     } else {
@@ -207,6 +208,7 @@ pub fn ZoneTree() -> impl IntoView {
                                     view! {
                                         <ZoneNode
                                             surface=surface
+                                            device_total=device_total
                                             devices=devices
                                             available=available
                                             collapsed=collapsed
@@ -255,6 +257,9 @@ pub fn ZoneTree() -> impl IntoView {
 #[component]
 fn ZoneNode(
     surface: Surface,
+    /// Devices in the zone before the header search filtered `devices`,
+    /// so the subtitle keeps reporting the inventory, not the match count.
+    device_total: usize,
     devices: Vec<(ZoneDeviceRow, Option<DeviceSummary>)>,
     /// Connected devices in no zone, folded under the sole LED zone in a
     /// single-zone scene (§3.3); empty otherwise. Each offers a one-tap add.
@@ -264,7 +269,8 @@ fn ZoneNode(
     let studio = expect_context::<StudioContext>();
     let ws = use_context::<WsContext>();
     let zone_id = surface.id.clone();
-    let device_count = devices.len();
+    let device_count = device_total;
+    let search_hides_all = device_total > 0 && devices.is_empty();
     // Captured before the device lists move `available`; gates the
     // Available section and suppresses the redundant picker when the
     // one-tap rows already cover adding hardware.
@@ -290,7 +296,8 @@ fn ZoneNode(
         })
     });
 
-    let controls_open = RwSignal::new(false);
+    let controls_open =
+        super::keyed_disclosure(studio.rail_disclosure, format!("zone-menu::{zone_id}"));
     let dimmed = !surface.enabled;
     let row_name = surface.name.clone();
     let swatch = surface.color.clone();
@@ -395,7 +402,7 @@ fn ZoneNode(
                     .then(|| {
                         view! {
                             <div class="px-2 py-1.5 text-[10px] text-fg-tertiary/50">
-                                "No devices yet"
+                                {if search_hides_all { "No devices match" } else { "No devices yet" }}
                             </div>
                         }
                     })}

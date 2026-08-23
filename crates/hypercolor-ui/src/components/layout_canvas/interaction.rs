@@ -5,7 +5,7 @@ use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 
 use crate::layout_geometry::{self, ResizeHandle};
-use hypercolor_types::spatial::{NormalizedPosition, Output, SpatialLayout, ZoneShape};
+use hypercolor_types::spatial::{NormalizedPosition, Output, SpatialLayout};
 
 /// Drag/resize runtime — non-reactive state machine for an in-flight pointer
 /// interaction. Owns cached DOM refs, the immutable base snapshot, and a
@@ -28,6 +28,10 @@ pub(super) struct DragRuntime {
     /// Last preview push timestamp (browser monotonic ms) for throttling.
     pub(super) last_preview_push_ms: Cell<f64>,
 }
+
+/// Pointer travel (normalized canvas units, about 3 px on a 640-wide
+/// canvas) before a press turns into a drag.
+const DRAG_THRESHOLD: f32 = 0.005;
 
 pub(super) enum InteractionKind {
     Drag {
@@ -69,6 +73,24 @@ impl DragRuntime {
                 offset_y,
                 initial_positions,
             } => {
+                // A press that has not travelled yet is a click, not a drag:
+                // the second press of a double-click must not nudge the box.
+                if !self.moved.get() {
+                    let press = initial_positions
+                        .iter()
+                        .find(|(id, _)| id == primary_zone_id)
+                        .map(|(_, pos)| {
+                            NormalizedPosition::new(pos.x + offset_x, pos.y + offset_y)
+                        });
+                    let travelled = press.is_some_and(|press| {
+                        (mouse.x - press.x).abs() >= DRAG_THRESHOLD
+                            || (mouse.y - press.y).abs() >= DRAG_THRESHOLD
+                    });
+                    if !travelled {
+                        self.current_zones = working.zones;
+                        return false;
+                    }
+                }
                 if initial_positions.len() > 1 {
                     let primary_initial = initial_positions
                         .iter()
@@ -107,10 +129,8 @@ impl DragRuntime {
                     self.current_zones = working.zones;
                     return false;
                 };
-                let force_locked = matches!(
-                    zone.shape,
-                    Some(ZoneShape::Ring) | Some(ZoneShape::Arc { .. })
-                );
+                let force_locked =
+                    layout_geometry::is_circular_zone(zone.shape.as_ref(), &zone.topology);
                 let (position, size) = layout_geometry::resize_zone_from_handle(
                     *start_center,
                     *start_size,
@@ -157,10 +177,8 @@ impl DragRuntime {
             let _ = style.set_property("left", &format!("{x_pct:.2}%"));
             let _ = style.set_property("top", &format!("{y_pct:.2}%"));
             let _ = style.set_property("width", &format!("{w_pct:.2}%"));
-            let is_circular = matches!(
-                zone.shape,
-                Some(ZoneShape::Ring) | Some(ZoneShape::Arc { .. })
-            );
+            let is_circular =
+                layout_geometry::is_circular_zone(zone.shape.as_ref(), &zone.topology);
             if is_circular {
                 let _ = style.set_property("aspect-ratio", "1");
                 // Browsers ignore stale `height` in the presence of

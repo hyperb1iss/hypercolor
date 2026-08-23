@@ -833,6 +833,7 @@ pub fn sync_wiring_to_layout(
                 &device.name,
                 &suggested_zones,
                 0,
+                layout_geometry::canvas_pixel_aspect(layout.canvas_width, layout.canvas_height),
             );
             let slot_display_names = suggested_zones
                 .iter()

@@ -25,18 +25,13 @@ use crate::toasts;
 
 use super::StudioContext;
 
-/// Authoring canvas used to normalize a freshly seeded hardware footprint.
-/// Live zone placements are normalized and carry no pixel dimensions.
-const MINT_CANVAS_WIDTH: u32 = 640;
-const MINT_CANVAS_HEIGHT: u32 = 480;
-
 /// The "+ Add device" control. Collapsed to a button until clicked,
 /// then a picker of every device not currently in `zone_id`.
 #[component]
 pub fn ZoneAddDevice(zone_id: String) -> impl IntoView {
     let studio = expect_context::<StudioContext>();
     let devices = expect_context::<DevicesContext>();
-    let picking = RwSignal::new(false);
+    let picking = super::keyed_disclosure(studio.rail_disclosure, format!("add-picker::{zone_id}"));
     let zone_id = StoredValue::new(zone_id);
 
     let options = Memo::new(move |_| {
@@ -177,7 +172,10 @@ pub(super) fn assign_device_to_zone(
     }
     let mut preserve_placement = false;
     if assignments.is_empty() {
-        let minted = mint_device_zones(&device, (MINT_CANVAS_WIDTH, MINT_CANVAS_HEIGHT));
+        // A seeded footprint is fitted to a canvas aspect ratio, so it has to
+        // be built against the daemon's canvas, the one it will live on.
+        let canvas = studio.render_canvas_size.get_untracked();
+        let minted = mint_device_zones(&device, canvas);
         assignments = minted.assignments;
         preserve_placement = minted.preserve_placement;
     }
@@ -266,8 +264,8 @@ fn mint_device_zones(
                     name,
                     None,
                     total_leds,
-                    MINT_CANVAS_WIDTH,
-                    MINT_CANVAS_HEIGHT,
+                    canvas_width,
+                    canvas_height,
                     0,
                 ),
             ))],
@@ -286,8 +284,8 @@ fn mint_device_zones(
                     name,
                     Some(channel),
                     total_leds,
-                    MINT_CANVAS_WIDTH,
-                    MINT_CANVAS_HEIGHT,
+                    canvas_width,
+                    canvas_height,
                     i32::try_from(order).unwrap_or(i32::MAX),
                 )))
             })
