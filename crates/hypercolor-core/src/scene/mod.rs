@@ -99,7 +99,7 @@ pub struct ZoneMetaPatch {
 
 // ── SceneManager ────────────────────────────────────────────────────────
 
-/// Immutable authored scene plan consumed by the render thread.
+/// Immutable resolved scene plan consumed by the render thread.
 ///
 /// The generation and every field in this value describe one admitted
 /// control-plane state. Per-frame clocks and transition progress belong
@@ -384,7 +384,7 @@ impl SceneManager {
         self.resolved_zones_revision
     }
 
-    /// Capture one commit-stable authored plan for lock-free frame work.
+    /// Capture one commit-stable resolved plan for lock-free frame work.
     #[must_use]
     pub fn plan_snapshot(&self, generation: u64) -> ScenePlanSnapshot {
         ScenePlanSnapshot {

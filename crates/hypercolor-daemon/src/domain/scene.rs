@@ -575,7 +575,7 @@ impl SceneService {
         candidate_spatial_engine: SpatialEngine,
         expected_layout: &SpatialLayout,
         expected_active_scene_id: Option<SceneId>,
-        expected_active_zones_revision: u64,
+        expected_resolved_zones_revision: u64,
         publish_renderer_state: F,
     ) -> Result<(), LayoutTransactionRejection>
     where
@@ -583,7 +583,7 @@ impl SceneService {
     {
         let mut manager = self.0.manager.write().await;
         let source_is_current = manager.active_scene_id().copied() == expected_active_scene_id
-            && manager.resolved_zones_revision() == expected_active_zones_revision
+            && manager.resolved_zones_revision() == expected_resolved_zones_revision
             && spatial_engine.has_layout(expected_layout);
         if !source_is_current {
             return Err(LayoutTransactionRejection::Superseded);
