@@ -8,7 +8,7 @@ from attrs import field as _attrs_field
 
 if TYPE_CHECKING:
     from ..models.discovery_completed_response import DiscoveryCompletedResponse
-    from ..models.discovery_started_response import DiscoveryStartedResponse
+    from ..models.discovery_scanning_response import DiscoveryScanningResponse
     from ..models.response_meta import ResponseMeta
 
 
@@ -19,19 +19,19 @@ T = TypeVar("T", bound="DiscoverDevicesResponse202")
 class DiscoverDevicesResponse202:
     """
     Attributes:
-        data (DiscoveryCompletedResponse | DiscoveryStartedResponse): Response from `POST /api/v1/devices/discover`.
+        data (DiscoveryCompletedResponse | DiscoveryScanningResponse): Response from `POST /api/v1/devices/discover`.
         meta (ResponseMeta): Response metadata included in every envelope.
     """
 
-    data: DiscoveryCompletedResponse | DiscoveryStartedResponse
+    data: DiscoveryCompletedResponse | DiscoveryScanningResponse
     meta: ResponseMeta
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        from ..models.discovery_started_response import DiscoveryStartedResponse
+        from ..models.discovery_scanning_response import DiscoveryScanningResponse
 
         data: dict[str, Any]
-        if isinstance(self.data, DiscoveryStartedResponse):
+        if isinstance(self.data, DiscoveryScanningResponse):
             data = self.data.to_dict()
         else:
             data = self.data.to_dict()
@@ -52,31 +52,31 @@ class DiscoverDevicesResponse202:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.discovery_completed_response import DiscoveryCompletedResponse
-        from ..models.discovery_started_response import DiscoveryStartedResponse
+        from ..models.discovery_scanning_response import DiscoveryScanningResponse
         from ..models.response_meta import ResponseMeta
 
         d = dict(src_dict)
 
         def _parse_data(
             data: object,
-        ) -> DiscoveryCompletedResponse | DiscoveryStartedResponse:
+        ) -> DiscoveryCompletedResponse | DiscoveryScanningResponse:
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                componentsschemas_discover_response_type_0 = (
-                    DiscoveryStartedResponse.from_dict(data)
+                componentsschemas_discover_response_discovery_scanning_response = (
+                    DiscoveryScanningResponse.from_dict(data)
                 )
 
-                return componentsschemas_discover_response_type_0
+                return componentsschemas_discover_response_discovery_scanning_response
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             if not isinstance(data, dict):
                 raise TypeError()
-            componentsschemas_discover_response_type_1 = (
+            componentsschemas_discover_response_discovery_completed_response = (
                 DiscoveryCompletedResponse.from_dict(data)
             )
 
-            return componentsschemas_discover_response_type_1
+            return componentsschemas_discover_response_discovery_completed_response
 
         data = _parse_data(d.pop("data"))
 

@@ -6,6 +6,10 @@ from typing import TYPE_CHECKING, Any, TypeVar
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
+from ..models.discovery_completed_response_status import (
+    DiscoveryCompletedResponseStatus,
+)
+
 if TYPE_CHECKING:
     from ..models.discovery_scan_result import DiscoveryScanResult
 
@@ -20,12 +24,12 @@ class DiscoveryCompletedResponse:
     Attributes:
         result (DiscoveryScanResult): Detailed result from a completed discovery scan.
         scan_id (str):
-        status (str):
+        status (DiscoveryCompletedResponseStatus):
     """
 
     result: DiscoveryScanResult
     scan_id: str
-    status: str
+    status: DiscoveryCompletedResponseStatus
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -33,7 +37,7 @@ class DiscoveryCompletedResponse:
 
         scan_id = self.scan_id
 
-        status = self.status
+        status = self.status.value
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -56,7 +60,7 @@ class DiscoveryCompletedResponse:
 
         scan_id = d.pop("scan_id")
 
-        status = d.pop("status")
+        status = DiscoveryCompletedResponseStatus(d.pop("status"))
 
         discovery_completed_response = cls(
             result=result,

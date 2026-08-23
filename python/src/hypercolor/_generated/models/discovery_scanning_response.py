@@ -6,22 +6,24 @@ from typing import Any, TypeVar, cast
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
-T = TypeVar("T", bound="DiscoveryStartedResponse")
+from ..models.discovery_scanning_response_status import DiscoveryScanningResponseStatus
+
+T = TypeVar("T", bound="DiscoveryScanningResponse")
 
 
 @_attrs_define
-class DiscoveryStartedResponse:
+class DiscoveryScanningResponse:
     """Immediate acknowledgement for an asynchronous discovery scan.
 
     Attributes:
         scan_id (str):
-        status (str):
+        status (DiscoveryScanningResponseStatus):
         targets (list[str]):
         timeout_ms (int):
     """
 
     scan_id: str
-    status: str
+    status: DiscoveryScanningResponseStatus
     targets: list[str]
     timeout_ms: int
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -29,7 +31,7 @@ class DiscoveryStartedResponse:
     def to_dict(self) -> dict[str, Any]:
         scan_id = self.scan_id
 
-        status = self.status
+        status = self.status.value
 
         targets = self.targets
 
@@ -53,21 +55,21 @@ class DiscoveryStartedResponse:
         d = dict(src_dict)
         scan_id = d.pop("scan_id")
 
-        status = d.pop("status")
+        status = DiscoveryScanningResponseStatus(d.pop("status"))
 
         targets = cast(list[str], d.pop("targets"))
 
         timeout_ms = d.pop("timeout_ms")
 
-        discovery_started_response = cls(
+        discovery_scanning_response = cls(
             scan_id=scan_id,
             status=status,
             targets=targets,
             timeout_ms=timeout_ms,
         )
 
-        discovery_started_response.additional_properties = d
-        return discovery_started_response
+        discovery_scanning_response.additional_properties = d
+        return discovery_scanning_response
 
     @property
     def additional_keys(self) -> list[str]:

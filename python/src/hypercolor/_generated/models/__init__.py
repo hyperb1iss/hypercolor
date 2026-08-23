@@ -296,9 +296,11 @@ from .discover_devices_response_200 import DiscoverDevicesResponse200
 from .discover_devices_response_202 import DiscoverDevicesResponse202
 from .discover_request import DiscoverRequest
 from .discovery_completed_response import DiscoveryCompletedResponse
+from .discovery_completed_response_status import DiscoveryCompletedResponseStatus
 from .discovery_scan_result import DiscoveryScanResult
 from .discovery_scanner_result import DiscoveryScannerResult
-from .discovery_started_response import DiscoveryStartedResponse
+from .discovery_scanning_response import DiscoveryScanningResponse
+from .discovery_scanning_response_status import DiscoveryScanningResponseStatus
 from .display_class import DisplayClass
 from .display_descriptor import DisplayDescriptor
 from .display_face_response import DisplayFaceResponse
@@ -888,9 +890,11 @@ __all__ = (
     "DiscoverDevicesResponse202",
     "DiscoverRequest",
     "DiscoveryCompletedResponse",
+    "DiscoveryCompletedResponseStatus",
     "DiscoveryScannerResult",
+    "DiscoveryScanningResponse",
+    "DiscoveryScanningResponseStatus",
     "DiscoveryScanResult",
-    "DiscoveryStartedResponse",
     "DisplayClass",
     "DisplayDescriptor",
     "DisplayFaceResponse",

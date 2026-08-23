@@ -60,6 +60,7 @@ class TemplateDetail:
             id (str):
             led_count (int):
             name (str):
+            origin (ComponentOrigin): Where an attachment template came from.
             topology (LedTopologyType0 | LedTopologyType1 | LedTopologyType2 | LedTopologyType3 | LedTopologyType4 |
                 LedTopologyType5 | LedTopologyType6): LED arrangement within a zone's bounding rectangle.
 
@@ -72,7 +73,6 @@ class TemplateDetail:
             led_mapping (list[int] | None | Unset):
             led_names (list[str] | None | Unset):
             led_positions (list[NormalizedPosition] | Unset):
-            origin (ComponentOrigin | Unset): Where an attachment template came from.
             physical_size_mm (list[float] | None | Unset): Physical footprint in millimeters, as `[width, height]`.
             tags (list[str] | Unset):
     """
@@ -95,6 +95,7 @@ class TemplateDetail:
     id: str
     led_count: int
     name: str
+    origin: ComponentOrigin
     topology: (
         LedTopologyType0
         | LedTopologyType1
@@ -110,7 +111,6 @@ class TemplateDetail:
     led_mapping: list[int] | None | Unset = UNSET
     led_names: list[str] | None | Unset = UNSET
     led_positions: list[NormalizedPosition] | Unset = UNSET
-    origin: ComponentOrigin | Unset = UNSET
     physical_size_mm: list[float] | None | Unset = UNSET
     tags: list[str] | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -156,6 +156,8 @@ class TemplateDetail:
         led_count = self.led_count
 
         name = self.name
+
+        origin = self.origin.value
 
         topology: dict[str, Any]
         if isinstance(self.topology, LedTopologyType0):
@@ -213,10 +215,6 @@ class TemplateDetail:
                 led_positions_item = led_positions_item_data.to_dict()
                 led_positions.append(led_positions_item)
 
-        origin: str | Unset = UNSET
-        if not isinstance(self.origin, Unset):
-            origin = self.origin.value
-
         physical_size_mm: list[float] | None | Unset
         if isinstance(self.physical_size_mm, Unset):
             physical_size_mm = UNSET
@@ -240,6 +238,7 @@ class TemplateDetail:
                 "id": id,
                 "led_count": led_count,
                 "name": name,
+                "origin": origin,
                 "topology": topology,
                 "vendor": vendor,
             }
@@ -254,8 +253,6 @@ class TemplateDetail:
             field_dict["led_names"] = led_names
         if led_positions is not UNSET:
             field_dict["led_positions"] = led_positions
-        if origin is not UNSET:
-            field_dict["origin"] = origin
         if physical_size_mm is not UNSET:
             field_dict["physical_size_mm"] = physical_size_mm
         if tags is not UNSET:
@@ -414,6 +411,8 @@ class TemplateDetail:
 
         name = d.pop("name")
 
+        origin = ComponentOrigin(d.pop("origin"))
+
         def _parse_topology(
             data: object,
         ) -> (
@@ -548,13 +547,6 @@ class TemplateDetail:
 
                 led_positions.append(led_positions_item)
 
-        _origin = d.pop("origin", UNSET)
-        origin: ComponentOrigin | Unset
-        if isinstance(_origin, Unset):
-            origin = UNSET
-        else:
-            origin = ComponentOrigin(_origin)
-
         def _parse_physical_size_mm(data: object) -> list[float] | None | Unset:
             if data is None:
                 return data
@@ -581,6 +573,7 @@ class TemplateDetail:
             id=id,
             led_count=led_count,
             name=name,
+            origin=origin,
             topology=topology,
             vendor=vendor,
             compatible_slots=compatible_slots,
@@ -588,7 +581,6 @@ class TemplateDetail:
             led_mapping=led_mapping,
             led_names=led_names,
             led_positions=led_positions,
-            origin=origin,
             physical_size_mm=physical_size_mm,
             tags=tags,
         )

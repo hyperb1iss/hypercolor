@@ -43,9 +43,9 @@ class TemplateSummary:
             id (str):
             led_count (int):
             name (str):
+            origin (ComponentOrigin): Where an attachment template came from.
             vendor (str):
             image_url (None | str | Unset):
-            origin (ComponentOrigin | Unset): Where an attachment template came from.
             tags (list[str] | Unset):
     """
 
@@ -66,9 +66,9 @@ class TemplateSummary:
     id: str
     led_count: int
     name: str
+    origin: ComponentOrigin
     vendor: str
     image_url: None | str | Unset = UNSET
-    origin: ComponentOrigin | Unset = UNSET
     tags: list[str] | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -105,6 +105,8 @@ class TemplateSummary:
 
         name = self.name
 
+        origin = self.origin.value
+
         vendor = self.vendor
 
         image_url: None | str | Unset
@@ -112,10 +114,6 @@ class TemplateSummary:
             image_url = UNSET
         else:
             image_url = self.image_url
-
-        origin: str | Unset = UNSET
-        if not isinstance(self.origin, Unset):
-            origin = self.origin.value
 
         tags: list[str] | Unset = UNSET
         if not isinstance(self.tags, Unset):
@@ -130,13 +128,12 @@ class TemplateSummary:
                 "id": id,
                 "led_count": led_count,
                 "name": name,
+                "origin": origin,
                 "vendor": vendor,
             }
         )
         if image_url is not UNSET:
             field_dict["image_url"] = image_url
-        if origin is not UNSET:
-            field_dict["origin"] = origin
         if tags is not UNSET:
             field_dict["tags"] = tags
 
@@ -281,6 +278,8 @@ class TemplateSummary:
 
         name = d.pop("name")
 
+        origin = ComponentOrigin(d.pop("origin"))
+
         vendor = d.pop("vendor")
 
         def _parse_image_url(data: object) -> None | str | Unset:
@@ -292,13 +291,6 @@ class TemplateSummary:
 
         image_url = _parse_image_url(d.pop("image_url", UNSET))
 
-        _origin = d.pop("origin", UNSET)
-        origin: ComponentOrigin | Unset
-        if isinstance(_origin, Unset):
-            origin = UNSET
-        else:
-            origin = ComponentOrigin(_origin)
-
         tags = cast(list[str], d.pop("tags", UNSET))
 
         template_summary = cls(
@@ -307,9 +299,9 @@ class TemplateSummary:
             id=id,
             led_count=led_count,
             name=name,
+            origin=origin,
             vendor=vendor,
             image_url=image_url,
-            origin=origin,
             tags=tags,
         )
 
