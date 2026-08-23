@@ -980,14 +980,11 @@ pub(super) fn json_payload_manifest() -> serde_json::Value {
         "timed_input_event_v1": {
             "schema_version": 1,
             "event": "input_event_received",
-            "required_fields": ["event"],
+            "required_fields": ["event", "at_ms", "seq", "repeat_count"],
             "optional_fields": {
-                "at_ms": 0,
-                "seq": 0,
-                "physical_code": null,
-                "repeat_count": 1
+                "physical_code": null
             },
-            "description": "Canonical captured input edge. Missing timing and metadata fields decode with their listed defaults for compatibility with the prior event-only payload.",
+            "description": "Canonical captured input edge with exact timing, ordering, and repeat multiplicity.",
             "topic": "input_events"
         },
         "input_source_status_changed_v1": {

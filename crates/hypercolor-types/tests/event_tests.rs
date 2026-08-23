@@ -526,29 +526,34 @@ fn input_event_received_round_trips_through_json() {
 }
 
 #[test]
-fn input_event_received_accepts_prior_event_only_payload() {
-    let json = r#"{"type":"InputEventReceived","data":{"event":{"kind":"key","source_id":"host:legacy","key":"a","state":"repeated"}}}"#;
-    let restored: HypercolorEvent = serde_json::from_str(json).expect("deserialize legacy event");
-    let HypercolorEvent::InputEventReceived { event } = restored else {
-        panic!("expected input event");
+fn input_event_received_serializes_ordinary_repeat_count() {
+    let event = HypercolorEvent::InputEventReceived {
+        event: TimedInputEvent {
+            event: InputEvent::Key {
+                source_id: "host:keyboard".into(),
+                key: "a".into(),
+                state: InputButtonState::Pressed,
+            },
+            at_ms: 1,
+            seq: 2,
+            physical_code: None,
+            repeat_count: 1,
+        },
     };
 
-    assert_eq!(event.at_ms, 0);
-    assert_eq!(event.seq, 0);
-    assert_eq!(event.physical_code, None);
-    assert_eq!(event.repeat_count, 1);
-    assert!(matches!(
-        event.event,
-        InputEvent::Key {
-            state: InputButtonState::Repeated,
-            ..
-        }
-    ));
+    let value = serde_json::to_value(event).expect("serialize input event");
+    assert_eq!(value["data"]["repeat_count"], 1);
+}
+
+#[test]
+fn input_event_received_rejects_event_only_payload() {
+    let json = r#"{"type":"InputEventReceived","data":{"event":{"kind":"key","source_id":"host:test","key":"a","state":"repeated"}}}"#;
+    serde_json::from_str::<HypercolorEvent>(json).expect_err("timed input fields must be present");
 }
 
 #[test]
 fn input_event_received_rejects_zero_repeat_count() {
-    let json = r#"{"type":"InputEventReceived","data":{"event":{"kind":"key","source_id":"host:test","key":"a","state":"repeated"},"repeat_count":0}}"#;
+    let json = r#"{"type":"InputEventReceived","data":{"event":{"kind":"key","source_id":"host:test","key":"a","state":"repeated"},"at_ms":1,"seq":2,"repeat_count":0}}"#;
     let error = serde_json::from_str::<HypercolorEvent>(json)
         .expect_err("zero repeat multiplicity must be rejected");
 
@@ -1281,10 +1286,7 @@ fn pointer_scroll_phase_defaults_to_none() {
 }
 
 #[test]
-fn timed_input_event_seq_defaults_to_zero_when_absent() {
-    let json = r#"{"event":{"kind":"key","source_id":"s","key":"a","state":"pressed"},"at_ms":5}"#;
-    let restored: TimedInputEvent = serde_json::from_str(json).expect("deserialize without seq");
-    assert_eq!(restored.seq, 0);
-    assert_eq!(restored.physical_code, None);
-    assert_eq!(restored.repeat_count, 1);
+fn timed_input_event_rejects_an_absent_sequence() {
+    let json = r#"{"event":{"kind":"key","source_id":"s","key":"a","state":"pressed"},"at_ms":5,"repeat_count":1}"#;
+    serde_json::from_str::<TimedInputEvent>(json).expect_err("seq must be present");
 }

@@ -334,26 +334,12 @@ impl InputEvent {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TimedInputEvent {
     pub event: InputEvent,
-    #[serde(default)]
     pub at_ms: u64,
-    #[serde(default)]
     pub seq: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub physical_code: Option<String>,
-    #[serde(
-        default = "default_input_event_repeat_count",
-        deserialize_with = "deserialize_input_event_repeat_count",
-        skip_serializing_if = "input_event_repeat_count_is_one"
-    )]
+    #[serde(deserialize_with = "deserialize_input_event_repeat_count")]
     pub repeat_count: u32,
-}
-
-const fn default_input_event_repeat_count() -> u32 {
-    1
-}
-
-const fn input_event_repeat_count_is_one(value: &u32) -> bool {
-    *value == 1
 }
 
 fn deserialize_input_event_repeat_count<'de, D>(deserializer: D) -> Result<u32, D::Error>
