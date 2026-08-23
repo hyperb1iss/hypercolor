@@ -434,8 +434,16 @@ fn effect_registry_watcher_uses_domain_authority() {
         .map(|(_, source)| source.as_str())
         .expect("startup lifecycle source should exist");
 
-    assert!(startup.contains("use crate::domain::effect::reload_registry_file;"));
-    assert!(startup.contains("reload_registry_file(&watcher_state"));
+    let watcher = startup
+        .split_once("async fn spawn_effect_watcher")
+        .and_then(|(_, source)| source.split_once("fn spawn_display_preference_sync_worker"))
+        .map(|(source, _)| source)
+        .expect("effect watcher implementation should exist");
+    assert!(watcher.contains("let effects = self.domains.effects.clone();"));
+    assert!(watcher.contains("effects.search_paths().await"));
+    assert!(watcher.contains("effects.reload_registry_file(&path).await"));
+    assert!(!watcher.contains("AppState::from_daemon_state"));
+    assert!(!watcher.contains("EffectRegistryUpdated"));
     assert!(!startup.contains("crate::api::effects::invalidate"));
     assert!(!startup.contains("reload_single(&path)"));
     assert!(!startup.contains("invalidate_resolved_zones"));
@@ -776,20 +784,26 @@ fn registry_refreshes_share_the_effect_domain_identity_authority() {
             .unwrap_or_else(|| panic!("missing daemon source {suffix}"))
     };
     let effect_api = source("api/effects.rs");
-    assert!(effect_api.contains("domain::effect::rescan_registry"));
-    assert!(effect_api.contains("domain::effect::install_registry_file"));
+    assert!(effect_api.contains("state.domains.effects.rescan_registry().await"));
+    assert!(effect_api.contains(".install_registry_file(&installed_path, &html)"));
+    assert!(!effect_api.contains("EffectRegistryUpdated"));
     assert!(!effect_api.contains("domains.effects.rescan()"));
     assert!(!effect_api.contains("domains.effects.register("));
 
     let lifecycle = source("startup/lifecycle.rs");
-    assert!(lifecycle.contains("use crate::domain::effect::reload_registry_file;"));
-    assert!(lifecycle.contains("reload_registry_file(&watcher_state"));
+    assert!(lifecycle.contains("effects.reload_registry_file(&path).await"));
     assert!(!lifecycle.contains("reload_single(&path)"));
+
+    let identity = source("domain/effect/identity.rs");
+    assert!(!identity.contains("AppState"));
+    assert!(identity.contains("self.publish_registry_update(&report)"));
 
     let app_state = source("app_state.rs");
     assert!(app_state.contains("playlist_runtime: Arc::clone(&daemon.playlist_runtime)"));
+    assert!(!app_state.contains("pub(crate) library_identity:"));
     let startup = source("startup/mod.rs");
     assert!(startup.contains("pub playlist_runtime: Arc<Mutex<PlaylistRuntimeState>>"));
+    assert!(!startup.contains("pub(crate) library_identity:"));
     let library = source("lib.rs");
     assert!(!library.contains("mod effect_id_migration"));
 }

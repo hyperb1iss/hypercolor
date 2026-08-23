@@ -7,22 +7,44 @@ use hypercolor_types::effect::EffectId;
 use hypercolor_types::layer::LayerSource;
 use hypercolor_types::library::{EffectPlaylist, PlaylistItemTarget};
 use hypercolor_types::scene::Zone;
-use tokio::sync::{OwnedMutexGuard, OwnedRwLockWriteGuard};
+use tokio::sync::{OwnedMutexGuard, OwnedRwLockWriteGuard, RwLock};
 
-use super::{EffectRegistryPublication, EffectRegistryUpdate, InstalledEffect};
-use crate::app_state::AppState;
+use super::{EffectContext, EffectRegistryPublication, EffectRegistryUpdate, InstalledEffect};
 use crate::display_preferences::{
     AdmittedDisplayPreferencesEffectIdMigration, DisplayPreferencesEffectIdMigrationPublication,
-    PersistedDisplayPreferencesEffectIdMigration,
+    DisplayPreferencesStore, PersistedDisplayPreferencesEffectIdMigration,
 };
 use crate::domain::DomainError;
 use crate::domain::context::PersistedRuntimeSessionEffectIdMigration;
 use crate::domain::effect::IdentityMigrationPersistence;
 use crate::domain::scene::SceneEffectIdMigrationPublication;
-use crate::library::{AdmittedLibraryEffectIdMigration, LibraryEffectIdMigrationPublication};
+use crate::library::{
+    AdmittedLibraryEffectIdMigration, LibraryEffectIdMigrationPublication, LibraryIdentityMigration,
+};
 use crate::playlist_runtime::PlaylistRuntimeState;
 
 pub(crate) type EffectIdMigrations = HashMap<EffectId, EffectId>;
+
+#[derive(Clone)]
+pub(crate) struct EffectIdentityResources {
+    display_preferences: Arc<RwLock<DisplayPreferencesStore>>,
+    library_identity: Arc<dyn LibraryIdentityMigration>,
+    playlist_runtime: Arc<tokio::sync::Mutex<PlaylistRuntimeState>>,
+}
+
+impl EffectIdentityResources {
+    pub(crate) fn new(
+        display_preferences: Arc<RwLock<DisplayPreferencesStore>>,
+        library_identity: Arc<dyn LibraryIdentityMigration>,
+        playlist_runtime: Arc<tokio::sync::Mutex<PlaylistRuntimeState>>,
+    ) -> Self {
+        Self {
+            display_preferences,
+            library_identity,
+            playlist_runtime,
+        }
+    }
+}
 
 struct ActivePlaylistEffectIdMigration {
     generation: Option<u64>,
@@ -96,145 +118,139 @@ pub(crate) fn remap_playlist(
         .sum()
 }
 
-pub(crate) async fn rescan_registry(state: &AppState) -> Result<RescanReport, DomainError> {
-    let update = state.domains.effects.prepare_rescan().await;
-    apply_registry_update(state, update).await
-}
-
-pub(crate) async fn reload_registry_file(
-    state: &AppState,
-    path: &Path,
-) -> Result<RescanReport, DomainError> {
-    let update = state.domains.effects.prepare_reload(path).await;
-    apply_registry_update(state, update).await
-}
-
-pub(crate) async fn install_registry_file(
-    state: &AppState,
-    path: &Path,
-    raw_html: &str,
-) -> Result<InstalledEffect, DomainError> {
-    let (update, metadata, replaced_existing) = state
-        .domains
-        .effects
-        .prepare_install(path, raw_html)
-        .await?;
-    let source_path = match &metadata.source {
-        hypercolor_types::effect::EffectSource::Html { path } => path.clone(),
-        hypercolor_types::effect::EffectSource::Native { .. }
-        | hypercolor_types::effect::EffectSource::Shader { .. } => path.to_path_buf(),
-    };
-    let report = apply_registry_update(state, update).await?;
-    Ok(InstalledEffect {
-        metadata,
-        source_path,
-        replaced_existing,
-        report,
-    })
-}
-
-async fn apply_registry_update(
-    state: &AppState,
-    update: EffectRegistryUpdate,
-) -> Result<RescanReport, DomainError> {
-    let migrations = update.report().legacy_effect_ids.clone();
-    if migrations.is_empty() {
-        let mut publication = update.prepare_publication().await?;
-        let report = publication.publish();
-        if report.added > 0 || report.removed > 0 || report.updated > 0 {
-            crate::domain::effect::invalidate_active_zones(&state.domains.effects).await?;
-        }
-        return Ok(report);
+impl EffectContext {
+    pub(crate) async fn rescan_registry(&self) -> Result<RescanReport, DomainError> {
+        let update = self.prepare_rescan().await;
+        self.apply_registry_update(update).await
     }
 
-    let (parts, scene_migrated) = loop {
-        let runtime = state
-            .domains
-            .runtime_session
-            .begin_effect_id_migration()
-            .await;
-        let scene = state
-            .scene_manager
-            .prepare_effect_id_migration(&migrations)
-            .await?;
-        let runtime = runtime.prepare(scene.candidate())?;
-        let display = state
-            .display_preferences
-            .read()
-            .await
-            .prepare_effect_id_migration(&migrations)
-            .map_err(DomainError::Internal)?;
-        let library = state
-            .library_identity
-            .prepare_effect_id_migration(&migrations)
-            .await
-            .map_err(|error| DomainError::Internal(error.into()))?;
-        let active_playlist = ActivePlaylistEffectIdMigration::prepare(state, &migrations).await;
-        let scene_migrated = scene.migrated();
+    pub(crate) async fn reload_registry_file(
+        &self,
+        path: &Path,
+    ) -> Result<RescanReport, DomainError> {
+        let update = self.prepare_reload(path).await;
+        self.apply_registry_update(update).await
+    }
 
-        let scene = scene.admit();
-        let runtime = runtime.admit();
-        let display =
-            display.map(crate::display_preferences::DisplayPreferencesEffectIdMigration::admit);
-        let mut library = library.map(crate::library::LibraryEffectIdMigration::admit);
+    pub(crate) async fn install_registry_file(
+        &self,
+        path: &Path,
+        raw_html: &str,
+    ) -> Result<InstalledEffect, DomainError> {
+        let (update, metadata, replaced_existing) = self.prepare_install(path, raw_html).await?;
+        let source_path = match &metadata.source {
+            hypercolor_types::effect::EffectSource::Html { path } => path.clone(),
+            hypercolor_types::effect::EffectSource::Native { .. }
+            | hypercolor_types::effect::EffectSource::Shader { .. } => path.to_path_buf(),
+        };
+        self.apply_registry_update(update).await?;
+        Ok(InstalledEffect {
+            metadata,
+            source_path,
+            replaced_existing,
+        })
+    }
 
-        let (persisted_scene, scene_persistence) = scene.persist();
-        let (persisted_runtime, runtime_persistence) = runtime.persist();
-        let (persisted_display, display_persistence) = persist_display_migration(display);
-        let library_persistence = library
-            .as_mut()
-            .map_or(IdentityMigrationPersistence::Written, |migration| {
-                migration.persist()
-            });
-
-        if [
-            &scene_persistence,
-            &runtime_persistence,
-            &display_persistence,
-            &library_persistence,
-        ]
-        .into_iter()
-        .any(|outcome| matches!(outcome, IdentityMigrationPersistence::Superseded))
-        {
-            tokio::task::yield_now().await;
-            continue;
+    async fn apply_registry_update(
+        &self,
+        update: EffectRegistryUpdate,
+    ) -> Result<RescanReport, DomainError> {
+        let migrations = update.report().legacy_effect_ids.clone();
+        if migrations.is_empty() {
+            let mut publication = update.prepare_publication().await?;
+            let report = publication.publish();
+            if report.added > 0 || report.removed > 0 || report.updated > 0 {
+                super::invalidate_active_zones(self).await?;
+            }
+            self.publish_registry_update(&report);
+            return Ok(report);
         }
 
-        #[cfg(test)]
-        state
-            .domains
-            .effects
-            .pause_before_identity_publication_for_test()
+        let (parts, scene_migrated) = loop {
+            let runtime = self.scene.begin_runtime_effect_id_migration().await;
+            let scene = self.scene.prepare_effect_id_migration(&migrations).await?;
+            let runtime = runtime.prepare(scene.candidate())?;
+            let display = self
+                .identity
+                .display_preferences
+                .read()
+                .await
+                .prepare_effect_id_migration(&migrations)
+                .map_err(DomainError::Internal)?;
+            let library = self
+                .identity
+                .library_identity
+                .prepare_effect_id_migration(&migrations)
+                .await
+                .map_err(|error| DomainError::Internal(error.into()))?;
+            let active_playlist = ActivePlaylistEffectIdMigration::prepare(
+                &self.identity.playlist_runtime,
+                &migrations,
+            )
             .await;
-        let Ok(parts) = EffectIdMigrationPublicationParts::prepare(
-            state,
-            persisted_scene,
-            persisted_runtime,
-            persisted_display,
-            library,
-            active_playlist,
-        )
-        .await
-        else {
-            tokio::task::yield_now().await;
-            continue;
-        };
-        break (parts, scene_migrated);
-    };
+            let scene_migrated = scene.migrated();
 
-    let registry = update.prepare_publication().await?;
-    let publication = parts.with_registry(registry);
-    let (report, scene_commit, library_migrated, active_playlist_migrated) =
-        publication.publish(state).await;
-    tracing::info!(
-        mappings = migrations.len(),
-        scene_references = scene_migrated,
-        library_references = library_migrated,
-        active_playlist_references = active_playlist_migrated,
-        scene_revision = scene_commit.revision(),
-        "Migrated late path-derived effect identities"
-    );
-    Ok(report)
+            let scene = scene.admit();
+            let runtime = runtime.admit();
+            let display =
+                display.map(crate::display_preferences::DisplayPreferencesEffectIdMigration::admit);
+            let mut library = library.map(crate::library::LibraryEffectIdMigration::admit);
+
+            let (persisted_scene, scene_persistence) = scene.persist();
+            let (persisted_runtime, runtime_persistence) = runtime.persist();
+            let (persisted_display, display_persistence) = persist_display_migration(display);
+            let library_persistence = library
+                .as_mut()
+                .map_or(IdentityMigrationPersistence::Written, |migration| {
+                    migration.persist()
+                });
+
+            if [
+                &scene_persistence,
+                &runtime_persistence,
+                &display_persistence,
+                &library_persistence,
+            ]
+            .into_iter()
+            .any(|outcome| matches!(outcome, IdentityMigrationPersistence::Superseded))
+            {
+                tokio::task::yield_now().await;
+                continue;
+            }
+
+            #[cfg(test)]
+            self.pause_before_identity_publication_for_test().await;
+            let Ok(parts) = EffectIdMigrationPublicationParts::prepare(
+                self,
+                persisted_scene,
+                persisted_runtime,
+                persisted_display,
+                library,
+                active_playlist,
+            )
+            .await
+            else {
+                tokio::task::yield_now().await;
+                continue;
+            };
+            break (parts, scene_migrated);
+        };
+
+        let registry = update.prepare_publication().await?;
+        let publication = parts.with_registry(registry);
+        let (report, scene_commit, library_migrated, active_playlist_migrated) =
+            publication.publish(self).await;
+        tracing::info!(
+            mappings = migrations.len(),
+            scene_references = scene_migrated,
+            library_references = library_migrated,
+            active_playlist_references = active_playlist_migrated,
+            scene_revision = scene_commit.revision(),
+            "Migrated late path-derived effect identities"
+        );
+        self.publish_registry_update(&report);
+        Ok(report)
+    }
 }
 
 fn persist_display_migration(
@@ -250,9 +266,12 @@ fn persist_display_migration(
 }
 
 impl ActivePlaylistEffectIdMigration {
-    async fn prepare(state: &AppState, migrations: &EffectIdMigrations) -> Self {
+    async fn prepare(
+        playlist_runtime: &Arc<tokio::sync::Mutex<PlaylistRuntimeState>>,
+        migrations: &EffectIdMigrations,
+    ) -> Self {
         let active = {
-            let runtime = state.playlist_runtime.lock().await;
+            let runtime = playlist_runtime.lock().await;
             runtime
                 .active
                 .as_ref()
@@ -281,9 +300,9 @@ impl ActivePlaylistEffectIdMigration {
 
     async fn prepare_publication(
         self,
-        state: &AppState,
+        playlist_runtime: &Arc<tokio::sync::Mutex<PlaylistRuntimeState>>,
     ) -> Result<ActivePlaylistEffectIdMigrationPublication, DomainError> {
-        let runtime = Arc::clone(&state.playlist_runtime).lock_owned().await;
+        let runtime = Arc::clone(playlist_runtime).lock_owned().await;
         let current = runtime.active.as_ref();
         let identity_matches = match (self.generation, self.playlist.as_ref(), current) {
             (None, None, None) => true,
@@ -330,21 +349,21 @@ impl ActivePlaylistEffectIdMigrationPublication {
 
 impl EffectIdMigrationPublicationParts {
     async fn prepare(
-        state: &AppState,
+        effects: &EffectContext,
         scene: crate::domain::scene::PersistedSceneEffectIdMigration,
         runtime: PersistedRuntimeSessionEffectIdMigration,
         display: Option<PersistedDisplayPreferencesEffectIdMigration>,
         library: Option<Box<dyn AdmittedLibraryEffectIdMigration>>,
         active_playlist: ActivePlaylistEffectIdMigration,
     ) -> Result<Self, DomainError> {
-        let scene = state
-            .scene_manager
+        let scene = effects
+            .scene
             .prepare_effect_id_migration_publication(scene)
             .await?;
         let display = match display {
             Some(display) => Some(
                 DisplayPreferencesEffectIdMigrationPublication::prepare(
-                    Arc::clone(&state.display_preferences),
+                    Arc::clone(&effects.identity.display_preferences),
                     display,
                 )
                 .await
@@ -361,7 +380,9 @@ impl EffectIdMigrationPublicationParts {
             ),
             None => None,
         };
-        let active_playlist = active_playlist.prepare_publication(state).await?;
+        let active_playlist = active_playlist
+            .prepare_publication(&effects.identity.playlist_runtime)
+            .await?;
         Ok(Self {
             scene,
             display,
@@ -386,7 +407,7 @@ impl EffectIdMigrationPublicationParts {
 impl EffectIdMigrationPublication {
     async fn publish(
         mut self,
-        state: &AppState,
+        effects: &EffectContext,
     ) -> (
         RescanReport,
         crate::domain::commit::SceneCommit,
@@ -398,18 +419,12 @@ impl EffectIdMigrationPublication {
             None => 0,
         };
         #[cfg(test)]
-        state
-            .domains
-            .effects
-            .pause_between_identity_components_for_test()
-            .await;
+        effects.pause_between_identity_components_for_test().await;
         if let Some(display) = self.display.as_mut() {
             display.publish();
         }
         let active_playlist_migrated = self.active_playlist.publish();
-        let scene_commit = state
-            .scene_manager
-            .publish_effect_id_migration(&mut self.scene);
+        let scene_commit = effects.scene.publish_effect_id_migration(&mut self.scene);
         let report = self.registry.publish();
         (
             report,

@@ -21,7 +21,7 @@ use tokio::sync::{OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
 use crate::discovery;
 use crate::domain::DomainError;
 use crate::domain::commit::SceneCommit;
-use crate::domain::effect::EffectContext;
+use crate::domain::effect::{EffectContext, EffectIdentityResources};
 use crate::domain::layout::{LayoutContext, LayoutRuntime};
 use crate::domain::output::OutputContext;
 use crate::domain::scene::{
@@ -60,6 +60,7 @@ pub struct DomainContexts {
 
 pub(crate) struct DomainContextResources {
     pub effect_registry: Arc<RwLock<EffectRegistry>>,
+    pub effect_identity: EffectIdentityResources,
     pub spatial: SpatialService,
     pub event_bus: Arc<HypercolorBus>,
 }
@@ -79,6 +80,8 @@ impl DomainContexts {
             scene.clone(),
             resources.spatial,
             output.clone(),
+            resources.effect_identity,
+            Arc::clone(&resources.event_bus),
         );
         let scene_tree = SceneTreeContext::new(
             scene.clone(),
@@ -596,6 +599,38 @@ impl SceneContext {
     /// Persist the durable runtime-session projection after a scene mutation.
     pub async fn save_runtime_session(&self) {
         self.runtime_session.save().await;
+    }
+
+    pub(crate) async fn begin_runtime_effect_id_migration(
+        &self,
+    ) -> RuntimeSessionEffectIdMigrationAdmission {
+        self.runtime_session.begin_effect_id_migration().await
+    }
+
+    pub(crate) async fn prepare_effect_id_migration(
+        &self,
+        migrations: &std::collections::HashMap<
+            hypercolor_types::effect::EffectId,
+            hypercolor_types::effect::EffectId,
+        >,
+    ) -> Result<crate::domain::scene::SceneEffectIdMigration, DomainError> {
+        self.scenes.prepare_effect_id_migration(migrations).await
+    }
+
+    pub(crate) async fn prepare_effect_id_migration_publication(
+        &self,
+        migration: crate::domain::scene::PersistedSceneEffectIdMigration,
+    ) -> Result<crate::domain::scene::SceneEffectIdMigrationPublication, DomainError> {
+        self.scenes
+            .prepare_effect_id_migration_publication(migration)
+            .await
+    }
+
+    pub(crate) fn publish_effect_id_migration(
+        &self,
+        publication: &mut crate::domain::scene::SceneEffectIdMigrationPublication,
+    ) -> SceneCommit {
+        self.scenes.publish_effect_id_migration(publication)
     }
 
     /// Layout connectivity authority needed after scene targeting changes.

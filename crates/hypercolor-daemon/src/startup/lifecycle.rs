@@ -18,7 +18,6 @@ use crate::discovery::{self, DiscoveryTarget};
 use crate::display_output::{
     DEFAULT_STATIC_HOLD_REFRESH_INTERVAL, DisplayOutputState, DisplayOutputThread,
 };
-use crate::domain::effect::reload_registry_file;
 use crate::interactive_preview::{
     InteractivePreviewAcceleration, InteractivePreviewContext, InteractivePreviewExecutor,
 };
@@ -647,15 +646,8 @@ impl DaemonState {
     }
 
     async fn spawn_effect_watcher(&mut self) {
-        // The reload invalidates the active scene's resolved zones, which
-        // is a scene commit and therefore needs the shared sequencer, not
-        // a bare handle on the manager.
-        let watcher_state = AppState::from_daemon_state(self);
-
-        let search_paths = {
-            let reg = self.effect_registry.read().await;
-            reg.search_paths().to_vec()
-        };
+        let effects = self.domains.effects.clone();
+        let search_paths = effects.search_paths().await;
 
         let (watcher, mut rx) = match EffectWatcher::start(&search_paths) {
             Ok(pair) => pair,
@@ -679,21 +671,9 @@ impl DaemonState {
                 };
                 info!(path = %path.display(), action, "Effect file change detected");
 
-                let report = match reload_registry_file(&watcher_state, &path).await {
-                    Ok(report) => report,
-                    Err(error) => {
-                        warn!(path = %path.display(), %error, "Effect hot reload rejected");
-                        continue;
-                    }
-                };
-
-                watcher_state.event_bus.publish(
-                    hypercolor_types::event::HypercolorEvent::EffectRegistryUpdated {
-                        added: report.added,
-                        removed: report.removed,
-                        updated: report.updated,
-                    },
-                );
+                if let Err(error) = effects.reload_registry_file(&path).await {
+                    warn!(path = %path.display(), %error, "Effect hot reload rejected");
+                }
             }
 
             debug!("Effect watcher channel closed; task exiting");

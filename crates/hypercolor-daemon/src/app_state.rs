@@ -44,6 +44,7 @@ use crate::domain::context::{
     DeviceContext, DomainContextResources, DomainContexts, PlatformContext,
     RuntimeSessionProjection, RuntimeSessionService, SceneContext,
 };
+use crate::domain::effect::EffectIdentityResources;
 use crate::domain::layout::{LayoutContext, LayoutContextResources};
 use crate::domain::output::OutputContext;
 use crate::domain::scene::SceneService;
@@ -249,8 +250,6 @@ pub struct AppState {
 
     /// Saved effect library storage (favorites, presets, playlists).
     pub library_store: Arc<dyn LibraryStore>,
-
-    pub(crate) library_identity: Arc<dyn LibraryIdentityMigration>,
 
     /// Active playlist runner state (single background worker at a time).
     pub playlist_runtime: Arc<Mutex<PlaylistRuntimeState>>,
@@ -637,20 +636,6 @@ impl AppState {
             devices.clone(),
             start_time,
         );
-        let domains = DomainContexts::assemble(
-            runtime_session,
-            devices,
-            scene,
-            layout,
-            output,
-            PlatformContext::new(input_status.clone(), config_manager.clone()),
-            DomainContextResources {
-                effect_registry: Arc::clone(&effect_registry),
-                spatial: spatial_engine.clone(),
-                event_bus: Arc::clone(&event_bus),
-            },
-        );
-
         let AppStateLibrary {
             store: library_store,
             identity: library_identity,
@@ -660,6 +645,25 @@ impl AppState {
             let identity: Arc<dyn LibraryIdentityMigration> = library;
             AppStateLibrary { store, identity }
         });
+        let playlist_runtime = Arc::new(Mutex::new(PlaylistRuntimeState::new()));
+        let domains = DomainContexts::assemble(
+            runtime_session,
+            devices,
+            scene,
+            layout,
+            output,
+            PlatformContext::new(input_status.clone(), config_manager.clone()),
+            DomainContextResources {
+                effect_registry: Arc::clone(&effect_registry),
+                effect_identity: EffectIdentityResources::new(
+                    Arc::clone(&display_preferences),
+                    Arc::clone(&library_identity),
+                    Arc::clone(&playlist_runtime),
+                ),
+                spatial: spatial_engine.clone(),
+                event_bus: Arc::clone(&event_bus),
+            },
+        );
 
         Self {
             domains,
@@ -712,8 +716,7 @@ impl AppState {
             output_power,
             scene_transactions,
             library_store,
-            library_identity,
-            playlist_runtime: Arc::new(Mutex::new(PlaylistRuntimeState::new())),
+            playlist_runtime,
             start_time,
             server_identity: ServerIdentity {
                 instance_id: "00000000-0000-7000-8000-000000000000".to_owned(),
@@ -742,7 +745,6 @@ impl AppState {
         // one API projection cannot silently clobber another projection's writes.
         let data_dir = ConfigManager::data_dir();
         let library_store = Arc::clone(&daemon.library_store);
-        let library_identity = Arc::clone(&daemon.library_identity);
         let driver_host = Arc::clone(&daemon.driver_host);
         let driver_registry = Arc::clone(&daemon.driver_registry);
         let domains = daemon.domains.clone();
@@ -800,7 +802,6 @@ impl AppState {
             output_power: daemon.output_power.clone(),
             scene_transactions: daemon.scene_transactions.clone(),
             library_store,
-            library_identity,
             playlist_runtime: Arc::clone(&daemon.playlist_runtime),
             start_time: daemon.start_time,
             server_identity: daemon.server_identity.clone(),

@@ -8,6 +8,7 @@ use hypercolor_core::config::ConfigManager;
 use hypercolor_daemon::api;
 use hypercolor_daemon::app_state::AppState;
 use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
+use hypercolor_types::event::HypercolorEvent;
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -197,12 +198,40 @@ async fn rescan_effects_invalidates_resolved_zone_revision() {
     )
     .expect("effect file should be written");
 
+    let mut events = state.event_bus.subscribe_all();
     let response = app
         .oneshot(rescan_request())
         .await
         .expect("rescan request should succeed");
 
     assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("rescan response body should read");
+    let response: serde_json::Value =
+        serde_json::from_slice(&body).expect("rescan response should be JSON");
+    let expected = (
+        response["data"]["added"]
+            .as_u64()
+            .expect("added count should be present") as usize,
+        response["data"]["removed"]
+            .as_u64()
+            .expect("removed count should be present") as usize,
+        response["data"]["updated"]
+            .as_u64()
+            .expect("updated count should be present") as usize,
+    );
+    let registry_updates = std::iter::from_fn(|| events.try_recv().ok())
+        .filter_map(|event| match event.event {
+            HypercolorEvent::EffectRegistryUpdated {
+                added,
+                removed,
+                updated,
+            } => Some((added, removed, updated)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(registry_updates, vec![expected]);
 
     let revision_after = {
         let scene_manager = state.scene_manager.snapshot().await;

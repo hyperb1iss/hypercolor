@@ -23,7 +23,6 @@ use hypercolor_types::api::scene::{
 };
 use hypercolor_types::control::ControlValue;
 use hypercolor_types::effect::{EffectCategory, EffectMetadata, EffectSource};
-use hypercolor_types::event::HypercolorEvent;
 use hypercolor_types::library::PresetId;
 
 use crate::api::envelope;
@@ -390,7 +389,7 @@ pub async fn get_effect_cover(
 
 /// `POST /api/v1/effects/rescan` — Manually trigger an effect registry rescan.
 pub async fn rescan_effects(State(state): State<Arc<AppState>>) -> Response {
-    let report = match crate::domain::effect::rescan_registry(state.as_ref()).await {
+    let report = match state.domains.effects.rescan_registry().await {
         Ok(report) => report,
         Err(error) => return error.into_response(),
     };
@@ -400,14 +399,6 @@ pub async fn rescan_effects(State(state): State<Arc<AppState>>) -> Response {
         removed = report.removed,
         updated = report.updated,
         "Manual effect rescan completed"
-    );
-
-    state.event_bus.publish(
-        hypercolor_types::event::HypercolorEvent::EffectRegistryUpdated {
-            added: report.added,
-            removed: report.removed,
-            updated: report.updated,
-        },
     );
 
     envelope::ok(RescanResponse {
@@ -461,21 +452,15 @@ pub async fn install_effect(
     // so existing assignments follow the update instead of a `-2` clone
     // appearing beside the original.
     let installed_path = install_dir.join(format!("{preferred_stem}.html"));
-    let installed =
-        match crate::domain::effect::install_registry_file(state.as_ref(), &installed_path, &html)
-            .await
-        {
-            Ok(installed) => installed,
-            Err(error) => return error.into_response(),
-        };
-
-    state
-        .event_bus
-        .publish(HypercolorEvent::EffectRegistryUpdated {
-            added: installed.report.added,
-            removed: installed.report.removed,
-            updated: installed.report.updated,
-        });
+    let installed = match state
+        .domains
+        .effects
+        .install_registry_file(&installed_path, &html)
+        .await
+    {
+        Ok(installed) => installed,
+        Err(error) => return error.into_response(),
+    };
 
     info!(
         effect = %installed.metadata.name,

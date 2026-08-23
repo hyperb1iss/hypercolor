@@ -135,8 +135,6 @@ pub struct DaemonState {
     /// to all of them and none can clobber another's in-memory copy.
     pub library_store: Arc<dyn crate::library::LibraryStore>,
 
-    pub(crate) library_identity: Arc<dyn crate::library::LibraryIdentityMigration>,
-
     /// Active playlist worker shared by API and filesystem watcher state.
     pub playlist_runtime: Arc<Mutex<PlaylistRuntimeState>>,
 

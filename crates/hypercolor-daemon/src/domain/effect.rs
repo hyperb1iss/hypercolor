@@ -10,8 +10,7 @@
 mod identity;
 
 pub(crate) use identity::{
-    EffectIdMigrations, install_registry_file, reload_registry_file, remap_effect_id, remap_zones,
-    rescan_registry,
+    EffectIdMigrations, EffectIdentityResources, remap_effect_id, remap_zones,
 };
 
 use std::collections::HashMap;
@@ -22,6 +21,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::SystemTime;
 
+use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::effect::{EffectEntry, EffectRegistry, RescanReport};
 use strum::VariantNames;
 use tempfile::NamedTempFile;
@@ -30,7 +30,7 @@ use hypercolor_types::api::scene::SideEffectOutcome;
 use hypercolor_types::config::EffectErrorFallbackPolicy;
 use hypercolor_types::control::ControlValue;
 use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
-use hypercolor_types::event::{EffectRef, EffectStopReason, ZoneChangeKind};
+use hypercolor_types::event::{EffectRef, EffectStopReason, HypercolorEvent, ZoneChangeKind};
 use hypercolor_types::layer::LayerSource;
 use hypercolor_types::library::PresetId;
 use hypercolor_types::scene::{SceneId, Zone, ZoneId};
@@ -57,6 +57,8 @@ pub struct EffectContext {
     scene: SceneContext,
     spatial: SpatialService,
     output: OutputContext,
+    identity: EffectIdentityResources,
+    event_bus: Arc<HypercolorBus>,
     update_gate: Arc<RwLock<()>>,
     #[cfg(test)]
     resolution_test_barrier: Arc<std::sync::Mutex<Option<Arc<EffectResolutionTestBarrier>>>>,
@@ -98,7 +100,6 @@ pub(crate) struct InstalledEffect {
     pub(crate) metadata: EffectMetadata,
     pub(crate) source_path: PathBuf,
     pub(crate) replaced_existing: bool,
-    pub(crate) report: RescanReport,
 }
 
 struct PendingEffectFile {
@@ -167,12 +168,16 @@ impl EffectContext {
         scene: SceneContext,
         spatial: SpatialService,
         output: OutputContext,
+        identity: EffectIdentityResources,
+        event_bus: Arc<HypercolorBus>,
     ) -> Self {
         Self {
             registry,
             scene,
             spatial,
             output,
+            identity,
+            event_bus,
             update_gate: Arc::new(RwLock::new(())),
             #[cfg(test)]
             resolution_test_barrier: Arc::new(std::sync::Mutex::new(None)),
@@ -183,6 +188,19 @@ impl EffectContext {
             #[cfg(test)]
             install_test_barrier: Arc::new(std::sync::Mutex::new(None)),
         }
+    }
+
+    pub(crate) async fn search_paths(&self) -> Vec<PathBuf> {
+        self.registry.read().await.search_paths().to_vec()
+    }
+
+    fn publish_registry_update(&self, report: &RescanReport) {
+        self.event_bus
+            .publish(HypercolorEvent::EffectRegistryUpdated {
+                added: report.added,
+                removed: report.removed,
+                updated: report.updated,
+            });
     }
 
     /// Current full-scope layout for a newly materialized primary zone.

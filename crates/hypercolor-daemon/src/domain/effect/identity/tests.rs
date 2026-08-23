@@ -22,7 +22,7 @@ use hypercolor_types::library::{
 use hypercolor_types::scene::{DisplayFaceTarget, SceneId, SceneKind, SceneMutationMode, ZoneRole};
 use tempfile::TempDir;
 
-use super::{install_registry_file, reload_registry_file, remap_zones, rescan_registry};
+use super::remap_zones;
 use crate::app_state::{AppState, AppStateBuilder};
 use crate::display_preferences::DisplayPreference;
 use crate::domain::DomainError;
@@ -296,7 +296,7 @@ async fn register_display_device(state: &AppState, device_id: DeviceId) {
 async fn assert_migration_is_blocked(
     state: Arc<AppState>,
 ) -> tokio::task::JoinHandle<Result<hypercolor_core::effect::RescanReport, DomainError>> {
-    let migration = tokio::spawn(async move { rescan_registry(state.as_ref()).await });
+    let migration = tokio::spawn(async move { state.domains.effects.rescan_registry().await });
     tokio::task::yield_now().await;
     assert!(
         !migration.is_finished(),
@@ -362,7 +362,11 @@ async fn same_stem_installs_and_watcher_reload_publish_whole_file_versions() {
         let state = Arc::clone(&state);
         let effect_path = effect_path.clone();
         tokio::spawn(async move {
-            install_registry_file(state.as_ref(), &effect_path, &first_html).await
+            state
+                .domains
+                .effects
+                .install_registry_file(&effect_path, &first_html)
+                .await
         })
     };
     barrier.wait_until_entered().await;
@@ -370,14 +374,24 @@ async fn same_stem_installs_and_watcher_reload_publish_whole_file_versions() {
     let watcher_reload = {
         let state = Arc::clone(&state);
         let effect_path = effect_path.clone();
-        tokio::spawn(async move { reload_registry_file(state.as_ref(), &effect_path).await })
+        tokio::spawn(async move {
+            state
+                .domains
+                .effects
+                .reload_registry_file(&effect_path)
+                .await
+        })
     };
     tokio::task::yield_now().await;
     let second_install = {
         let state = Arc::clone(&state);
         let effect_path = effect_path.clone();
         tokio::spawn(async move {
-            install_registry_file(state.as_ref(), &effect_path, &second_html).await
+            state
+                .domains
+                .effects
+                .install_registry_file(&effect_path, &second_html)
+                .await
         })
     };
     tokio::task::yield_now().await;
@@ -420,7 +434,10 @@ async fn rejected_install_restores_the_previous_file_and_publication() {
     let state = AppState::new_with_data_dir(temp.path().join("state"));
     let effect_path = temp.path().join("state/effects/user/shared.html");
     let original_html = installable_effect("Original", "const version = 'original';");
-    let original = install_registry_file(&state, &effect_path, &original_html)
+    let original = state
+        .domains
+        .effects
+        .install_registry_file(&effect_path, &original_html)
         .await
         .expect("original install should publish");
     let invalid_html = r#"<!DOCTYPE html>
@@ -429,7 +446,10 @@ async fn rejected_install_restores_the_previous_file_and_publication() {
 <meta preset="Two" preset-id="duplicate" preset-controls='{}' />
 </head><body><canvas id="exCanvas"></canvas><script>1</script></body></html>"#;
 
-    let error = install_registry_file(&state, &effect_path, invalid_html)
+    let error = state
+        .domains
+        .effects
+        .install_registry_file(&effect_path, invalid_html)
         .await
         .expect_err("duplicate preset ids should reject the install");
 
@@ -455,7 +475,11 @@ async fn late_rescan_migrates_every_live_and_durable_reference_before_publicatio
     let stale_mutation = fixture.state.scene_manager.begin_mutation().await;
     let revision_before = fixture.state.scene_manager.revision();
 
-    let report = rescan_registry(&fixture.state)
+    let report = fixture
+        .state
+        .domains
+        .effects
+        .rescan_registry()
         .await
         .expect("late rescan should migrate");
 
@@ -576,7 +600,11 @@ async fn late_rescan_migrates_every_live_and_durable_reference_before_publicatio
         .iter()
         .map(|path| std::fs::read(path).expect("migrated store should read"))
         .collect::<Vec<_>>();
-    rescan_registry(&fixture.state)
+    fixture
+        .state
+        .domains
+        .effects
+        .rescan_registry()
         .await
         .expect("repeated discovery should remain idempotent");
     let after_restart = durable_paths
@@ -599,7 +627,7 @@ async fn identity_publication_blocks_every_observer_until_registry_assignment() 
         .effects
         .pause_next_identity_inter_component_for_test();
     let rescan_state = Arc::clone(&state);
-    let rescan = tokio::spawn(async move { rescan_registry(rescan_state.as_ref()).await });
+    let rescan = tokio::spawn(async move { rescan_state.domains.effects.rescan_registry().await });
 
     barrier.wait_until_entered().await;
 
@@ -726,7 +754,11 @@ async fn identity_publication_blocks_every_observer_until_registry_assignment() 
 async fn watcher_reload_reapplies_the_ephemeral_map_idempotently() {
     let temp = TempDir::new().expect("tempdir");
     let fixture = late_migration_fixture(&temp).await;
-    rescan_registry(&fixture.state)
+    fixture
+        .state
+        .domains
+        .effects
+        .rescan_registry()
         .await
         .expect("initial rescan should migrate");
     fixture
@@ -737,7 +769,11 @@ async fn watcher_reload_reapplies_the_ephemeral_map_idempotently() {
         .expect("late legacy favorite should persist");
     write_effect(&fixture.effect_path, "Late Arrival Reloaded");
 
-    let report = reload_registry_file(&fixture.state, &fixture.effect_path)
+    let report = fixture
+        .state
+        .domains
+        .effects
+        .reload_registry_file(&fixture.effect_path)
         .await
         .expect("watcher reload should migrate");
 
@@ -801,10 +837,16 @@ async fn skipped_screen_cast_port_never_migrates_scene_persistence() {
         .expect("named scene should commit");
 
     for report in [
-        rescan_registry(&state)
+        state
+            .domains
+            .effects
+            .rescan_registry()
             .await
             .expect("rescan should skip the unavailable port"),
-        reload_registry_file(&state, &effect_path)
+        state
+            .domains
+            .effects
+            .reload_registry_file(&effect_path)
             .await
             .expect("watcher reload should skip the unavailable port"),
     ] {
@@ -847,7 +889,7 @@ async fn publication_conflict_reprepares_inside_the_same_rescan() {
         .effects
         .pause_next_identity_publication_for_test();
     let rescan_state = Arc::clone(&state);
-    let rescan = tokio::spawn(async move { rescan_registry(rescan_state.as_ref()).await });
+    let rescan = tokio::spawn(async move { rescan_state.domains.effects.rescan_registry().await });
 
     barrier.wait_until_entered().await;
     state
@@ -903,7 +945,10 @@ async fn rest_apply_resolved_before_migration_is_rejected_after_publication() {
     });
 
     barrier.wait_until_entered().await;
-    rescan_registry(state.as_ref())
+    state
+        .domains
+        .effects
+        .rescan_registry()
         .await
         .expect("migration should publish while REST resolution is paused");
     barrier.release();
@@ -932,7 +977,11 @@ async fn display_assignment_resolved_before_migration_is_rejected() {
         .metadata_for_mutation(fixture.legacy_id)
         .await
         .expect("legacy effect should resolve before migration");
-    rescan_registry(&fixture.state)
+    fixture
+        .state
+        .domains
+        .effects
+        .rescan_registry()
         .await
         .expect("migration should publish");
     let revision = fixture.state.scene_manager.revision();
@@ -986,7 +1035,10 @@ async fn cloned_playlist_item_resolved_before_migration_cannot_commit() {
     });
 
     barrier.wait_until_entered().await;
-    rescan_registry(state.as_ref())
+    state
+        .domains
+        .effects
+        .rescan_registry()
         .await
         .expect("migration should publish while playlist resolution is paused");
     barrier.release();
@@ -1269,7 +1321,11 @@ async fn scene_effect_writes_reject_unknown_and_retired_ids() {
     let fixture = late_migration_fixture(&temp).await;
     let legacy_id = fixture.legacy_id;
     let named_scene_id = fixture.named_scene_id;
-    rescan_registry(&fixture.state)
+    fixture
+        .state
+        .domains
+        .effects
+        .rescan_registry()
         .await
         .expect("migration should retire the legacy ID");
     let state = Arc::new(fixture.state);
@@ -1340,7 +1396,7 @@ async fn revision_neutral_snapshot_save_cannot_overtake_identity_publication() {
 
     let migration = {
         let state = Arc::clone(&state);
-        tokio::spawn(async move { rescan_registry(state.as_ref()).await })
+        tokio::spawn(async move { state.domains.effects.rescan_registry().await })
     };
     publication_barrier.wait_until_entered().await;
     assert_eq!(state.scene_manager.revision(), revision);
@@ -1393,7 +1449,7 @@ async fn shutdown_snapshot_cannot_overtake_identity_publication() {
 
     let migration = {
         let state = Arc::clone(&state);
-        tokio::spawn(async move { rescan_registry(state.as_ref()).await })
+        tokio::spawn(async move { state.domains.effects.rescan_registry().await })
     };
     publication_barrier.wait_until_entered().await;
 
@@ -1453,7 +1509,7 @@ async fn runtime_save_cannot_overtake_identity_publication() {
 
     let migration = {
         let state = Arc::clone(&state);
-        tokio::spawn(async move { rescan_registry(state.as_ref()).await })
+        tokio::spawn(async move { state.domains.effects.rescan_registry().await })
     };
     publication_barrier.wait_until_entered().await;
     assert_eq!(state.scene_manager.revision(), revision);
@@ -1531,7 +1587,10 @@ async fn migration_generation_preserves_an_admitted_newer_named_scene() {
         .expect("pre-migration scene store should load");
     assert!(before.list().all(|scene| scene.id != admitted_scene_id));
 
-    rescan_registry(state.as_ref())
+    state
+        .domains
+        .effects
+        .rescan_registry()
         .await
         .expect("the same rescan should migrate the admitted manager candidate");
     barrier.release();
@@ -1583,7 +1642,11 @@ async fn transient_store_failure_converges_without_another_rescan() {
         .expect("scene writer should resolve");
     writer.set_injected_replace_failures(1);
 
-    rescan_registry(&fixture.state)
+    fixture
+        .state
+        .domains
+        .effects
+        .rescan_registry()
         .await
         .expect("an admitted migration remains authoritative while persistence retries");
 

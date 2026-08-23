@@ -58,6 +58,7 @@ use crate::domain::context::{
     DeviceContext, DomainContextResources, DomainContexts, PlatformContext,
     RuntimeSessionProjection, RuntimeSessionService, SceneContext,
 };
+use crate::domain::effect::EffectIdentityResources;
 use crate::domain::layout::LayoutContext;
 use crate::domain::output::OutputContext;
 use crate::driver_inventory::{DRIVER_INVENTORY_FILENAME, DriverInventoryStore};
@@ -763,6 +764,11 @@ impl DaemonState {
             PlatformContext::new(input_status.clone(), Some(Arc::clone(&config_manager))),
             DomainContextResources {
                 effect_registry: Arc::clone(&effect_registry),
+                effect_identity: EffectIdentityResources::new(
+                    Arc::clone(&display_preferences),
+                    Arc::clone(&library_identity),
+                    Arc::clone(&playlist_runtime),
+                ),
                 spatial: spatial_engine.clone(),
                 event_bus: Arc::clone(&event_bus),
             },
@@ -784,7 +790,6 @@ impl DaemonState {
             _macos_owner_watch: macos_owner_watch,
             asset_library,
             library_store,
-            library_identity,
             playlist_runtime,
             preview_runtime,
             zone_layout_previews,
