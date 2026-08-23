@@ -4,8 +4,7 @@ use anyhow::Context;
 use tracing::{info, warn};
 
 use hypercolor_core::input::AudioReconfigurationConflict;
-use hypercolor_types::audio::{AudioPipelineConfig, AudioSourceType};
-use hypercolor_types::config::HypercolorConfig;
+use hypercolor_types::audio::AudioPipelineConfig;
 
 use crate::app_state::AppState;
 
@@ -39,7 +38,7 @@ async fn reconfigure_input_manager(state: &Arc<AppState>) -> anyhow::Result<()> 
         let capture_active = current_live_audio_capture_demand(state).await;
         let audio_device = latest_config.audio.device.clone();
         let audio_name = format!("AudioInput({audio_device})");
-        let effective_config = audio_pipeline_config(latest_config.as_ref());
+        let effective_config = AudioPipelineConfig::from(&latest_config.audio);
         let (plan, previous_sources) = {
             let input_manager = state.input_manager().lock().await;
             (
@@ -132,37 +131,4 @@ async fn current_live_audio_capture_demand(state: &Arc<AppState>) -> bool {
         .effects
         .any_audio_reactive(active_effect_ids)
         .await
-}
-
-fn audio_pipeline_config(config: &HypercolorConfig) -> AudioPipelineConfig {
-    AudioPipelineConfig {
-        source: audio_source_from_device(&config.audio.device, config.audio.enabled),
-        fft_size: usize::try_from(config.audio.fft_size).unwrap_or(1024),
-        smoothing: config.audio.smoothing.clamp(0.0, 1.0),
-        gain: 1.0,
-        noise_floor: noise_gate_to_db(config.audio.noise_gate),
-        beat_sensitivity: config.audio.beat_sensitivity.max(0.01),
-    }
-}
-
-fn audio_source_from_device(device: &str, enabled: bool) -> AudioSourceType {
-    if !enabled {
-        return AudioSourceType::None;
-    }
-
-    let normalized = device.trim();
-    if normalized.eq_ignore_ascii_case("none") {
-        AudioSourceType::None
-    } else if normalized.eq_ignore_ascii_case("default") {
-        AudioSourceType::SystemMonitor
-    } else if normalized.eq_ignore_ascii_case("microphone") {
-        AudioSourceType::Microphone
-    } else {
-        AudioSourceType::Named(normalized.to_owned())
-    }
-}
-
-fn noise_gate_to_db(noise_gate: f32) -> f32 {
-    let linear = noise_gate.clamp(0.000_001, 1.0);
-    20.0 * linear.log10()
 }

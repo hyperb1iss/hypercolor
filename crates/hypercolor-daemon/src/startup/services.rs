@@ -51,7 +51,7 @@ use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_driver_support::CredentialStore;
 use hypercolor_network::DriverModuleRegistry;
-use hypercolor_types::audio::{AudioPipelineConfig, AudioSourceType};
+use hypercolor_types::audio::AudioPipelineConfig;
 use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 
@@ -852,14 +852,7 @@ pub(crate) fn build_input_manager(
     input_manager.add_source(Box::new(hypercolor_core::input::NetSource::new()));
 
     if config.audio.enabled {
-        let audio_pipeline_config = AudioPipelineConfig {
-            source: audio_source_from_device(&config.audio.device),
-            fft_size: usize::try_from(config.audio.fft_size).unwrap_or(1024),
-            smoothing: config.audio.smoothing.clamp(0.0, 1.0),
-            gain: 1.0,
-            noise_floor: noise_gate_to_db(config.audio.noise_gate),
-            beat_sensitivity: config.audio.beat_sensitivity.max(0.01),
-        };
+        let audio_pipeline_config = AudioPipelineConfig::from(&config.audio);
         let audio_input = AudioInput::new(&audio_pipeline_config)
             .with_name(format!("AudioInput({})", config.audio.device));
         input_manager.add_source(Box::new(audio_input));
@@ -1489,19 +1482,6 @@ fn screen_capture_config_with_capacity_from(
         ..screen_capture_config_from(capture)?
     })
 }
-fn audio_source_from_device(device: &str) -> AudioSourceType {
-    let normalized = device.trim();
-    if normalized.eq_ignore_ascii_case("none") {
-        AudioSourceType::None
-    } else if normalized.eq_ignore_ascii_case("default") {
-        AudioSourceType::SystemMonitor
-    } else if normalized.eq_ignore_ascii_case("microphone") {
-        AudioSourceType::Microphone
-    } else {
-        AudioSourceType::Named(normalized.to_owned())
-    }
-}
-
 /// Authorities fixed before the daemon domain graph is assembled.
 ///
 /// Both composition roots fill this in, so the graph can only ever be
@@ -1636,11 +1616,6 @@ pub(crate) fn assemble_domains(
         domains,
         driver_host,
     })
-}
-
-fn noise_gate_to_db(noise_gate: f32) -> f32 {
-    let linear = noise_gate.clamp(0.000_001, 1.0);
-    20.0 * linear.log10()
 }
 
 #[cfg(all(
