@@ -84,7 +84,7 @@ pub enum EffectErrorFallbackPolicy {
     #[default]
     None,
     /// Clear every active render-zone assignment using the failing effect.
-    ClearGroups,
+    ClearZones,
 }
 
 impl EffectErrorFallbackPolicy {
@@ -92,7 +92,7 @@ impl EffectErrorFallbackPolicy {
     pub const fn event_label(self) -> Option<&'static str> {
         match self {
             Self::None => None,
-            Self::ClearGroups => Some("clear_groups"),
+            Self::ClearZones => Some("clear_zones"),
         }
     }
 }

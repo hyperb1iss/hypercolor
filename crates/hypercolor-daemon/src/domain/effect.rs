@@ -1051,7 +1051,7 @@ pub async fn apply_error_fallback(
 ) -> Result<Option<EffectErrorFallbackApplied>, DomainError> {
     match policy {
         EffectErrorFallbackPolicy::None => Ok(None),
-        EffectErrorFallbackPolicy::ClearGroups => {
+        EffectErrorFallbackPolicy::ClearZones => {
             clear_active_scene_effect_zones(ctx, effect_id).await
         }
     }

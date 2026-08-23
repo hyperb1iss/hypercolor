@@ -151,7 +151,7 @@ async fn seed_effect_identity_stores(
         &guard.legacy_state_path("runtime-state.json"),
         &runtime_state::RuntimeSessionSnapshot {
             active_scene_id: Some(SceneId::DEFAULT.to_string()),
-            default_scene_groups: named_scene.zones.clone(),
+            default_scene_zones: named_scene.zones.clone(),
             active_layout_id: None,
             manual_paused: false,
         },
@@ -221,7 +221,7 @@ async fn assert_effect_identity_everywhere(
         .expect("runtime state should exist");
     assert_eq!(
         runtime
-            .default_scene_groups
+            .default_scene_zones
             .iter()
             .flat_map(Zone::effect_ids)
             .collect::<Vec<_>>(),
@@ -1622,7 +1622,7 @@ async fn a_stale_runtime_snapshot_never_blocks_startup() {
         guard.runtime_state_path(),
         serde_json::json!({
             "active_scene_id": null,
-            "default_scene_groups": [],
+            "default_scene_zones": [],
             "active_layout_id": "layout_gone",
             "global_brightness": 0.25,
             "manual_paused": true,
@@ -1675,7 +1675,7 @@ async fn daemon_start_restores_persisted_active_layout_from_disk() {
         &guard.runtime_state_path(),
         &runtime_state::RuntimeSessionSnapshot {
             active_scene_id: Some(SceneId::DEFAULT.to_string()),
-            default_scene_groups: Vec::new(),
+            default_scene_zones: Vec::new(),
             active_layout_id: Some(restored_layout.id.clone()),
             manual_paused: false,
         },
@@ -1719,7 +1719,7 @@ async fn daemon_start_discards_legacy_runtime_brightness_and_restores_pause() {
         &runtime_path,
         serde_json::to_vec_pretty(&serde_json::json!({
             "active_scene_id": SceneId::DEFAULT.to_string(),
-            "default_scene_groups": [],
+            "default_scene_zones": [],
             "active_layout_id": null,
             "global_brightness": 0.42,
             "manual_paused": true,
@@ -1876,9 +1876,9 @@ async fn runtime_state_and_driver_inventory_persist_independently() {
         .expect("runtime state should load")
         .expect("runtime state snapshot should exist");
     assert_eq!(snapshot.active_scene_id, Some(SceneId::DEFAULT.to_string()));
-    assert_eq!(snapshot.default_scene_groups.len(), 1);
+    assert_eq!(snapshot.default_scene_zones.len(), 1);
     assert!(matches!(
-        snapshot.default_scene_groups[0]
+        snapshot.default_scene_zones[0]
             .layers
             .first()
             .map(|layer| &layer.source),
@@ -1933,7 +1933,7 @@ async fn daemon_start_restores_named_active_scene_and_default_groups() {
         &guard.runtime_state_path(),
         &runtime_state::RuntimeSessionSnapshot {
             active_scene_id: Some(named_scene_id.to_string()),
-            default_scene_groups: vec![default_group.clone()],
+            default_scene_zones: vec![default_group.clone()],
             active_layout_id: None,
             manual_paused: false,
         },
@@ -2069,7 +2069,7 @@ async fn default_scene_contents_restore_on_restart() {
         &guard.runtime_state_path(),
         &runtime_state::RuntimeSessionSnapshot {
             active_scene_id: Some(SceneId::DEFAULT.to_string()),
-            default_scene_groups: vec![Zone {
+            default_scene_zones: vec![Zone {
                 id: zone_id,
                 name: "Saved Default Group".to_owned(),
                 description: Some("Restored from runtime snapshot".to_owned()),
@@ -2475,7 +2475,7 @@ fn test_zone(id: &str, device_id: &str) -> Output {
 async fn effect_error_fallback_worker_clears_active_zones_when_configured() {
     let _guard = TestDataDirGuard::new().await;
     let mut config = default_config();
-    config.effect_engine.effect_error_fallback = EffectErrorFallbackPolicy::ClearGroups;
+    config.effect_engine.effect_error_fallback = EffectErrorFallbackPolicy::ClearZones;
     let temp = temp_config_file();
     std::fs::write(
         temp.path(),
@@ -2547,7 +2547,7 @@ async fn effect_error_fallback_worker_clears_active_zones_when_configured() {
                     fallback,
                     ..
                 } if effect_id == expected_effect_id
-                    && fallback.as_deref() == Some("clear_groups") =>
+                    && fallback.as_deref() == Some("clear_zones") =>
                 {
                     saw_fallback_event = true;
                 }

@@ -32,6 +32,53 @@ fn references_rust_member(source: &str, member: &str) -> bool {
 }
 
 #[test]
+fn persisted_scene_and_fallback_vocabulary_stays_zone_native() {
+    let sources = daemon_sources();
+    let source = |suffix: &str| {
+        sources
+            .iter()
+            .find(|(path, _)| path.ends_with(suffix))
+            .map(|(_, source)| source.as_str())
+            .unwrap_or_else(|| panic!("missing daemon source {suffix}"))
+    };
+    let runtime_state = source("runtime_state.rs")
+        .split_once("\n#[cfg(test)]\nmod tests {")
+        .map_or(source("runtime_state.rs"), |(production, _)| production);
+
+    for production in [
+        runtime_state,
+        source("domain/effect.rs"),
+        source("domain/layout/publication.rs"),
+        source("startup/lifecycle.rs"),
+    ] {
+        for retired in ["default_scene_groups", "ClearGroups", "clear_groups"] {
+            assert!(
+                !production.contains(retired),
+                "daemon production source contains retired term {retired}"
+            );
+        }
+    }
+
+    let types = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../hypercolor-types/src/config/effect_engine.rs"),
+    )
+    .expect("effect engine config source should read");
+    assert!(!types.contains("ClearGroups"));
+    assert!(!types.contains("clear_groups"));
+
+    let core = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../hypercolor-core/src/config/mod.rs"),
+    )
+    .expect("core config source should read");
+    assert_eq!(
+        core.matches("\"clear_groups\"").count(),
+        1,
+        "only the schema v4 migration may retain the old serialized value"
+    );
+}
+
+#[test]
 fn app_state_has_one_module_identity() {
     let banned = [
         "crate::api::AppState",

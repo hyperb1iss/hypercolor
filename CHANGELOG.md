@@ -53,6 +53,10 @@ and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `device-aliases.json` schema version 1 remains untouched but is no longer
   loaded. Back up and remove that file, then rescan devices to rebuild the
   schema version 2 alias overlay from the unchanged portable keys.
+- Effect error fallback now uses `clear_zones`, and runtime session snapshots
+  store default scene content under `default_scene_zones`. Schema version 4
+  config migrates the old fallback value once; schema version 5 config and
+  unversioned runtime snapshots reject the retired group-named spellings.
 
 ## [0.3.2] - 2026-08-15
 

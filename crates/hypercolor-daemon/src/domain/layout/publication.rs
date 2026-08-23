@@ -187,7 +187,7 @@ async fn persist_layout_runtime_phase(
                 if let LayoutPersistencePhase::Precommit(candidate) = phase {
                     snapshot.active_layout_id = Some(candidate.layout.id);
                     if candidate.active_scene_id == Some(SceneId::DEFAULT) {
-                        snapshot.default_scene_groups = candidate.resolved_zones.to_vec();
+                        snapshot.default_scene_zones = candidate.resolved_zones.to_vec();
                     }
                 }
             },

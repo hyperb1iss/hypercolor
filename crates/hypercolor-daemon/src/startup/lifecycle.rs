@@ -604,14 +604,14 @@ impl DaemonState {
 
         {
             let mut mutation = self.scene_manager.begin_mutation().await;
-            if !snapshot.default_scene_groups.is_empty() {
+            if !snapshot.default_scene_zones.is_empty() {
                 let Some(mut default_scene) = mutation.scenes().get(&SceneId::DEFAULT).cloned()
                 else {
                     anyhow::bail!("default scene is missing during runtime restore");
                 };
                 default_scene
                     .zones
-                    .clone_from(&snapshot.default_scene_groups);
+                    .clone_from(&snapshot.default_scene_zones);
                 mutation.restore_scene(default_scene)?;
             }
 
@@ -628,16 +628,16 @@ impl DaemonState {
                 }
             }
 
-            // Persisted groups carry a frozen layout snapshot that may pre-date
-            // the active layout restored just above. Re-align the primary group
+            // Persisted zones carry a frozen layout snapshot that may pre-date
+            // the active layout restored just above. Re-align the primary zone
             // so the render pipeline sees the current layout's zones.
             let active_layout = self.spatial_engine.snapshot().layout().as_ref().clone();
             mutation.sync_primary_layout(&active_layout);
             self.scene_manager.commit_mutation(mutation).await?;
         }
-        if !snapshot.default_scene_groups.is_empty() || requested_active_scene_id.is_some() {
+        if !snapshot.default_scene_zones.is_empty() || requested_active_scene_id.is_some() {
             info!(
-                groups = snapshot.default_scene_groups.len(),
+                zones = snapshot.default_scene_zones.len(),
                 active_scene_id = ?requested_active_scene_id.unwrap_or(SceneId::DEFAULT),
                 "Restored runtime scene snapshot"
             );

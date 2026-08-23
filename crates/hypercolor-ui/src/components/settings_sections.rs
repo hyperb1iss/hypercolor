@@ -989,8 +989,8 @@ pub fn RenderingSection(
         read_config(config, |cfg| {
             match cfg.effect_engine.effect_error_fallback {
                 hypercolor_types::config::EffectErrorFallbackPolicy::None => "none".to_string(),
-                hypercolor_types::config::EffectErrorFallbackPolicy::ClearGroups => {
-                    "clear_groups".to_string()
+                hypercolor_types::config::EffectErrorFallbackPolicy::ClearZones => {
+                    "clear_zones".to_string()
                 }
             }
         })
@@ -1021,10 +1021,7 @@ pub fn RenderingSection(
     ];
     let fallback_options = vec![
         ("none".to_string(), "Leave as-is".to_string()),
-        (
-            "clear_groups".to_string(),
-            "Clear failed groups".to_string(),
-        ),
+        ("clear_zones".to_string(), "Clear failed zones".to_string()),
     ];
 
     // Apply a preset by issuing two config writes. "custom" is a UI-only

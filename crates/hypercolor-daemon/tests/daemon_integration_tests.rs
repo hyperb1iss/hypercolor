@@ -374,7 +374,7 @@ async fn removed_runtime_effect_fields_are_rejected_on_startup() {
         &state.runtime_state_path,
         serde_json::to_string_pretty(&serde_json::json!({
             "active_scene_id": hypercolor_types::scene::SceneId::DEFAULT.to_string(),
-            "default_scene_groups": [],
+            "default_scene_zones": [],
             "active_effect_id": effect_id,
             "control_values": {
                 "speed": { "kind": "float", "value": 7.0 }

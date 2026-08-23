@@ -12397,7 +12397,7 @@ async fn deleting_display_device_prunes_scene_display_zones_and_persists_cleanup
         runtime_state::load(&state.runtime_state_path).expect("runtime state should load");
     let persisted = persisted.expect("runtime state should exist");
     assert!(
-        persisted.default_scene_groups.iter().all(|group| {
+        persisted.default_scene_zones.iter().all(|group| {
             group
                 .display_target
                 .as_ref()

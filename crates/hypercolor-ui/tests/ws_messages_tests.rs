@@ -421,7 +421,7 @@ fn extract_effect_error_hint_parses_fallback_payload() {
         &serde_json::json!({
             "effect_id": "effect-1",
             "error": "render exploded",
-            "fallback": "clear_groups",
+            "fallback": "clear_zones",
         }),
     )
     .expect("effect error hint");
@@ -429,7 +429,19 @@ fn extract_effect_error_hint_parses_fallback_payload() {
     assert_eq!(hint.event_type, "effect_error");
     assert_eq!(hint.effect_id, "effect-1");
     assert_eq!(hint.error, "render exploded");
-    assert_eq!(hint.fallback.as_deref(), Some("clear_groups"));
+    assert_eq!(hint.fallback.as_deref(), Some("clear_zones"));
+}
+
+#[test]
+fn effect_fallback_ui_consumers_keep_zone_vocabulary() {
+    for source in [
+        include_str!("../src/app/effect_state.rs"),
+        include_str!("../src/components/settings_sections.rs"),
+        include_str!("../src/pages/effects.rs"),
+    ] {
+        assert!(!source.contains("clear_groups"));
+        assert!(!source.contains("ClearGroups"));
+    }
 }
 
 #[test]

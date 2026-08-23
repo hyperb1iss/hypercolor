@@ -350,7 +350,7 @@ pub(super) fn effect_error_toast_message(
 ) -> String {
     let effect_name = effect_error_display_name(ctx, &effect_error.effect_id);
     match effect_error.fallback.as_deref() {
-        Some("clear_groups") => {
+        Some("clear_zones") => {
             format!("{effect_name} crashed and was cleared from the active scene.")
         }
         Some(fallback) if !fallback.is_empty() => {

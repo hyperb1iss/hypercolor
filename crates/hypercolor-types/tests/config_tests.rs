@@ -753,10 +753,12 @@ zones = ["keyboard", "mouse"]
 fn effect_engine_compositor_acceleration_mode_toml_roundtrip() {
     let original = EffectEngineConfig {
         compositor_acceleration_mode: RenderAccelerationMode::Auto,
-        effect_error_fallback: EffectErrorFallbackPolicy::ClearGroups,
+        effect_error_fallback: EffectErrorFallbackPolicy::ClearZones,
         ..EffectEngineConfig::default()
     };
     let toml_str = toml::to_string(&original).expect("serialize EffectEngineConfig");
+    assert!(toml_str.contains("effect_error_fallback = \"clear_zones\""));
+    assert!(!toml_str.contains("clear_groups"));
     let restored: EffectEngineConfig =
         toml::from_str(&toml_str).expect("deserialize EffectEngineConfig");
     assert_eq!(
@@ -765,7 +767,7 @@ fn effect_engine_compositor_acceleration_mode_toml_roundtrip() {
     );
     assert_eq!(
         restored.effect_error_fallback,
-        EffectErrorFallbackPolicy::ClearGroups
+        EffectErrorFallbackPolicy::ClearZones
     );
 }
 

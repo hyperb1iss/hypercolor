@@ -4,7 +4,7 @@ use std::fs;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use hypercolor_core::config::ConfigManager;
-use hypercolor_types::config::InteractionRoutePolicy;
+use hypercolor_types::config::{EffectErrorFallbackPolicy, InteractionRoutePolicy};
 
 // ─── TOML Parsing ───────────────────────────────────────────────────────────
 
@@ -37,6 +37,32 @@ fn schema_v4_renames_start_profile_before_deserialization() {
 
     assert_eq!(config.schema_version, 5);
     assert_eq!(config.daemon.start_scene, "Evening");
+}
+
+#[test]
+fn schema_v4_renames_clear_groups_fallback_before_deserialization() {
+    let config = ConfigManager::parse_toml(
+        "schema_version = 4\n[effect_engine]\neffect_error_fallback = \"clear_groups\"\n",
+    )
+    .expect("schema v4 should migrate");
+
+    assert_eq!(
+        config.effect_engine.effect_error_fallback,
+        EffectErrorFallbackPolicy::ClearZones
+    );
+}
+
+#[test]
+fn schema_v5_refuses_the_retired_clear_groups_fallback() {
+    let error = ConfigManager::parse_toml(
+        "schema_version = 5\n[effect_engine]\neffect_error_fallback = \"clear_groups\"\n",
+    )
+    .expect_err("schema v5 must reject the retired fallback value");
+
+    assert!(
+        format!("{error:#}").contains("unknown variant `clear_groups`"),
+        "{error:#}"
+    );
 }
 
 #[test]

@@ -706,8 +706,9 @@ impl ConfigManager {
     /// This is THE config parser: file loads, tooling, and tests all run
     /// the same parse and normalize, so no caller can materialize a
     /// config that skips them. Schema v4 is upgraded in memory by
-    /// renaming `daemon.start_profile` to `daemon.start_scene`; every
-    /// other older or newer schema is refused rather than guessed at.
+    /// renaming `daemon.start_profile` to `daemon.start_scene` and the
+    /// effect fallback value `clear_groups` to `clear_zones`; every other
+    /// older or newer schema is refused rather than guessed at.
     ///
     /// # Errors
     ///
@@ -760,6 +761,19 @@ fn migrate_v4_to_v5(document: &mut toml::Value) -> Result<()> {
         if let Some(start_scene) = daemon.remove("start_profile") {
             daemon.insert("start_scene".to_owned(), start_scene);
         }
+    }
+    if let Some(effect_engine) = root
+        .get_mut("effect_engine")
+        .and_then(toml::Value::as_table_mut)
+        && effect_engine
+            .get("effect_error_fallback")
+            .and_then(toml::Value::as_str)
+            == Some("clear_groups")
+    {
+        effect_engine.insert(
+            "effect_error_fallback".to_owned(),
+            toml::Value::String("clear_zones".to_owned()),
+        );
     }
     root.insert(
         "schema_version".to_owned(),

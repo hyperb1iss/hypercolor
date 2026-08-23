@@ -29,7 +29,7 @@ pub struct RuntimeSessionSnapshot {
     pub active_scene_id: Option<String>,
 
     /// Full zones for the synthesized default scene.
-    pub default_scene_groups: Vec<Zone>,
+    pub default_scene_zones: Vec<Zone>,
 
     /// Active layout ID, if one was applied to the spatial engine.
     pub active_layout_id: Option<String>,
@@ -41,7 +41,7 @@ pub struct RuntimeSessionSnapshot {
 impl RuntimeSessionSnapshot {
     /// Rewrite path-derived effect IDs in the persisted default scene.
     pub fn migrate_effect_ids(&mut self, migrations: &EffectIdMigrations) -> usize {
-        remap_zones(&mut self.default_scene_groups, migrations)
+        remap_zones(&mut self.default_scene_zones, migrations)
     }
 }
 
@@ -93,14 +93,14 @@ pub enum RuntimeSessionError {
 #[must_use]
 pub fn snapshot_from_scene_manager(manager: &SceneManager) -> RuntimeSessionSnapshot {
     let active_scene_id = manager.active_scene_id().map(ToString::to_string);
-    let default_scene_groups = manager
+    let default_scene_zones = manager
         .get(&SceneId::DEFAULT)
         .map(|scene| scene.zones.clone())
         .unwrap_or_default();
 
     RuntimeSessionSnapshot {
         active_scene_id,
-        default_scene_groups,
+        default_scene_zones,
         active_layout_id: None,
         manual_paused: false,
     }
@@ -290,18 +290,41 @@ mod tests {
 
         let expected = RuntimeSessionSnapshot {
             active_scene_id: Some(SceneId::DEFAULT.to_string()),
-            default_scene_groups: Vec::new(),
+            default_scene_zones: Vec::new(),
             active_layout_id: Some("layout_abc123".to_owned()),
             manual_paused: true,
         };
 
         save(&path, &expected).expect("save snapshot");
+        let serialized = std::fs::read_to_string(&path).expect("saved snapshot should read");
+        assert!(serialized.contains("\"default_scene_zones\""));
+        assert!(!serialized.contains("default_scene_groups"));
         let loaded = load(&path).expect("load snapshot");
         let loaded = loaded.expect("snapshot should exist");
 
         assert_eq!(loaded.active_scene_id, expected.active_scene_id);
-        assert_eq!(loaded.default_scene_groups, expected.default_scene_groups);
+        assert_eq!(loaded.default_scene_zones, expected.default_scene_zones);
         assert_eq!(loaded.manual_paused, expected.manual_paused);
+    }
+
+    #[test]
+    fn runtime_snapshot_refuses_the_retired_default_scene_groups_key() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let path = tempdir.path().join("runtime-state.json");
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({
+                "active_scene_id": null,
+                "default_scene_groups": [],
+                "active_layout_id": null,
+                "manual_paused": false,
+            }))
+            .expect("retired snapshot should serialize"),
+        )
+        .expect("retired snapshot should write");
+
+        let error = load(&path).expect_err("retired runtime key must be refused");
+        assert!(matches!(error, RuntimeSessionError::Parse { .. }));
     }
 
     #[test]
@@ -323,7 +346,7 @@ mod tests {
             None,
         )];
         let snapshot = RuntimeSessionSnapshot {
-            default_scene_groups: vec![zone],
+            default_scene_zones: vec![zone],
             ..RuntimeSessionSnapshot::default()
         };
         let payload = serde_json::to_value(snapshot).expect("snapshot should serialize");
@@ -336,13 +359,13 @@ mod tests {
         let loaded = load(&path)
             .expect("snapshot should load")
             .expect("snapshot should exist");
-        let loaded_id = loaded.default_scene_groups[0].layers[0].id;
+        let loaded_id = loaded.default_scene_zones[0].layers[0].id;
         assert_eq!(loaded_id.as_uuid(), zone_id.0);
 
         let reloaded = load(&path)
             .expect("snapshot should reload")
             .expect("snapshot should exist");
-        assert_eq!(reloaded.default_scene_groups[0].layers[0].id, loaded_id);
+        assert_eq!(reloaded.default_scene_zones[0].layers[0].id, loaded_id);
     }
 
     #[test]
@@ -364,7 +387,7 @@ mod tests {
             None,
         )];
         let mut snapshot = RuntimeSessionSnapshot {
-            default_scene_groups: vec![zone],
+            default_scene_zones: vec![zone],
             ..RuntimeSessionSnapshot::default()
         };
         save(&path, &snapshot).expect("legacy snapshot should persist");
@@ -382,7 +405,7 @@ mod tests {
             .expect("snapshot should reload")
             .expect("snapshot should exist");
         assert_eq!(
-            reopened.default_scene_groups[0]
+            reopened.default_scene_zones[0]
                 .effect_ids()
                 .collect::<Vec<_>>(),
             vec![canonical_id]
@@ -402,7 +425,7 @@ mod tests {
             &path,
             serde_json::to_vec(&serde_json::json!({
                 "active_scene_id": null,
-                "default_scene_groups": [],
+                "default_scene_zones": [],
                 "active_layout_id": null,
                 "global_brightness": 1.0,
                 "manual_paused": false,
@@ -445,7 +468,7 @@ mod tests {
             &path,
             serde_json::to_vec(&serde_json::json!({
                 "active_scene_id": null,
-                "default_scene_groups": [],
+                "default_scene_zones": [],
                 "active_layout_id": null,
                 "global_brightness": 1.0,
             }))
@@ -466,7 +489,7 @@ mod tests {
         let path = Arc::new(tempdir.path().join("runtime-state.json"));
         let snapshot = Arc::new(RuntimeSessionSnapshot {
             active_scene_id: Some(SceneId::DEFAULT.to_string()),
-            default_scene_groups: Vec::new(),
+            default_scene_zones: Vec::new(),
             active_layout_id: None,
             manual_paused: false,
         });
@@ -506,7 +529,7 @@ mod tests {
             &path,
             serde_json::to_string_pretty(&serde_json::json!({
                 "active_scene_id": SceneId::DEFAULT.to_string(),
-                "default_scene_groups": [],
+                "default_scene_zones": [],
                 "active_effect_id": "0195e5b0-b2ea-7f22-9ab2-9bc31b48adf3",
             }))
             .expect("snapshot json should serialize"),

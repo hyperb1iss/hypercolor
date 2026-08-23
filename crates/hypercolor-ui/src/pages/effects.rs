@@ -367,7 +367,7 @@ pub fn EffectsPage() -> impl IntoView {
         Some((
             effect.name,
             match effect_error.fallback.as_deref() {
-                Some("clear_groups") => {
+                Some("clear_zones") => {
                     "The daemon cleared this effect from the active scene after a render failure."
                         .to_owned()
                 }

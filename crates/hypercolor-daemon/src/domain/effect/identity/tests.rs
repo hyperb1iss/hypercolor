@@ -550,7 +550,7 @@ async fn late_rescan_migrates_every_live_and_durable_reference_before_publicatio
         .expect("runtime state should exist");
     assert!(
         runtime
-            .default_scene_groups
+            .default_scene_zones
             .iter()
             .flat_map(hypercolor_types::scene::Zone::effect_ids)
             .all(|effect_id| effect_id == fixture.canonical_id)
@@ -1493,7 +1493,7 @@ async fn runtime_save_cannot_overtake_identity_publication() {
         .expect("runtime state should exist after the race");
     assert!(
         runtime
-            .default_scene_groups
+            .default_scene_zones
             .iter()
             .flat_map(hypercolor_types::scene::Zone::effect_ids)
             .all(|effect_id| effect_id == fixture.canonical_id)

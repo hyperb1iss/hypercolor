@@ -1062,7 +1062,7 @@ async fn stateful_display_face_tool_assigns_and_clears_face_groups() {
         assign_snapshot.active_scene_id,
         Some(SceneId::DEFAULT.to_string())
     );
-    assert_eq!(assign_snapshot.default_scene_groups.len(), 2);
+    assert_eq!(assign_snapshot.default_scene_zones.len(), 2);
 
     let mut saw_assign_event = false;
     while let Ok(timestamped) = assign_events.try_recv() {
@@ -1107,9 +1107,9 @@ async fn stateful_display_face_tool_assigns_and_clears_face_groups() {
     let clear_snapshot = runtime_state::load(&state.runtime_state_path)
         .expect("runtime snapshot should load")
         .expect("runtime snapshot should exist");
-    assert_eq!(clear_snapshot.default_scene_groups.len(), 2);
+    assert_eq!(clear_snapshot.default_scene_zones.len(), 2);
     let display_zone = clear_snapshot
-        .default_scene_groups
+        .default_scene_zones
         .iter()
         .find(|group| group.role == hypercolor_types::scene::ZoneRole::Display)
         .expect("display screen surface should survive face clear");
@@ -1940,13 +1940,13 @@ async fn stateful_set_effect_and_clear_zone_sync_scene_runtime_and_events() {
     let active_snapshot = runtime_state::load(&state.runtime_state_path)
         .expect("runtime snapshot should load")
         .expect("runtime snapshot should exist");
-    assert_eq!(active_snapshot.default_scene_groups.len(), 1);
+    assert_eq!(active_snapshot.default_scene_zones.len(), 1);
     assert_eq!(
-        active_snapshot.default_scene_groups[0].effect_ids().next(),
+        active_snapshot.default_scene_zones[0].effect_ids().next(),
         Some(effect.id)
     );
     assert_eq!(
-        effect_controls(&active_snapshot.default_scene_groups[0])
+        effect_controls(&active_snapshot.default_scene_zones[0])
             .and_then(|controls| controls.get("speed")),
         Some(&ControlValue::Float(7.5))
     );
@@ -2003,8 +2003,8 @@ async fn stateful_set_effect_and_clear_zone_sync_scene_runtime_and_events() {
     let stopped_snapshot = runtime_state::load(&state.runtime_state_path)
         .expect("runtime snapshot should load")
         .expect("runtime snapshot should exist");
-    assert_eq!(stopped_snapshot.default_scene_groups.len(), 1);
-    assert!(stopped_snapshot.default_scene_groups[0].layers.is_empty());
+    assert_eq!(stopped_snapshot.default_scene_zones.len(), 1);
+    assert!(stopped_snapshot.default_scene_zones[0].layers.is_empty());
 
     let cleared_group = {
         let manager = state.scene_manager.snapshot().await;
@@ -2100,17 +2100,17 @@ async fn stateful_set_color_syncs_scene_runtime_state() {
     let snapshot = runtime_state::load(&state.runtime_state_path)
         .expect("runtime snapshot should load")
         .expect("runtime snapshot should exist");
-    assert_eq!(snapshot.default_scene_groups.len(), 1);
+    assert_eq!(snapshot.default_scene_zones.len(), 1);
     assert_eq!(
-        snapshot.default_scene_groups[0].effect_ids().next(),
+        snapshot.default_scene_zones[0].effect_ids().next(),
         Some(solid_effect.id)
     );
     assert_eq!(
-        effect_controls(&snapshot.default_scene_groups[0])
+        effect_controls(&snapshot.default_scene_zones[0])
             .and_then(|controls| controls.get("brightness")),
         Some(&ControlValue::Float(0.5))
     );
-    match effect_controls(&snapshot.default_scene_groups[0])
+    match effect_controls(&snapshot.default_scene_zones[0])
         .and_then(|controls| controls.get("color"))
     {
         Some(ControlValue::ColorLinear(color)) => {
