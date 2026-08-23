@@ -1542,7 +1542,6 @@ async fn layouts_show_json_output_preserves_the_daemon_payload() -> Result<()> {
         "zones": [],
         "default_sampling_mode": { "type": "bilinear" },
         "default_edge_behavior": "clamp",
-        "spaces": null,
         "version": 1
     });
     let expected = payload.clone();
