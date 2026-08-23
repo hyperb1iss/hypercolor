@@ -30,7 +30,7 @@ use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_driver_support::CredentialStore;
 use hypercolor_network::DriverModuleRegistry;
-use hypercolor_types::config::{HypercolorConfig, RenderAccelerationMode};
+use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::server::ServerIdentity;
 
 use crate::attachment_profiles::ComponentProfileStore;
@@ -330,16 +330,6 @@ fn default_state_dir(data_dir: &Path) -> PathBuf {
         ConfigManager::state_dir()
     } else {
         data_dir.join("state")
-    }
-}
-
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) const fn effect_renderer_acceleration_mode(
-    requested_mode: RenderAccelerationMode,
-) -> RenderAccelerationMode {
-    match requested_mode {
-        RenderAccelerationMode::Gpu => RenderAccelerationMode::Cpu,
-        mode => mode,
     }
 }
 
@@ -809,32 +799,10 @@ impl Default for AppState {
 
 #[cfg(test)]
 mod tests {
-    use hypercolor_types::config::RenderAccelerationMode;
-
-    use super::{AppState, effect_renderer_acceleration_mode};
+    use super::AppState;
 
     #[test]
     fn test_app_state_constructs_without_an_ambient_runtime() {
         let _state = AppState::new();
-    }
-
-    #[test]
-    fn effect_renderer_mode_keeps_cpu_and_auto_requests() {
-        assert_eq!(
-            effect_renderer_acceleration_mode(RenderAccelerationMode::Cpu),
-            RenderAccelerationMode::Cpu
-        );
-        assert_eq!(
-            effect_renderer_acceleration_mode(RenderAccelerationMode::Auto),
-            RenderAccelerationMode::Auto
-        );
-    }
-
-    #[test]
-    fn effect_renderer_mode_downgrades_gpu_requests_to_cpu() {
-        assert_eq!(
-            effect_renderer_acceleration_mode(RenderAccelerationMode::Gpu),
-            RenderAccelerationMode::Cpu
-        );
     }
 }
