@@ -184,7 +184,7 @@ pub fn StudioDeviceCard(
                 scene
                     .zones
                     .iter()
-                    .find(|group| group.id.to_string() == select)
+                    .find(|zone| zone.id.to_string() == select)
                     .map(api::zone_outputs)
             })
         })
@@ -628,9 +628,9 @@ fn card_ops_menu(
                     scene
                         .zones
                         .iter()
-                        .filter(|group| group.role != ZoneRole::Display)
-                        .filter(|group| group.id.to_string() != current.get_value())
-                        .map(|group| (group.id.to_string(), zone_display_name(group)))
+                        .filter(|zone| zone.role != ZoneRole::Display)
+                        .filter(|zone| zone.id.to_string() != current.get_value())
+                        .map(|zone| (zone.id.to_string(), zone_display_name(zone)))
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default()
@@ -977,10 +977,9 @@ fn remove_device_from_zone(studio: StudioContext, zone_id: String, device_id: St
     let output_ids: Vec<String> = scene
         .zones
         .iter()
-        .find(|group| group.id.to_string() == zone_id)
-        .map(|group| {
-            group
-                .members
+        .find(|zone| zone.id.to_string() == zone_id)
+        .map(|zone| {
+            zone.members
                 .iter()
                 .filter(|member| member.device_id == device_id)
                 .map(|member| member.id.to_string())
@@ -1095,14 +1094,14 @@ fn screen_surface_id_for_device(studio: StudioContext, device_id: &str) -> Optio
             scene
                 .zones
                 .iter()
-                .find(|group| {
-                    group.role == ZoneRole::Display
-                        && group
+                .find(|zone| {
+                    zone.role == ZoneRole::Display
+                        && zone
                             .display_target
                             .as_ref()
                             .is_some_and(|target| target.device_id.to_string() == device_id)
                 })
-                .map(|group| group.id.to_string())
+                .map(|zone| zone.id.to_string())
         })
     })
 }

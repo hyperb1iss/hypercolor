@@ -56,13 +56,12 @@ pub fn ZoneAddDevice(zone_id: String) -> impl IntoView {
                 let outputs_outside_target = scene
                     .zones
                     .iter()
-                    .filter(|group| group.id.to_string() != target)
-                    .flat_map(|group| group.members.iter())
+                    .filter(|zone| zone.id.to_string() != target)
+                    .flat_map(|zone| zone.members.iter())
                     .filter(|member| member.device_id == device_layout_id)
                     .count();
-                let any_output = scene.zones.iter().any(|group| {
-                    group
-                        .members
+                let any_output = scene.zones.iter().any(|zone| {
+                    zone.members
                         .iter()
                         .any(|member| member.device_id == device_layout_id)
                 });
@@ -164,11 +163,11 @@ pub(super) fn assign_device_to_zone(
         return;
     };
     let mut assignments: Vec<OutputAssignment> = Vec::new();
-    for group in &scene.zones {
-        if group.id.to_string() == zone_id {
+    for zone in &scene.zones {
+        if zone.id.to_string() == zone_id {
             continue;
         }
-        for member in &group.members {
+        for member in &zone.members {
             if member.device_id == device.layout_device_id {
                 assignments.push(OutputAssignment::Existing {
                     id: member.id.to_string(),
@@ -300,35 +299,35 @@ fn mint_device_zones(
 /// The non-target zone that currently owns a device's outputs, or
 /// "unassigned" if no zone holds any. Drives the location hint in the
 /// picker label so the user sees where the move comes from.
-fn device_location(groups: &[api::ZoneResource], device_id: &str, target: &str) -> String {
-    for group in groups {
-        if group.role == ZoneRole::Display {
+fn device_location(zones: &[api::ZoneResource], device_id: &str, target: &str) -> String {
+    for zone in zones {
+        if zone.role == ZoneRole::Display {
             continue;
         }
-        if group.id.to_string() == target {
+        if zone.id.to_string() == target {
             continue;
         }
-        if group
+        if zone
             .members
             .iter()
             .any(|member| member.device_id == device_id)
         {
-            return format!("in {}", zone_display_name(group));
+            return format!("in {}", zone_display_name(zone));
         }
     }
     "unassigned".to_owned()
 }
 
 /// Display name for a zone: the user's typed name, or "Default zone" for an
-/// unnamed `Primary` group, so it never surfaces a raw role string. Shared
+/// unnamed `Primary` zone, so it never surfaces a raw role string. Shared
 /// with the device card's move-to-zone picker.
-pub(super) fn zone_display_name(group: &api::ZoneResource) -> String {
-    let trimmed = group.name.trim();
-    if group.role == ZoneRole::Primary
+pub(super) fn zone_display_name(zone: &api::ZoneResource) -> String {
+    let trimmed = zone.name.trim();
+    if zone.role == ZoneRole::Primary
         && (trimmed.is_empty() || trimmed.eq_ignore_ascii_case("primary"))
     {
         "Default zone".to_owned()
     } else {
-        group.name.clone()
+        zone.name.clone()
     }
 }

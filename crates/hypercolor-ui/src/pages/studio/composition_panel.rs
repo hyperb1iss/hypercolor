@@ -26,8 +26,8 @@ use super::surface::UNASSIGNED_SURFACE_ID;
 #[component]
 pub fn CompositionPanel(
     #[prop(into)] active_scene: Signal<Option<api::SceneDocument>>,
-    selected_group_id: ReadSignal<Option<String>>,
-    set_selected_group_id: WriteSignal<Option<String>>,
+    selected_zone_id: ReadSignal<Option<String>>,
+    set_selected_zone_id: WriteSignal<Option<String>>,
     #[prop(into)] surface_label: Signal<Option<String>>,
     layers_resource: LocalResource<api::ApiResult<api::LayerStackResponse>>,
     on_layers_mutated: Callback<()>,
@@ -41,19 +41,19 @@ pub fn CompositionPanel(
     // still in flight, which panics the reactive runtime when the stale
     // Suspense closure re-polls.
     let is_unassigned =
-        Memo::new(move |_| selected_group_id.get().as_deref() == Some(UNASSIGNED_SURFACE_ID));
+        Memo::new(move |_| selected_zone_id.get().as_deref() == Some(UNASSIGNED_SURFACE_ID));
 
     // A Screen surface's backing display device — present only while the
-    // selection is a display-role group with a bound target. Drives the
+    // selection is a display-role zone with a bound target. Drives the
     // face-composition section above the layer stack.
     let screen_device_id = Memo::new(move |_| {
-        let selected = selected_group_id.get()?;
+        let selected = selected_zone_id.get()?;
         let scene = active_scene.get()?;
         scene
             .zones
             .iter()
-            .find(|group| group.id.to_string() == selected && group.role == ZoneRole::Display)
-            .and_then(|group| group.display_target.as_ref())
+            .find(|zone| zone.id.to_string() == selected && zone.role == ZoneRole::Display)
+            .and_then(|zone| zone.display_target.as_ref())
             .map(|target| target.device_id.to_string())
     });
 
@@ -98,8 +98,8 @@ pub fn CompositionPanel(
                             <ScreenCompositionSection display_device_id=screen_device_id />
                             <LayerPanel
                                 active_scene=active_scene
-                                selected_group_id=selected_group_id
-                                set_selected_group_id=set_selected_group_id
+                                selected_zone_id=selected_zone_id
+                                set_selected_zone_id=set_selected_zone_id
                                 surface_label=surface_label
                                 layers_resource=layers_resource
                                 on_layers_mutated=on_layers_mutated

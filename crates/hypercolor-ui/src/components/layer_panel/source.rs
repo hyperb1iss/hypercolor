@@ -161,12 +161,12 @@ pub fn effect_picker_matches_query(name: &str, category: EffectCategory, query: 
 /// nothing to scope to, and a scope that would target nothing is dropped
 /// (§6.6), so a result shorter than two means "show no selector".
 #[must_use]
-pub fn available_add_layer_scopes(groups: &[ZoneResource]) -> Vec<AddLayerScope> {
-    if groups.len() < 2 {
+pub fn available_add_layer_scopes(zones: &[ZoneResource]) -> Vec<AddLayerScope> {
+    if zones.len() < 2 {
         return Vec::new();
     }
-    let has_lights = groups.iter().any(|group| group.role != ZoneRole::Display);
-    let has_screens = groups.iter().any(|group| group.role == ZoneRole::Display);
+    let has_lights = zones.iter().any(|zone| zone.role != ZoneRole::Display);
+    let has_screens = zones.iter().any(|zone| zone.role == ZoneRole::Display);
     let mut scopes = vec![AddLayerScope::ThisSurface];
     if has_lights {
         scopes.push(AddLayerScope::AllZones);
@@ -184,22 +184,22 @@ pub fn available_add_layer_scopes(groups: &[ZoneResource]) -> Vec<AddLayerScope>
 #[must_use]
 pub fn resolve_add_layer_targets(
     scope: AddLayerScope,
-    groups: &[ZoneResource],
-    selected_group_id: &str,
+    zones: &[ZoneResource],
+    selected_zone_id: &str,
 ) -> Vec<String> {
     match scope {
-        AddLayerScope::ThisSurface => vec![selected_group_id.to_owned()],
-        AddLayerScope::AllZones => groups
+        AddLayerScope::ThisSurface => vec![selected_zone_id.to_owned()],
+        AddLayerScope::AllZones => zones
             .iter()
-            .filter(|group| group.role != ZoneRole::Display)
-            .map(|group| group.id.to_string())
+            .filter(|zone| zone.role != ZoneRole::Display)
+            .map(|zone| zone.id.to_string())
             .collect(),
-        AddLayerScope::AllScreens => groups
+        AddLayerScope::AllScreens => zones
             .iter()
-            .filter(|group| group.role == ZoneRole::Display)
-            .map(|group| group.id.to_string())
+            .filter(|zone| zone.role == ZoneRole::Display)
+            .map(|zone| zone.id.to_string())
             .collect(),
-        AddLayerScope::WholeScene => groups.iter().map(|group| group.id.to_string()).collect(),
+        AddLayerScope::WholeScene => zones.iter().map(|zone| zone.id.to_string()).collect(),
     }
 }
 

@@ -61,7 +61,7 @@ fn layer_title(
 /// the source's own controls, and a transform/color disclosure.
 #[component]
 pub fn LayerRow(
-    group_id: String,
+    zone_id: String,
     layer: SceneLayer,
     stack_index: usize,
     total_layers: usize,
@@ -130,8 +130,8 @@ pub fn LayerRow(
                 <div class="flex shrink-0 items-center gap-1">
                     {show_reorder
                         .then(|| {
-                            let group_up = group_id.clone();
-                            let group_down = group_id.clone();
+                            let zone_up = zone_id.clone();
+                            let zone_down = zone_id.clone();
                             let up_stack = move_up_stack.clone();
                             let down_stack = move_down_stack.clone();
                             view! {
@@ -141,7 +141,7 @@ pub fn LayerRow(
                                     disabled=!can_move_up
                                     title="Move layer up"
                                     on:click=move |_| reorder_layer(
-                                        group_up.clone(),
+                                        zone_up.clone(),
                                         up_stack.clone(),
                                         stack_index,
                                         1,
@@ -157,7 +157,7 @@ pub fn LayerRow(
                                     disabled=!can_move_down
                                     title="Move layer down"
                                     on:click=move |_| reorder_layer(
-                                        group_down.clone(),
+                                        zone_down.clone(),
                                         down_stack.clone(),
                                         stack_index,
                                         -1,
@@ -174,10 +174,10 @@ pub fn LayerRow(
                         class="rounded-md p-1.5 text-fg-tertiary transition-colors hover:text-status-error btn-press"
                         title="Delete layer"
                         on:click={
-                            let group_id = group_id.clone();
+                            let zone_id = zone_id.clone();
                             let layer_id = layer_id.clone();
                             move |_| delete_layer(
-                                group_id.clone(),
+                                zone_id.clone(),
                                 layer_id.clone(),
                                 revision,
                                 on_layers_mutated,
@@ -196,12 +196,12 @@ pub fn LayerRow(
                             value=Signal::derive(move || blend_value(blend).to_owned())
                             options=Signal::derive(blend_options)
                             on_change=Callback::new({
-                                let group_id = group_id.clone();
+                                let zone_id = zone_id.clone();
                                 move |value: String| {
                                     let mut next = blend_layer.clone();
                                     next.blend = parse_blend(&value);
                                     update_layer(
-                                        group_id.clone(),
+                                        zone_id.clone(),
                                         next,
                                         revision,
                                         on_layers_mutated,
@@ -230,13 +230,13 @@ pub fn LayerRow(
                         class="slider-silk min-w-0 flex-1 cursor-pointer"
                         prop:value=format!("{opacity:.2}")
                         on:change={
-                            let group_id = group_id.clone();
+                            let zone_id = zone_id.clone();
                             move |event| {
                                 if let Some(value) = Change::from_event(event).value::<f32>() {
                                     let mut next = opacity_layer.clone();
                                     next.opacity = value.clamp(0.0, 1.0);
                                     update_layer(
-                                        group_id.clone(),
+                                        zone_id.clone(),
                                         next,
                                         revision,
                                         on_layers_mutated,
@@ -259,7 +259,7 @@ pub fn LayerRow(
                         view! {
                             <div class="border-t border-edge-subtle/40 pt-3">
                                 <EffectControlsSection
-                                    group_id=group_id.clone()
+                                    zone_id=zone_id.clone()
                                     layer=effect_layer.clone()
                                     on_layers_mutated=on_layers_mutated
                                 />
@@ -271,7 +271,7 @@ pub fn LayerRow(
                         view! {
                             <div class="border-t border-edge-subtle/40 pt-3">
                                 <MediaPlaybackSection
-                                    group_id=group_id.clone()
+                                    zone_id=zone_id.clone()
                                     layer=media_layer.clone()
                                     revision=revision
                                     on_layers_mutated=on_layers_mutated
@@ -291,12 +291,12 @@ pub fn LayerRow(
                             value=Signal::derive(move || fit_value(fit).to_owned())
                             options=Signal::derive(fit_options)
                             on_change=Callback::new({
-                                let group_id = group_id.clone();
+                                let zone_id = zone_id.clone();
                                 move |value: String| {
                                     let mut next = fit_layer.clone();
                                     next.transform.fit = parse_fit(&value);
                                     update_layer(
-                                        group_id.clone(),
+                                        zone_id.clone(),
                                         next,
                                         revision,
                                         on_layers_mutated,
@@ -314,12 +314,12 @@ pub fn LayerRow(
                             max=4.0
                             step=0.05
                             on_change=Callback::new({
-                                let group_id = group_id.clone();
+                                let zone_id = zone_id.clone();
                                 move |value: f32| {
                                     let mut next = brightness_layer.clone();
                                     next.adjust.brightness = value.clamp(0.0, 4.0);
                                     update_layer(
-                                        group_id.clone(),
+                                        zone_id.clone(),
                                         next,
                                         revision,
                                         on_layers_mutated,
@@ -334,12 +334,12 @@ pub fn LayerRow(
                             max=4.0
                             step=0.05
                             on_change=Callback::new({
-                                let group_id = group_id.clone();
+                                let zone_id = zone_id.clone();
                                 move |value: f32| {
                                     let mut next = saturation_layer.clone();
                                     next.adjust.saturation = value.clamp(0.0, 4.0);
                                     update_layer(
-                                        group_id.clone(),
+                                        zone_id.clone(),
                                         next,
                                         revision,
                                         on_layers_mutated,
@@ -354,12 +354,12 @@ pub fn LayerRow(
                             max=1.0
                             step=0.01
                             on_change=Callback::new({
-                                let group_id = group_id.clone();
+                                let zone_id = zone_id.clone();
                                 move |value: f32| {
                                     let mut next = tint_layer.clone();
                                     next.adjust.tint_strength = value.clamp(0.0, 1.0);
                                     update_layer(
-                                        group_id.clone(),
+                                        zone_id.clone(),
                                         next,
                                         revision,
                                         on_layers_mutated,
@@ -374,12 +374,12 @@ pub fn LayerRow(
                             max=4.0
                             step=0.05
                             on_change=Callback::new({
-                                let group_id = group_id.clone();
+                                let zone_id = zone_id.clone();
                                 move |value: f32| {
                                     let mut next = scale_x_layer.clone();
                                     next.transform.scale[0] = value.clamp(0.1, 4.0);
                                     update_layer(
-                                        group_id.clone(),
+                                        zone_id.clone(),
                                         next,
                                         revision,
                                         on_layers_mutated,
@@ -394,12 +394,12 @@ pub fn LayerRow(
                             max=4.0
                             step=0.05
                             on_change=Callback::new({
-                                let group_id = group_id.clone();
+                                let zone_id = zone_id.clone();
                                 move |value: f32| {
                                     let mut next = scale_y_layer.clone();
                                     next.transform.scale[1] = value.clamp(0.1, 4.0);
                                     update_layer(
-                                        group_id.clone(),
+                                        zone_id.clone(),
                                         next,
                                         revision,
                                         on_layers_mutated,

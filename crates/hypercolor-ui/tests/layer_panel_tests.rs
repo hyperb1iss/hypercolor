@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use hypercolor_types::effect::EffectCategory;
 use hypercolor_types::layer::WebViewportRender;
 use hypercolor_types::layer::{
-    LayerAdjust, BlendMode, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
+    BlendMode, LayerAdjust, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
 };
 use hypercolor_types::scene::{ZoneId, ZoneRole};
 use hypercolor_types::viewport::{FitMode, ViewportRect};
@@ -249,18 +249,9 @@ fn added_effect_layers_screen_over_existing_content_by_default() {
     let effect = effect_layer_source(SAMPLE_ID).expect("valid uuid is accepted");
     let media = media_layer_source(SAMPLE_ID).expect("valid uuid is accepted");
 
-    assert_eq!(
-        default_blend_for_added_layer(&effect, 0),
-        BlendMode::Alpha
-    );
-    assert_eq!(
-        default_blend_for_added_layer(&effect, 1),
-        BlendMode::Screen
-    );
-    assert_eq!(
-        default_blend_for_added_layer(&media, 1),
-        BlendMode::Alpha
-    );
+    assert_eq!(default_blend_for_added_layer(&effect, 0), BlendMode::Alpha);
+    assert_eq!(default_blend_for_added_layer(&effect, 1), BlendMode::Screen);
+    assert_eq!(default_blend_for_added_layer(&media, 1), BlendMode::Alpha);
 }
 
 #[test]
@@ -334,7 +325,7 @@ fn layer_source_label_resolves_names_and_never_leaks_raw_types() {
 
 // ── Add-layer target scope (§6.6) ───────────────────────────────────────
 
-fn group(name: &str, role: ZoneRole) -> hypercolor_ui::api::ZoneResource {
+fn zone_resource(name: &str, role: ZoneRole) -> hypercolor_ui::api::ZoneResource {
     hypercolor_ui::api::ZoneResource {
         id: ZoneId::new(),
         name: name.to_owned(),
@@ -352,18 +343,18 @@ fn group(name: &str, role: ZoneRole) -> hypercolor_ui::api::ZoneResource {
 
 #[test]
 fn a_single_surface_offers_no_target_scope() {
-    let scopes = available_add_layer_scopes(&[group("Zone A", ZoneRole::Primary)]);
+    let scopes = available_add_layer_scopes(&[zone_resource("Zone A", ZoneRole::Primary)]);
     assert!(scopes.is_empty());
 }
 
 #[test]
 fn a_light_and_screen_scene_offers_every_relevant_scope() {
-    let groups = [
-        group("Zone A", ZoneRole::Primary),
-        group("AIO Screen", ZoneRole::Display),
+    let zones = [
+        zone_resource("Zone A", ZoneRole::Primary),
+        zone_resource("AIO Screen", ZoneRole::Display),
     ];
     assert_eq!(
-        available_add_layer_scopes(&groups),
+        available_add_layer_scopes(&zones),
         [
             AddLayerScope::ThisSurface,
             AddLayerScope::AllZones,
@@ -375,38 +366,38 @@ fn a_light_and_screen_scene_offers_every_relevant_scope() {
 
 #[test]
 fn all_screens_scope_is_dropped_when_no_screens_exist() {
-    let groups = [
-        group("Zone A", ZoneRole::Primary),
-        group("Zone B", ZoneRole::Custom),
+    let zones = [
+        zone_resource("Zone A", ZoneRole::Primary),
+        zone_resource("Zone B", ZoneRole::Custom),
     ];
-    let scopes = available_add_layer_scopes(&groups);
+    let scopes = available_add_layer_scopes(&zones);
     assert!(!scopes.contains(&AddLayerScope::AllScreens));
     assert!(scopes.contains(&AddLayerScope::AllZones));
 }
 
 #[test]
 fn scope_resolution_picks_the_right_surfaces() {
-    let groups = [
-        group("Zone A", ZoneRole::Primary),
-        group("Zone B", ZoneRole::Custom),
-        group("AIO Screen", ZoneRole::Display),
+    let zones = [
+        zone_resource("Zone A", ZoneRole::Primary),
+        zone_resource("Zone B", ZoneRole::Custom),
+        zone_resource("AIO Screen", ZoneRole::Display),
     ];
-    let selected = groups[0].id.to_string();
+    let selected = zones[0].id.to_string();
 
     assert_eq!(
-        resolve_add_layer_targets(AddLayerScope::ThisSurface, &groups, &selected),
+        resolve_add_layer_targets(AddLayerScope::ThisSurface, &zones, &selected),
         vec![selected.clone()]
     );
     assert_eq!(
-        resolve_add_layer_targets(AddLayerScope::AllZones, &groups, &selected).len(),
+        resolve_add_layer_targets(AddLayerScope::AllZones, &zones, &selected).len(),
         2
     );
     assert_eq!(
-        resolve_add_layer_targets(AddLayerScope::AllScreens, &groups, &selected),
-        [groups[2].id.to_string()]
+        resolve_add_layer_targets(AddLayerScope::AllScreens, &zones, &selected),
+        [zones[2].id.to_string()]
     );
     assert_eq!(
-        resolve_add_layer_targets(AddLayerScope::WholeScene, &groups, &selected).len(),
+        resolve_add_layer_targets(AddLayerScope::WholeScene, &zones, &selected).len(),
         3
     );
 }
