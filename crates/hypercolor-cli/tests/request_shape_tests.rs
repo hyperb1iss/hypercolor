@@ -952,16 +952,45 @@ async fn effect_detail_with_color(Path(effect): Path<String>) -> Json<serde_json
     }))
 }
 
+/// One stored scene in the shape `GET`/`POST /scenes` publishes.
+fn scene_summary_fixture(id: &str, name: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": id,
+        "name": name,
+        "description": null,
+        "enabled": true,
+        "priority": 50,
+        "mutation_mode": "live"
+    })
+}
+
+/// The live scene document, as `GET /scene` publishes it.
+fn scene_document_fixture() -> serde_json::Value {
+    serde_json::json!({
+        "id": "0198c5b6-3333-7000-8000-000000000001",
+        "name": "Default",
+        "description": null,
+        "kind": "named",
+        "is_default": true,
+        "unassigned_behavior": "off",
+        "layout_id": null,
+        "activation_brightness": null,
+        "priority": 50,
+        "enabled": true,
+        "metadata": {},
+        "mutation_mode": "live",
+        "revision": 7,
+        "zones": []
+    })
+}
+
 async fn capture_scene_create(
     State(captured_body): State<SharedBody>,
     Json(body): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
     *captured_body.lock().await = Some(body);
     Json(serde_json::json!({
-        "data": {
-            "id": "scene_movie_night",
-            "name": "Movie Night",
-        },
+        "data": scene_summary_fixture("scene_movie_night", "Movie Night"),
     }))
 }
 
@@ -973,8 +1002,10 @@ async fn capture_scene_activate(
     *captured_body.lock().await = Some(body);
     Json(serde_json::json!({
         "data": {
+            "scene": { "id": scene, "name": "Movie Night" },
             "activated": true,
-            "scene": scene,
+            "layout": { "layout_id": null, "applied": true },
+            "brightness": { "applied": true },
         },
     }))
 }
@@ -985,10 +1016,7 @@ async fn capture_scene_deactivate(
 ) -> Json<serde_json::Value> {
     *captured_body.lock().await = Some(body);
     Json(serde_json::json!({
-        "data": {
-            "activated": true,
-            "scene": "Default",
-        },
+        "data": scene_document_fixture(),
     }))
 }
 
@@ -1268,12 +1296,7 @@ async fn capture_scene_snapshot(
 ) -> Json<serde_json::Value> {
     *captured_body.lock().await = Some(body);
     Json(serde_json::json!({
-        "data": {
-            "scene": {
-                "id": "0198c5b6-1111-7000-8000-000000000005",
-                "name": "Evening",
-            },
-        },
+        "data": scene_summary_fixture("0198c5b6-1111-7000-8000-000000000005", "Evening"),
     }))
 }
 
@@ -1447,6 +1470,35 @@ async fn effects_list_json_output_preserves_the_daemon_payload() -> Result<()> {
     let (port, shutdown_tx, task) = spawn_server(router).await?;
 
     let rendered = run_hyper_json(port, &["effects", "list"]).await;
+
+    let _ = shutdown_tx.send(());
+    task.await.context("test server task join failed")?;
+
+    assert_eq!(rendered?, expected);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn scenes_list_json_output_preserves_the_daemon_payload() -> Result<()> {
+    let payload = serde_json::json!({
+        "items": [
+            scene_summary_fixture("0198c5b6-4444-7000-8000-000000000001", "Movie Night"),
+            scene_summary_fixture("0198c5b6-4444-7000-8000-000000000002", "Focus")
+        ],
+        "total": 2
+    });
+    let expected = payload.clone();
+    let router = Router::new().route(
+        "/api/v1/scenes",
+        get(move || {
+            let payload = payload.clone();
+            async move { Json(serde_json::json!({ "data": payload })) }
+        }),
+    );
+    let (port, shutdown_tx, task) = spawn_server(router).await?;
+
+    let rendered = run_hyper_json(port, &["scenes", "list"]).await;
 
     let _ = shutdown_tx.send(());
     task.await.context("test server task join failed")?;
