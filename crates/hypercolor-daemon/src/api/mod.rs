@@ -156,6 +156,29 @@ pub(crate) fn openapi_document() -> utoipa::openapi::OpenApi {
     )
 }
 
+/// Build the application state a router is assembled from.
+///
+/// This is the one place a serving [`security::SecurityState`] is
+/// minted: the environment keys, the configured network policy (which
+/// enumerates the host's interfaces), and the macOS session credential
+/// are each resolved once per process. Every other `AppState` is a
+/// worker projection carrying [`security::SecurityState::unserved`],
+/// so a second projection can neither rescan interfaces nor open a
+/// rate-limit budget the enforced state does not know about.
+pub(crate) fn build_state(
+    daemon: &crate::startup::DaemonState,
+    macos_daemon_session: Option<&crate::macos_owner::MacosDaemonSessionAttestation>,
+) -> AppState {
+    let mut state = AppState::from_daemon_state(daemon);
+    let mut security = security::SecurityState::from_config(&daemon.config_manager.get());
+    if let Some(attestation) = macos_daemon_session {
+        state.server_session_id = Some(attestation.server_session_id.as_str().to_owned());
+        security.install_macos_daemon_session(attestation);
+    }
+    state.security_state = security;
+    state
+}
+
 /// Build the complete Axum router with all API routes and middleware.
 ///
 /// When `ui_dir` is provided, static files are served at `/` with SPA

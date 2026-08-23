@@ -105,7 +105,10 @@ async fn public_system_identity_exposes_only_the_attested_session_id() {
         protected_control_credential: credential.clone(),
     };
     let mut state = AppState::new_with_data_dir(tempdir.path().join("data"));
-    state.install_macos_daemon_session(&attestation);
+    state.server_session_id = Some(attestation.server_session_id.as_str().to_owned());
+    state
+        .security_state
+        .install_macos_daemon_session(&attestation);
 
     let response = get_system(
         State(Arc::new(state)),

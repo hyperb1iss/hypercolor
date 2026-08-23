@@ -677,7 +677,7 @@ impl AppState {
                 version: env!("CARGO_PKG_VERSION").to_owned(),
             },
             server_session_id: None,
-            security_state: crate::api::security::SecurityState::from_config(&config),
+            security_state: crate::api::security::SecurityState::unserved(),
         }
     }
 
@@ -780,19 +780,8 @@ impl AppState {
             start_time: daemon.start_time,
             server_identity: daemon.server_identity.clone(),
             server_session_id: None,
-            security_state: crate::api::security::SecurityState::from_config(
-                &daemon.config_manager.get(),
-            ),
+            security_state: crate::api::security::SecurityState::unserved(),
         }
-    }
-
-    pub(crate) fn install_macos_daemon_session(
-        &mut self,
-        attestation: &crate::macos_owner::MacosDaemonSessionAttestation,
-    ) {
-        self.server_session_id = Some(attestation.server_session_id.as_str().to_owned());
-        self.security_state
-            .install_macos_daemon_session(attestation);
     }
 
     #[cfg(feature = "persistence-test-hooks")]

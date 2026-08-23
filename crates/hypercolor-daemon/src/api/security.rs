@@ -207,16 +207,27 @@ impl RequestAuthContext {
 }
 
 impl SecurityState {
+    /// The posture of an application state that serves no router.
+    ///
+    /// Workers and one-shot projections build an `AppState` to reach the
+    /// domain graph, never to answer a request. Handing them a state
+    /// with no keys and no network policy keeps every enforcement
+    /// decision with the one state a router was assembled from.
+    #[must_use]
+    pub(crate) fn unserved() -> Self {
+        Self {
+            auth: AuthConfig::default(),
+            macos_session_credential: None,
+            network: NetworkAccessPolicy::default(),
+            rate_limiter: Arc::new(Mutex::new(RateLimiter::new())),
+            static_assets: StaticAssetSurface::default(),
+        }
+    }
+
     #[must_use]
     pub fn from_env() -> Self {
         if cfg!(test) {
-            return Self {
-                auth: AuthConfig::default(),
-                macos_session_credential: None,
-                network: NetworkAccessPolicy::default(),
-                rate_limiter: Arc::new(Mutex::new(RateLimiter::new())),
-                static_assets: StaticAssetSurface::default(),
-            };
+            return Self::unserved();
         }
 
         let control_key = api_key_from_env("HYPERCOLOR_API_KEY");

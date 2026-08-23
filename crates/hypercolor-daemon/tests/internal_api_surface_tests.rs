@@ -320,6 +320,51 @@ fn output_static_hold_lifecycle_uses_output_context_directly() {
 }
 
 #[test]
+fn api_security_is_resolved_once_at_router_assembly() {
+    let sources = daemon_sources();
+    let source = |suffix: &str| {
+        sources
+            .iter()
+            .find(|(path, _)| path.ends_with(suffix))
+            .map(|(_, source)| source.as_str())
+            .unwrap_or_else(|| panic!("missing daemon source {suffix}"))
+    };
+
+    let app_state = source("app_state.rs");
+    assert!(!app_state.contains("SecurityState::from_config"));
+    assert!(!app_state.contains("fn install_macos_daemon_session"));
+    assert_eq!(
+        app_state.matches("SecurityState::unserved()").count(),
+        2,
+        "both composition roots must build an unserved security posture"
+    );
+
+    let api_root = source("api/mod.rs");
+    assert!(api_root.contains("pub(crate) fn build_state("));
+    assert!(api_root.contains("SecurityState::from_config(&daemon.config_manager.get())"));
+    assert!(api_root.contains("security.install_macos_daemon_session(attestation)"));
+
+    let daemon = source("daemon.rs");
+    assert!(daemon.contains("api::build_state("));
+    assert!(!daemon.contains("AppState::from_daemon_state"));
+
+    let minters = sources
+        .iter()
+        .filter(|(path, _)| !path.ends_with("api/security.rs") && !path.ends_with("api/mod.rs"))
+        .filter(|(_, source)| {
+            source.contains("SecurityState::from_config(")
+                || source.contains("SecurityState::from_env(")
+        })
+        .map(|(path, _)| path.display().to_string())
+        .collect::<Vec<_>>();
+    assert!(
+        minters.is_empty(),
+        "a serving security state escaped router assembly:\n{}",
+        minters.join("\n")
+    );
+}
+
+#[test]
 fn transports_use_the_effect_domain_authority() {
     let offenders = daemon_sources()
         .into_iter()

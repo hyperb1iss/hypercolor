@@ -139,11 +139,10 @@ impl PreparedDaemon {
         Box::pin(daemon_state.start()).await?;
 
         let ui_dir = resolve_ui_dir(self.options.ui_dir.clone());
-        let mut app_state = AppState::from_daemon_state(&daemon_state);
-        if let Some(attestation) = macos_daemon_session_attestation.as_ref() {
-            app_state.install_macos_daemon_session(attestation);
-        }
-        let app_state = Arc::new(app_state);
+        let app_state = Arc::new(api::build_state(
+            &daemon_state,
+            macos_daemon_session_attestation.as_ref(),
+        ));
         api::displays::sync_connected_display_surfaces(&app_state).await;
         api::displays::sync_display_preference_overlays(&app_state).await;
         if let Err(error) = notify_api_ready_extensions(&daemon_state, &app_state).await {
