@@ -14,7 +14,10 @@ fn envelope(code: &str, details: serde_json::Value) -> serde_json::Value {
 
 #[test]
 fn canonical_envelope_keeps_the_code_and_details() {
-    let error = http_error_from_body(409, &envelope("control_bound", json!({ "bound": ["speed"] })));
+    let error = http_error_from_body(
+        409,
+        &envelope("control_bound", json!({ "bound": ["speed"] })),
+    );
 
     assert_eq!(error.code(), Some("control_bound"));
     assert_eq!(error.bound_control_keys(), vec!["speed".to_owned()]);
@@ -33,7 +36,10 @@ fn bound_keys_are_empty_for_other_codes() {
 fn precondition_details_survive_for_the_stale_rebase_path() {
     let error = http_error_from_body(
         412,
-        &envelope("precondition_failed", json!({ "current": 7, "expected": 6 })),
+        &envelope(
+            "precondition_failed",
+            json!({ "current": 7, "expected": 6 }),
+        ),
     );
 
     let ApiError::Http { details, .. } = &error else {

@@ -15,10 +15,7 @@ fn every_blend_mode_round_trips_through_wire_tokens() {
 
 #[test]
 fn alpha_presents_as_cutout() {
-    assert_eq!(
-        face_blend_option(BlendMode::Alpha).label,
-        "Cutout"
-    );
+    assert_eq!(face_blend_option(BlendMode::Alpha).label, "Cutout");
 }
 
 #[test]

@@ -6,8 +6,8 @@
 //! than occupying a permanent rail.
 
 mod composition_panel;
-mod device_card;
 pub mod device_assignment;
+mod device_card;
 mod face_composition;
 mod scene_selector;
 mod stage;

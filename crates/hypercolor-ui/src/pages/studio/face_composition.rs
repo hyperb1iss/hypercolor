@@ -69,26 +69,24 @@ pub fn ScreenCompositionSection(
         }
     });
 
-    let commit = Callback::new(
-        move |(mode, amount): (Option<BlendMode>, Option<f32>)| {
-            let Some(device_id) = display_device_id.get_untracked() else {
-                return;
-            };
-            let refresh_scene = studio.refresh_scene;
-            spawn_local(async move {
-                match api::update_display_face_composition(&device_id, mode, amount).await {
-                    Ok(_) => {
-                        set_face_tick.update(|tick| *tick = tick.wrapping_add(1));
-                        refresh_scene.run(());
-                    }
-                    Err(error) => {
-                        set_face_tick.update(|tick| *tick = tick.wrapping_add(1));
-                        toasts::toast_error(&format!("Face composition update failed: {error}"));
-                    }
+    let commit = Callback::new(move |(mode, amount): (Option<BlendMode>, Option<f32>)| {
+        let Some(device_id) = display_device_id.get_untracked() else {
+            return;
+        };
+        let refresh_scene = studio.refresh_scene;
+        spawn_local(async move {
+            match api::update_display_face_composition(&device_id, mode, amount).await {
+                Ok(_) => {
+                    set_face_tick.update(|tick| *tick = tick.wrapping_add(1));
+                    refresh_scene.run(());
                 }
-            });
-        },
-    );
+                Err(error) => {
+                    set_face_tick.update(|tick| *tick = tick.wrapping_add(1));
+                    toasts::toast_error(&format!("Face composition update failed: {error}"));
+                }
+            }
+        });
+    });
 
     let commit_opacity = leptos_use::use_debounce_fn(
         move || {

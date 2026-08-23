@@ -18,10 +18,7 @@ pub fn category_style(category: &str) -> (&'static str, &'static str) {
         "scenic" => ("bg-accent-hover/10 text-accent-hover", "255, 153, 255"),
         "interactive" => ("bg-status-info/10 text-status-info", "130, 170, 255"),
         "fun" => ("bg-purple-light/10 text-purple-light", "189, 0, 221"),
-        "source" => (
-            "bg-status-warning/10 text-status-warning",
-            "241, 250, 140",
-        ),
+        "source" => ("bg-status-warning/10 text-status-warning", "241, 250, 140"),
         "utility" => ("bg-fg-tertiary/10 text-fg-tertiary", "139, 133, 160"),
         "display" => ("bg-coral/10 text-coral", "255, 106, 193"),
         _ => ("bg-surface-overlay/50 text-fg-tertiary", "139, 133, 160"),

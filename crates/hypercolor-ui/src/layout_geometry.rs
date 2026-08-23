@@ -12,9 +12,9 @@ use hypercolor_types::spatial::{LedTopology, NormalizedPosition, SpatialLayout, 
 mod compounds;
 
 pub use compounds::{
-    AlignAnchor, AlignAxis, CompoundBounds, align_compound, compound_bounding_box, distribute_compound,
-    compound_centroid, mirror_compound, pack_compound, rotate_compound, scale_compound, translate_compound,
-    translate_zones,
+    AlignAnchor, AlignAxis, CompoundBounds, align_compound, compound_bounding_box,
+    compound_centroid, distribute_compound, mirror_compound, pack_compound, rotate_compound,
+    scale_compound, translate_compound, translate_zones,
 };
 #[path = "layout_geometry/defaults.rs"]
 mod defaults;

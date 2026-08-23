@@ -19,10 +19,10 @@ use crate::storage;
 use crate::ws::messages::zone_has_degraded_layer;
 
 use super::StudioContext;
-use super::device_card::{CardMode, StudioDeviceCard};
 use super::device_assignment::{
     DeviceMeta, ZoneDeviceRow, device_rows_for_zone, sort_device_rows, unassigned_device_rows,
 };
+use super::device_card::{CardMode, StudioDeviceCard};
 use super::surface::{Surface, SurfaceKind, UNASSIGNED_SURFACE_ID, surfaces_from_zones};
 use super::zone_add_device::ZoneAddDevice;
 use super::zone_controls::{NewZoneControl, ZoneControls};

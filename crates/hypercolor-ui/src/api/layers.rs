@@ -113,11 +113,12 @@ pub async fn patch_layer_controls(
     controls: &std::collections::HashMap<String, ControlValue>,
 ) -> ApiResult<()> {
     let url = format!("/api/v1/scene/zones/{zone_id}/layers/{layer_id}/controls");
-    let error =
-        match client::patch_json_discard(&url, &control_patch_request(controls, Vec::new())).await {
-            Ok(()) => return Ok(()),
-            Err(error) => error,
-        };
+    let error = match client::patch_json_discard(&url, &control_patch_request(controls, Vec::new()))
+        .await
+    {
+        Ok(()) => return Ok(()),
+        Err(error) => error,
+    };
 
     let bound = error.bound_control_keys();
     if bound.is_empty() {

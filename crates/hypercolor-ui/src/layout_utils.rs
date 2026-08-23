@@ -10,7 +10,9 @@ use crate::channel_names;
 use crate::layout_geometry;
 use crate::layout_history::RemovedOutputCache;
 use crate::style_utils::uuid_v4_hex;
-pub use hypercolor_types::attachment::{slot_id_matches_channel_name, channel_name_matches_slot_alias};
+pub use hypercolor_types::attachment::{
+    channel_name_matches_slot_alias, slot_id_matches_channel_name,
+};
 use hypercolor_types::spatial::{NormalizedPosition, Output, SpatialLayout};
 
 #[derive(Debug, Clone, PartialEq, Eq)]

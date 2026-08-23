@@ -167,11 +167,9 @@ where
         client::MutationOutcome::Applied(response) => {
             effect_target_from_apply(effect_id, &response)
         }
-        client::MutationOutcome::Stale { current } => {
-            Err(ApiError::precondition_failed(format!(
-                "Scene changed from revision {expected_revision} to {current} before preset apply"
-            )))
-        }
+        client::MutationOutcome::Stale { current } => Err(ApiError::precondition_failed(format!(
+            "Scene changed from revision {expected_revision} to {current} before preset apply"
+        ))),
     }
 }
 
@@ -276,11 +274,9 @@ pub async fn reset_effect_controls(
     .await?;
     match outcome {
         client::MutationOutcome::Applied(zone) => effect_target_from_zone(&target.effect_id, &zone),
-        client::MutationOutcome::Stale { current } => {
-            Err(ApiError::precondition_failed(format!(
-                "Scene changed from revision {expected_revision} to {current} before controls reset"
-            )))
-        }
+        client::MutationOutcome::Stale { current } => Err(ApiError::precondition_failed(format!(
+            "Scene changed from revision {expected_revision} to {current} before controls reset"
+        ))),
     }
 }
 
