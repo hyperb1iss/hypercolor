@@ -184,8 +184,9 @@ pub async fn delete_scene(State(state): State<Arc<AppState>>, Path(id): Path<Str
 pub async fn activate_scene(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-    Json(request): Json<ActivateSceneRequest>,
+    body: Option<Json<ActivateSceneRequest>>,
 ) -> Response {
+    let request = body.map(|Json(body)| body).unwrap_or_default();
     // The media-cap violation body is a frozen v1 shape, so the adapter
     // renders it from the shared evaluation rather than from the service's
     // error text. The service enforces the same rule regardless.

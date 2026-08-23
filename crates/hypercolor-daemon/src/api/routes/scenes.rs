@@ -71,7 +71,7 @@ pub(super) fn router() -> OpenApiRouter<Arc<AppState>> {
                     "scenes",
                     "Activate scene",
                 )
-                .body::<hypercolor_types::api::scenes::ActivateSceneRequest>(),
+                .optional_body::<hypercolor_types::api::scenes::ActivateSceneRequest>(),
             ],
         ))
 }
