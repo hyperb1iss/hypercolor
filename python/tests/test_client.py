@@ -1623,7 +1623,8 @@ async def test_library_helpers(client: HypercolorClient) -> None:
         "tags": ["bright"],
     }
     assert str(created.id) == "22222222-2222-4222-8222-222222222222"
-    assert deleted == {"id": "22222222-2222-4222-8222-222222222222", "deleted": True}
+    assert str(deleted.id) == "22222222-2222-4222-8222-222222222222"
+    assert deleted.deleted is True
 
 
 @respx.mock
@@ -1728,6 +1729,72 @@ async def test_scene_display_and_diagnostics_helpers(
                         }
                     ],
                     "summary": {"passed": 1, "warnings": 0, "failed": 0},
+                    "snapshot": {
+                        "input": {
+                            "enabled": False,
+                            "host_capture_registered": False,
+                            "host_capturing": False,
+                            "devices_opened": 0,
+                            "devices_denied": 0,
+                            "backends": [],
+                            "source_graph_generation": 0,
+                            "sources": [],
+                        },
+                        "render": {
+                            "latest_frame": None,
+                            "recent_window": {
+                                "frames": 0,
+                                "gpu_sample_deferred": 0,
+                                "gpu_sample_stale": 0,
+                                "gpu_sample_retry_hit": 0,
+                                "gpu_sample_queue_saturated": 0,
+                                "gpu_sample_wait_blocked": 0,
+                                "gpu_sample_cpu_fallback": 0,
+                                "output_current_frame": 0,
+                                "output_published_frame": 0,
+                                "output_routed_reuse": 0,
+                                "output_reused_published_frame": 0,
+                                "output_error_frames": 0,
+                                "push_avg_ms": 0.0,
+                                "push_p95_ms": 0.0,
+                                "publish_avg_ms": 0.0,
+                                "publish_p95_ms": 0.0,
+                            },
+                        },
+                        "usb": {
+                            "display_frames_total": 0,
+                            "display_frames_delayed_for_led_total": 0,
+                            "display_led_priority_wait_total_ms": 0.0,
+                            "display_led_priority_wait_avg_ms": 0.0,
+                            "display_led_priority_wait_max_ms": 0.0,
+                        },
+                        "display_output": {
+                            "captured_devices": 0,
+                            "preview_subscribers": 0,
+                            "encode_attempts_total": 0,
+                            "encode_successes_total": 0,
+                            "encode_failures_total": 0,
+                            "encode_avg_ms": 0.0,
+                            "encode_max_ms": 0.0,
+                            "encode_last_ms": None,
+                            "encoded_bytes_total": 0,
+                            "encoded_last_bytes": 0,
+                            "write_attempts_total": 0,
+                            "write_successes_total": 0,
+                            "write_failures_total": 0,
+                            "retry_attempts_total": 0,
+                            "last_failure_age_ms": None,
+                        },
+                        "device_output": {
+                            "queues": 0,
+                            "usb_queues": 0,
+                            "lagging_queues": 0,
+                            "worker_finished_queues": 0,
+                            "dropped_frames_total": 0,
+                            "errors_total": 0,
+                            "items": [],
+                        },
+                    },
                 }
             ),
         )
@@ -1772,7 +1839,8 @@ async def test_scene_display_and_diagnostics_helpers(
         "checks": ["daemon"],
         "system": True,
     }
-    assert diagnostics["summary"]["passed"] == 1
+    assert diagnostics.summary.passed == 1
+    assert diagnostics.snapshot.render.latest_frame is None
 
 
 @respx.mock

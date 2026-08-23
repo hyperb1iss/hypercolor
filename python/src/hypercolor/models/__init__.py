@@ -6,7 +6,9 @@ images arrive as raw bytes with a content type, so no schema describes
 them.
 """
 
+from .._generated.models.activate_playlist_response import ActivatePlaylistResponse
 from .._generated.models.activate_scene_response import ActivateSceneResponse
+from .._generated.models.add_favorite_response import AddFavoriteResponse
 from .._generated.models.api_error_body import ApiErrorBody
 from .._generated.models.api_error_detail import ApiErrorDetail
 from .._generated.models.apply_control_changes_response import ApplyControlChangesResponse
@@ -25,11 +27,14 @@ from .._generated.models.control_action_status import ControlActionStatus
 from .._generated.models.control_definition import ControlDefinition
 from .._generated.models.control_surface_document import ControlSurfaceDocument
 from .._generated.models.control_surface_list_response import ControlSurfaceListResponse
+from .._generated.models.delete_favorite_response import DeleteFavoriteResponse
+from .._generated.models.delete_preset_response import DeletePresetResponse
 from .._generated.models.device_components_response import DeviceComponentsResponse
 from .._generated.models.device_connection_summary import DeviceConnectionSummary
 from .._generated.models.device_origin import DeviceOrigin
 from .._generated.models.device_ref import DeviceRef
 from .._generated.models.device_summary import DeviceSummary
+from .._generated.models.diagnose_response import DiagnoseResponse
 from .._generated.models.discovery_completed_response import DiscoveryCompletedResponse
 from .._generated.models.discovery_scan_result import DiscoveryScanResult
 from .._generated.models.discovery_scanner_result import DiscoveryScannerResult
@@ -80,7 +85,9 @@ from .._generated.models.zone_resource import ZoneResource
 from .effect import EffectCoverImage
 
 __all__ = [
+    "ActivatePlaylistResponse",
     "ActivateSceneResponse",
+    "AddFavoriteResponse",
     "ApiErrorBody",
     "ApiErrorDetail",
     "ApplyControlChangesResponse",
@@ -99,11 +106,14 @@ __all__ = [
     "ControlDefinition",
     "ControlSurfaceDocument",
     "ControlSurfaceListResponse",
+    "DeleteFavoriteResponse",
+    "DeletePresetResponse",
     "DeviceComponentsResponse",
     "DeviceConnectionSummary",
     "DeviceOrigin",
     "DeviceRef",
     "DeviceSummary",
+    "DiagnoseResponse",
     "DiscoveryCompletedResponse",
     "DiscoveryScanResult",
     "DiscoveryScannerResult",

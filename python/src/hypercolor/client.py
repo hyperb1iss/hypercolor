@@ -116,13 +116,18 @@ from .exceptions import (
     HypercolorValidationError,
 )
 from .models import (
+    ActivatePlaylistResponse,
+    AddFavoriteResponse,
     ApplyControlChangesResponse,
     ApplyLayoutResponse,
     AudioDevicesResponse,
     ConfigMutationResponse,
     ControlActionResult,
     ControlSurfaceDocument,
+    DeleteFavoriteResponse,
+    DeletePresetResponse,
     DeviceSummary,
+    DiagnoseResponse,
     DisplayFaceResponse,
     DisplaySummaryListItem,
     DriverSummary,
@@ -965,19 +970,21 @@ class HypercolorClient:
         """List favorite effects."""
         return await self._request_items("GET", "/library/favorites", FavoriteSummary.from_dict)
 
-    async def add_favorite(self, effect_id: str) -> dict[str, Any]:
+    async def add_favorite(self, effect_id: str) -> AddFavoriteResponse:
         """Add or update a favorite effect."""
-        return await self._request_payload(
+        return await self._request_model(
             "POST",
             "/library/favorites",
+            AddFavoriteResponse.from_dict,
             body={"effect": effect_id},
         )
 
-    async def remove_favorite(self, effect_id: str) -> dict[str, Any]:
+    async def remove_favorite(self, effect_id: str) -> DeleteFavoriteResponse:
         """Remove a favorite effect."""
-        return await self._request_payload(
+        return await self._request_model(
             "DELETE",
             f"/library/favorites/{_quote_path(effect_id)}",
+            DeleteFavoriteResponse.from_dict,
         )
 
     async def get_presets(self) -> list[EffectPreset]:
@@ -1015,11 +1022,12 @@ class HypercolorClient:
             "POST", "/library/presets", EffectPreset.from_dict, body=body
         )
 
-    async def delete_preset(self, preset_id: str) -> dict[str, Any]:
+    async def delete_preset(self, preset_id: str) -> DeletePresetResponse:
         """Delete a saved preset."""
-        return await self._request_payload(
+        return await self._request_model(
             "DELETE",
             f"/library/presets/{_quote_path(preset_id)}",
+            DeletePresetResponse.from_dict,
         )
 
     async def get_playlists(self) -> list[EffectPlaylist]:
@@ -1034,11 +1042,12 @@ class HypercolorClient:
             EffectPlaylist.from_dict,
         )
 
-    async def activate_playlist(self, playlist_id: str) -> dict[str, Any]:
+    async def activate_playlist(self, playlist_id: str) -> ActivatePlaylistResponse:
         """Start playlist playback."""
-        return await self._request_payload(
+        return await self._request_model(
             "POST",
             f"/library/playlists/{_quote_path(playlist_id)}/activate",
+            ActivatePlaylistResponse.from_dict,
         )
 
     async def list_displays(self) -> list[DisplaySummaryListItem]:
@@ -1081,10 +1090,12 @@ class HypercolorClient:
         *,
         checks: list[str] | None = None,
         system: bool | None = None,
-    ) -> dict[str, Any]:
+    ) -> DiagnoseResponse:
         """Run daemon diagnostics."""
         body = _drop_none({"checks": checks, "system": system})
-        return await self._request_payload("POST", "/diagnose", body=body)
+        return await self._request_model(
+            "POST", "/diagnose", DiagnoseResponse.from_dict, body=body
+        )
 
     async def get_audio_spectrum(self) -> NoReturn:
         """Raise: spectrum snapshots only exist on the WebSocket stream."""
