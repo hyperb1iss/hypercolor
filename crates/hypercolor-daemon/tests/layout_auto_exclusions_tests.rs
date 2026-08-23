@@ -96,7 +96,7 @@ fn load_restores_scoped_layout_auto_exclusion_fixture() {
 }
 
 #[test]
-fn load_migrates_legacy_layout_auto_exclusions() {
+fn load_accepts_layout_scoped_auto_exclusions() {
     let temp_dir = tempfile::tempdir().expect("tempdir");
     let path = temp_dir.path().join("layout-auto-exclusions.json");
     std::fs::write(
@@ -108,7 +108,7 @@ fn load_migrates_legacy_layout_auto_exclusions() {
           }
         ]"#,
     )
-    .expect("write legacy exclusions");
+    .expect("write layout exclusions");
 
     let loaded = load(&path).expect("load exclusions");
 

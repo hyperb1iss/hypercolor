@@ -15,13 +15,13 @@ use crate::persistence::serialize_json_pretty;
 /// Discovery auto-sync exclusion scope.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum LayoutAutoExclusionKey {
-    LegacyLayout(String),
+    Layout(String),
     Zone { scene_id: SceneId, zone_id: ZoneId },
 }
 
 impl LayoutAutoExclusionKey {
     pub fn layout(layout_id: impl Into<String>) -> Self {
-        Self::LegacyLayout(layout_id.into())
+        Self::Layout(layout_id.into())
     }
 
     #[must_use]
@@ -31,7 +31,7 @@ impl LayoutAutoExclusionKey {
 
     fn sort_key(&self) -> String {
         match self {
-            Self::LegacyLayout(layout_id) => format!("layout:{layout_id}"),
+            Self::Layout(layout_id) => format!("layout:{layout_id}"),
             Self::Zone { scene_id, zone_id } => format!("zone:{scene_id}:{zone_id}"),
         }
     }
@@ -40,13 +40,13 @@ impl LayoutAutoExclusionKey {
 impl fmt::Display for LayoutAutoExclusionKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::LegacyLayout(layout_id) => write!(f, "layout:{layout_id}"),
+            Self::Layout(layout_id) => write!(f, "layout:{layout_id}"),
             Self::Zone { scene_id, zone_id } => write!(f, "zone:{scene_id}:{zone_id}"),
         }
     }
 }
 
-/// In-memory layout exclusion store keyed by legacy layout or scene-zone scope.
+/// In-memory layout exclusion store keyed by layout or scene-zone scope.
 pub type LayoutAutoExclusionStore = HashMap<LayoutAutoExclusionKey, HashSet<String>>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,7 +81,7 @@ impl PersistedLayoutAutoExclusionEntry {
 
     fn from_key(key: &LayoutAutoExclusionKey, excluded_device_ids: Vec<String>) -> Self {
         match key {
-            LayoutAutoExclusionKey::LegacyLayout(layout_id) => Self {
+            LayoutAutoExclusionKey::Layout(layout_id) => Self {
                 scope: None,
                 layout_id: Some(layout_id.clone()),
                 scene_id: None,
