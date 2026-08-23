@@ -470,49 +470,6 @@ fn scene_manager_clear_group_effect_clears_effect_layers() {
 }
 
 #[test]
-fn scene_manager_reset_group_controls_updates_effect_layer() {
-    let mut mgr = SceneManager::new();
-    let effect_id = EffectId::from(Uuid::now_v7());
-    let mut scene = grouped_scene("Reset", "desk:main", effect_id);
-    let scene_id = scene.id;
-    let group_id = scene.zones[0].id;
-    scene.zones[0].layers = vec![
-        color_layer([0.0, 0.0, 0.0, 1.0]),
-        effect_layer(effect_id, 0.5),
-    ];
-    scene.zones[0].layers_version = 7;
-
-    mgr.create(scene).expect("create grouped scene");
-    mgr.activate(&scene_id, None)
-        .expect("activate grouped scene");
-
-    let updated = mgr
-        .reset_group_controls(
-            group_id,
-            HashMap::from([("speed".into(), ControlValue::Float(1.75))]),
-        )
-        .expect("reset group controls")
-        .clone();
-
-    assert_eq!(
-        zone_control(&updated, "speed"),
-        Some(&ControlValue::Float(1.75))
-    );
-    assert_eq!(updated.controls_version, 1);
-    assert_eq!(updated.layers_version, 8);
-
-    let layer = updated
-        .layers
-        .iter()
-        .find(|layer| matches!(layer.source, LayerSource::Effect { .. }))
-        .expect("effect layer should remain");
-    let LayerSource::Effect { controls, .. } = &layer.source else {
-        panic!("target layer should remain an effect layer");
-    };
-    assert_eq!(controls.get("speed"), Some(&ControlValue::Float(1.75)));
-}
-
-#[test]
 fn scene_manager_add_layer_preserves_authored_effect_and_refreshes_cache() {
     let mut mgr = SceneManager::new();
     let effect_id = EffectId::from(Uuid::now_v7());
@@ -534,7 +491,7 @@ fn scene_manager_add_layer_preserves_authored_effect_and_refreshes_cache() {
     let overlay = color_layer([1.0, 0.0, 0.5, 1.0]);
     let overlay_id = overlay.id;
     let (updated, version) = mgr
-        .add_group_layer(group_id, overlay, Some(0))
+        .insert_scene_group_layer(scene_id, group_id, overlay, None, Some(0))
         .expect("add layer");
     let updated = updated.clone();
 
@@ -550,37 +507,29 @@ fn scene_manager_add_layer_preserves_authored_effect_and_refreshes_cache() {
 }
 
 #[test]
-fn scene_manager_update_and_remove_layers_bump_versions() {
+fn scene_manager_remove_layer_bumps_versions() {
     let mut mgr = SceneManager::new();
     let effect_id = EffectId::from(Uuid::now_v7());
     let mut scene = grouped_scene("Mutable", "desk:main", effect_id);
     let scene_id = scene.id;
     let group_id = scene.zones[0].id;
     let base = effect_layer(effect_id, 0.5);
-    let mut overlay = color_layer([0.0, 0.25, 1.0, 1.0]);
+    let overlay = color_layer([0.0, 0.25, 1.0, 1.0]);
     let overlay_id = overlay.id;
-    overlay.opacity = 0.75;
-    scene.zones[0].layers = vec![base, overlay.clone()];
+    scene.zones[0].layers = vec![base, overlay];
 
     mgr.create(scene).expect("create grouped scene");
     mgr.activate(&scene_id, None)
         .expect("activate grouped scene");
 
-    overlay.opacity = 0.25;
-    let (updated, update_version) = mgr
-        .update_group_layer(group_id, overlay_id, overlay, Some(0))
-        .expect("update layer");
-    assert_eq!(update_version, 1);
-    assert_eq!(updated.layers[1].opacity, 0.25);
-
     let (updated, remove_version) = mgr
-        .remove_group_layer(group_id, overlay_id, Some(1))
+        .remove_scene_group_layer(scene_id, group_id, overlay_id, Some(0))
         .expect("remove layer");
-    assert_eq!(remove_version, 2);
+    assert_eq!(remove_version, 1);
     assert_eq!(updated.layers.len(), 1);
 
     let missing = mgr
-        .remove_group_layer(group_id, overlay_id, Some(2))
+        .remove_scene_group_layer(scene_id, group_id, overlay_id, Some(1))
         .expect_err("removed layer should be missing");
     assert_eq!(
         missing,
@@ -608,12 +557,12 @@ fn scene_manager_reorder_layers_requires_exact_permutation() {
         .expect("activate grouped scene");
 
     let invalid = mgr
-        .reorder_group_layers(group_id, vec![top_id], Some(0))
+        .reorder_scene_group_layers(scene_id, group_id, vec![top_id], Some(0))
         .expect_err("missing layer id should reject");
     assert_eq!(invalid, LayerMutationError::InvalidOrder);
 
     let (updated, version) = mgr
-        .reorder_group_layers(group_id, vec![top_id, base_id], Some(0))
+        .reorder_scene_group_layers(scene_id, group_id, vec![top_id, base_id], Some(0))
         .expect("reorder layers");
     let updated = updated.clone();
     assert_eq!(version, 1);
@@ -621,7 +570,7 @@ fn scene_manager_reorder_layers_requires_exact_permutation() {
     assert_eq!(updated.layers[1].id, base_id);
 
     let stale = mgr
-        .reorder_group_layers(group_id, vec![base_id, top_id], Some(0))
+        .reorder_scene_group_layers(scene_id, group_id, vec![base_id, top_id], Some(0))
         .expect_err("stale reorder should fail");
     assert_eq!(
         stale,
@@ -649,7 +598,8 @@ fn scene_manager_patch_layer_effect_controls_uses_layers_version() {
         .expect("activate grouped scene");
 
     let (updated, version) = mgr
-        .patch_layer_effect_controls(
+        .patch_scene_layer_effect_controls(
+            scene_id,
             group_id,
             layer_id,
             HashMap::from([("speed".into(), ControlValue::Float(1.25))]),
@@ -676,7 +626,8 @@ fn scene_manager_patch_layer_effect_controls_uses_layers_version() {
     assert_eq!(controls.get("speed"), Some(&ControlValue::Float(1.25)));
 
     let stale = mgr
-        .patch_layer_effect_controls(
+        .patch_scene_layer_effect_controls(
+            scene_id,
             group_id,
             layer_id,
             HashMap::from([("speed".into(), ControlValue::Float(2.0))]),

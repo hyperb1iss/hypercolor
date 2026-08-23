@@ -37,7 +37,7 @@ use hypercolor_types::asset::AssetId;
 use hypercolor_types::config::MediaConfig;
 use hypercolor_types::control::ControlValue;
 use hypercolor_types::device::DeviceId;
-use hypercolor_types::effect::{ControlBinding, EffectMetadata};
+use hypercolor_types::effect::EffectMetadata;
 use hypercolor_types::event::{
     ChangeTrigger, EffectRef, EffectStopReason, HypercolorEvent, LayerStackChangeKind,
     SceneChangeReason, SceneLibraryChangeKind, SceneSettingsChangeKind, Severity, ZoneChangeKind,
@@ -1182,23 +1182,6 @@ impl SceneMutation {
         let zone = self
             .candidate
             .patch_group_controls(zone_id, updates)?
-            .clone();
-        self.persists_scene_content = true;
-        self.record_zone_change(scene_id, &zone, ZoneChangeKind::ControlsPatched);
-        Some(zone)
-    }
-
-    /// Attach one live control binding to an effect zone.
-    pub fn set_zone_control_binding(
-        &mut self,
-        zone_id: ZoneId,
-        control_id: String,
-        binding: ControlBinding,
-    ) -> Option<Zone> {
-        let scene_id = self.candidate.active_scene_id().copied()?;
-        let zone = self
-            .candidate
-            .set_group_control_binding(zone_id, control_id, binding)?
             .clone();
         self.persists_scene_content = true;
         self.record_zone_change(scene_id, &zone, ZoneChangeKind::ControlsPatched);

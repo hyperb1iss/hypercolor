@@ -235,12 +235,20 @@ fn upsert_primary_group_updates_effect_id_when_present() {
         deadband: 0.0,
         smoothing: 0.5,
     };
-    assert!(
-        manager
-            .set_group_control_binding(first_group_id, "speed".to_owned(), binding)
-            .is_some(),
-        "binding should attach to the existing primary group"
-    );
+    let mut scene = manager
+        .active_scene()
+        .expect("default scene should remain active")
+        .clone();
+    let LayerSource::Effect {
+        control_bindings, ..
+    } = &mut scene.zones[0].layers[0].source
+    else {
+        panic!("primary zone should contain an effect layer");
+    };
+    control_bindings.insert("speed".to_owned(), binding);
+    manager
+        .update(scene)
+        .expect("bound scene fixture should remain valid");
 
     let updated_group = manager
         .upsert_primary_group(
@@ -635,35 +643,6 @@ fn patch_display_group_target_preserves_opacity_for_effect_blends_and_normalizes
 }
 
 #[test]
-fn remove_display_group_is_idempotent() {
-    let mut manager = SceneManager::with_default();
-    let device_id = DeviceId::new();
-    let effect = sample_effect("Monitor");
-    manager
-        .upsert_display_group(
-            device_id,
-            "Pump LCD",
-            &effect,
-            HashMap::new(),
-            sample_layout("display"),
-        )
-        .expect("display upsert should succeed");
-
-    assert_eq!(
-        manager
-            .remove_display_group(device_id)
-            .expect("first removal should succeed"),
-        true
-    );
-    assert_eq!(
-        manager
-            .remove_display_group(device_id)
-            .expect("second removal should succeed"),
-        false
-    );
-}
-
-#[test]
 fn remove_display_groups_for_device_prunes_named_scenes_too() {
     let mut manager = SceneManager::with_default();
     let device_id = DeviceId::new();
@@ -760,7 +739,7 @@ fn patch_group_controls_missing_group_returns_none() {
 }
 
 #[test]
-fn control_derivations_preserve_selected_preset_provenance() {
+fn control_patches_preserve_selected_preset_provenance() {
     let mut manager = SceneManager::with_default();
     let effect = sample_effect("Aurora");
     let preset_id = PresetId::new();
@@ -781,20 +760,6 @@ fn control_derivations_preserve_selected_preset_provenance() {
         )
         .expect("control patch should succeed");
     assert_eq!(zone_preset_id(patched), Some(preset_id));
-
-    let binding = ControlBinding {
-        sensor: "cpu_temp".to_owned(),
-        sensor_min: 30.0,
-        sensor_max: 100.0,
-        target_min: 0.0,
-        target_max: 1.0,
-        deadband: 0.0,
-        smoothing: 0.5,
-    };
-    let bound = manager
-        .set_group_control_binding(group_id, "speed".to_owned(), binding)
-        .expect("binding should succeed");
-    assert_eq!(zone_preset_id(bound), Some(preset_id));
 }
 
 #[test]

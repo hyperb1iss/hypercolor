@@ -760,9 +760,7 @@ pub(crate) fn layer_error(
     layer_id: Option<SceneLayerId>,
 ) -> DomainError {
     match error {
-        LayerMutationError::NoActiveScene | LayerMutationError::SceneMissing => {
-            DomainError::not_found(ResourceKind::Scene, "active")
-        }
+        LayerMutationError::SceneMissing => DomainError::not_found(ResourceKind::Scene, "active"),
         LayerMutationError::GroupMissing => DomainError::not_found(ResourceKind::Zone, zone_id),
         LayerMutationError::LayerMissing { layer_id } => {
             DomainError::not_found(ResourceKind::Layer, layer_id)

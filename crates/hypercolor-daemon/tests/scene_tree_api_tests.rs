@@ -28,6 +28,7 @@ use hypercolor_types::effect::{
 use hypercolor_types::event::{
     ChangeTrigger, EffectStopReason, HypercolorEvent, LayerStackChangeKind, SceneSettingsChangeKind,
 };
+use hypercolor_types::layer::LayerSource;
 use hypercolor_types::library::PresetId;
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
@@ -758,21 +759,44 @@ async fn a_write_to_a_bound_control_is_refused_and_recoverable_in_one_request() 
 
     {
         let mut mutation = state.scene_manager.begin_mutation().await;
-        let zone_uuid = zone_id.parse::<Uuid>().expect("zone uuid");
+        let zone_id = hypercolor_types::scene::ZoneId(zone_id.parse::<Uuid>().expect("zone uuid"));
+        let (scene_id, layer_index, mut layer) = {
+            let scene = mutation
+                .scenes()
+                .active_scene()
+                .expect("seeded scene should remain active");
+            let zone = scene
+                .zones
+                .iter()
+                .find(|zone| zone.id == zone_id)
+                .expect("seeded zone should remain active");
+            let layer_index = zone
+                .layers
+                .iter()
+                .position(|layer| layer.id.to_string() == layer_id)
+                .expect("seeded layer should remain active");
+            (scene.id, layer_index, zone.layers[layer_index].clone())
+        };
+        let LayerSource::Effect {
+            control_bindings, ..
+        } = &mut layer.source
+        else {
+            panic!("seeded layer should remain an effect layer");
+        };
+        control_bindings.insert(
+            "speed".to_owned(),
+            ControlBinding {
+                sensor: "cpu".to_owned(),
+                sensor_min: 0.0,
+                sensor_max: 100.0,
+                target_min: 0.0,
+                target_max: 1.0,
+                deadband: 0.0,
+                smoothing: 0.0,
+            },
+        );
         mutation
-            .set_zone_control_binding(
-                hypercolor_types::scene::ZoneId(zone_uuid),
-                "speed".to_owned(),
-                ControlBinding {
-                    sensor: "cpu".to_owned(),
-                    sensor_min: 0.0,
-                    sensor_max: 100.0,
-                    target_min: 0.0,
-                    target_max: 1.0,
-                    deadband: 0.0,
-                    smoothing: 0.0,
-                },
-            )
+            .replace_layer(scene_id, zone_id, layer.id, layer, layer_index)
             .expect("binding should attach");
         hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
             .await
