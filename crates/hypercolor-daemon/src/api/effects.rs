@@ -1020,15 +1020,7 @@ fn validate_preset_json(html: &str, parsed: &ParsedHtmlEffectMetadata, errors: &
 }
 
 fn user_effects_install_dir(state: &AppState) -> PathBuf {
-    state
-        .runtime_state_path
-        .parent()
-        .map(|dir| dir.join("effects").join("user"))
-        .unwrap_or_else(|| {
-            hypercolor_core::config::ConfigManager::data_dir()
-                .join("effects")
-                .join("user")
-        })
+    state.data_dir.join("effects").join("user")
 }
 
 fn uploaded_file_stem(file_name: &str) -> Option<&str> {

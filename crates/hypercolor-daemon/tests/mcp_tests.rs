@@ -526,11 +526,7 @@ async fn seed_multi_zone_primary_assignment(
 }
 
 fn scenes_path(state: &AppState) -> PathBuf {
-    state
-        .runtime_state_path
-        .parent()
-        .expect("runtime-state.json should live under a data dir")
-        .join("scenes.json")
+    state.data_dir.join("scenes.json")
 }
 
 #[derive(Debug, PartialEq)]
@@ -2494,7 +2490,7 @@ async fn stateful_set_output_power_is_reversible_and_idempotent() {
 /// same store the REST route does.
 #[tokio::test]
 async fn set_brightness_tool_projects_the_output_service() {
-    let (state, tmp) = isolated_state_with_tempdir();
+    let (state, _tmp) = isolated_state_with_tempdir();
 
     let response =
         execute_tool_with_state("set_brightness", &json!({ "brightness": 35.0 }), &state)
@@ -2504,7 +2500,7 @@ async fn set_brightness_tool_projects_the_output_service() {
     assert_eq!(response["previous_brightness"], 100);
     assert!((state.output_power.global_brightness() - 0.35).abs() < 1e-6);
     assert_eq!(
-        DeviceSettingsStore::load(&tmp.path().join("data/device-settings.json"))
+        DeviceSettingsStore::load(&state.state_dir.join("device-settings.json"))
             .expect("device settings should reload")
             .global_brightness(),
         0.35,

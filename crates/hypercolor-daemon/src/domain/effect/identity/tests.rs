@@ -613,7 +613,7 @@ async fn late_rescan_migrates_every_live_and_durable_reference_before_publicatio
     let durable_paths = [
         fixture.state.data_dir.join("scenes.json"),
         fixture.state.runtime_state_path.clone(),
-        fixture.state.data_dir.join("display-preferences.json"),
+        fixture.state.state_dir.join("display-preferences.json"),
         fixture.state.data_dir.join("library.json"),
     ];
     let before_restart = durable_paths

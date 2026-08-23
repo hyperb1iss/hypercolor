@@ -1,7 +1,7 @@
 //! Daemon application composition root.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::AtomicBool;
 #[cfg(any(target_os = "macos", test))]
@@ -155,6 +155,9 @@ pub struct AppState {
     /// Data directory backing state-owned stores and caches.
     pub data_dir: PathBuf,
 
+    /// State directory backing the stores that survive as machine-local state.
+    pub state_dir: PathBuf,
+
     /// Typed state owned by downstream daemon extensions.
     pub extensions: ExtensionRegistry,
 
@@ -254,6 +257,7 @@ struct AppStateLibrary {
 #[doc(hidden)]
 pub struct AppStateBuilder {
     data_dir: PathBuf,
+    state_dir: PathBuf,
     config_manager: Option<Arc<ConfigManager>>,
     driver_registry: Option<Arc<DriverModuleRegistry>>,
     runtime_state_path: Option<PathBuf>,
@@ -265,6 +269,7 @@ impl AppStateBuilder {
     #[must_use]
     pub fn new(data_dir: PathBuf) -> Self {
         Self {
+            state_dir: default_state_dir(&data_dir),
             data_dir,
             config_manager: None,
             driver_registry: None,
@@ -272,6 +277,12 @@ impl AppStateBuilder {
             library: None,
             input_manager: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_state_dir(mut self, state_dir: PathBuf) -> Self {
+        self.state_dir = state_dir;
+        self
     }
 
     #[must_use]
@@ -309,6 +320,16 @@ impl AppStateBuilder {
     #[must_use]
     pub fn build(self) -> AppState {
         AppState::from_builder(self)
+    }
+}
+
+/// The state tier is a sibling of the data tier for every fixture, so an
+/// overridden data directory never reaches the real per-user state directory.
+fn default_state_dir(data_dir: &Path) -> PathBuf {
+    if data_dir == ConfigManager::data_dir() {
+        ConfigManager::state_dir()
+    } else {
+        data_dir.join("state")
     }
 }
 
@@ -365,6 +386,7 @@ impl AppState {
 
         let AppStateBuilder {
             data_dir,
+            state_dir,
             config_manager,
             driver_registry,
             runtime_state_path,
@@ -415,7 +437,7 @@ impl AppState {
                 );
                 ComponentProfileStore::new(attachment_profiles_path)
             });
-        let device_settings_path = data_dir.join("device-settings.json");
+        let device_settings_path = state_dir.join("device-settings.json");
         let device_settings =
             DeviceSettingsStore::load(&device_settings_path).unwrap_or_else(|error| {
                 warn!(
@@ -494,7 +516,7 @@ impl AppState {
         let discovery_in_progress = Arc::new(AtomicBool::new(false));
         let attachment_registry = Arc::new(RwLock::new(attachment_registry));
         let attachment_profiles = Arc::new(RwLock::new(attachment_profiles));
-        let display_preferences_path = data_dir.join("display-preferences.json");
+        let display_preferences_path = state_dir.join("display-preferences.json");
         let display_preferences = Arc::new(RwLock::new(
             DisplayPreferencesStore::load(&display_preferences_path).unwrap_or_else(|_| {
                 DisplayPreferencesStore::new(display_preferences_path)
@@ -511,10 +533,10 @@ impl AppState {
         let logical_devices = Arc::new(RwLock::new(HashMap::new()));
         let logical_devices_path = data_dir.join("logical-devices.json");
         let runtime_state_path =
-            runtime_state_path.unwrap_or_else(|| data_dir.join("runtime-state.json"));
-        let device_aliases_path = data_dir.join(crate::device_aliases::DEVICE_ALIASES_FILE);
+            runtime_state_path.unwrap_or_else(|| state_dir.join("runtime-state.json"));
+        let device_aliases_path = state_dir.join(crate::device_aliases::DEVICE_ALIASES_FILE);
         let driver_inventory = Arc::new(
-            DriverInventoryStore::open(data_dir.join(DRIVER_INVENTORY_FILENAME))
+            DriverInventoryStore::open(state_dir.join(DRIVER_INVENTORY_FILENAME))
                 .expect("default app state should open driver inventory"),
         );
         let driver_registry = driver_registry.unwrap_or_else(|| {
@@ -633,6 +655,7 @@ impl AppState {
             device_metrics,
             config_manager,
             data_dir,
+            state_dir,
             extensions: ExtensionRegistry::default(),
             api_extensions: Vec::new(),
             input_manager,
@@ -710,6 +733,7 @@ impl AppState {
         // State-owned stores are shared from the daemon, never reopened, so
         // one API projection cannot silently clobber another projection's writes.
         let data_dir = ConfigManager::data_dir();
+        let state_dir = ConfigManager::state_dir();
         let library_store = Arc::clone(daemon.library_store());
         let driver_host = Arc::clone(daemon.driver_host());
         let driver_registry = Arc::clone(daemon.driver_registry());
@@ -734,6 +758,7 @@ impl AppState {
             device_metrics: Arc::clone(&daemon.device_metrics),
             config_manager: Some(Arc::clone(&daemon.config_manager)),
             data_dir,
+            state_dir,
             extensions: daemon.extensions.clone(),
             api_extensions: daemon.api_extensions.clone(),
             input_manager: Arc::clone(daemon.input_manager()),

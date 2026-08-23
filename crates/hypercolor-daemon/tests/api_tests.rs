@@ -1919,7 +1919,7 @@ async fn global_brightness_endpoint_updates_status_and_persistence() {
     let status_json = body_json(status_response).await;
     assert_eq!(status_json["data"]["status"]["global_brightness"], 42);
 
-    let device_settings_raw = fs::read_to_string(tmp.path().join("device-settings.json"))
+    let device_settings_raw = fs::read_to_string(state.state_dir.join("device-settings.json"))
         .expect("device settings file should exist");
     let device_settings_json: serde_json::Value =
         serde_json::from_str(&device_settings_raw).expect("device settings file should be valid");
@@ -4559,7 +4559,7 @@ async fn get_control_surface_returns_driver_owned_device_surface_by_id() {
 
 #[tokio::test]
 async fn patch_driver_owned_device_control_surface_persists_values() {
-    let (state, tmp) = isolated_state_with_tempdir();
+    let (state, _tmp) = isolated_state_with_tempdir();
     let state = Arc::new(state);
     let device_id = insert_test_device(&state, "Desk Strip").await;
     let app = test_app_with_state(Arc::clone(&state));
@@ -4616,7 +4616,7 @@ async fn patch_driver_owned_device_control_surface_persists_values() {
     assert_eq!(driver_device_surface["values"]["protocol"]["value"], "e131");
     assert!(driver_device_surface["values"]["dedup_threshold"].is_null());
 
-    let raw = fs::read_to_string(tmp.path().join("data/device-settings.json"))
+    let raw = fs::read_to_string(state.state_dir.join("device-settings.json"))
         .expect("device settings should be persisted");
     let saved: serde_json::Value =
         serde_json::from_str(&raw).expect("device settings should be valid JSON");
@@ -10329,7 +10329,7 @@ async fn identify_device_not_found() {
 
 #[tokio::test]
 async fn update_device_persists_name_enabled_and_brightness_state() {
-    let (state, tmp) = test_state_with_temp_output_store();
+    let (state, _tmp) = test_state_with_temp_output_store();
     let device_id = insert_test_device(&state, "Desk Strip").await;
     let app = test_app_with_state(Arc::clone(&state));
 
@@ -10369,7 +10369,7 @@ async fn update_device_persists_name_enabled_and_brightness_state() {
     assert_eq!(get_json["data"]["status"], "disabled");
     assert_eq!(get_json["data"]["brightness"], 27);
 
-    let persisted_raw = fs::read_to_string(tmp.path().join("device-settings.json"))
+    let persisted_raw = fs::read_to_string(state.state_dir.join("device-settings.json"))
         .expect("device settings file should exist");
     let persisted_json: serde_json::Value =
         serde_json::from_str(&persisted_raw).expect("device settings file should be valid json");
@@ -10554,7 +10554,7 @@ async fn get_device_controls_returns_host_control_surface() {
 
 #[tokio::test]
 async fn patch_device_control_surface_updates_user_settings() {
-    let (state, tmp) = test_state_with_temp_output_store();
+    let (state, _tmp) = test_state_with_temp_output_store();
     let device_id = insert_test_device(&state, "Desk Strip").await;
     let app = test_app_with_state(Arc::clone(&state));
 
@@ -10630,7 +10630,7 @@ async fn patch_device_control_surface_updates_user_settings() {
     assert_eq!(get_json["data"]["status"], "disabled");
     assert_eq!(get_json["data"]["brightness"], 50);
 
-    let persisted_raw = fs::read_to_string(tmp.path().join("device-settings.json"))
+    let persisted_raw = fs::read_to_string(state.state_dir.join("device-settings.json"))
         .expect("device settings file should exist");
     let persisted_json: serde_json::Value =
         serde_json::from_str(&persisted_raw).expect("device settings file should be valid json");

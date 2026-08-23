@@ -837,3 +837,32 @@ async fn library_failed_delete_returns_error_and_retry_converges() {
     let reloaded = JsonLibraryStore::open(path).expect("reload library store");
     assert!(reloaded.list_favorites().await.is_empty());
 }
+
+#[test]
+fn app_state_fixtures_resolve_state_tier_stores_beside_the_data_tier() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let data_dir = directory.path().join("data");
+    let state_dir = data_dir.join("state");
+    let state = hypercolor_daemon::app_state::AppState::new_with_data_dir(data_dir.clone());
+
+    assert_eq!(
+        state.runtime_state_path,
+        state_dir.join("runtime-state.json")
+    );
+    assert!(
+        state_dir.is_dir(),
+        "state tier should be created for the fixture"
+    );
+    for state_file in [
+        "device-settings.json",
+        "display-preferences.json",
+        "runtime-state.json",
+        hypercolor_daemon::driver_inventory::DRIVER_INVENTORY_FILENAME,
+        hypercolor_daemon::device_aliases::DEVICE_ALIASES_FILE,
+    ] {
+        assert!(
+            !data_dir.join(state_file).exists(),
+            "{state_file} should not land on the data tier"
+        );
+    }
+}
