@@ -232,7 +232,7 @@ async fn scene_layer_wins_when_both_are_assigned() {
 
     // Only the scene zone renders for the device — the overlay is suppressed.
     let scene_manager = state.scene_manager.snapshot().await;
-    let groups_for_device = scene_manager
+    let zones_for_device = scene_manager
         .active_render_groups()
         .iter()
         .filter(|zone| {
@@ -242,8 +242,8 @@ async fn scene_layer_wins_when_both_are_assigned() {
         })
         .cloned()
         .collect::<Vec<_>>();
-    assert_eq!(groups_for_device.len(), 1);
-    assert!(groups_for_device[0].has_effect(scene_effect));
+    assert_eq!(zones_for_device.len(), 1);
+    assert!(zones_for_device[0].has_effect(scene_effect));
 }
 
 // ── Delete semantics ────────────────────────────────────────────────────
@@ -498,7 +498,7 @@ async fn deleting_a_display_prunes_its_default_face_and_preference() {
     {
         let scene_manager = state.scene_manager.snapshot().await;
         assert!(
-            scene_manager.default_display_group_for(device_id).is_some(),
+            scene_manager.default_display_zone_for(device_id).is_some(),
             "default face should be live before deletion"
         );
     }
@@ -514,7 +514,7 @@ async fn deleting_a_display_prunes_its_default_face_and_preference() {
 
     let scene_manager = state.scene_manager.snapshot().await;
     assert!(
-        scene_manager.default_display_group_for(device_id).is_none(),
+        scene_manager.default_display_zone_for(device_id).is_none(),
         "deleted display must not keep a runtime default face zone"
     );
     assert!(

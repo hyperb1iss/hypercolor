@@ -247,7 +247,7 @@ fn mint_device_zones(
                     // non-alphanumeric character to '_', so device ids that
                     // differ only in punctuation collapse together — two Push
                     // 2s on usb paths `...-0-12` and `...-0-1-2` land on the
-                    // same id. assign_device_zone treats an output id as a
+                    // same id. assign_output_to_zone treats an output id as a
                     // scene-global ownership key, so the second device would
                     // silently take over the first one's outputs.
                     output.id = format!("zone_{}", uuid_v4_hex());

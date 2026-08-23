@@ -515,14 +515,14 @@ pub async fn set_default_display_overlay(
                 // up failing a user's write.
                 already_installed = mutation
                     .scenes()
-                    .default_display_group_for(device_id)
+                    .default_display_zone_for(device_id)
                     .cloned();
                 return Ok(None);
             }
             Ok(Some(
                 mutation
                     .scenes()
-                    .default_display_group_for(device_id)
+                    .default_display_zone_for(device_id)
                     .cloned(),
             ))
         })

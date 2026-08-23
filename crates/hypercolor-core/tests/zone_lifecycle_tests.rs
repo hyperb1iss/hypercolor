@@ -77,7 +77,7 @@ fn sample_zone(id: &str) -> Output {
 }
 
 #[test]
-fn create_and_delete_custom_zone_refreshes_active_group_cache() {
+fn create_and_delete_custom_zone_refreshes_resolved_zone_cache() {
     let mut manager = SceneManager::with_default();
     let scene_id = SceneId::DEFAULT;
     let zones_revision = manager
@@ -86,8 +86,8 @@ fn create_and_delete_custom_zone_refreshes_active_group_cache() {
         .zones_revision;
     let cache_revision = manager.active_render_groups_revision();
 
-    let group_id = manager
-        .create_render_group(
+    let zone_id = manager
+        .create_zone(
             &scene_id,
             "Desk".to_owned(),
             Some("#80ffea".to_owned()),
@@ -98,24 +98,24 @@ fn create_and_delete_custom_zone_refreshes_active_group_cache() {
     let scene = manager
         .active_scene()
         .expect("default scene should stay active");
-    let group = scene
+    let zone = scene
         .zones
         .iter()
-        .find(|group| group.id == group_id)
+        .find(|zone| zone.id == zone_id)
         .expect("new custom zone should be in the active scene");
-    assert_eq!(group.role, ZoneRole::Custom);
-    assert!(group.layout.zones.is_empty());
+    assert_eq!(zone.role, ZoneRole::Custom);
+    assert!(zone.layout.zones.is_empty());
     assert!(scene.zones_revision > zones_revision);
     assert!(manager.active_render_groups_revision() > cache_revision);
     assert!(
         manager
             .active_render_groups()
             .iter()
-            .any(|group| group.id == group_id)
+            .any(|zone| zone.id == zone_id)
     );
 
     manager
-        .delete_render_group(&scene_id, group_id)
+        .delete_zone(&scene_id, zone_id)
         .expect("custom zone should be deleted");
 
     assert!(
@@ -124,7 +124,7 @@ fn create_and_delete_custom_zone_refreshes_active_group_cache() {
             .expect("default scene should stay active")
             .zones
             .iter()
-            .any(|group| group.id == group_id)
+            .any(|zone| zone.id == zone_id)
     );
 }
 
@@ -139,7 +139,7 @@ fn structural_zone_mutations_reject_snapshot_scenes() {
         .expect("snapshot scene should register");
 
     let error = manager
-        .create_render_group(&scene_id, "Nope".to_owned(), None, (320, 200))
+        .create_zone(&scene_id, "Nope".to_owned(), None, (320, 200))
         .expect_err("snapshot scene should reject structural zone creation");
 
     assert_eq!(error, ZoneMutationError::SnapshotLocked);
@@ -150,7 +150,7 @@ fn metadata_patch_can_promote_primary_atomically() {
     let mut manager = SceneManager::with_default();
     let scene_id = SceneId::DEFAULT;
     manager
-        .upsert_primary_group(
+        .upsert_primary_zone(
             &sample_effect("Primary"),
             HashMap::new(),
             None,
@@ -158,7 +158,7 @@ fn metadata_patch_can_promote_primary_atomically() {
         )
         .expect("primary should be created");
     let custom_id = manager
-        .create_render_group(&scene_id, "Ambient".to_owned(), None, (320, 200))
+        .create_zone(&scene_id, "Ambient".to_owned(), None, (320, 200))
         .expect("custom zone should be created");
     let before = manager
         .active_scene()
@@ -166,7 +166,7 @@ fn metadata_patch_can_promote_primary_atomically() {
         .zones_revision;
 
     let updated = manager
-        .update_render_group_meta(
+        .update_zone_meta(
             &scene_id,
             custom_id,
             ZoneMetaPatch {
@@ -188,7 +188,7 @@ fn metadata_patch_can_promote_primary_atomically() {
         scene
             .zones
             .iter()
-            .filter(|group| group.role == ZoneRole::Primary)
+            .filter(|zone| zone.role == ZoneRole::Primary)
             .count(),
         1
     );
@@ -196,11 +196,11 @@ fn metadata_patch_can_promote_primary_atomically() {
 }
 
 #[test]
-fn apply_effect_to_group_targets_a_named_zone_and_keeps_its_layout() {
+fn apply_effect_to_zone_targets_a_named_zone_and_keeps_its_layout() {
     let mut manager = SceneManager::with_default();
     let scene_id = SceneId::DEFAULT;
     manager
-        .upsert_primary_group(
+        .upsert_primary_zone(
             &sample_effect("Primary"),
             HashMap::new(),
             None,
@@ -208,17 +208,17 @@ fn apply_effect_to_group_targets_a_named_zone_and_keeps_its_layout() {
         )
         .expect("primary should be created");
     let custom_id = manager
-        .create_render_group(&scene_id, "Ambient".to_owned(), None, (320, 200))
+        .create_zone(&scene_id, "Ambient".to_owned(), None, (320, 200))
         .expect("custom zone should be created");
     let custom_layout = manager
         .active_scene()
-        .and_then(|scene| scene.zones.iter().find(|group| group.id == custom_id))
-        .map(|group| group.layout.clone())
+        .and_then(|scene| scene.zones.iter().find(|zone| zone.id == custom_id))
+        .map(|zone| zone.layout.clone())
         .expect("custom zone should exist");
 
     let aurora = sample_effect("Aurora");
     let updated = manager
-        .apply_effect_to_group(custom_id, &aurora, HashMap::new(), None)
+        .apply_effect_to_zone(custom_id, &aurora, HashMap::new(), None)
         .expect("effect should apply to the named zone");
     assert_eq!(updated.id, custom_id);
     assert_eq!(
@@ -236,8 +236,8 @@ fn apply_effect_to_group_targets_a_named_zone_and_keeps_its_layout() {
     let primary_effect = manager
         .active_scene()
         .and_then(|scene| scene.primary_zone())
-        .and_then(|group| {
-            group.layers.iter().find_map(|layer| match layer.source {
+        .and_then(|zone| {
+            zone.layers.iter().find_map(|layer| match layer.source {
                 LayerSource::Effect { effect_id, .. } => Some(effect_id),
                 _ => None,
             })
@@ -246,10 +246,10 @@ fn apply_effect_to_group_targets_a_named_zone_and_keeps_its_layout() {
 }
 
 #[test]
-fn apply_effect_to_group_rejects_an_unknown_zone() {
+fn apply_effect_to_zone_rejects_an_unknown_zone() {
     let mut manager = SceneManager::with_default();
     manager
-        .upsert_primary_group(
+        .upsert_primary_zone(
             &sample_effect("Primary"),
             HashMap::new(),
             None,
@@ -257,7 +257,7 @@ fn apply_effect_to_group_rejects_an_unknown_zone() {
         )
         .expect("primary should be created");
 
-    let result = manager.apply_effect_to_group(
+    let result = manager.apply_effect_to_zone(
         ZoneId::new(),
         &sample_effect("Aurora"),
         HashMap::new(),
@@ -271,7 +271,7 @@ fn assignment_moves_zones_and_resets_cross_zone_placement() {
     let mut manager = SceneManager::with_default();
     let scene_id = SceneId::DEFAULT;
     manager
-        .upsert_primary_group(
+        .upsert_primary_zone(
             &sample_effect("Primary"),
             HashMap::new(),
             None,
@@ -279,7 +279,7 @@ fn assignment_moves_zones_and_resets_cross_zone_placement() {
         )
         .expect("primary should be created");
     let custom_id = manager
-        .create_render_group(&scene_id, "Custom".to_owned(), None, (320, 200))
+        .create_zone(&scene_id, "Custom".to_owned(), None, (320, 200))
         .expect("custom zone should be created");
     let mut zone = sample_zone("device-zone");
     zone.position = NormalizedPosition::new(0.9, 0.8);
@@ -287,13 +287,13 @@ fn assignment_moves_zones_and_resets_cross_zone_placement() {
     zone.scale = 2.0;
 
     manager
-        .assign_device_zone(
+        .assign_output_to_zone(
             &scene_id,
             custom_id,
             zone.clone(),
             OutputPlacement::AutoGrid,
         )
-        .expect("zone should move into custom group");
+        .expect("zone should move into custom zone");
 
     let scene = manager
         .active_scene()
@@ -301,9 +301,9 @@ fn assignment_moves_zones_and_resets_cross_zone_placement() {
     let custom_zone = scene
         .zones
         .iter()
-        .find(|group| group.id == custom_id)
-        .and_then(|group| group.layout.zones.first())
-        .expect("custom group should own moved zone");
+        .find(|zone| zone.id == custom_id)
+        .and_then(|zone| zone.layout.zones.first())
+        .expect("custom zone should own moved zone");
     assert_eq!(custom_zone.id, "device-zone");
     assert_eq!(custom_zone.position, NormalizedPosition::new(0.2, 0.2));
     assert_eq!(custom_zone.size, NormalizedPosition::new(0.2, 0.15));
@@ -321,7 +321,7 @@ fn assignment_moves_zones_and_resets_cross_zone_placement() {
     );
 
     manager
-        .unassign_device_zone(&scene_id, "device-zone")
+        .unassign_output(&scene_id, "device-zone")
         .expect("zone should unassign");
 
     assert!(
@@ -330,7 +330,7 @@ fn assignment_moves_zones_and_resets_cross_zone_placement() {
             .expect("default scene should stay active")
             .zones
             .iter()
-            .all(|group| group.layout.zones.is_empty())
+            .all(|zone| zone.layout.zones.is_empty())
     );
 }
 
@@ -339,7 +339,7 @@ fn preserved_assignment_keeps_caller_placement() {
     let mut manager = SceneManager::with_default();
     let scene_id = SceneId::DEFAULT;
     manager
-        .upsert_primary_group(
+        .upsert_primary_zone(
             &sample_effect("Primary"),
             HashMap::new(),
             None,
@@ -347,7 +347,7 @@ fn preserved_assignment_keeps_caller_placement() {
         )
         .expect("primary should be created");
     let custom_id = manager
-        .create_render_group(&scene_id, "Custom".to_owned(), None, (320, 200))
+        .create_zone(&scene_id, "Custom".to_owned(), None, (320, 200))
         .expect("custom zone should be created");
     let mut zone = sample_zone("device-zone");
     zone.position = NormalizedPosition::new(0.9, 0.8);
@@ -356,13 +356,13 @@ fn preserved_assignment_keeps_caller_placement() {
     zone.scale = 2.0;
 
     manager
-        .assign_device_zone(
+        .assign_output_to_zone(
             &scene_id,
             custom_id,
             zone.clone(),
             OutputPlacement::Preserve,
         )
-        .expect("zone should move into custom group");
+        .expect("zone should move into custom zone");
 
     let scene = manager
         .active_scene()
@@ -370,9 +370,9 @@ fn preserved_assignment_keeps_caller_placement() {
     let custom_zone = scene
         .zones
         .iter()
-        .find(|group| group.id == custom_id)
-        .and_then(|group| group.layout.zones.first())
-        .expect("custom group should own moved zone");
+        .find(|zone| zone.id == custom_id)
+        .and_then(|zone| zone.layout.zones.first())
+        .expect("custom zone should own moved zone");
     assert_eq!(custom_zone.position, zone.position);
     assert_eq!(custom_zone.size, zone.size);
     assert_eq!(custom_zone.rotation, zone.rotation);
@@ -388,7 +388,7 @@ fn primary_and_display_zones_cannot_be_deleted_as_custom_zones() {
     let mut manager = SceneManager::with_default();
     let scene_id = SceneId::DEFAULT;
     manager
-        .upsert_primary_group(
+        .upsert_primary_zone(
             &sample_effect("Primary"),
             HashMap::new(),
             None,
@@ -398,32 +398,32 @@ fn primary_and_display_zones_cannot_be_deleted_as_custom_zones() {
     let primary_id = manager
         .active_scene()
         .and_then(|scene| scene.primary_zone())
-        .map(|group| group.id)
-        .expect("primary group should exist");
+        .map(|zone| zone.id)
+        .expect("primary zone should exist");
     let device_id = DeviceId::new();
     manager
-        .upsert_display_group(
+        .upsert_display_zone(
             device_id,
             "Face",
             &sample_effect("Display"),
             HashMap::new(),
             sample_layout("display-zone"),
         )
-        .expect("display group should be created");
+        .expect("display zone should be created");
     let display_id = manager
         .active_scene()
         .and_then(|scene| scene.display_zone_for(device_id))
-        .map(|group| group.id)
-        .expect("display group should exist");
+        .map(|zone| zone.id)
+        .expect("display zone should exist");
 
     assert_eq!(
-        manager.delete_render_group(&scene_id, primary_id),
+        manager.delete_zone(&scene_id, primary_id),
         Err(ZoneMutationError::InvalidRole {
             role: ZoneRole::Primary
         })
     );
     assert_eq!(
-        manager.delete_render_group(&scene_id, display_id),
+        manager.delete_zone(&scene_id, display_id),
         Err(ZoneMutationError::InvalidRole {
             role: ZoneRole::Display
         })
@@ -431,11 +431,11 @@ fn primary_and_display_zones_cannot_be_deleted_as_custom_zones() {
 }
 
 #[test]
-fn unassigned_behavior_validates_fallback_group() {
+fn unassigned_behavior_validates_fallback_zone() {
     let mut manager = SceneManager::with_default();
     let scene_id = SceneId::DEFAULT;
     let custom_id = manager
-        .create_render_group(&scene_id, "Fallback".to_owned(), None, (320, 200))
+        .create_zone(&scene_id, "Fallback".to_owned(), None, (320, 200))
         .expect("custom fallback zone should be created");
     let revision = manager
         .active_scene()
@@ -444,7 +444,7 @@ fn unassigned_behavior_validates_fallback_group() {
 
     let behavior = manager
         .set_unassigned_behavior(&scene_id, UnassignedBehavior::Fallback(custom_id))
-        .expect("fallback should accept existing LED group");
+        .expect("fallback should accept existing LED zone");
 
     assert_eq!(behavior, UnassignedBehavior::Fallback(custom_id));
     assert!(
@@ -456,33 +456,33 @@ fn unassigned_behavior_validates_fallback_group() {
     );
     assert_eq!(
         manager.set_unassigned_behavior(&scene_id, UnassignedBehavior::Fallback(ZoneId::new())),
-        Err(ZoneMutationError::GroupMissing)
+        Err(ZoneMutationError::ZoneMissing)
     );
 }
 
 #[test]
-fn fallback_unassigned_behavior_rejects_display_group() {
+fn fallback_unassigned_behavior_rejects_display_zone() {
     let mut manager = SceneManager::with_default();
     let scene_id = SceneId::DEFAULT;
     let device_id = DeviceId::new();
     manager
-        .upsert_display_group(
+        .upsert_display_zone(
             device_id,
             "Face",
             &sample_effect("Display"),
             HashMap::new(),
             sample_layout("display-zone"),
         )
-        .expect("display group should be created");
+        .expect("display zone should be created");
     let display_id = manager
         .active_scene()
         .and_then(|scene| scene.display_zone_for(device_id))
-        .map(|group| group.id)
-        .expect("display group should exist");
+        .map(|zone| zone.id)
+        .expect("display zone should exist");
 
     assert_eq!(
         manager.set_unassigned_behavior(&scene_id, UnassignedBehavior::Fallback(display_id)),
-        Err(ZoneMutationError::GroupMissing)
+        Err(ZoneMutationError::ZoneMissing)
     );
 }
 
@@ -491,7 +491,7 @@ fn effect_apply_preserves_primary_assignment_when_custom_zones_exist() {
     let mut manager = SceneManager::with_default();
     let scene_id = SceneId::DEFAULT;
     manager
-        .upsert_primary_group(
+        .upsert_primary_zone(
             &sample_effect("Primary"),
             HashMap::new(),
             None,
@@ -499,10 +499,10 @@ fn effect_apply_preserves_primary_assignment_when_custom_zones_exist() {
         )
         .expect("primary should be created");
     let custom_id = manager
-        .create_render_group(&scene_id, "Custom".to_owned(), None, (320, 200))
+        .create_zone(&scene_id, "Custom".to_owned(), None, (320, 200))
         .expect("custom zone should be created");
     manager
-        .assign_device_zone(
+        .assign_output_to_zone(
             &scene_id,
             custom_id,
             sample_zone("custom-zone"),
@@ -512,15 +512,15 @@ fn effect_apply_preserves_primary_assignment_when_custom_zones_exist() {
     let before = manager
         .active_scene()
         .and_then(|scene| scene.primary_zone())
-        .map(|group| group.layout.clone())
-        .expect("primary group should exist");
+        .map(|zone| zone.layout.clone())
+        .expect("primary zone should exist");
     let full_layout = SpatialLayout {
         zones: vec![sample_zone("primary-zone"), sample_zone("custom-zone")],
         ..sample_layout("primary-zone")
     };
 
     manager
-        .upsert_primary_group(
+        .upsert_primary_zone(
             &sample_effect("Next"),
             HashMap::new(),
             None,
@@ -531,8 +531,8 @@ fn effect_apply_preserves_primary_assignment_when_custom_zones_exist() {
     let after = manager
         .active_scene()
         .and_then(|scene| scene.primary_zone())
-        .map(|group| group.layout.clone())
-        .expect("primary group should exist");
+        .map(|zone| zone.layout.clone())
+        .expect("primary zone should exist");
     assert_eq!(after, before);
 }
 
@@ -549,10 +549,10 @@ fn effect_apply_seeds_new_primary_with_unclaimed_zones_only() {
         .update(default_scene)
         .expect("default scene should update");
     let custom_id = manager
-        .create_render_group(&scene_id, "Custom".to_owned(), None, (320, 200))
+        .create_zone(&scene_id, "Custom".to_owned(), None, (320, 200))
         .expect("custom zone should be created");
     manager
-        .assign_device_zone(
+        .assign_output_to_zone(
             &scene_id,
             custom_id,
             sample_zone("custom-zone"),
@@ -565,13 +565,13 @@ fn effect_apply_seeds_new_primary_with_unclaimed_zones_only() {
     };
 
     manager
-        .upsert_primary_group(&sample_effect("Primary"), HashMap::new(), None, full_layout)
+        .upsert_primary_zone(&sample_effect("Primary"), HashMap::new(), None, full_layout)
         .expect("primary should be created");
 
     let primary = manager
         .active_scene()
         .and_then(|scene| scene.primary_zone())
-        .expect("primary group should exist");
+        .expect("primary zone should exist");
     assert_eq!(primary.layout.zones.len(), 1);
     assert_eq!(primary.layout.zones[0].id, "primary-zone");
 }
@@ -581,7 +581,7 @@ fn layout_sync_preserves_primary_assignment_when_custom_zones_exist() {
     let mut manager = SceneManager::with_default();
     let scene_id = SceneId::DEFAULT;
     manager
-        .upsert_primary_group(
+        .upsert_primary_zone(
             &sample_effect("Primary"),
             HashMap::new(),
             None,
@@ -589,21 +589,21 @@ fn layout_sync_preserves_primary_assignment_when_custom_zones_exist() {
         )
         .expect("primary should be created");
     manager
-        .create_render_group(&scene_id, "Custom".to_owned(), None, (320, 200))
+        .create_zone(&scene_id, "Custom".to_owned(), None, (320, 200))
         .expect("custom zone should be created");
     let before = manager
         .active_scene()
         .and_then(|scene| scene.primary_zone())
-        .map(|group| group.layout.clone())
-        .expect("primary group should exist");
+        .map(|zone| zone.layout.clone())
+        .expect("primary zone should exist");
 
-    let changed = manager.sync_primary_group_layout(&sample_layout("new-full-layout"));
+    let changed = manager.sync_primary_zone_layout(&sample_layout("new-full-layout"));
 
     let after = manager
         .active_scene()
         .and_then(|scene| scene.primary_zone())
-        .map(|group| group.layout.clone())
-        .expect("primary group should exist");
+        .map(|zone| zone.layout.clone())
+        .expect("primary zone should exist");
     assert!(!changed);
     assert_eq!(after, before);
 }
@@ -613,7 +613,7 @@ fn update_zone_layout_merges_placement_and_preserves_identity() {
     let mut manager = SceneManager::with_default();
     let scene_id = SceneId::DEFAULT;
     manager
-        .upsert_primary_group(
+        .upsert_primary_zone(
             &sample_effect("Glow"),
             HashMap::new(),
             None,
@@ -623,8 +623,8 @@ fn update_zone_layout_merges_placement_and_preserves_identity() {
     let zone_id = manager
         .active_scene()
         .and_then(|scene| scene.primary_zone())
-        .map(|group| group.id)
-        .expect("primary group should exist");
+        .map(|zone| zone.id)
+        .expect("primary zone should exist");
     let revision_before = manager
         .active_scene()
         .expect("default scene should be active")
@@ -677,7 +677,7 @@ fn update_zone_layout_rejects_output_set_changes() {
     let mut manager = SceneManager::with_default();
     let scene_id = SceneId::DEFAULT;
     manager
-        .upsert_primary_group(
+        .upsert_primary_zone(
             &sample_effect("Glow"),
             HashMap::new(),
             None,
@@ -687,8 +687,8 @@ fn update_zone_layout_rejects_output_set_changes() {
     let zone_id = manager
         .active_scene()
         .and_then(|scene| scene.primary_zone())
-        .map(|group| group.id)
-        .expect("primary group should exist");
+        .map(|zone| zone.id)
+        .expect("primary zone should exist");
 
     // Adding a foreign output is rejected.
     let mut extra = sample_layout("out-1");
@@ -716,7 +716,7 @@ fn update_zone_layout_retunes_canvas_and_sampling_defaults() {
     let mut manager = SceneManager::with_default();
     let scene_id = SceneId::DEFAULT;
     manager
-        .upsert_primary_group(
+        .upsert_primary_zone(
             &sample_effect("Glow"),
             HashMap::new(),
             None,
@@ -726,8 +726,8 @@ fn update_zone_layout_retunes_canvas_and_sampling_defaults() {
     let zone_id = manager
         .active_scene()
         .and_then(|scene| scene.primary_zone())
-        .map(|group| group.id)
-        .expect("primary group should exist");
+        .map(|zone| zone.id)
+        .expect("primary zone should exist");
 
     let mut request = sample_layout("out-1");
     request.canvas_width = 800;
@@ -751,13 +751,13 @@ fn update_zone_layout_adopts_request_output_order() {
     let mut seed = sample_layout("out-a");
     seed.zones.push(sample_zone("out-b"));
     manager
-        .upsert_primary_group(&sample_effect("Glow"), HashMap::new(), None, seed)
+        .upsert_primary_zone(&sample_effect("Glow"), HashMap::new(), None, seed)
         .expect("primary should be created");
     let zone_id = manager
         .active_scene()
         .and_then(|scene| scene.primary_zone())
-        .map(|group| group.id)
-        .expect("primary group should exist");
+        .map(|zone| zone.id)
+        .expect("primary zone should exist");
 
     // The same outputs in reversed order — the merge adopts request order,
     // since vector order is the canvas tie-breaker and drives routing.

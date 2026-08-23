@@ -44,11 +44,11 @@ const DEFAULT_ZONE_NAME: &str = "Default zone";
 pub enum LayerMutationError {
     /// No scene exists with the requested id.
     SceneMissing,
-    /// The active scene exists but no group with the given id.
-    GroupMissing,
-    /// The group exists but no layer with the given id.
+    /// The active scene exists but no zone with the given id.
+    ZoneMissing,
+    /// The zone exists but no layer with the given id.
     LayerMissing { layer_id: SceneLayerId },
-    /// The requested layer id already exists in the group.
+    /// The requested layer id already exists in the zone.
     DuplicateLayer { layer_id: SceneLayerId },
     /// The internal layer-stack generation is stale.
     Stale { expected: u64, current: u64 },
@@ -66,18 +66,18 @@ pub enum LayerMutationError {
     ControlBound { keys: Vec<String> },
 }
 
-/// Error variants for structural render-group mutations.
+/// Error variants for structural render-zone mutations.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ZoneMutationError {
     /// No scene exists with the requested id.
     SceneMissing,
     /// No zone exists with the requested id.
-    GroupMissing,
+    ZoneMissing,
     /// No device zone exists with the requested id.
     OutputMissing,
     /// The scene is snapshot-locked and cannot be structurally edited.
     SnapshotLocked,
-    /// The requested mutation is invalid for the group's role.
+    /// The requested mutation is invalid for the zone's role.
     InvalidRole { role: ZoneRole },
     /// A placement update carried an output set that does not match the
     /// zone's stored outputs. Adds and drops route through the device
@@ -140,13 +140,13 @@ pub struct SceneManager {
     /// Cached active zones for cheap frame snapshot reads.
     active_render_groups: Arc<[Zone]>,
 
-    /// Monotonic revision for the active render-group cache.
+    /// Monotonic revision for the active render-zone cache.
     active_render_groups_revision: u64,
 
     /// Runtime-only default face zones, keyed by display device. Merged
-    /// into the active render groups whenever the active scene has no
+    /// into the active render zones whenever the active scene has no
     /// assigned display zone for that device; never written into scenes.
-    default_display_groups: Vec<Zone>,
+    default_display_zones: Vec<Zone>,
 }
 
 impl SceneManager {
@@ -161,7 +161,7 @@ impl SceneManager {
             activation_history: Vec::new(),
             active_render_groups: Arc::default(),
             active_render_groups_revision: 0,
-            default_display_groups: Vec::new(),
+            default_display_zones: Vec::new(),
         }
     }
 
@@ -186,7 +186,7 @@ impl SceneManager {
             id: SceneId::DEFAULT,
             name: "Default".to_owned(),
             description: Some("Auto-managed default scene.".to_owned()),
-            zones: vec![default_primary_group(layout)],
+            zones: vec![default_primary_zone(layout)],
             zones_revision: 0,
             transition: TransitionSpec {
                 duration_ms: 1_000,
@@ -409,7 +409,7 @@ impl SceneManager {
 
     /// Replace effect identities throughout authored and runtime-only scene state.
     ///
-    /// The render-group revision advances even when only an inactive scene
+    /// The render-zone revision advances even when only an inactive scene
     /// changed, fencing prepared layout publications captured before the
     /// identity rewrite.
     pub fn remap_effect_ids(&mut self, migrations: &HashMap<EffectId, EffectId>) -> usize {
@@ -428,7 +428,7 @@ impl SceneManager {
                 bump_zones_revision(scene);
             }
         }
-        for zone in &mut self.default_display_groups {
+        for zone in &mut self.default_display_zones {
             let zone_migrated = remap_zone_effect_ids(zone, migrations);
             if zone_migrated > 0 {
                 zone.layers_version = zone.layers_version.saturating_add(1);
@@ -469,7 +469,7 @@ impl SceneManager {
         &self.activation_history
     }
 
-    pub fn upsert_primary_group(
+    pub fn upsert_primary_zone(
         &mut self,
         effect: &EffectMetadata,
         controls: HashMap<String, ControlValue>,
@@ -479,44 +479,44 @@ impl SceneManager {
         let scene = self
             .active_scene_mut()
             .ok_or_else(|| anyhow::anyhow!("no active scene"))?;
-        let custom_zones_present = scene_has_custom_led_groups(scene);
+        let custom_zones_present = scene_has_custom_led_zones(scene);
         let next_primary_layout = if custom_zones_present {
             scene
                 .primary_zone()
-                .map(|group| group.layout.clone())
+                .map(|zone| zone.layout.clone())
                 .unwrap_or_else(|| unclaimed_primary_layout(scene, full_scope_layout))
         } else {
             full_scope_layout
         };
 
         let mut structural_changed = false;
-        if let Some(group) = scene.primary_zone_mut() {
-            let effect_changed = effect_layer_id(group) != Some(effect.id);
+        if let Some(zone) = scene.primary_zone_mut() {
+            let effect_changed = effect_layer_id(zone) != Some(effect.id);
             let control_bindings = if effect_changed {
                 HashMap::new()
             } else {
-                effect_control_bindings(group)
+                effect_control_bindings(zone)
             };
             replace_effect_layer_stack(
-                group,
+                zone,
                 effect.id,
                 controls,
                 control_bindings,
                 active_preset_id,
             );
-            if group.layout != next_primary_layout {
-                group.layout = next_primary_layout;
+            if zone.layout != next_primary_layout {
+                zone.layout = next_primary_layout;
                 structural_changed = true;
             }
-            group.enabled = true;
-            group.display_target = None;
-            group.role = ZoneRole::Primary;
+            zone.enabled = true;
+            zone.display_target = None;
+            zone.role = ZoneRole::Primary;
             // Preserve the internal control generation for compatibility
             // observers. Wire clients are fenced by the replacement's new
             // immutable layer id and the scene document revision.
-            group.controls_version = group.controls_version.saturating_add(1);
+            zone.controls_version = zone.controls_version.saturating_add(1);
         } else {
-            let mut group = Zone {
+            let mut zone = Zone {
                 id: ZoneId::new(),
                 name: DEFAULT_ZONE_NAME.to_owned(),
                 description: Some("Default zone.".to_owned()),
@@ -531,13 +531,13 @@ impl SceneManager {
                 layers_version: 0,
             };
             replace_effect_layer_stack(
-                &mut group,
+                &mut zone,
                 effect.id,
                 controls,
                 HashMap::new(),
                 active_preset_id,
             );
-            scene.zones.push(group);
+            scene.zones.push(zone);
             structural_changed = true;
         }
 
@@ -549,10 +549,10 @@ impl SceneManager {
         Ok(self
             .active_scene()
             .and_then(Scene::primary_zone)
-            .expect("primary group should exist after upsert"))
+            .expect("primary zone should exist after upsert"))
     }
 
-    pub fn upsert_display_group(
+    pub fn upsert_display_zone(
         &mut self,
         device_id: DeviceId,
         device_name: &str,
@@ -564,23 +564,23 @@ impl SceneManager {
             .active_scene_mut()
             .ok_or_else(|| anyhow::anyhow!("no active scene"))?;
 
-        if let Some(group) = scene.display_zone_for_mut(device_id) {
-            let effect_changed = effect_layer_id(group) != Some(effect.id);
+        if let Some(zone) = scene.display_zone_for_mut(device_id) {
+            let effect_changed = effect_layer_id(zone) != Some(effect.id);
             let control_bindings = if effect_changed {
                 HashMap::new()
             } else {
-                effect_control_bindings(group)
+                effect_control_bindings(zone)
             };
-            replace_effect_layer_stack(group, effect.id, controls, control_bindings, None);
-            group.layout = layout;
-            group.display_target = Some(DisplayFaceTarget::new(device_id));
-            group.enabled = true;
-            group.role = ZoneRole::Display;
-            if group.name.trim().is_empty() {
-                group.name = format!("{device_name} Face");
+            replace_effect_layer_stack(zone, effect.id, controls, control_bindings, None);
+            zone.layout = layout;
+            zone.display_target = Some(DisplayFaceTarget::new(device_id));
+            zone.enabled = true;
+            zone.role = ZoneRole::Display;
+            if zone.name.trim().is_empty() {
+                zone.name = format!("{device_name} Face");
             }
         } else {
-            let mut group = Zone {
+            let mut zone = Zone {
                 id: ZoneId::new(),
                 name: format!("{device_name} Face"),
                 description: Some(format!("Display face for {device_name}")),
@@ -594,18 +594,18 @@ impl SceneManager {
                 controls_version: 0,
                 layers_version: 0,
             };
-            replace_effect_layer_stack(&mut group, effect.id, controls, HashMap::new(), None);
-            scene.zones.push(group);
+            replace_effect_layer_stack(&mut zone, effect.id, controls, HashMap::new(), None);
+            scene.zones.push(zone);
         }
 
         self.refresh_active_render_groups();
         Ok(self
             .active_scene()
             .and_then(|scene| scene.display_zone_for(device_id))
-            .expect("display group should exist after upsert"))
+            .expect("display zone should exist after upsert"))
     }
 
-    pub fn ensure_display_group_surface(
+    pub fn ensure_display_zone_surface(
         &mut self,
         device_id: DeviceId,
         device_name: &str,
@@ -616,34 +616,34 @@ impl SceneManager {
             .ok_or_else(|| anyhow::anyhow!("no active scene"))?;
 
         let mut structural_changed = false;
-        if let Some(group) = scene.display_zone_for_mut(device_id) {
-            if group.role != ZoneRole::Display {
-                group.role = ZoneRole::Display;
+        if let Some(zone) = scene.display_zone_for_mut(device_id) {
+            if zone.role != ZoneRole::Display {
+                zone.role = ZoneRole::Display;
                 structural_changed = true;
             }
-            if group.display_target.is_none() {
-                group.display_target = Some(DisplayFaceTarget::new(device_id));
+            if zone.display_target.is_none() {
+                zone.display_target = Some(DisplayFaceTarget::new(device_id));
                 structural_changed = true;
             }
-            // Repair pass: earlier builds seeded face-less screen groups
+            // Repair pass: earlier builds seeded face-less screen zones
             // with Replace, which drops the scene frame the moment a face
-            // arrives via the layer path. A face-less group cannot carry a
+            // arrives via the layer path. A face-less zone cannot carry a
             // deliberate composition choice (the composition endpoint
             // rejects targets with no face), so normalizing to the blended
             // default is always safe here.
-            if !display_group_has_face(group)
-                && let Some(target) = group.display_target.as_mut()
+            if !display_zone_has_face(zone)
+                && let Some(target) = zone.display_target.as_mut()
                 && target.blend_mode == BlendMode::Replace
             {
                 target.blend_mode = BlendMode::default();
                 structural_changed = true;
             }
-            if group.layout != layout {
-                group.layout = layout;
+            if zone.layout != layout {
+                zone.layout = layout;
                 structural_changed = true;
             }
-            if group.name.trim().is_empty() {
-                device_name.clone_into(&mut group.name);
+            if zone.name.trim().is_empty() {
+                device_name.clone_into(&mut zone.name);
                 structural_changed = true;
             }
         } else {
@@ -672,10 +672,10 @@ impl SceneManager {
         Ok(self
             .active_scene()
             .and_then(|scene| scene.display_zone_for(device_id))
-            .expect("display group should exist after sync"))
+            .expect("display zone should exist after sync"))
     }
 
-    pub fn clear_display_group_assignment(
+    pub fn clear_display_zone_assignment(
         &mut self,
         device_id: DeviceId,
         device_name: &str,
@@ -685,24 +685,24 @@ impl SceneManager {
             .active_scene_mut()
             .ok_or_else(|| anyhow::anyhow!("no active scene"))?;
 
-        let structural_changed = if let Some(group) = scene.display_zone_for_mut(device_id) {
-            let changed = !group.layers.is_empty()
-                || group.layout != layout
-                || !group.enabled
-                || group.display_target != Some(DisplayFaceTarget::new(device_id))
-                || group.role != ZoneRole::Display
-                || group.name.trim().is_empty();
-            group.layers.clear();
-            group.layout = layout;
-            group.enabled = true;
-            group.display_target = Some(DisplayFaceTarget::new(device_id));
-            group.role = ZoneRole::Display;
-            if group.name.trim().is_empty() {
-                device_name.clone_into(&mut group.name);
+        let structural_changed = if let Some(zone) = scene.display_zone_for_mut(device_id) {
+            let changed = !zone.layers.is_empty()
+                || zone.layout != layout
+                || !zone.enabled
+                || zone.display_target != Some(DisplayFaceTarget::new(device_id))
+                || zone.role != ZoneRole::Display
+                || zone.name.trim().is_empty();
+            zone.layers.clear();
+            zone.layout = layout;
+            zone.enabled = true;
+            zone.display_target = Some(DisplayFaceTarget::new(device_id));
+            zone.role = ZoneRole::Display;
+            if zone.name.trim().is_empty() {
+                device_name.clone_into(&mut zone.name);
             }
             if changed {
-                group.controls_version = group.controls_version.saturating_add(1);
-                group.layers_version = group.layers_version.saturating_add(1);
+                zone.controls_version = zone.controls_version.saturating_add(1);
+                zone.layers_version = zone.layers_version.saturating_add(1);
             }
             changed
         } else {
@@ -731,15 +731,15 @@ impl SceneManager {
         Ok(self
             .active_scene()
             .and_then(|scene| scene.display_zone_for(device_id))
-            .expect("display group should exist after clearing assignment"))
+            .expect("display zone should exist after clearing assignment"))
     }
 
     /// Create an empty `Custom` LED zone in the target scene.
     ///
-    /// The zone inherits its canvas from an existing LED group so it stays
+    /// The zone inherits its canvas from an existing LED zone so it stays
     /// consistent with its siblings; `fallback_canvas` is used only when the
-    /// scene has no LED group to inherit from.
-    pub fn create_render_group(
+    /// scene has no LED zone to inherit from.
+    pub fn create_zone(
         &mut self,
         scene_id: &SceneId,
         name: String,
@@ -758,9 +758,9 @@ impl SceneManager {
         let (canvas_width, canvas_height) = scene
             .zones
             .iter()
-            .find(|group| group.display_target.is_none())
-            .map_or(fallback_canvas, |group| {
-                (group.layout.canvas_width, group.layout.canvas_height)
+            .find(|zone| zone.display_target.is_none())
+            .map_or(fallback_canvas, |zone| {
+                (zone.layout.canvas_width, zone.layout.canvas_height)
             });
         let id = ZoneId::new();
         scene.zones.push(Zone {
@@ -768,7 +768,7 @@ impl SceneManager {
             name,
             description: None,
             layers: Vec::new(),
-            layout: empty_scene_group_layout(id, canvas_width, canvas_height),
+            layout: empty_scene_zone_layout(id, canvas_width, canvas_height),
             brightness: 1.0,
             enabled: true,
             color,
@@ -784,10 +784,10 @@ impl SceneManager {
         Ok(id)
     }
 
-    pub fn delete_render_group(
+    pub fn delete_zone(
         &mut self,
         scene_id: &SceneId,
-        group_id: ZoneId,
+        zone_id: ZoneId,
     ) -> Result<(), ZoneMutationError> {
         let active_scene_id = self.active_scene_id().copied();
         let scene = self
@@ -797,8 +797,8 @@ impl SceneManager {
         if scene.blocks_runtime_mutation() {
             return Err(ZoneMutationError::SnapshotLocked);
         }
-        let Some(index) = scene.zones.iter().position(|group| group.id == group_id) else {
-            return Err(ZoneMutationError::GroupMissing);
+        let Some(index) = scene.zones.iter().position(|zone| zone.id == zone_id) else {
+            return Err(ZoneMutationError::ZoneMissing);
         };
         let role = scene.zones[index].role;
         if role != ZoneRole::Custom {
@@ -813,10 +813,10 @@ impl SceneManager {
         Ok(())
     }
 
-    pub fn update_render_group_meta(
+    pub fn update_zone_meta(
         &mut self,
         scene_id: &SceneId,
-        group_id: ZoneId,
+        zone_id: ZoneId,
         patch: ZoneMetaPatch,
     ) -> Result<Zone, ZoneMutationError> {
         let active_scene_id = self.active_scene_id().copied();
@@ -828,49 +828,49 @@ impl SceneManager {
         if role_change && scene.blocks_runtime_mutation() {
             return Err(ZoneMutationError::SnapshotLocked);
         }
-        let Some(index) = scene.zones.iter().position(|group| group.id == group_id) else {
-            return Err(ZoneMutationError::GroupMissing);
+        let Some(index) = scene.zones.iter().position(|zone| zone.id == zone_id) else {
+            return Err(ZoneMutationError::ZoneMissing);
         };
 
         if role_change {
-            for group in &mut scene.zones {
-                if group.role == ZoneRole::Primary {
-                    group.role = ZoneRole::Custom;
+            for zone in &mut scene.zones {
+                if zone.role == ZoneRole::Primary {
+                    zone.role = ZoneRole::Custom;
                 }
             }
-            let group = &mut scene.zones[index];
-            group.role = ZoneRole::Primary;
-            group.display_target = None;
+            let zone = &mut scene.zones[index];
+            zone.role = ZoneRole::Primary;
+            zone.display_target = None;
             bump_zones_revision(scene);
         }
 
-        let group = &mut scene.zones[index];
+        let zone = &mut scene.zones[index];
         if let Some(name) = patch.name {
-            group.name = name;
+            zone.name = name;
         }
         if let Some(description) = patch.description {
-            group.description = description;
+            zone.description = description;
         }
         if let Some(color) = patch.color {
-            group.color = color;
+            zone.color = color;
         }
         if let Some(brightness) = patch.brightness {
-            group.brightness = brightness.clamp(0.0, 1.0);
+            zone.brightness = brightness.clamp(0.0, 1.0);
         }
         if let Some(enabled) = patch.enabled {
-            group.enabled = enabled;
+            zone.enabled = enabled;
         }
-        let group = group.clone();
+        let zone = zone.clone();
         if active_scene_id == Some(*scene_id) {
             self.refresh_active_render_groups();
         }
-        Ok(group)
+        Ok(zone)
     }
 
-    pub fn assign_device_zone(
+    pub fn assign_output_to_zone(
         &mut self,
         scene_id: &SceneId,
-        group_id: ZoneId,
+        zone_id: ZoneId,
         device_zone: Output,
         placement: OutputPlacement,
     ) -> Result<(), ZoneMutationError> {
@@ -885,12 +885,11 @@ impl SceneManager {
         let target_index = scene
             .zones
             .iter()
-            .position(|group| group.id == group_id)
-            .ok_or(ZoneMutationError::GroupMissing)?;
+            .position(|zone| zone.id == zone_id)
+            .ok_or(ZoneMutationError::ZoneMissing)?;
 
-        let current_owner = scene.zones.iter().position(|group| {
-            group
-                .layout
+        let current_owner = scene.zones.iter().position(|zone| {
+            zone.layout
                 .zones
                 .iter()
                 .any(|zone| zone.id == device_zone.id)
@@ -906,8 +905,8 @@ impl SceneManager {
                 *zone = device_zone;
             }
         } else {
-            for group in &mut scene.zones {
-                group.layout.zones.retain(|zone| zone.id != device_zone.id);
+            for zone in &mut scene.zones {
+                zone.layout.zones.retain(|zone| zone.id != device_zone.id);
             }
             let slot = scene.zones[target_index].layout.zones.len();
             let mut moved = device_zone;
@@ -927,7 +926,7 @@ impl SceneManager {
         Ok(())
     }
 
-    pub fn unassign_device_zone(
+    pub fn unassign_output(
         &mut self,
         scene_id: &SceneId,
         device_zone_id: &str,
@@ -941,10 +940,10 @@ impl SceneManager {
             return Err(ZoneMutationError::SnapshotLocked);
         }
         let mut removed = false;
-        for group in &mut scene.zones {
-            let previous_len = group.layout.zones.len();
-            group.layout.zones.retain(|zone| zone.id != device_zone_id);
-            removed |= group.layout.zones.len() != previous_len;
+        for zone in &mut scene.zones {
+            let previous_len = zone.layout.zones.len();
+            zone.layout.zones.retain(|zone| zone.id != device_zone_id);
+            removed |= zone.layout.zones.len() != previous_len;
         }
         if !removed {
             return Err(ZoneMutationError::OutputMissing);
@@ -969,13 +968,13 @@ impl SceneManager {
         if scene.blocks_runtime_mutation() {
             return Err(ZoneMutationError::SnapshotLocked);
         }
-        if let UnassignedBehavior::Fallback(group_id) = behavior
+        if let UnassignedBehavior::Fallback(zone_id) = behavior
             && !scene
                 .zones
                 .iter()
-                .any(|group| group.id == group_id && group.display_target.is_none())
+                .any(|zone| zone.id == zone_id && zone.display_target.is_none())
         {
-            return Err(ZoneMutationError::GroupMissing);
+            return Err(ZoneMutationError::ZoneMissing);
         }
         scene.unassigned_behavior = behavior;
         bump_zones_revision(scene);
@@ -1015,8 +1014,8 @@ impl SceneManager {
         let index = scene
             .zones
             .iter()
-            .position(|group| group.id == zone_id)
-            .ok_or(ZoneMutationError::GroupMissing)?;
+            .position(|zone| zone.id == zone_id)
+            .ok_or(ZoneMutationError::ZoneMissing)?;
 
         // The request must carry exactly the outputs the zone owns. Adds
         // and drops are not placement edits — they route through the
@@ -1043,14 +1042,14 @@ impl SceneManager {
         // vector order is the canvas tie-breaker for equal `display_order`
         // and drives ordered routing, so a reorder is a real placement
         // edit, not a no-op.
-        let group = &mut scene.zones[index];
-        let mut stored = group
+        let zone = &mut scene.zones[index];
+        let mut stored = zone
             .layout
             .zones
             .drain(..)
             .map(|zone| (zone.id.clone(), zone))
             .collect::<HashMap<_, _>>();
-        group.layout.zones = layout
+        zone.layout.zones = layout
             .zones
             .into_iter()
             .filter_map(|incoming| {
@@ -1073,12 +1072,12 @@ impl SceneManager {
         // Canvas dimensions and sampling defaults are mutable; the
         // layout's own identity (id, name, description, version, spaces)
         // is preserved from the stored layout.
-        group.layout.canvas_width = layout.canvas_width;
-        group.layout.canvas_height = layout.canvas_height;
-        group.layout.default_sampling_mode = layout.default_sampling_mode;
-        group.layout.default_edge_behavior = layout.default_edge_behavior;
+        zone.layout.canvas_width = layout.canvas_width;
+        zone.layout.canvas_height = layout.canvas_height;
+        zone.layout.default_sampling_mode = layout.default_sampling_mode;
+        zone.layout.default_edge_behavior = layout.default_edge_behavior;
 
-        let updated = group.clone();
+        let updated = zone.clone();
         // Exclusivity holds by construction: the output-id set is
         // unchanged and no other zone is touched.
         bump_zones_revision(scene);
@@ -1088,15 +1087,15 @@ impl SceneManager {
         Ok(updated)
     }
 
-    pub fn patch_display_group_target(
+    pub fn patch_display_zone_target(
         &mut self,
-        group_id: ZoneId,
+        zone_id: ZoneId,
         blend_mode: Option<BlendMode>,
         opacity: Option<f32>,
     ) -> Option<&Zone> {
         let scene = self.active_scene_mut()?;
-        let group = scene.zones.iter_mut().find(|group| group.id == group_id)?;
-        let current_target = group.display_target.clone()?;
+        let zone = scene.zones.iter_mut().find(|zone| zone.id == zone_id)?;
+        let current_target = zone.display_target.clone()?;
         let mut next_target = DisplayFaceTarget {
             blend_mode: blend_mode.unwrap_or(current_target.blend_mode),
             device_id: current_target.device_id,
@@ -1106,22 +1105,22 @@ impl SceneManager {
         if !next_target.clone().blends_with_effect() {
             next_target.opacity = 1.0;
         }
-        group.display_target = Some(next_target);
+        zone.display_target = Some(next_target);
         self.refresh_active_render_groups();
         self.active_scene()
-            .and_then(|active| active.zones.iter().find(|group| group.id == group_id))
+            .and_then(|active| active.zones.iter().find(|zone| zone.id == zone_id))
     }
 
-    pub fn insert_scene_group_layer(
+    pub fn insert_zone_layer(
         &mut self,
         scene_id: SceneId,
-        group_id: ZoneId,
+        zone_id: ZoneId,
         layer: SceneLayer,
         index: Option<usize>,
         expected_version: Option<u64>,
     ) -> Result<(&Zone, u64), LayerMutationError> {
-        self.mutate_scene_group_layers(scene_id, group_id, expected_version, |group| {
-            if group.layers.iter().any(|existing| existing.id == layer.id) {
+        self.mutate_zone_layers(scene_id, zone_id, expected_version, |zone| {
+            if zone.layers.iter().any(|existing| existing.id == layer.id) {
                 return Err(LayerMutationError::DuplicateLayer { layer_id: layer.id });
             }
             let layer = layer.normalized();
@@ -1129,63 +1128,63 @@ impl SceneManager {
                 return Err(LayerMutationError::InvalidLayer { errors });
             }
             if let Some(index) = index {
-                if index > group.layers.len() {
+                if index > zone.layers.len() {
                     return Err(LayerMutationError::InvalidIndex {
                         index,
-                        len: group.layers.len(),
+                        len: zone.layers.len(),
                     });
                 }
-                group.layers.insert(index, layer);
+                zone.layers.insert(index, layer);
             } else {
-                group.layers.push(layer);
+                zone.layers.push(layer);
             }
             Ok(())
         })
     }
 
-    pub fn remove_scene_group_layer(
+    pub fn remove_zone_layer(
         &mut self,
         scene_id: SceneId,
-        group_id: ZoneId,
+        zone_id: ZoneId,
         layer_id: SceneLayerId,
         expected_version: Option<u64>,
     ) -> Result<(&Zone, u64), LayerMutationError> {
-        self.mutate_scene_group_layers(scene_id, group_id, expected_version, |group| {
-            let Some(index) = group.layers.iter().position(|layer| layer.id == layer_id) else {
+        self.mutate_zone_layers(scene_id, zone_id, expected_version, |zone| {
+            let Some(index) = zone.layers.iter().position(|layer| layer.id == layer_id) else {
                 return Err(LayerMutationError::LayerMissing { layer_id });
             };
-            group.layers.remove(index);
+            zone.layers.remove(index);
             Ok(())
         })
     }
 
-    pub fn reorder_scene_group_layers(
+    pub fn reorder_zone_layers(
         &mut self,
         scene_id: SceneId,
-        group_id: ZoneId,
+        zone_id: ZoneId,
         layer_ids: Vec<SceneLayerId>,
         expected_version: Option<u64>,
     ) -> Result<(&Zone, u64), LayerMutationError> {
-        self.mutate_scene_group_layers(scene_id, group_id, expected_version, |group| {
-            let current_ids = group
+        self.mutate_zone_layers(scene_id, zone_id, expected_version, |zone| {
+            let current_ids = zone
                 .layers
                 .iter()
                 .map(|layer| layer.id)
                 .collect::<HashSet<_>>();
             let requested_ids = layer_ids.iter().copied().collect::<HashSet<_>>();
-            if current_ids.len() != group.layers.len()
+            if current_ids.len() != zone.layers.len()
                 || requested_ids.len() != layer_ids.len()
                 || current_ids != requested_ids
             {
                 return Err(LayerMutationError::InvalidOrder);
             }
 
-            let mut layers_by_id = group
+            let mut layers_by_id = zone
                 .layers
                 .drain(..)
                 .map(|layer| (layer.id, layer))
                 .collect::<HashMap<_, _>>();
-            group.layers = layer_ids
+            zone.layers = layer_ids
                 .into_iter()
                 .map(|layer_id| {
                     layers_by_id
@@ -1197,16 +1196,16 @@ impl SceneManager {
         })
     }
 
-    pub fn patch_scene_layer_effect_controls(
+    pub fn patch_zone_layer_effect_controls(
         &mut self,
         scene_id: SceneId,
-        group_id: ZoneId,
+        zone_id: ZoneId,
         layer_id: SceneLayerId,
         updates: HashMap<String, ControlValue>,
         expected_version: Option<u64>,
     ) -> Result<(&Zone, u64), LayerMutationError> {
-        self.mutate_scene_group_layers(scene_id, group_id, expected_version, |group| {
-            let Some(layer) = group.layers.iter_mut().find(|layer| layer.id == layer_id) else {
+        self.mutate_zone_layers(scene_id, zone_id, expected_version, |zone| {
+            let Some(layer) = zone.layers.iter_mut().find(|layer| layer.id == layer_id) else {
                 return Err(LayerMutationError::LayerMissing { layer_id });
             };
             let LayerSource::Effect { controls, .. } = &mut layer.source else {
@@ -1232,17 +1231,17 @@ impl SceneManager {
     /// [`LayerMutationError::ControlBound`] when a written key keeps a
     /// binding this request does not clear, plus the usual missing
     /// scene, zone, layer, and stale-version refusals.
-    pub fn patch_scene_layer_controls_and_bindings(
+    pub fn patch_zone_layer_controls_and_bindings(
         &mut self,
         scene_id: SceneId,
-        group_id: ZoneId,
+        zone_id: ZoneId,
         layer_id: SceneLayerId,
         updates: HashMap<String, ControlValue>,
         clear_bindings: &[String],
         expected_version: Option<u64>,
     ) -> Result<(&Zone, u64), LayerMutationError> {
-        self.mutate_scene_group_layers(scene_id, group_id, expected_version, |group| {
-            let Some(layer) = group.layers.iter_mut().find(|layer| layer.id == layer_id) else {
+        self.mutate_zone_layers(scene_id, zone_id, expected_version, |zone| {
+            let Some(layer) = zone.layers.iter_mut().find(|layer| layer.id == layer_id) else {
                 return Err(LayerMutationError::LayerMissing { layer_id });
             };
             let LayerSource::Effect {
@@ -1278,10 +1277,7 @@ impl SceneManager {
     }
 
     #[must_use]
-    pub fn remove_display_groups_for_device(
-        &mut self,
-        device_id: DeviceId,
-    ) -> Vec<(SceneId, Zone)> {
+    pub fn remove_display_zones_for_device(&mut self, device_id: DeviceId) -> Vec<(SceneId, Zone)> {
         let active_scene_id = self.active_scene_id().copied();
         let mut removed_groups = Vec::new();
 
@@ -1312,42 +1308,38 @@ impl SceneManager {
         removed_groups
     }
 
-    pub fn patch_group_controls(
+    pub fn patch_zone_controls(
         &mut self,
-        group_id: ZoneId,
+        zone_id: ZoneId,
         updates: HashMap<String, ControlValue>,
     ) -> Option<&Zone> {
         let scene = self.active_scene_mut()?;
-        let group = scene.zones.iter_mut().find(|group| group.id == group_id)?;
-        let mut effect_layers = group
-            .layers
-            .iter()
-            .enumerate()
-            .filter_map(|(index, layer)| {
-                matches!(layer.source, LayerSource::Effect { .. }).then_some(index)
-            });
+        let zone = scene.zones.iter_mut().find(|zone| zone.id == zone_id)?;
+        let mut effect_layers = zone.layers.iter().enumerate().filter_map(|(index, layer)| {
+            matches!(layer.source, LayerSource::Effect { .. }).then_some(index)
+        });
         let index = effect_layers.next()?;
         if effect_layers.next().is_some() {
             return None;
         }
-        let LayerSource::Effect { controls, .. } = &mut group.layers[index].source else {
+        let LayerSource::Effect { controls, .. } = &mut zone.layers[index].source else {
             unreachable!("selected layer must be an effect layer");
         };
         controls.extend(updates);
-        group.controls_version = group.controls_version.saturating_add(1);
+        zone.controls_version = zone.controls_version.saturating_add(1);
         self.refresh_active_render_groups();
         self.active_scene()
-            .and_then(|active| active.zones.iter().find(|group| group.id == group_id))
+            .and_then(|active| active.zones.iter().find(|zone| zone.id == zone_id))
     }
 
     /// Apply an effect to a named (non-Primary) zone — the
-    /// zone-targeted counterpart of [`Self::upsert_primary_group`]. Sets
-    /// the group's effect, controls, and preset; the group's layout,
-    /// role, and device assignment are left untouched. The group must
+    /// zone-targeted counterpart of [`Self::upsert_primary_zone`]. Sets
+    /// the zone's effect, controls, and preset; the zone's layout,
+    /// role, and device assignment are left untouched. The zone must
     /// already exist — an effect apply never creates a zone.
-    pub fn apply_effect_to_group(
+    pub fn apply_effect_to_zone(
         &mut self,
-        group_id: ZoneId,
+        zone_id: ZoneId,
         effect: &EffectMetadata,
         controls: HashMap<String, ControlValue>,
         active_preset_id: Option<PresetId>,
@@ -1355,75 +1347,75 @@ impl SceneManager {
         let scene = self
             .active_scene_mut()
             .ok_or_else(|| anyhow::anyhow!("no active scene"))?;
-        let group = scene
+        let zone = scene
             .zones
             .iter_mut()
-            .find(|group| group.id == group_id)
-            .ok_or_else(|| anyhow::anyhow!("zone {group_id:?} is not in the active scene"))?;
-        if group.role == ZoneRole::Display {
-            anyhow::bail!("zone {group_id:?} is a display face, not an LED zone");
+            .find(|zone| zone.id == zone_id)
+            .ok_or_else(|| anyhow::anyhow!("zone {zone_id:?} is not in the active scene"))?;
+        if zone.role == ZoneRole::Display {
+            anyhow::bail!("zone {zone_id:?} is a display face, not an LED zone");
         }
-        let effect_changed = effect_layer_id(group) != Some(effect.id);
+        let effect_changed = effect_layer_id(zone) != Some(effect.id);
         let control_bindings = if effect_changed {
             HashMap::new()
         } else {
-            effect_control_bindings(group)
+            effect_control_bindings(zone)
         };
         replace_effect_layer_stack(
-            group,
+            zone,
             effect.id,
             controls,
             control_bindings,
             active_preset_id,
         );
-        group.enabled = true;
+        zone.enabled = true;
         // Keep compatibility observers aligned with the source replacement.
-        group.controls_version = group.controls_version.saturating_add(1);
+        zone.controls_version = zone.controls_version.saturating_add(1);
         self.refresh_active_render_groups();
         self.active_scene()
-            .and_then(|scene| scene.zones.iter().find(|group| group.id == group_id))
+            .and_then(|scene| scene.zones.iter().find(|zone| zone.id == zone_id))
             .ok_or_else(|| anyhow::anyhow!("zone vanished after effect apply"))
     }
 
-    pub fn clear_group_effect(&mut self, group_id: ZoneId) -> Option<&Zone> {
+    pub fn clear_zone_effect(&mut self, zone_id: ZoneId) -> Option<&Zone> {
         let scene = self.active_scene_mut()?;
-        let group = scene.zones.iter_mut().find(|group| group.id == group_id)?;
-        if !group.layers.is_empty() {
-            group.layers.clear();
-            group.layers_version = group.layers_version.saturating_add(1);
+        let zone = scene.zones.iter_mut().find(|zone| zone.id == zone_id)?;
+        if !zone.layers.is_empty() {
+            zone.layers.clear();
+            zone.layers_version = zone.layers_version.saturating_add(1);
         }
         // Keep the internal generation aligned with the cleared source.
-        group.controls_version = group.controls_version.saturating_add(1);
+        zone.controls_version = zone.controls_version.saturating_add(1);
         self.refresh_active_render_groups();
         self.active_scene()
-            .and_then(|active| active.zones.iter().find(|group| group.id == group_id))
+            .and_then(|active| active.zones.iter().find(|zone| zone.id == zone_id))
     }
 
-    /// Refresh the active scene's full-scope (primary-role, non-display) groups
+    /// Refresh the active scene's full-scope (primary-role, non-display) zones
     /// so their `layout` matches the supplied layout.
     ///
-    /// The primary group's layout is a snapshot taken when an effect is
+    /// The primary zone's layout is a snapshot taken when an effect is
     /// applied. When the active spatial layout changes, that snapshot goes
     /// stale and the render pipeline stops seeing the real device zones. Call
-    /// this after applying a new active layout to keep the primary group in
-    /// sync. Custom and display groups are left alone — they own their own
+    /// this after applying a new active layout to keep the primary zone in
+    /// sync. Custom and display zones are left alone — they own their own
     /// layouts.
     ///
-    /// Returns `true` if any group's layout changed.
-    pub fn sync_primary_group_layout(&mut self, layout: &SpatialLayout) -> bool {
+    /// Returns `true` if any zone's layout changed.
+    pub fn sync_primary_zone_layout(&mut self, layout: &SpatialLayout) -> bool {
         let Some(scene) = self.active_scene_mut() else {
             return false;
         };
-        if scene_has_custom_led_groups(scene) {
+        if scene_has_custom_led_zones(scene) {
             return false;
         }
         let mut changed = false;
-        for group in &mut scene.zones {
-            if group.role != ZoneRole::Primary || group.display_target.is_some() {
+        for zone in &mut scene.zones {
+            if zone.role != ZoneRole::Primary || zone.display_target.is_some() {
                 continue;
             }
-            if group.layout != *layout {
-                group.layout = layout.clone();
+            if zone.layout != *layout {
+                zone.layout = layout.clone();
                 changed = true;
             }
         }
@@ -1434,7 +1426,7 @@ impl SceneManager {
         changed
     }
 
-    /// Build the active render groups that would result from synchronizing the
+    /// Build the active render zones that would result from synchronizing the
     /// primary layout, without changing scene state.
     #[must_use]
     pub fn active_render_groups_for_primary_layout(
@@ -1447,7 +1439,7 @@ impl SceneManager {
                 self.active_render_groups_revision,
             );
         };
-        if scene_has_custom_led_groups(scene) {
+        if scene_has_custom_led_zones(scene) {
             return (
                 Arc::clone(&self.active_render_groups),
                 self.active_render_groups_revision,
@@ -1455,24 +1447,24 @@ impl SceneManager {
         }
 
         let mut changed = false;
-        let groups = self
+        let zones = self
             .active_render_groups
             .iter()
             .cloned()
-            .map(|mut group| {
-                if group.role == ZoneRole::Primary
-                    && group.display_target.is_none()
-                    && group.layout != *layout
+            .map(|mut zone| {
+                if zone.role == ZoneRole::Primary
+                    && zone.display_target.is_none()
+                    && zone.layout != *layout
                 {
-                    group.layout = layout.clone();
+                    zone.layout = layout.clone();
                     changed = true;
                 }
-                group
+                zone
             })
             .collect::<Vec<_>>();
         if changed {
             (
-                groups.into(),
+                zones.into(),
                 self.active_render_groups_revision.saturating_add(1),
             )
         } else {
@@ -1488,10 +1480,10 @@ impl SceneManager {
         self.scenes.get_mut(&scene_id)
     }
 
-    fn mutate_scene_group_layers<F>(
+    fn mutate_zone_layers<F>(
         &mut self,
         scene_id: SceneId,
-        group_id: ZoneId,
+        zone_id: ZoneId,
         expected_version: Option<u64>,
         mutate: F,
     ) -> Result<(&Zone, u64), LayerMutationError>
@@ -1503,23 +1495,23 @@ impl SceneManager {
             .scenes
             .get_mut(&scene_id)
             .ok_or(LayerMutationError::SceneMissing)?;
-        let group = scene
+        let zone = scene
             .zones
             .iter_mut()
-            .find(|group| group.id == group_id)
-            .ok_or(LayerMutationError::GroupMissing)?;
+            .find(|zone| zone.id == zone_id)
+            .ok_or(LayerMutationError::ZoneMissing)?;
         if let Some(expected) = expected_version
-            && expected != group.layers_version
+            && expected != zone.layers_version
         {
             return Err(LayerMutationError::Stale {
                 expected,
-                current: group.layers_version,
+                current: zone.layers_version,
             });
         }
 
-        mutate(group)?;
-        group.layers_version = group.layers_version.saturating_add(1);
-        let new_version = group.layers_version;
+        mutate(zone)?;
+        zone.layers_version = zone.layers_version.saturating_add(1);
+        let new_version = zone.layers_version;
 
         if active_scene_id == Some(scene_id) {
             self.refresh_active_render_groups();
@@ -1527,8 +1519,8 @@ impl SceneManager {
         let current = self
             .scenes
             .get(&scene_id)
-            .and_then(|scene| scene.zones.iter().find(|group| group.id == group_id))
-            .ok_or(LayerMutationError::GroupMissing)?;
+            .and_then(|scene| scene.zones.iter().find(|zone| zone.id == zone_id))
+            .ok_or(LayerMutationError::ZoneMissing)?;
         Ok((current, new_version))
     }
 
@@ -1537,7 +1529,7 @@ impl SceneManager {
             .active_scene()
             .map(|scene| scene.zones.clone())
             .unwrap_or_default();
-        for default_group in &self.default_display_groups {
+        for default_group in &self.default_display_zones {
             let Some(target) = default_group.display_target.as_ref() else {
                 continue;
             };
@@ -1563,36 +1555,34 @@ impl SceneManager {
     ///
     /// The zone's identity is keyed by its display target's device; updates
     /// keep the existing [`ZoneId`] so effect slots stay stable. The zone
-    /// only reaches the active render groups while the active scene has no
+    /// only reaches the active render zones while the active scene has no
     /// assigned display zone for the same device.
-    pub fn set_default_display_group(&mut self, mut zone: Zone) {
+    pub fn set_default_display_zone(&mut self, mut zone: Zone) {
         let Some(device_id) = zone.display_target.as_ref().map(|target| target.device_id) else {
             return;
         };
-        if let Some(existing) = self.default_display_groups.iter_mut().find(|group| {
-            group
-                .display_target
+        if let Some(existing) = self.default_display_zones.iter_mut().find(|zone| {
+            zone.display_target
                 .as_ref()
                 .is_some_and(|target| target.device_id == device_id)
         }) {
             zone.id = existing.id;
             *existing = zone;
         } else {
-            self.default_display_groups.push(zone);
+            self.default_display_zones.push(zone);
         }
         self.refresh_active_render_groups();
     }
 
     /// Remove the runtime default face zone for a display, if present.
-    pub fn remove_default_display_group(&mut self, device_id: DeviceId) -> bool {
-        let before = self.default_display_groups.len();
-        self.default_display_groups.retain(|group| {
-            group
-                .display_target
+    pub fn remove_default_display_zone(&mut self, device_id: DeviceId) -> bool {
+        let before = self.default_display_zones.len();
+        self.default_display_zones.retain(|zone| {
+            zone.display_target
                 .as_ref()
                 .is_none_or(|target| target.device_id != device_id)
         });
-        let removed = self.default_display_groups.len() != before;
+        let removed = self.default_display_zones.len() != before;
         if removed {
             self.refresh_active_render_groups();
         }
@@ -1602,19 +1592,18 @@ impl SceneManager {
     /// Every runtime default face zone, in insertion order.
     ///
     /// A default hidden behind an assigned display zone never reaches
-    /// the resolved render groups, so a caller comparing scene state
+    /// the resolved render zones, so a caller comparing scene state
     /// for concurrent modification has to read the set directly.
     #[must_use]
-    pub fn default_display_groups(&self) -> &[Zone] {
-        &self.default_display_groups
+    pub fn default_display_zones(&self) -> &[Zone] {
+        &self.default_display_zones
     }
 
     /// The runtime default face zone registered for a display, if any.
     #[must_use]
-    pub fn default_display_group_for(&self, device_id: DeviceId) -> Option<&Zone> {
-        self.default_display_groups.iter().find(|group| {
-            group
-                .display_target
+    pub fn default_display_zone_for(&self, device_id: DeviceId) -> Option<&Zone> {
+        self.default_display_zones.iter().find(|zone| {
+            zone.display_target
                 .as_ref()
                 .is_some_and(|target| target.device_id == device_id)
         })
@@ -1622,7 +1611,7 @@ impl SceneManager {
 }
 
 #[must_use]
-pub fn default_primary_group(mut layout: SpatialLayout) -> Zone {
+pub fn default_primary_zone(mut layout: SpatialLayout) -> Zone {
     DEFAULT_ZONE_NAME.clone_into(&mut layout.name);
     Zone {
         id: ZoneId::new(),
@@ -1663,23 +1652,23 @@ fn remap_zone_effect_ids(zone: &mut Zone, migrations: &HashMap<EffectId, EffectI
         .sum()
 }
 
-fn display_group_has_face(group: &Zone) -> bool {
-    effect_layer_id(group).is_some()
+fn display_zone_has_face(zone: &Zone) -> bool {
+    effect_layer_id(zone).is_some()
 }
 
-fn scene_has_custom_led_groups(scene: &Scene) -> bool {
+fn scene_has_custom_led_zones(scene: &Scene) -> bool {
     scene
         .zones
         .iter()
-        .any(|group| group.role == ZoneRole::Custom && group.display_target.is_none())
+        .any(|zone| zone.role == ZoneRole::Custom && zone.display_target.is_none())
 }
 
 fn unclaimed_primary_layout(scene: &Scene, mut full_scope_layout: SpatialLayout) -> SpatialLayout {
     let claimed = scene
         .zones
         .iter()
-        .filter(|group| group.role == ZoneRole::Custom && group.display_target.is_none())
-        .flat_map(|group| group.layout.zones.iter().map(|zone| zone.id.as_str()))
+        .filter(|zone| zone.role == ZoneRole::Custom && zone.display_target.is_none())
+        .flat_map(|zone| zone.layout.zones.iter().map(|zone| zone.id.as_str()))
         .collect::<HashSet<_>>();
     full_scope_layout
         .zones
@@ -1687,13 +1676,13 @@ fn unclaimed_primary_layout(scene: &Scene, mut full_scope_layout: SpatialLayout)
     full_scope_layout
 }
 
-fn empty_scene_group_layout(
-    group_id: ZoneId,
+fn empty_scene_zone_layout(
+    zone_id: ZoneId,
     canvas_width: u32,
     canvas_height: u32,
 ) -> SpatialLayout {
     SpatialLayout {
-        id: format!("zone-{group_id}"),
+        id: format!("zone-{zone_id}"),
         name: "Zone Layout".to_owned(),
         description: None,
         canvas_width,
@@ -1726,7 +1715,7 @@ fn empty_default_spatial_layout() -> SpatialLayout {
 /// spot nor blanket the whole canvas. `size` is a normalized extent and
 /// `position` is the box center, so a 0.2 x 0.15 box centered inside the
 /// canvas stays small and movable; the user repositions from there.
-/// How [`SceneManager::assign_device_zone`] places an output that lands in a
+/// How [`SceneManager::assign_output_to_zone`] places an output that lands in a
 /// zone it did not previously belong to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputPlacement {
@@ -1755,32 +1744,31 @@ fn reset_device_zone_placement(zone: &mut Output, slot: usize) {
 
 /// Replace a zone's whole stack with a freshly identified effect layer.
 fn replace_effect_layer_stack(
-    group: &mut Zone,
+    zone: &mut Zone,
     effect_id: EffectId,
     controls: HashMap<String, ControlValue>,
     control_bindings: HashMap<String, ControlBinding>,
     preset_id: Option<PresetId>,
 ) {
-    group.layers = vec![SceneLayer::from_effect(
+    zone.layers = vec![SceneLayer::from_effect(
         SceneLayerId::new(),
         effect_id,
         controls,
         control_bindings,
         preset_id,
     )];
-    group.layers_version = group.layers_version.saturating_add(1);
+    zone.layers_version = zone.layers_version.saturating_add(1);
 }
 
-fn effect_layer_id(group: &Zone) -> Option<EffectId> {
-    group.layers.iter().find_map(|layer| match layer.source {
+fn effect_layer_id(zone: &Zone) -> Option<EffectId> {
+    zone.layers.iter().find_map(|layer| match layer.source {
         LayerSource::Effect { effect_id, .. } => Some(effect_id),
         _ => None,
     })
 }
 
-fn effect_control_bindings(group: &Zone) -> HashMap<String, ControlBinding> {
-    group
-        .layers
+fn effect_control_bindings(zone: &Zone) -> HashMap<String, ControlBinding> {
+    zone.layers
         .iter()
         .find_map(|layer| match &layer.source {
             LayerSource::Effect {

@@ -480,7 +480,7 @@ async fn late_rescan_migrates_every_live_and_durable_reference_before_publicatio
     );
     assert!(
         manager
-            .default_display_groups()
+            .default_display_zones()
             .iter()
             .flat_map(hypercolor_types::scene::Zone::effect_ids)
             .all(|effect_id| effect_id == fixture.canonical_id)
@@ -1170,7 +1170,7 @@ async fn default_overlay_reconciliation_holds_admission_through_scene_commit() {
     let manager = state.scene_manager.snapshot().await;
     assert!(
         manager
-            .default_display_groups()
+            .default_display_zones()
             .iter()
             .flat_map(hypercolor_types::scene::Zone::effect_ids)
             .all(|effect_id| effect_id == canonical_id)
@@ -1210,7 +1210,7 @@ async fn rejected_default_overlay_holds_admission_through_retraction() {
             .scene_manager
             .snapshot()
             .await
-            .default_display_group_for(device_id)
+            .default_display_zone_for(device_id)
             .is_none()
     );
 }
@@ -1254,7 +1254,7 @@ async fn default_overlay_reconciliation_retries_a_replaced_preference() {
                 .and_then(|zone| zone.display_target.as_ref())
                 .map(|target| target.opacity),
             manager
-                .default_display_group_for(device_id)
+                .default_display_zone_for(device_id)
                 .and_then(|zone| zone.display_target.as_ref())
                 .map(|target| target.opacity),
         ),

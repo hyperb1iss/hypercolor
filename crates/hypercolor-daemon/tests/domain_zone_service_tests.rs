@@ -74,7 +74,7 @@ async fn seeded_scene(state: &AppState) -> SceneId {
     };
     scene
         .zones
-        .push(hypercolor_core::scene::default_primary_group(layout));
+        .push(hypercolor_core::scene::default_primary_zone(layout));
     let scene_id = scene.id;
     let mut mutation = state.scene_manager.begin_mutation().await;
     mutation

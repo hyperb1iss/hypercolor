@@ -26,7 +26,7 @@ use arc_swap::{ArcSwap, Guard};
 use hypercolor_core::bus::{HypercolorBus, TimestampedEvent};
 use hypercolor_core::scene::{
     LayerMutationError, OutputPlacement, SceneManager, ScenePlanSnapshot, ZoneMetaPatch,
-    ZoneMutationError, default_primary_group,
+    ZoneMutationError, default_primary_zone,
 };
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::api::scene::SideEffectOutcome;
@@ -590,7 +590,7 @@ impl SceneService {
         }
 
         publish_renderer_state(candidate_spatial_engine.clone())?;
-        manager.sync_primary_group_layout(candidate_spatial_engine.layout().as_ref());
+        manager.sync_primary_zone_layout(candidate_spatial_engine.layout().as_ref());
         let ticket = self.0.commits.admit(Arc::clone(&self.0.event_bus));
         self.0
             .plan
@@ -815,10 +815,10 @@ impl SceneMutation {
         };
         let zone = self
             .candidate
-            .upsert_primary_group(metadata, controls, preset_id, layout)
+            .upsert_primary_zone(metadata, controls, preset_id, layout)
             .map_err(|error| {
                 DomainError::Internal(anyhow::anyhow!(
-                    "Failed to update active scene primary group: {error}"
+                    "Failed to update active scene primary zone: {error}"
                 ))
             })?
             .clone();
@@ -845,7 +845,7 @@ impl SceneMutation {
             .ok_or_else(|| DomainError::not_found(ResourceKind::Scene, "active"))?;
         let zone = self
             .candidate
-            .apply_effect_to_group(zone_id, metadata, controls, preset_id)
+            .apply_effect_to_zone(zone_id, metadata, controls, preset_id)
             .map_err(|error| {
                 DomainError::validation(format!("Failed to apply effect to zone: {error}"))
             })?
@@ -933,7 +933,7 @@ impl SceneMutation {
 
     /// Align the active primary zone with a newly authoritative layout.
     pub fn sync_primary_layout(&mut self, layout: &SpatialLayout) {
-        self.candidate.sync_primary_group_layout(layout);
+        self.candidate.sync_primary_zone_layout(layout);
     }
 
     /// Restore a persisted scene without scheduling a redundant store write.
@@ -1011,9 +1011,9 @@ impl SceneMutation {
         color: Option<String>,
         fallback_canvas: (u32, u32),
     ) -> Result<ZoneId, ZoneMutationError> {
-        let zone_id =
-            self.candidate
-                .create_render_group(&scene_id, name, color, fallback_canvas)?;
+        let zone_id = self
+            .candidate
+            .create_zone(&scene_id, name, color, fallback_canvas)?;
         self.persists_scene_content = true;
         if let Some(zone) = self
             .candidate
@@ -1033,9 +1033,7 @@ impl SceneMutation {
         zone_id: ZoneId,
         patch: ZoneMetaPatch,
     ) -> Result<Zone, ZoneMutationError> {
-        let zone = self
-            .candidate
-            .update_render_group_meta(&scene_id, zone_id, patch)?;
+        let zone = self.candidate.update_zone_meta(&scene_id, zone_id, patch)?;
         self.persists_scene_content = true;
         self.events
             .push(zone_changed_event(scene_id, &zone, ZoneChangeKind::Updated));
@@ -1053,7 +1051,7 @@ impl SceneMutation {
             .get(&scene_id)
             .and_then(|scene| scene.zones.iter().find(|zone| zone.id == zone_id))
             .cloned();
-        self.candidate.delete_render_group(&scene_id, zone_id)?;
+        self.candidate.delete_zone(&scene_id, zone_id)?;
         self.persists_scene_content = true;
         if let Some(zone) = removed {
             self.events
@@ -1071,7 +1069,7 @@ impl SceneMutation {
         placement: OutputPlacement,
     ) -> Result<(), ZoneMutationError> {
         self.candidate
-            .assign_device_zone(&scene_id, zone_id, output, placement)?;
+            .assign_output_to_zone(&scene_id, zone_id, output, placement)?;
         self.persists_scene_content = true;
         if let Some(zone) = self
             .candidate
@@ -1102,7 +1100,7 @@ impl SceneMutation {
                 })
                 .map(|zone| zone.id)
         });
-        self.candidate.unassign_device_zone(&scene_id, output_id)?;
+        self.candidate.unassign_output(&scene_id, output_id)?;
         self.persists_scene_content = true;
         if let Some(zone) = zone_id.and_then(|zone_id| {
             self.candidate
@@ -1158,7 +1156,7 @@ impl SceneMutation {
         reason: EffectStopReason,
     ) -> Option<Zone> {
         let scene_id = self.candidate.active_scene_id().copied()?;
-        let zone = self.candidate.clear_group_effect(zone_id).cloned()?;
+        let zone = self.candidate.clear_zone_effect(zone_id).cloned()?;
         self.persists_scene_content = true;
         if let Some(effect) = stopped_effect {
             self.events.push(HypercolorEvent::EffectStopped {
@@ -1181,7 +1179,7 @@ impl SceneMutation {
         let scene_id = self.candidate.active_scene_id().copied()?;
         let zone = self
             .candidate
-            .patch_group_controls(zone_id, updates)?
+            .patch_zone_controls(zone_id, updates)?
             .clone();
         self.persists_scene_content = true;
         self.record_zone_change(scene_id, &zone, ZoneChangeKind::ControlsPatched);
@@ -1191,7 +1189,7 @@ impl SceneMutation {
     /// Force the active scene's resolved zones to be recomputed.
     ///
     /// The resolved zones are derived state, so this bumps the
-    /// render-group revision without touching persisted scene content.
+    /// render-zone revision without touching persisted scene content.
     pub fn invalidate_active_zones(&mut self) {
         self.candidate.invalidate_active_render_groups();
     }
@@ -1207,13 +1205,9 @@ impl SceneMutation {
         index: Option<usize>,
         expected_version: Option<u64>,
     ) -> Result<Zone, LayerMutationError> {
-        let (zone, _version) = self.candidate.insert_scene_group_layer(
-            scene_id,
-            zone_id,
-            layer,
-            index,
-            expected_version,
-        )?;
+        let (zone, _version) =
+            self.candidate
+                .insert_zone_layer(scene_id, zone_id, layer, index, expected_version)?;
         let zone = zone.clone();
         self.persists_scene_content = true;
         self.record_layer_change(scene_id, &zone, LayerStackChangeKind::Created);
@@ -1228,12 +1222,9 @@ impl SceneMutation {
         layer_id: SceneLayerId,
         expected_version: Option<u64>,
     ) -> Result<Zone, LayerMutationError> {
-        let (zone, _version) = self.candidate.remove_scene_group_layer(
-            scene_id,
-            zone_id,
-            layer_id,
-            expected_version,
-        )?;
+        let (zone, _version) =
+            self.candidate
+                .remove_zone_layer(scene_id, zone_id, layer_id, expected_version)?;
         let zone = zone.clone();
         self.persists_scene_content = true;
         self.record_layer_change(scene_id, &zone, LayerStackChangeKind::Removed);
@@ -1250,10 +1241,10 @@ impl SceneMutation {
         index: usize,
     ) -> Result<Zone, LayerMutationError> {
         self.candidate
-            .remove_scene_group_layer(scene_id, zone_id, layer_id, None)?;
+            .remove_zone_layer(scene_id, zone_id, layer_id, None)?;
         let (zone, _version) =
             self.candidate
-                .insert_scene_group_layer(scene_id, zone_id, layer, Some(index), None)?;
+                .insert_zone_layer(scene_id, zone_id, layer, Some(index), None)?;
         let zone = zone.clone();
         self.persists_scene_content = true;
         self.record_layer_change(scene_id, &zone, LayerStackChangeKind::Updated);
@@ -1268,12 +1259,9 @@ impl SceneMutation {
         layer_ids: Vec<SceneLayerId>,
         expected_version: Option<u64>,
     ) -> Result<Zone, LayerMutationError> {
-        let (zone, _version) = self.candidate.reorder_scene_group_layers(
-            scene_id,
-            zone_id,
-            layer_ids,
-            expected_version,
-        )?;
+        let (zone, _version) =
+            self.candidate
+                .reorder_zone_layers(scene_id, zone_id, layer_ids, expected_version)?;
         let zone = zone.clone();
         self.persists_scene_content = true;
         self.record_layer_change(scene_id, &zone, LayerStackChangeKind::Reordered);
@@ -1289,7 +1277,7 @@ impl SceneMutation {
         updates: HashMap<String, ControlValue>,
         expected_version: Option<u64>,
     ) -> Result<Zone, LayerMutationError> {
-        let (zone, _version) = self.candidate.patch_scene_layer_effect_controls(
+        let (zone, _version) = self.candidate.patch_zone_layer_effect_controls(
             scene_id,
             zone_id,
             layer_id,
@@ -1325,7 +1313,7 @@ impl SceneMutation {
                 _ => None,
             });
         let changed_values = updates.clone();
-        let (zone, _version) = self.candidate.patch_scene_layer_controls_and_bindings(
+        let (zone, _version) = self.candidate.patch_zone_layer_controls_and_bindings(
             scene_id,
             zone_id,
             layer_id,
@@ -1388,14 +1376,14 @@ impl SceneMutation {
         };
         let zone_id = self
             .candidate
-            .upsert_display_group(device_id, device_name, effect, controls, layout)
+            .upsert_display_zone(device_id, device_name, effect, controls, layout)
             .map_err(|error| {
                 DomainError::Internal(anyhow::anyhow!("Failed to update active scene: {error}"))
             })?
             .id;
         let zone = self
             .candidate
-            .patch_display_group_target(zone_id, Some(target.blend_mode), Some(target.opacity))
+            .patch_display_zone_target(zone_id, Some(target.blend_mode), Some(target.opacity))
             .ok_or_else(|| {
                 DomainError::Internal(anyhow::anyhow!("Failed to update display face composition"))
             })?
@@ -1418,7 +1406,7 @@ impl SceneMutation {
         let scene_id = self.candidate.active_scene_id().copied();
         let before = self.active_zones_revision();
         self.candidate
-            .ensure_display_group_surface(device_id, device_name, layout)
+            .ensure_display_zone_surface(device_id, device_name, layout)
             .map_err(|error| {
                 DomainError::Internal(anyhow::anyhow!(
                     "Failed to sync display screen surface: {error}"
@@ -1484,7 +1472,7 @@ impl SceneMutation {
         let scene_id = self.candidate.active_scene_id().copied()?;
         let zone = self
             .candidate
-            .patch_display_group_target(zone_id, blend_mode, opacity)?
+            .patch_display_zone_target(zone_id, blend_mode, opacity)?
             .clone();
         self.persists_scene_content = true;
         self.record_zone_change(scene_id, &zone, ZoneChangeKind::Updated);
@@ -1514,7 +1502,7 @@ impl SceneMutation {
         };
         let zone = self
             .candidate
-            .clear_display_group_assignment(device_id, device_name, layout)
+            .clear_display_zone_assignment(device_id, device_name, layout)
             .map_err(|error| {
                 DomainError::Internal(anyhow::anyhow!("Failed to update active scene: {error}"))
             })?
@@ -1526,7 +1514,7 @@ impl SceneMutation {
 
     /// Drop every scene's display zone for one device.
     pub fn remove_display_zones_for_device(&mut self, device_id: DeviceId) -> Vec<(SceneId, Zone)> {
-        let removed = self.candidate.remove_display_groups_for_device(device_id);
+        let removed = self.candidate.remove_display_zones_for_device(device_id);
         if !removed.is_empty() {
             self.persists_scene_content = true;
             for (scene_id, zone) in &removed {
@@ -1554,7 +1542,7 @@ impl SceneMutation {
         let Some(device_id) = zone.display_target.as_ref().map(|target| target.device_id) else {
             return false;
         };
-        let previous = self.candidate.default_display_group_for(device_id).cloned();
+        let previous = self.candidate.default_display_zone_for(device_id).cloned();
         let unchanged = previous.as_ref().is_some_and(|installed| {
             let mut candidate = zone.clone();
             candidate.id = installed.id;
@@ -1570,8 +1558,8 @@ impl SceneMutation {
         if unchanged {
             return false;
         }
-        self.candidate.set_default_display_group(zone);
-        if let Some(installed) = self.candidate.default_display_group_for(device_id).cloned() {
+        self.candidate.set_default_display_zone(zone);
+        if let Some(installed) = self.candidate.default_display_zone_for(device_id).cloned() {
             let scene_id = self
                 .candidate
                 .active_scene_id()
@@ -1589,8 +1577,8 @@ impl SceneMutation {
 
     /// Remove a display's runtime default overlay zone.
     pub fn remove_default_display_zone(&mut self, device_id: DeviceId) -> Option<Zone> {
-        let existing = self.candidate.default_display_group_for(device_id).cloned();
-        self.candidate.remove_default_display_group(device_id);
+        let existing = self.candidate.default_display_zone_for(device_id).cloned();
+        self.candidate.remove_default_display_zone(device_id);
         if let Some(zone) = existing.as_ref() {
             let scene_id = self
                 .candidate
@@ -2171,7 +2159,7 @@ pub async fn create_scene(
         id: SceneId::new(),
         name: command.name,
         description: command.description,
-        zones: vec![default_primary_group(default_layout)],
+        zones: vec![default_primary_zone(default_layout)],
         zones_revision: 0,
         transition: TransitionSpec {
             duration_ms: 1000,
@@ -2293,12 +2281,12 @@ pub async fn replace_scene(
     }
 
     validate_replacement_identities(&existing, &command.document)?;
-    let groups = replacement_zones(&existing, &default_layout, command.document.zones)?;
+    let zones = replacement_zones(&existing, &default_layout, command.document.zones)?;
     let updated = Scene {
         id: existing.id,
         name: command.document.name,
         description: command.document.description,
-        zones: groups,
+        zones,
         zones_revision: existing.zones_revision.saturating_add(1),
         transition: command.document.transition,
         priority: command.document.priority,

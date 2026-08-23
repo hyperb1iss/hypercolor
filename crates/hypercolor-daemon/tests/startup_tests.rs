@@ -125,7 +125,7 @@ async fn seed_effect_identity_stores(
 
     let mut named_scene = hypercolor_core::scene::make_scene("Legacy identity");
     let scene_id = named_scene.id;
-    let mut zone = hypercolor_core::scene::default_primary_group(SpatialLayout {
+    let mut zone = hypercolor_core::scene::default_primary_zone(SpatialLayout {
         id: "identity-test".into(),
         name: "Identity Test".to_owned(),
         description: None,

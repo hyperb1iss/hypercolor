@@ -739,7 +739,7 @@ fn zone_layout_error(
     use hypercolor_core::scene::ZoneMutationError;
     match error {
         ZoneMutationError::SceneMissing => DomainError::not_found(ResourceKind::Scene, "active"),
-        ZoneMutationError::GroupMissing => DomainError::not_found(ResourceKind::Zone, zone_id),
+        ZoneMutationError::ZoneMissing => DomainError::not_found(ResourceKind::Zone, zone_id),
         ZoneMutationError::OutputMissing => DomainError::not_found(ResourceKind::Device, "member"),
         ZoneMutationError::SnapshotLocked => {
             DomainError::conflict("Snapshot scene cannot be structurally edited")
@@ -761,7 +761,7 @@ pub(crate) fn layer_error(
 ) -> DomainError {
     match error {
         LayerMutationError::SceneMissing => DomainError::not_found(ResourceKind::Scene, "active"),
-        LayerMutationError::GroupMissing => DomainError::not_found(ResourceKind::Zone, zone_id),
+        LayerMutationError::ZoneMissing => DomainError::not_found(ResourceKind::Zone, zone_id),
         LayerMutationError::LayerMissing { layer_id } => {
             DomainError::not_found(ResourceKind::Layer, layer_id)
         }

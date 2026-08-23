@@ -48,13 +48,13 @@ fn sample_layout() -> SpatialLayout {
 fn invalidate_active_render_groups_bumps_revision_without_mutating_groups() {
     let mut manager = SceneManager::with_default();
     manager
-        .upsert_primary_group(
+        .upsert_primary_zone(
             &sample_effect("aurora"),
             HashMap::new(),
             None,
             sample_layout(),
         )
-        .expect("primary group should be created");
+        .expect("primary zone should be created");
 
     let groups_before = manager.active_render_groups();
     let revision_before = manager.active_render_groups_revision();
@@ -68,7 +68,7 @@ fn invalidate_active_render_groups_bumps_revision_without_mutating_groups() {
     assert_eq!(
         manager.active_render_groups().as_ref(),
         groups_before.as_ref(),
-        "invalidating external dependencies should not rewrite the active groups"
+        "invalidating external dependencies should not rewrite the active zones"
     );
 }
 
@@ -80,11 +80,11 @@ fn effect_id_migration_rewrites_scene_and_overlay_and_fences_stale_layouts() {
     effect.id = legacy_id;
     let mut manager = SceneManager::with_default();
     manager
-        .upsert_primary_group(&effect, HashMap::new(), None, sample_layout())
-        .expect("primary group should be created");
+        .upsert_primary_zone(&effect, HashMap::new(), None, sample_layout())
+        .expect("primary zone should be created");
     let mut overlay = manager.active_render_groups()[0].clone();
     overlay.display_target = Some(DisplayFaceTarget::new(DeviceId::new()));
-    manager.set_default_display_group(overlay);
+    manager.set_default_display_zone(overlay);
     let revision_before = manager.active_render_groups_revision();
 
     let migrated = manager.remap_effect_ids(&HashMap::from([(legacy_id, canonical_id)]));
@@ -100,7 +100,7 @@ fn effect_id_migration_rewrites_scene_and_overlay_and_fences_stale_layouts() {
     );
     assert!(
         manager
-            .default_display_groups()
+            .default_display_zones()
             .iter()
             .flat_map(hypercolor_types::scene::Zone::effect_ids)
             .all(|effect_id| effect_id == canonical_id)

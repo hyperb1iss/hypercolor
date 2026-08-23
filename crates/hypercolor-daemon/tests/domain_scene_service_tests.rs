@@ -652,7 +652,7 @@ async fn activate_scene_switches_the_current_scene_and_publishes_once() {
 }
 
 #[tokio::test]
-async fn activation_persists_groups_after_auto_layout_convergence() {
+async fn activation_persists_zones_after_auto_layout_convergence() {
     let (state, _tempdir) = isolated_state();
     let device_id = DeviceId::new();
     let info = auto_layout_device_info(device_id);
@@ -691,7 +691,7 @@ async fn activation_persists_groups_after_auto_layout_convergence() {
     .expect("stale layout should publish");
 
     let mut scene = named_scene("repair scene");
-    scene.zones = vec![hypercolor_core::scene::default_primary_group(stale_layout)];
+    scene.zones = vec![hypercolor_core::scene::default_primary_zone(stale_layout)];
     let scene_id = scene.id;
     seed_scene(&state, scene).await;
 
@@ -717,7 +717,7 @@ async fn activation_persists_groups_after_auto_layout_convergence() {
     let durable_output = durable_scene
         .primary_zone()
         .and_then(|zone| zone.layout.zones.first())
-        .expect("durable primary group should contain the repaired output");
+        .expect("durable primary zone should contain the repaired output");
     assert_eq!(durable_output.name, info.name);
     assert_eq!(
         durable_output.topology,
@@ -1023,7 +1023,7 @@ async fn mcp_scene_activation_applies_media_soft_admission() {
     // soft path without tripping the hard one.
     let mut zone = {
         let spatial = state.spatial_engine.snapshot();
-        hypercolor_core::scene::default_primary_group(spatial.layout().as_ref().clone())
+        hypercolor_core::scene::default_primary_zone(spatial.layout().as_ref().clone())
     };
     for index in 0..8u8 {
         let asset_id = insert_lottie_asset(&state, &format!("sparkle-{index}.json"), index).await;

@@ -158,7 +158,7 @@ async fn assign_command(
 
 /// A runtime overlay zone, as the preference store materializes one.
 fn overlay_zone(device_id: DeviceId, effect_id: EffectId) -> hypercolor_types::scene::Zone {
-    let mut zone = hypercolor_core::scene::default_primary_group(face_layout(device_id));
+    let mut zone = hypercolor_core::scene::default_primary_zone(face_layout(device_id));
     zone.id = ZoneId::new();
     "Kraken Face".clone_into(&mut zone.name);
     zone.role = ZoneRole::Display;
@@ -516,7 +516,7 @@ async fn prune_display_zones_removes_both_layers_for_a_deleted_device() {
     assert!(pruned.commit.is_some());
 
     let manager = state.scene_manager.snapshot().await;
-    assert!(manager.default_display_group_for(device_id).is_none());
+    assert!(manager.default_display_zone_for(device_id).is_none());
     assert!(
         manager
             .active_scene()
@@ -553,7 +553,7 @@ async fn the_default_overlay_installs_and_retracts_without_persisting() {
     assert_eq!(removed.id, installed.id);
 
     let manager = state.scene_manager.snapshot().await;
-    assert!(manager.default_display_group_for(device_id).is_none());
+    assert!(manager.default_display_zone_for(device_id).is_none());
     assert!(
         manager
             .list()

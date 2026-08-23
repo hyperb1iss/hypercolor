@@ -1,6 +1,6 @@
 //! Integration tests for persisted named-scene storage.
 
-use hypercolor_core::scene::{default_primary_group, make_scene};
+use hypercolor_core::scene::{default_primary_zone, make_scene};
 use hypercolor_daemon::scene_store;
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
@@ -152,7 +152,7 @@ fn scene_store_load_rejects_zones_missing_role() {
     let tempdir = TempDir::new().expect("tempdir");
     let path = tempdir.path().join("scenes.json");
     let mut scene = make_scene("Strict Display");
-    scene.zones = vec![default_primary_group(sample_layout("desk:display"))];
+    scene.zones = vec![default_primary_zone(sample_layout("desk:display"))];
     let mut payload = scene_store_payload(scene);
     payload
         .get_mut("scenes")
@@ -182,7 +182,7 @@ fn scene_store_load_rejects_scenes_missing_kind() {
     let tempdir = TempDir::new().expect("tempdir");
     let path = tempdir.path().join("scenes.json");
     let mut scene = make_scene("Strict Primary");
-    scene.zones = vec![default_primary_group(sample_layout("desk:main"))];
+    scene.zones = vec![default_primary_zone(sample_layout("desk:main"))];
     let mut payload = scene_store_payload(scene);
     payload
         .get_mut("scenes")

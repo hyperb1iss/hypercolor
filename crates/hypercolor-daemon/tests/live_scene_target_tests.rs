@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use hypercolor_core::scene::{ZoneMetaPatch, default_primary_group};
+use hypercolor_core::scene::{ZoneMetaPatch, default_primary_zone};
 use hypercolor_daemon::app_state::AppState;
 use hypercolor_daemon::domain::DomainError;
 use hypercolor_daemon::domain::layer::{insert_layer, remove_layer, reorder_layers};
@@ -50,7 +50,7 @@ fn scene_template(
     mutation_mode: SceneMutationMode,
 ) -> Scene {
     let layout = state.spatial_engine.snapshot().layout().as_ref().clone();
-    let mut primary = default_primary_group(layout.clone());
+    let mut primary = default_primary_zone(layout.clone());
     primary.name = format!("{name} primary");
     let zone = Zone {
         id: zone_id,

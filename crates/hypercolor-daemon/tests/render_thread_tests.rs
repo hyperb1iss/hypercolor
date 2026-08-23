@@ -1206,7 +1206,7 @@ fn make_render_state(
     let mut scene_manager = SceneManager::with_default();
     if let Some(metadata) = active_effect.metadata.as_ref() {
         scene_manager
-            .upsert_primary_group(
+            .upsert_primary_zone(
                 metadata,
                 active_effect.controls.clone(),
                 active_effect.preset_id,
@@ -2902,7 +2902,7 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
         .clone()
         .expect("builtin effect should expose metadata");
     scene_manager
-        .upsert_primary_group(
+        .upsert_primary_zone(
             &metadata,
             effect_seed.controls.clone(),
             effect_seed.preset_id,
@@ -4755,7 +4755,7 @@ async fn release_sleep_clears_published_frame_and_canvas_once() {
         .clone()
         .expect("builtin effect should expose metadata");
     scene_manager
-        .upsert_primary_group(
+        .upsert_primary_zone(
             &metadata,
             effect_seed.controls.clone(),
             effect_seed.preset_id,

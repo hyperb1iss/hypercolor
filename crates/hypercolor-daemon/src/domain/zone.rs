@@ -205,7 +205,7 @@ fn zone_error(
 ) -> DomainError {
     match error {
         ZoneMutationError::SceneMissing => DomainError::not_found(ResourceKind::Scene, scene_id),
-        ZoneMutationError::GroupMissing => DomainError::not_found(
+        ZoneMutationError::ZoneMissing => DomainError::not_found(
             ResourceKind::Zone,
             zone_id.map_or_else(|| "unknown".to_owned(), |id| id.to_string()),
         ),
