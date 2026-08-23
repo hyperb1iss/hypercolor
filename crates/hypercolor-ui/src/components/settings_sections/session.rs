@@ -443,6 +443,9 @@ fn owner_remedy_label(remedy: &MacosOwnerRemedy) -> String {
         MacosOwnerRemedy::StopStandaloneOwner { pid } => {
             format!("Quit the terminal-launched daemon (process {pid}), then try again.")
         }
+        MacosOwnerRemedy::RestartStandalone { pid } => {
+            format!("Restart the terminal-launched daemon (process {pid}), then try again.")
+        }
         MacosOwnerRemedy::StartAppSidecar => "Start Hypercolor.app.".to_owned(),
         MacosOwnerRemedy::StartLaunchdService => "Start the launchd service.".to_owned(),
         MacosOwnerRemedy::StartHomebrewService => "Start the Homebrew service.".to_owned(),
@@ -455,6 +458,7 @@ const fn owner_remedy_button_label(remedy: &MacosOwnerRemedy) -> &'static str {
         MacosOwnerRemedy::StartLaunchdService => "Start launchd service",
         MacosOwnerRemedy::StartHomebrewService => "Start Homebrew service",
         MacosOwnerRemedy::StopStandaloneOwner { .. }
+        | MacosOwnerRemedy::RestartStandalone { .. }
         | MacosOwnerRemedy::StartAppSidecar
         | MacosOwnerRemedy::Unknown => "Unavailable",
     }
