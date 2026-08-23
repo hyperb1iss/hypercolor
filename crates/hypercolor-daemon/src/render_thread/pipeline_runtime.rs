@@ -2997,7 +2997,7 @@ mod tests {
             .with_source(SourceKind::Media, 1)
             .with_source(SourceKind::Network, 1);
 
-        assert_eq!(demand, expected);
+        assert!(demand.same_publication_request(&expected));
     }
 
     #[test]
@@ -3030,7 +3030,7 @@ mod tests {
             ScreenPublicationExecutorRequest::SourceNative(target),
         );
 
-        assert_eq!(demand, expected);
+        assert!(demand.same_publication_request(&expected));
     }
 
     #[test]

@@ -9,10 +9,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use hypercolor_core::config::{BootConfig, ConfigManager};
-use hypercolor_core::input::{BrowserInputHandle, InputManager};
 use hypercolor_daemon::api;
 use hypercolor_daemon::app_state::AppState;
-use hypercolor_daemon::interaction_routing::InteractionRoutingControl;
 use hypercolor_daemon::startup::{DaemonState, default_config};
 use hypercolor_types::config::{RenderAccelerationMode, ServoGpuImportMode};
 use tempfile::TempDir;
@@ -100,7 +98,6 @@ impl DaemonHarness {
             config_manager,
         )
         .context("failed to initialize daemon state")?;
-        install_browser_only_input(&mut daemon_state);
         daemon_state
             .start()
             .await
@@ -184,24 +181,6 @@ impl DaemonHarness {
 
         first_error.map_or(Ok(()), Err)
     }
-}
-
-fn install_browser_only_input(daemon_state: &mut DaemonState) {
-    let config = daemon_state.config();
-    let browser_input = BrowserInputHandle::new();
-    let interaction_routing = InteractionRoutingControl::new(
-        browser_input.registry(),
-        1,
-        config.input.daemon_route,
-        config.input.preview_route,
-    );
-    let input_manager = InputManager::new();
-    let input_status = input_manager.source_status_registry();
-
-    daemon_state.input_manager = Arc::new(Mutex::new(input_manager));
-    daemon_state.input_status = input_status;
-    daemon_state.browser_input = browser_input;
-    daemon_state.interaction_routing = interaction_routing;
 }
 
 fn record_first_error(first_error: &mut Option<anyhow::Error>, error: anyhow::Error) {
