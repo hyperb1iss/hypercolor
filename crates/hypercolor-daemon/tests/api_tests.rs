@@ -400,7 +400,7 @@ fn test_state_with_temp_config_manager() -> (Arc<AppState>, Arc<ConfigManager>, 
     let state = builder.with_config_manager(Arc::clone(&manager)).build();
     {
         let mut input_manager = state
-            .input_manager
+            .input_manager()
             .try_lock()
             .expect("isolated input manager should be uncontended");
         let capacity = input_manager.screen_resource_capacity();
@@ -1598,7 +1598,7 @@ async fn status_reports_stale_source_health_without_captured_contents() {
     let (source, _) =
         ObservableInputSource::new("stale_test_audio", true, Duration::from_millis(1));
     {
-        let mut manager = state.input_manager.lock().await;
+        let mut manager = state.input_manager().lock().await;
         manager.add_source(Box::new(source));
         manager.start_all().expect("test input graph should start");
     }
@@ -1684,7 +1684,7 @@ async fn input_status_and_diagnose_observe_failure_while_manager_is_locked() {
     let (source, session) =
         ObservableInputSource::new("failed_test_audio", true, Duration::from_millis(1));
     {
-        let mut manager = state.input_manager.lock().await;
+        let mut manager = state.input_manager().lock().await;
         manager
             .set_screen_capacity_plan(
                 ScreenAdmissionCapacity::new(2_000_000, 1_500_000),
@@ -1696,7 +1696,7 @@ async fn input_status_and_diagnose_observe_failure_while_manager_is_locked() {
         manager.start_all().expect("test input graph should start");
     }
 
-    let mut manager_guard = state.input_manager.lock().await;
+    let mut manager_guard = state.input_manager().lock().await;
     let (demanded_stopped, _) =
         ObservableInputSource::new("demanded_stopped_audio", true, Duration::from_secs(30));
     manager_guard.add_source(Box::new(demanded_stopped));
@@ -2107,7 +2107,7 @@ async fn config_set_audio_device_persists_without_live_rebuild_by_default() {
     assert_eq!(json["data"]["live"], false);
 
     {
-        let input_manager = state.input_manager.lock().await;
+        let input_manager = state.input_manager().lock().await;
         assert_eq!(
             input_manager.source_count(),
             0,
@@ -2337,7 +2337,7 @@ async fn config_set_rejects_invalid_capture_boundaries_before_persistence() {
         !manager.path().exists(),
         "invalid capture config must not reach persistent storage"
     );
-    assert!(!state.input_manager.lock().await.has_screen_source());
+    assert!(!state.input_manager().lock().await.has_screen_source());
 }
 
 #[cfg(target_os = "windows")]
@@ -2359,7 +2359,7 @@ async fn config_set_rejects_capture_resource_plan_before_persistence() {
     let json = body_json(response).await;
     assert_eq!(json["error"]["code"], "validation_error");
     assert!(!manager.path().exists());
-    assert!(!state.input_manager.lock().await.has_screen_source());
+    assert!(!state.input_manager().lock().await.has_screen_source());
 }
 
 #[cfg(target_os = "windows")]
@@ -2384,7 +2384,7 @@ async fn config_set_applies_windows_capture_settings_source_and_disable_live() {
         assert_eq!(response.status(), StatusCode::OK);
         let json = body_json(response).await;
         assert_eq!(json["data"]["live"], true);
-        assert!(state.input_manager.lock().await.has_screen_source());
+        assert!(state.input_manager().lock().await.has_screen_source());
     }
 
     let response = execute_trusted_config_request(
@@ -2396,7 +2396,7 @@ async fn config_set_applies_windows_capture_settings_source_and_disable_live() {
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
     assert_eq!(json["data"]["live"], true);
-    assert!(!state.input_manager.lock().await.has_screen_source());
+    assert!(!state.input_manager().lock().await.has_screen_source());
 
     let persisted = fs::read_to_string(manager.path()).expect("capture config should persist");
     let persisted: HypercolorConfig =
@@ -2430,7 +2430,7 @@ async fn config_set_audio_device_rebuilds_live_input_manager_when_requested() {
     assert_eq!(json["data"]["live"], true);
 
     {
-        let input_manager = state.input_manager.lock().await;
+        let input_manager = state.input_manager().lock().await;
         assert_eq!(
             input_manager.source_count(),
             1,
@@ -2475,7 +2475,7 @@ async fn config_set_legacy_audio_alias_persists_canonical_device_id() {
     assert_eq!(json["data"]["live"], true);
 
     {
-        let input_manager = state.input_manager.lock().await;
+        let input_manager = state.input_manager().lock().await;
         assert!(
             input_manager
                 .source_names()
@@ -2515,7 +2515,7 @@ async fn config_set_legacy_audio_alias_skips_live_rebuild_when_already_canonical
     assert_eq!(json["data"]["live"], false);
 
     {
-        let input_manager = state.input_manager.lock().await;
+        let input_manager = state.input_manager().lock().await;
         assert_eq!(
             input_manager.source_count(),
             0,
@@ -2553,7 +2553,7 @@ async fn config_set_identical_audio_value_skips_live_rebuild() {
     assert_eq!(json["data"]["live"], false);
 
     {
-        let input_manager = state.input_manager.lock().await;
+        let input_manager = state.input_manager().lock().await;
         assert_eq!(
             input_manager.source_count(),
             0,
@@ -2753,7 +2753,7 @@ fn reset_fixture_state_from(
     let state = isolated_state_with_config_manager(Arc::clone(&config_manager));
     {
         let mut input_manager = state
-            .input_manager
+            .input_manager()
             .try_lock()
             .expect("isolated input manager should be uncontended");
         let capacity = input_manager.screen_resource_capacity();
@@ -5203,7 +5203,7 @@ async fn driver_control_reload_preserves_raw_objects_with_kind_fields() {
         .build();
 
     let values = state
-        .driver_host
+        .driver_host()
         .load_driver_values("action_test")
         .await
         .expect("driver values should reload");
@@ -5242,7 +5242,7 @@ async fn driver_control_reload_rejects_malformed_canonical_envelopes() {
         .build();
 
     let error = state
-        .driver_host
+        .driver_host()
         .load_driver_values("action_test")
         .await
         .expect_err("malformed canonical values must not fall back to a projection");
@@ -7325,7 +7325,7 @@ async fn library_delete_keeps_active_playlist_when_persistence_admission_fails()
     );
     assert!(
         state
-            .library_store
+            .library_store()
             .list_playlists()
             .await
             .iter()
@@ -8138,7 +8138,7 @@ async fn layout_apply_converges_a_concurrent_driver_runtime_update() {
     );
     assert_eq!(
         state
-            .driver_host
+            .driver_host()
             .driver_inventory()
             .driver_cache("runtime_cache_test")["revision"],
         serde_json::json!(2)
@@ -9303,7 +9303,7 @@ async fn assert_auto_layout_store_failure_rolls_back(saved_layout_present: bool)
     cleanup.writer().set_injected_replace_failures(1);
     let renderer = tokio::spawn(run_layout_publications(Arc::clone(&state), 2));
 
-    let runtime = state.driver_host.discovery_runtime();
+    let runtime = state.driver_host().discovery_runtime();
     runtime
         .layout
         .test_workflows()
@@ -12223,7 +12223,7 @@ async fn delete_device_forgets_learned_wled_inventory() {
         )
         .await;
     state
-        .driver_host
+        .driver_host()
         .driver_inventory()
         .replace_driver(
             "wled",
@@ -12259,7 +12259,7 @@ async fn delete_device_forgets_learned_wled_inventory() {
 
     assert_eq!(response.status(), StatusCode::OK);
     assert!(state.device_registry.get(&device_id).await.is_none());
-    let cache = state.driver_host.driver_inventory().driver_cache("wled");
+    let cache = state.driver_host().driver_inventory().driver_cache("wled");
     assert_eq!(cache["probe_ips"], serde_json::json!(["10.4.22.169"]));
     assert_eq!(cache["probe_targets"][0]["ip"], "10.4.22.169");
     assert_eq!(cache["future_key"], serde_json::json!(true));

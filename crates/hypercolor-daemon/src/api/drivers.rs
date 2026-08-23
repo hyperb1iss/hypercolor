@@ -19,7 +19,7 @@ pub async fn list_drivers(State(state): State<Arc<AppState>>) -> Response {
         |manager| Arc::clone(&manager.get()),
     );
 
-    let descriptors = network::module_descriptors(state.driver_registry.as_ref());
+    let descriptors = network::module_descriptors(state.driver_registry().as_ref());
 
     let items = descriptors
         .into_iter()
@@ -35,14 +35,14 @@ pub async fn list_drivers(State(state): State<Arc<AppState>>) -> Response {
                 .controls
                 .then(|| format!("/api/v1/drivers/{}/controls", descriptor.id));
             let protocols = if descriptor.capabilities.protocol_catalog {
-                network::protocol_descriptors(state.driver_registry.as_ref(), &descriptor.id)
+                network::protocol_descriptors(state.driver_registry().as_ref(), &descriptor.id)
             } else {
                 Vec::new()
             };
 
             DriverSummary {
                 presentation: network::module_presentation(
-                    state.driver_registry.as_ref(),
+                    state.driver_registry().as_ref(),
                     &descriptor.id,
                 )
                 .unwrap_or_else(|| network::descriptor_presentation(&descriptor)),
@@ -64,7 +64,7 @@ pub async fn get_driver_config(
     State(state): State<Arc<AppState>>,
     Path(driver_id): Path<String>,
 ) -> Response {
-    let Some(driver) = state.driver_registry.get(&driver_id) else {
+    let Some(driver) = state.driver_registry().get(&driver_id) else {
         return DomainError::not_found(ResourceKind::Driver, &driver_id).into_response();
     };
 

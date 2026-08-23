@@ -25,7 +25,7 @@ async fn sensors_endpoint_returns_latest_snapshot() {
     });
     let (_tx, rx) = watch::channel(snapshot);
     state
-        .input_manager
+        .input_manager()
         .lock()
         .await
         .set_sensor_snapshot_receiver(rx);

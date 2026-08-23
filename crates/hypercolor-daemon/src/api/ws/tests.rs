@@ -1564,7 +1564,7 @@ async fn relay_sensors_streams_latest_snapshot_from_watch() {
     initial.polled_at_ms = 1_000;
     let (sensor_tx, sensor_rx) = watch::channel(Arc::new(initial));
     state
-        .input_manager
+        .input_manager()
         .lock()
         .await
         .set_sensor_snapshot_receiver(sensor_rx);
@@ -1615,7 +1615,7 @@ async fn relay_sensors_coalesces_to_latest_snapshot_while_output_is_full() {
     initial.polled_at_ms = 1_000;
     let (sensor_tx, sensor_rx) = watch::channel(Arc::new(initial));
     state
-        .input_manager
+        .input_manager()
         .lock()
         .await
         .set_sensor_snapshot_receiver(sensor_rx);
@@ -3790,7 +3790,7 @@ async fn input_status_publisher_rebuilds_watchers_after_graph_change() {
         .expect("event bus should remain open");
 
     {
-        let mut manager = state.input_manager.lock().await;
+        let mut manager = state.input_manager().lock().await;
         manager.add_source(Box::new(StatusEventTestSource::with_id(
             "status-event-added",
             SourceSessionSlot::new(),

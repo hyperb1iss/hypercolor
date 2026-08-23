@@ -122,7 +122,7 @@ pub(crate) async fn persist_runtime_session(state: &Arc<AppState>) {
 }
 
 pub(crate) fn discovery_runtime(state: &AppState) -> crate::discovery::DiscoveryRuntime {
-    state.driver_host.discovery_runtime()
+    state.driver_host().discovery_runtime()
 }
 
 // ── Router ───────────────────────────────────────────────────────────────

@@ -626,7 +626,7 @@ fn validate_driver_config_scope(
     config: &HypercolorConfig,
 ) -> Result<(), DriverConfigRejection> {
     let driver_ids = match key {
-        None | Some("drivers") => state.driver_registry.ids(),
+        None | Some("drivers") => state.driver_registry().ids(),
         Some(value) => value
             .strip_prefix("drivers.")
             .and_then(|rest| rest.split('.').next())
@@ -635,7 +635,7 @@ fn validate_driver_config_scope(
     };
 
     for driver_id in driver_ids {
-        let Some(driver) = state.driver_registry.get(&driver_id) else {
+        let Some(driver) = state.driver_registry().get(&driver_id) else {
             continue;
         };
         let Some(provider) = driver.config() else {

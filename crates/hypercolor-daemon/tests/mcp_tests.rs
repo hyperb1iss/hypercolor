@@ -196,7 +196,7 @@ async fn diagnose_reports_demanded_input_failure_as_unhealthy() {
     let (state, _tempdir) = isolated_state_with_tempdir();
 
     {
-        let mut manager = state.input_manager.lock().await;
+        let mut manager = state.input_manager().lock().await;
         manager.add_source(Box::new(FailedInputSource::new()));
         manager.start_all().expect("test input graph should start");
     }
@@ -227,12 +227,12 @@ async fn mcp_status_surfaces_are_exact_while_input_manager_is_held() {
     let (state, _tempdir) = isolated_state_with_tempdir();
 
     state
-        .input_manager
+        .input_manager()
         .lock()
         .await
         .start_all()
         .expect("input manager should start");
-    let manager_guard = state.input_manager.lock().await;
+    let manager_guard = state.input_manager().lock().await;
 
     let status = tokio::time::timeout(
         Duration::from_secs(1),

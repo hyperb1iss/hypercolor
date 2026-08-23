@@ -227,7 +227,7 @@ pub(crate) async fn run_macos_screen_parity(
             )
         })?;
     let screenshot_action = {
-        let input = state.input_manager.lock().await;
+        let input = state.input_manager().lock().await;
         input.macos_screenshot_reference_action()
     };
     let screenshot_action = screenshot_action.ok_or_else(|| {

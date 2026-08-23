@@ -521,7 +521,7 @@ async fn sensors_subscription_streams_seeded_snapshot() {
     snapshot.polled_at_ms = 8_901;
     let (_sensor_tx, sensor_rx) = tokio::sync::watch::channel(Arc::new(snapshot));
     state
-        .input_manager
+        .input_manager()
         .lock()
         .await
         .set_sensor_snapshot_receiver(sensor_rx);

@@ -25,7 +25,7 @@ pub use hypercolor_types::api::library::{
 
 /// `GET /api/v1/library/favorites` — list favorited effects.
 pub async fn list_favorites(State(state): State<Arc<AppState>>) -> Response {
-    let favorites = state.library_store.list_favorites().await;
+    let favorites = state.library_store().list_favorites().await;
 
     let effect_names: HashMap<_, _> = state
         .domains
@@ -67,13 +67,13 @@ pub async fn add_favorite(
     };
 
     let existing = state
-        .library_store
+        .library_store()
         .list_favorites()
         .await
         .iter()
         .any(|favorite| favorite.effect_id == effect.id);
     let favorite = state
-        .library_store
+        .library_store()
         .upsert_favorite(effect.id, unix_epoch_ms())
         .await;
     let favorite = match favorite {
@@ -108,7 +108,7 @@ pub async fn remove_favorite(
         return DomainError::not_found(ResourceKind::Favorite, &effect).into_response();
     };
 
-    let removed = match state.library_store.remove_favorite(effect.id).await {
+    let removed = match state.library_store().remove_favorite(effect.id).await {
         Ok(removed) => removed,
         Err(error) => return super::store_error(&error).into_response(),
     };

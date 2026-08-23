@@ -294,7 +294,7 @@ pub async fn apply_effect(
             else {
                 if let Some(saved) =
                     state
-                        .library_store
+                        .library_store()
                         .list_presets()
                         .await
                         .into_iter()
@@ -498,7 +498,7 @@ async fn effect_preset_stack(
         .collect::<Vec<_>>();
 
     let mut saved = state
-        .library_store
+        .library_store()
         .list_presets()
         .await
         .into_iter()
@@ -529,7 +529,7 @@ async fn resolve_effect_preset(
     metadata: &EffectMetadata,
     id_or_name: &str,
 ) -> Option<ResolvedEffectPreset> {
-    let saved = state.library_store.list_presets().await;
+    let saved = state.library_store().list_presets().await;
     if let Ok(id) = id_or_name.parse::<PresetId>() {
         if let Some(preset) = metadata.presets.iter().find(|preset| preset.id == id) {
             return Some(ResolvedEffectPreset {

@@ -173,13 +173,13 @@ async fn late_migration_fixture(temp: &TempDir) -> LateMigrationFixture {
         )
         .expect("display preference should persist");
     state
-        .library_store
+        .library_store()
         .upsert_favorite(legacy_id, 10)
         .await
         .expect("favorite should persist");
     let preset_id = PresetId::new();
     state
-        .library_store
+        .library_store()
         .insert_preset(EffectPreset {
             id: preset_id,
             name: "Legacy preset".to_owned(),
@@ -210,7 +210,7 @@ async fn late_migration_fixture(temp: &TempDir) -> LateMigrationFixture {
         updated_at_ms: 10,
     };
     state
-        .library_store
+        .library_store()
         .insert_playlist(playlist.clone())
         .await
         .expect("playlist should persist");
@@ -530,13 +530,13 @@ async fn late_rescan_migrates_every_live_and_durable_reference_before_publicatio
         Some(fixture.canonical_id)
     );
     assert_eq!(
-        fixture.state.library_store.list_favorites().await[0].effect_id,
+        fixture.state.library_store().list_favorites().await[0].effect_id,
         fixture.canonical_id
     );
     assert_eq!(
         fixture
             .state
-            .library_store
+            .library_store()
             .get_preset(fixture.preset_id)
             .await
             .map(|preset| preset.effect_id),
@@ -544,7 +544,7 @@ async fn late_rescan_migrates_every_live_and_durable_reference_before_publicatio
     );
     let stored_playlist = fixture
         .state
-        .library_store
+        .library_store()
         .get_playlist(fixture.playlist_id)
         .await
         .expect("playlist should remain stored");
@@ -634,7 +634,7 @@ async fn identity_publication_blocks_every_observer_until_registry_assignment() 
     let library_state = Arc::clone(&state);
     let mut library_observer =
         tokio::spawn(
-            async move { library_state.library_store.list_favorites().await[0].effect_id },
+            async move { library_state.library_store().list_favorites().await[0].effect_id },
         );
     let display_state = Arc::clone(&state);
     let mut display_observer = tokio::spawn(async move {
@@ -763,7 +763,7 @@ async fn watcher_reload_reapplies_the_ephemeral_map_idempotently() {
         .expect("initial rescan should migrate");
     fixture
         .state
-        .library_store
+        .library_store()
         .upsert_favorite(fixture.legacy_id, 20)
         .await
         .expect("late legacy favorite should persist");
@@ -781,7 +781,7 @@ async fn watcher_reload_reapplies_the_ephemeral_map_idempotently() {
         report.legacy_effect_ids.get(&fixture.legacy_id),
         Some(&fixture.canonical_id)
     );
-    let favorites = fixture.state.library_store.list_favorites().await;
+    let favorites = fixture.state.library_store().list_favorites().await;
     assert_eq!(favorites.len(), 1);
     assert_eq!(favorites[0].effect_id, fixture.canonical_id);
     assert_eq!(favorites[0].added_at_ms, 20);

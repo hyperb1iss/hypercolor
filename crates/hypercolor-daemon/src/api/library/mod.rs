@@ -26,7 +26,7 @@ pub(crate) async fn resolve_preset_id(state: &Arc<AppState>, id_or_name: &str) -
     }
 
     state
-        .library_store
+        .library_store()
         .list_presets()
         .await
         .iter()

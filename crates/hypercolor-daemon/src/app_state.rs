@@ -173,7 +173,7 @@ pub struct AppState {
     pub api_extensions: Vec<Arc<dyn ApiExtension>>,
 
     /// Live input graph shared with the daemon render thread.
-    pub input_manager: Arc<Mutex<InputManager>>,
+    input_manager: Arc<Mutex<InputManager>>,
 
     /// Exact lock-free screen capacity policy and physical usage.
     pub screen_capacity_status: ScreenCapacityStatusHandle,
@@ -228,10 +228,10 @@ pub struct AppState {
     pub credential_store: Arc<CredentialStore>,
 
     /// Narrow host adapter shared with built-in driver modules.
-    pub driver_host: Arc<DaemonDriverHost>,
+    driver_host: Arc<DaemonDriverHost>,
 
     /// Registry of compiled-in driver modules and capabilities.
-    pub driver_registry: Arc<DriverModuleRegistry>,
+    driver_registry: Arc<DriverModuleRegistry>,
 
     /// Logical device segmentation store (physical device -> logical ranges).
     pub logical_devices: Arc<RwLock<HashMap<String, LogicalDevice>>>,
@@ -249,7 +249,7 @@ pub struct AppState {
     pub(crate) scene_transactions: SceneTransactionQueue,
 
     /// Saved effect library storage (favorites, presets, playlists).
-    pub library_store: Arc<dyn LibraryStore>,
+    library_store: Arc<dyn LibraryStore>,
 
     /// Active playlist runner state (single background worker at a time).
     pub playlist_runtime: Arc<Mutex<PlaylistRuntimeState>>,
@@ -734,6 +734,30 @@ impl AppState {
         self.config_manager.as_ref()
     }
 
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn input_manager(&self) -> &Arc<Mutex<InputManager>> {
+        &self.input_manager
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn driver_host(&self) -> &Arc<DaemonDriverHost> {
+        &self.driver_host
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn driver_registry(&self) -> &Arc<DriverModuleRegistry> {
+        &self.driver_registry
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn library_store(&self) -> &Arc<dyn LibraryStore> {
+        &self.library_store
+    }
+
     /// Create an `AppState` from a live [`DaemonState`](crate::startup::DaemonState).
     ///
     /// The device registry is cloned (it's internally `Arc`-wrapped).
@@ -744,9 +768,9 @@ impl AppState {
         // State-owned stores are shared from the daemon, never reopened, so
         // one API projection cannot silently clobber another projection's writes.
         let data_dir = ConfigManager::data_dir();
-        let library_store = Arc::clone(&daemon.library_store);
-        let driver_host = Arc::clone(&daemon.driver_host);
-        let driver_registry = Arc::clone(&daemon.driver_registry);
+        let library_store = Arc::clone(daemon.library_store());
+        let driver_host = Arc::clone(daemon.driver_host());
+        let driver_registry = Arc::clone(daemon.driver_registry());
         let domains = daemon.domains.clone();
 
         Self {
@@ -772,7 +796,7 @@ impl AppState {
             data_dir,
             extensions: daemon.extensions.clone(),
             api_extensions: daemon.api_extensions.clone(),
-            input_manager: Arc::clone(&daemon.input_manager),
+            input_manager: Arc::clone(daemon.input_manager()),
             screen_capacity_status: daemon.screen_capacity_status.clone(),
             #[cfg(target_os = "macos")]
             capture_picker_request_epoch: Arc::new(AtomicU64::new(0)),

@@ -296,7 +296,7 @@ async fn route_only_input_config_changes_publish_without_rebuilding_sources() {
         .with_config_manager(Arc::clone(&manager))
         .build();
     let state = Arc::new(state);
-    let graph_generation = state.input_manager.lock().await.source_graph_generation();
+    let graph_generation = state.input_manager().lock().await.source_graph_generation();
 
     manager.modify(|config| config.input.daemon_route = InteractionRoutePolicy::Merge);
     assert!(apply_input_config_change(&state, Some("input.daemon_route")).await);
@@ -310,7 +310,7 @@ async fn route_only_input_config_changes_publish_without_rebuilding_sources() {
     assert_eq!(second.preview_policy, InteractionRoutePolicy::Host);
     assert_eq!(second.config_generation, 3);
     assert_eq!(
-        state.input_manager.lock().await.source_graph_generation(),
+        state.input_manager().lock().await.source_graph_generation(),
         graph_generation
     );
 }
@@ -460,7 +460,7 @@ async fn capture_transaction_applies_publication_capacity_with_config() {
         .build();
     let state = Arc::new(state);
     state
-        .input_manager
+        .input_manager()
         .lock()
         .await
         .set_screen_capacity_plan(
@@ -477,14 +477,18 @@ async fn capture_transaction_applies_publication_capacity_with_config() {
     assert_eq!(manager.get().capture, capture);
     assert!(manager.capture_runtime_matches(&capture));
     let capacity = state
-        .input_manager
+        .input_manager()
         .lock()
         .await
         .screen_publication_capacity();
     assert_eq!(capacity.byte_budget(), 30_000);
     assert_eq!(capacity.backend_capacity(), 40_000);
     assert_eq!(
-        state.input_manager.lock().await.screen_resource_capacity(),
+        state
+            .input_manager()
+            .lock()
+            .await
+            .screen_resource_capacity(),
         ScreenAdmissionCapacity::new(40_000, 40_000)
     );
 }
@@ -507,7 +511,7 @@ async fn capture_transaction_conflict_preserves_publication_capacity() {
         .build();
     let state = Arc::new(state);
     state
-        .input_manager
+        .input_manager()
         .lock()
         .await
         .set_screen_capacity_plan(
@@ -524,7 +528,7 @@ async fn capture_transaction_conflict_preserves_publication_capacity() {
         Err(CaptureConfigTransactionError::Conflict)
     ));
     let capacity = state
-        .input_manager
+        .input_manager()
         .lock()
         .await
         .screen_publication_capacity();
@@ -555,7 +559,7 @@ async fn failed_windows_capture_preparation_preserves_old_graph_and_config() {
         .build();
     let state = Arc::new(state);
     {
-        let mut input_manager = state.input_manager.lock().await;
+        let mut input_manager = state.input_manager().lock().await;
         let mut old = Box::new(TestScreenSource::new(Arc::new(AtomicBool::new(false))));
         old.start().expect("old test source should start");
         input_manager.add_source(old);
@@ -563,9 +567,9 @@ async fn failed_windows_capture_preparation_preserves_old_graph_and_config() {
             .set_screen_capture_demand(test_screen_demand())
             .expect("old source should accept active demand");
     }
-    let graph_generation = state.input_manager.lock().await.source_graph_generation();
+    let graph_generation = state.input_manager().lock().await.source_graph_generation();
     let admission_coordinator = state
-        .input_manager
+        .input_manager()
         .lock()
         .await
         .screen_admission_coordinator();
@@ -581,7 +585,7 @@ async fn failed_windows_capture_preparation_preserves_old_graph_and_config() {
         Err(CaptureConfigTransactionError::Prepare(_))
     ));
     assert_eq!(manager.get().capture.source, "auto");
-    let input_manager = state.input_manager.lock().await;
+    let input_manager = state.input_manager().lock().await;
     assert_eq!(input_manager.source_graph_generation(), graph_generation);
     assert!(input_manager.has_screen_source());
     assert!(
@@ -611,7 +615,7 @@ async fn unchanged_disabled_capture_repairs_stale_runtime_source() {
     let state = Arc::new(state);
     let stopped = Arc::new(AtomicBool::new(false));
     {
-        let mut input_manager = state.input_manager.lock().await;
+        let mut input_manager = state.input_manager().lock().await;
         let mut source = Box::new(TestScreenSource::new(Arc::clone(&stopped)));
         source.start().expect("stale source should start");
         input_manager.add_source(source);
@@ -639,7 +643,7 @@ async fn unchanged_disabled_capture_repairs_stale_runtime_source() {
         "{}",
         String::from_utf8_lossy(&body)
     );
-    assert!(!state.input_manager.lock().await.has_screen_source());
+    assert!(!state.input_manager().lock().await.has_screen_source());
     assert!(stopped.load(Ordering::Acquire));
 }
 
@@ -657,7 +661,7 @@ async fn unchanged_capture_rejects_a_concurrent_config_generation() {
         .with_config_manager(Arc::clone(&manager))
         .build();
     let state = Arc::new(state);
-    let input_manager = state.input_manager.lock().await;
+    let input_manager = state.input_manager().lock().await;
     let request_state = Arc::clone(&state);
     let unchanged_fps = initial.capture.capture_fps;
     let request = tokio::spawn(async move {

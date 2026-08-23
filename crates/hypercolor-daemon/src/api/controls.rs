@@ -162,7 +162,7 @@ async fn driver_control_surface_document(
     state: &AppState,
     driver_id: &str,
 ) -> Result<Option<ControlSurfaceDocument>, DomainError> {
-    let Some(driver) = state.driver_registry.get(&driver_id) else {
+    let Some(driver) = state.driver_registry().get(&driver_id) else {
         return Err(DomainError::not_found(ResourceKind::Driver, driver_id));
     };
     let Some(provider) = driver.controls() else {
@@ -182,7 +182,7 @@ async fn driver_control_surface_document(
     };
 
     match provider
-        .driver_surface(state.driver_host.as_ref(), config_view)
+        .driver_surface(state.driver_host().as_ref(), config_view)
         .await
     {
         Ok(surface) => Ok(surface.map(|mut surface| {
@@ -201,7 +201,7 @@ async fn driver_device_control_surface(
     current_state: DeviceState,
 ) -> Result<Option<ControlSurfaceDocument>, DomainError> {
     let driver_id = info.driver_id();
-    let Some(driver) = state.driver_registry.get(driver_id) else {
+    let Some(driver) = state.driver_registry().get(driver_id) else {
         return Ok(None);
     };
     let Some(provider) = driver.controls() else {
@@ -216,7 +216,7 @@ async fn driver_device_control_surface(
     };
 
     provider
-        .device_surface(state.driver_host.as_ref(), &device)
+        .device_surface(state.driver_host().as_ref(), &device)
         .await
         .map_err(|error| {
             DomainError::Internal(anyhow::anyhow!(
@@ -401,7 +401,7 @@ async fn invoke_driver_control_action(
     action_id: String,
     body: InvokeControlActionRequest,
 ) -> Response {
-    let Some(driver) = state.driver_registry.get(&driver_id) else {
+    let Some(driver) = state.driver_registry().get(&driver_id) else {
         return DomainError::not_found(ResourceKind::Driver, &driver_id).into_response();
     };
     let Some(provider) = driver.controls() else {
@@ -419,7 +419,12 @@ async fn invoke_driver_control_action(
     };
 
     match provider
-        .invoke_action(state.driver_host.as_ref(), &target, &action_id, body.input)
+        .invoke_action(
+            state.driver_host().as_ref(),
+            &target,
+            &action_id,
+            body.input,
+        )
         .await
     {
         Ok(result) => {
@@ -449,7 +454,7 @@ async fn invoke_device_control_action(
         return DomainError::not_found(ResourceKind::Device, device_id).into_response();
     };
     let driver_id = tracked.info.driver_id();
-    let Some(driver) = state.driver_registry.get(driver_id) else {
+    let Some(driver) = state.driver_registry().get(driver_id) else {
         return DomainError::not_found(ResourceKind::Driver, driver_id).into_response();
     };
     let Some(provider) = driver.controls() else {
@@ -465,7 +470,12 @@ async fn invoke_device_control_action(
     let target = ControlApplyTarget::Device { device: &device };
 
     match provider
-        .invoke_action(state.driver_host.as_ref(), &target, &action_id, body.input)
+        .invoke_action(
+            state.driver_host().as_ref(),
+            &target,
+            &action_id,
+            body.input,
+        )
         .await
     {
         Ok(result) => {
@@ -490,7 +500,7 @@ async fn invoke_driver_device_control_action(
     let Some(tracked) = state.device_registry.get(&device_id).await else {
         return DomainError::not_found(ResourceKind::Device, device_id).into_response();
     };
-    let Some(driver) = state.driver_registry.get(&driver_id) else {
+    let Some(driver) = state.driver_registry().get(&driver_id) else {
         return DomainError::not_found(ResourceKind::Driver, &driver_id).into_response();
     };
     let Some(provider) = driver.controls() else {
@@ -504,7 +514,7 @@ async fn invoke_driver_device_control_action(
         current_state: &tracked.state,
     };
     let revision = match provider
-        .device_surface(state.driver_host.as_ref(), &device)
+        .device_surface(state.driver_host().as_ref(), &device)
         .await
     {
         Ok(Some(surface)) => surface.revision,
@@ -522,7 +532,12 @@ async fn invoke_driver_device_control_action(
     let target = ControlApplyTarget::Device { device: &device };
 
     match provider
-        .invoke_action(state.driver_host.as_ref(), &target, &action_id, body.input)
+        .invoke_action(
+            state.driver_host().as_ref(),
+            &target,
+            &action_id,
+            body.input,
+        )
         .await
     {
         Ok(result) => {
@@ -664,7 +679,7 @@ async fn apply_driver_control_surface_values(
     driver_id: String,
     changes: Vec<ControlChange>,
 ) -> Response {
-    let Some(driver) = state.driver_registry.get(&driver_id) else {
+    let Some(driver) = state.driver_registry().get(&driver_id) else {
         return DomainError::not_found(ResourceKind::Driver, &driver_id).into_response();
     };
     let Some(provider) = driver.controls() else {
@@ -689,7 +704,7 @@ async fn apply_driver_control_surface_values(
         config: config_view,
     };
     let validated = match provider
-        .validate_changes(state.driver_host.as_ref(), &target, &changes)
+        .validate_changes(state.driver_host().as_ref(), &target, &changes)
         .await
     {
         Ok(changes) => changes,
@@ -706,7 +721,7 @@ async fn apply_driver_control_surface_values(
     }
 
     let mut response = match provider
-        .apply_changes(state.driver_host.as_ref(), &target, validated)
+        .apply_changes(state.driver_host().as_ref(), &target, validated)
         .await
     {
         Ok(response) => response,
@@ -748,7 +763,7 @@ async fn apply_driver_device_control_surface_values(
     let Some(tracked) = state.device_registry.get(&device_id).await else {
         return DomainError::not_found(ResourceKind::Device, device_id).into_response();
     };
-    let Some(driver) = state.driver_registry.get(&driver_id) else {
+    let Some(driver) = state.driver_registry().get(&driver_id) else {
         return DomainError::not_found(ResourceKind::Driver, &driver_id).into_response();
     };
     let Some(provider) = driver.controls() else {
@@ -762,7 +777,7 @@ async fn apply_driver_device_control_surface_values(
         current_state: &tracked.state,
     };
     let surface = match provider
-        .device_surface(state.driver_host.as_ref(), &device)
+        .device_surface(state.driver_host().as_ref(), &device)
         .await
     {
         Ok(Some(surface)) => surface,
@@ -780,7 +795,7 @@ async fn apply_driver_device_control_surface_values(
     let previous_revision = surface.revision;
     let target = ControlApplyTarget::Device { device: &device };
     let validated = match provider
-        .validate_changes(state.driver_host.as_ref(), &target, &changes)
+        .validate_changes(state.driver_host().as_ref(), &target, &changes)
         .await
     {
         Ok(changes) => changes,
@@ -802,13 +817,13 @@ async fn apply_driver_device_control_surface_values(
     }
 
     match provider
-        .apply_changes(state.driver_host.as_ref(), &target, validated)
+        .apply_changes(state.driver_host().as_ref(), &target, validated)
         .await
     {
         Ok(mut response) => {
             response.surface_id = surface_id.clone();
             let refreshed = provider
-                .device_surface(state.driver_host.as_ref(), &device)
+                .device_surface(state.driver_host().as_ref(), &device)
                 .await
                 .ok()
                 .flatten();
@@ -1060,7 +1075,7 @@ async fn driver_surface_values(
         entry: config_entry,
     };
     provider
-        .driver_surface(state.driver_host.as_ref(), config_view)
+        .driver_surface(state.driver_host().as_ref(), config_view)
         .await
         .ok()
         .flatten()
@@ -1072,7 +1087,7 @@ async fn apply_driver_control_impacts(
     driver_id: &str,
     impacts: &[ApplyImpact],
 ) -> anyhow::Result<()> {
-    let Some(host) = state.driver_host.control_host() else {
+    let Some(host) = state.driver_host().control_host() else {
         return Ok(());
     };
     for impact in impacts {
@@ -1098,7 +1113,7 @@ async fn apply_driver_device_control_impacts(
     backend_id: &str,
     impacts: &[ApplyImpact],
 ) -> anyhow::Result<()> {
-    let Some(host) = state.driver_host.control_host() else {
+    let Some(host) = state.driver_host().control_host() else {
         return Ok(());
     };
     for impact in impacts {

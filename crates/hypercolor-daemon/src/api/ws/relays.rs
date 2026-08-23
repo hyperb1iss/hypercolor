@@ -3414,7 +3414,7 @@ pub(super) fn build_device_metrics_message(state: &AppState) -> ServerMessage {
 async fn sensor_snapshot_receiver(
     state: &AppState,
 ) -> Option<watch::Receiver<Arc<SystemSnapshot>>> {
-    let input_manager = state.input_manager.lock().await;
+    let input_manager = state.input_manager().lock().await;
     input_manager.sensor_snapshot_receiver()
 }
 

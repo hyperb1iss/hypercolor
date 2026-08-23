@@ -89,8 +89,8 @@ pub use signals::{SUPERVISED_PARENT_PID_ENV, install_signal_handlers};
 /// can be shared across the API server, render loop, MCP server, and event
 /// handlers without contention.
 ///
-/// Fields are `pub` because the API and MCP modules (built by other agents)
-/// will need direct access to subsystems.
+/// The domain graph is the primary transport-facing surface. Raw authorities
+/// stay private when their pointer identity must remain fixed after assembly.
 pub struct DaemonState {
     /// Complete domain service graph shared by every transport.
     pub domains: DomainContexts,
@@ -133,7 +133,7 @@ pub struct DaemonState {
     /// One instance for the whole process: every `AppState` built from
     /// this daemon shares it, so a write through any surface is visible
     /// to all of them and none can clobber another's in-memory copy.
-    pub library_store: Arc<dyn crate::library::LibraryStore>,
+    library_store: Arc<dyn crate::library::LibraryStore>,
 
     /// Active playlist worker shared by API and filesystem watcher state.
     pub playlist_runtime: Arc<Mutex<PlaylistRuntimeState>>,
@@ -163,10 +163,10 @@ pub struct DaemonState {
     pub credential_store: Arc<CredentialStore>,
 
     /// Narrow host adapter shared with built-in driver modules.
-    pub driver_host: Arc<DaemonDriverHost>,
+    driver_host: Arc<DaemonDriverHost>,
 
     /// Registry of compiled-in driver modules and capabilities.
-    pub driver_registry: Arc<DriverModuleRegistry>,
+    driver_registry: Arc<DriverModuleRegistry>,
 
     /// Rolling render-performance snapshot shared with the API.
     pub performance: Arc<RwLock<PerformanceTracker>>,
@@ -184,7 +184,7 @@ pub struct DaemonState {
     pub reconnect_tasks: Arc<StdMutex<HashMap<DeviceId, JoinHandle<()>>>>,
 
     /// Input orchestrator — audio and screen capture sampling sources.
-    pub input_manager: Arc<Mutex<InputManager>>,
+    input_manager: Arc<Mutex<InputManager>>,
 
     /// Exact lock-free screen capacity policy and physical usage.
     pub screen_capacity_status: ScreenCapacityStatusHandle,
@@ -277,6 +277,30 @@ pub struct DaemonState {
 }
 
 impl DaemonState {
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn input_manager(&self) -> &Arc<Mutex<InputManager>> {
+        &self.input_manager
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn driver_host(&self) -> &Arc<DaemonDriverHost> {
+        &self.driver_host
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn driver_registry(&self) -> &Arc<DriverModuleRegistry> {
+        &self.driver_registry
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn library_store(&self) -> &Arc<dyn crate::library::LibraryStore> {
+        &self.library_store
+    }
+
     /// Read a snapshot of the current configuration.
     ///
     /// Lock-free via `arc_swap` — cheap to call from any context.

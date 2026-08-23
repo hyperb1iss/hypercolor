@@ -336,7 +336,7 @@ fn config_path(state: &AppState) -> PathBuf {
 }
 
 async fn latest_sensor_snapshot(state: &AppState) -> Arc<SystemSnapshot> {
-    let input_manager = state.input_manager.lock().await;
+    let input_manager = state.input_manager().lock().await;
     input_manager
         .latest_sensor_snapshot()
         .unwrap_or_else(|| Arc::new(SystemSnapshot::empty()))

@@ -63,7 +63,7 @@ pub(super) async fn build_device_auth_summary(
     metadata: Option<&HashMap<String, String>>,
 ) -> Result<Option<DeviceAuthSummary>, DriverError> {
     let driver_id = info.driver_id();
-    let Some(driver) = state.driver_registry.get(driver_id) else {
+    let Some(driver) = state.driver_registry().get(driver_id) else {
         return Ok(None);
     };
     let Some(pairing) = driver.pairing() else {
@@ -77,7 +77,7 @@ pub(super) async fn build_device_auth_summary(
     };
 
     pairing
-        .auth_summary(state.driver_host.as_ref(), &device)
+        .auth_summary(state.driver_host().as_ref(), &device)
         .await
 }
 
@@ -124,7 +124,7 @@ async fn pair_device_for_ui(
     };
     let metadata = state.device_registry.metadata_for_id(&device_id).await;
     let driver_id = tracked.info.driver_id();
-    let Some(driver) = state.driver_registry.get(driver_id) else {
+    let Some(driver) = state.driver_registry().get(driver_id) else {
         return Err(DomainError::validation(format!(
             "Pairing is not supported for driver '{driver_id}'"
         )));
@@ -141,7 +141,7 @@ async fn pair_device_for_ui(
         current_state: &tracked.state,
     };
     let outcome = pairing
-        .pair(state.driver_host.as_ref(), &device, &request)
+        .pair(state.driver_host().as_ref(), &device, &request)
         .await
         .map_err(|error| {
             warn!(
@@ -186,7 +186,7 @@ async fn delete_device_pairing(
     };
     let metadata = state.device_registry.metadata_for_id(&device_id).await;
     let driver_id = tracked.info.driver_id();
-    let Some(driver) = state.driver_registry.get(driver_id) else {
+    let Some(driver) = state.driver_registry().get(driver_id) else {
         return Err(DomainError::validation(format!(
             "Pairing is not supported for driver '{driver_id}'"
         )));
@@ -203,7 +203,7 @@ async fn delete_device_pairing(
         current_state: &tracked.state,
     };
     let outcome = pairing
-        .clear_credentials(state.driver_host.as_ref(), &device)
+        .clear_credentials(state.driver_host().as_ref(), &device)
         .await
         .map_err(|error| {
             warn!(

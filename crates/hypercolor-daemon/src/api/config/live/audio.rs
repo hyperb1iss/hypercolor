@@ -41,7 +41,7 @@ async fn reconfigure_input_manager(state: &Arc<AppState>) -> anyhow::Result<()> 
         let audio_name = format!("AudioInput({audio_device})");
         let effective_config = audio_pipeline_config(latest_config.as_ref());
         let (plan, previous_sources) = {
-            let input_manager = state.input_manager.lock().await;
+            let input_manager = state.input_manager().lock().await;
             (
                 input_manager.plan_audio_runtime_config(
                     latest_config.audio.enabled,
@@ -74,7 +74,7 @@ async fn reconfigure_input_manager(state: &Arc<AppState>) -> anyhow::Result<()> 
         if !manager.is_current(&latest_config) {
             anyhow::bail!("audio config changed while live reconfiguration was prepared");
         }
-        let mut input_manager = state.input_manager.lock().await;
+        let mut input_manager = state.input_manager().lock().await;
         match input_manager.commit_audio_runtime_config(&mut prepared) {
             Ok(retirement) => {
                 let sources = input_manager.source_names();

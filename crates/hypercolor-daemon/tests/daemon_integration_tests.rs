@@ -193,7 +193,7 @@ async fn daemon_lifecycle_initialize_start_shutdown() {
         config_manager_for(&config, temp.path()),
     )
     .expect("initialization should succeed");
-    *state.input_manager.lock().await = test_input_manager();
+    *state.input_manager().lock().await = test_input_manager();
 
     // Verify initial state — all subsystems created but not started
     assert!(state.device_registry.is_empty().await);
@@ -244,7 +244,7 @@ async fn daemon_shutdown_publishes_events() {
         config_manager_for(&config, temp.path()),
     )
     .expect("initialization should succeed");
-    *state.input_manager.lock().await = test_input_manager();
+    *state.input_manager().lock().await = test_input_manager();
 
     let mut rx = state.event_bus.subscribe_all();
 
@@ -301,7 +301,7 @@ async fn daemon_double_shutdown_is_safe() {
         config_manager_for(&config, temp.path()),
     )
     .expect("initialization should succeed");
-    *state.input_manager.lock().await = test_input_manager();
+    *state.input_manager().lock().await = test_input_manager();
 
     state.start().await.expect("start");
     state.shutdown().await.expect("first shutdown");
@@ -331,7 +331,7 @@ async fn daemon_start_rolls_back_partial_startup() {
         config_manager_for(&config, temp.path()),
     )
     .expect("initialization should succeed");
-    *state.input_manager.lock().await = test_input_manager();
+    *state.input_manager().lock().await = test_input_manager();
 
     let shutdowns = Arc::new(AtomicUsize::new(0));
     state.register_lifecycle_extension(Arc::new(FailingStartupExtension {
@@ -360,7 +360,7 @@ async fn removed_runtime_effect_fields_are_rejected_on_startup() {
         config_manager_for(&config, temp.path()),
     )
     .expect("initialization should succeed");
-    *state.input_manager.lock().await = test_input_manager();
+    *state.input_manager().lock().await = test_input_manager();
 
     let effect_id = {
         let registry = state.effect_registry.read().await;

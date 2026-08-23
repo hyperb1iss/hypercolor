@@ -36,7 +36,7 @@ const DEFAULT_PLAYLIST_ITEM_DURATION_MS: u64 = 30_000;
 
 /// `GET /api/v1/library/playlists` — list all playlists.
 pub async fn list_playlists(State(state): State<Arc<AppState>>) -> Response {
-    let items = state.library_store.list_playlists().await;
+    let items = state.library_store().list_playlists().await;
     let total = items.len();
 
     envelope::ok(PlaylistListResponse {
@@ -52,7 +52,7 @@ pub async fn get_playlist(State(state): State<Arc<AppState>>, Path(id): Path<Str
         return DomainError::not_found(ResourceKind::Playlist, &id).into_response();
     };
 
-    let Some(playlist) = state.library_store.get_playlist(playlist_id).await else {
+    let Some(playlist) = state.library_store().get_playlist(playlist_id).await else {
         return DomainError::not_found(ResourceKind::Playlist, &id).into_response();
     };
 
@@ -84,7 +84,11 @@ pub async fn create_playlist(
         updated_at_ms: now,
     };
 
-    if let Err(error) = state.library_store.insert_playlist(playlist.clone()).await {
+    if let Err(error) = state
+        .library_store()
+        .insert_playlist(playlist.clone())
+        .await
+    {
         return store_error(&error).into_response();
     }
     state
@@ -111,7 +115,7 @@ pub async fn update_playlist(
         return DomainError::validation("Playlist name must not be empty").into_response();
     }
 
-    let Some(existing) = state.library_store.get_playlist(playlist_id).await else {
+    let Some(existing) = state.library_store().get_playlist(playlist_id).await else {
         return DomainError::not_found(ResourceKind::Playlist, &id).into_response();
     };
     let _admission = state.domains.effects.admit_current().await;
@@ -130,7 +134,11 @@ pub async fn update_playlist(
         updated_at_ms: unix_epoch_ms(),
     };
 
-    if let Err(error) = state.library_store.update_playlist(playlist.clone()).await {
+    if let Err(error) = state
+        .library_store()
+        .update_playlist(playlist.clone())
+        .await
+    {
         return store_error(&error).into_response();
     }
     state
@@ -167,7 +175,7 @@ pub async fn delete_playlist(
         return DomainError::not_found(ResourceKind::Playlist, &id).into_response();
     };
 
-    let removed = match state.library_store.remove_playlist(playlist_id).await {
+    let removed = match state.library_store().remove_playlist(playlist_id).await {
         Ok(removed) => removed,
         Err(error) => return store_error(&error).into_response(),
     };
@@ -210,7 +218,7 @@ pub async fn activate_playlist(
     let Some(playlist_id) = resolve_playlist_id(&state, &id).await else {
         return DomainError::not_found(ResourceKind::Playlist, &id).into_response();
     };
-    let Some(mut playlist) = state.library_store.get_playlist(playlist_id).await else {
+    let Some(mut playlist) = state.library_store().get_playlist(playlist_id).await else {
         return DomainError::not_found(ResourceKind::Playlist, &id).into_response();
     };
     if playlist.items.is_empty() {
@@ -234,7 +242,7 @@ pub async fn activate_playlist(
     }
 
     let _admission = state.domains.effects.admit_current().await;
-    let Some(current_playlist) = state.library_store.get_playlist(playlist_id).await else {
+    let Some(current_playlist) = state.library_store().get_playlist(playlist_id).await else {
         return DomainError::not_found(ResourceKind::Playlist, &id).into_response();
     };
     playlist = current_playlist;
@@ -328,7 +336,7 @@ async fn resolve_playlist_id(state: &Arc<AppState>, id_or_name: &str) -> Option<
     }
 
     state
-        .library_store
+        .library_store()
         .list_playlists()
         .await
         .iter()
@@ -458,7 +466,7 @@ pub(crate) async fn activate_playlist_item(
             (metadata, HashMap::new(), None)
         }
         PlaylistItemTarget::Preset { preset_id } => {
-            let Some(preset) = state.library_store.get_preset(*preset_id).await else {
+            let Some(preset) = state.library_store().get_preset(*preset_id).await else {
                 return Err(format!("playlist references missing preset: {preset_id}"));
             };
             let metadata = metadata_for_effect_id(state, preset.effect_id).await?;
@@ -509,7 +517,7 @@ async fn build_playlist_items(
                 let Some(parsed) = resolve_preset_id(state, preset_id).await else {
                     return Err(format!("Playlist references unknown preset: {preset_id}"));
                 };
-                if state.library_store.get_preset(parsed).await.is_none() {
+                if state.library_store().get_preset(parsed).await.is_none() {
                     return Err(format!("Playlist references unknown preset: {preset_id}"));
                 }
                 PlaylistItemTarget::Preset { preset_id: parsed }

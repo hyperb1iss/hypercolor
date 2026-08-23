@@ -370,10 +370,10 @@ pub async fn delete_device(State(state): State<Arc<AppState>>, Path(id): Path<St
         return DomainError::not_found(ResourceKind::Device, &id).into_response();
     };
     let driver_id = tracked.info.driver_id().to_owned();
-    let removed = if let Some(driver) = state.driver_registry.get(&driver_id)
+    let removed = if let Some(driver) = state.driver_registry().get(&driver_id)
         && let Some(provider) = driver.runtime_cache()
     {
-        let inventory = state.driver_host.driver_inventory();
+        let inventory = state.driver_host().driver_inventory();
         let guard = inventory.operation_guard().await;
         let device = DriverTrackedDevice {
             info: tracked.info.clone(),
@@ -842,7 +842,7 @@ pub(super) async fn summarize_device_for_response(
         layout_device_id,
         name: info.name.clone(),
         origin: info.origin.clone(),
-        presentation: crate::network::device_presentation(state.driver_registry.as_ref(), info),
+        presentation: crate::network::device_presentation(state.driver_registry().as_ref(), info),
         status: device_state.variant_name().to_lowercase(),
         brightness: brightness_percent(brightness),
         firmware_version: info.firmware_version.clone(),

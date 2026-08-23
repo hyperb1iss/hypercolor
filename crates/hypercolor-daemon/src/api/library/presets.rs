@@ -27,7 +27,7 @@ pub use hypercolor_types::api::library::{
 
 /// `GET /api/v1/library/presets` — list all saved presets.
 pub async fn list_presets(State(state): State<Arc<AppState>>) -> Response {
-    let items = state.library_store.list_presets().await;
+    let items = state.library_store().list_presets().await;
     let total = items.len();
 
     envelope::ok(PresetListResponse {
@@ -43,7 +43,7 @@ pub async fn get_preset(State(state): State<Arc<AppState>>, Path(id): Path<Strin
         return DomainError::not_found(ResourceKind::Preset, &id).into_response();
     };
 
-    let Some(preset) = state.library_store.get_preset(preset_id).await else {
+    let Some(preset) = state.library_store().get_preset(preset_id).await else {
         return DomainError::not_found(ResourceKind::Preset, &id).into_response();
     };
 
@@ -87,7 +87,7 @@ pub async fn create_preset(
         updated_at_ms: now,
     };
 
-    if let Err(error) = state.library_store.insert_preset(preset.clone()).await {
+    if let Err(error) = state.library_store().insert_preset(preset.clone()).await {
         return store_error(&error).into_response();
     }
     state
@@ -114,7 +114,7 @@ pub async fn update_preset(
         return DomainError::validation("Preset name must not be empty").into_response();
     }
 
-    let Some(existing) = state.library_store.get_preset(preset_id).await else {
+    let Some(existing) = state.library_store().get_preset(preset_id).await else {
         return DomainError::not_found(ResourceKind::Preset, &id).into_response();
     };
 
@@ -145,7 +145,7 @@ pub async fn update_preset(
         updated_at_ms: unix_epoch_ms(),
     };
 
-    if let Err(error) = state.library_store.update_preset(preset.clone()).await {
+    if let Err(error) = state.library_store().update_preset(preset.clone()).await {
         return store_error(&error).into_response();
     }
     state
@@ -165,7 +165,7 @@ pub async fn delete_preset(State(state): State<Arc<AppState>>, Path(id): Path<St
         return DomainError::not_found(ResourceKind::Preset, &id).into_response();
     };
 
-    let removed = match state.library_store.remove_preset(preset_id).await {
+    let removed = match state.library_store().remove_preset(preset_id).await {
         Ok(removed) => removed,
         Err(error) => return store_error(&error).into_response(),
     };

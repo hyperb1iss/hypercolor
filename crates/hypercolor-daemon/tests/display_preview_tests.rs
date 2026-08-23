@@ -46,7 +46,7 @@ async fn register_display(state: &Arc<AppState>) -> DeviceId {
         .await
         .upsert(config.clone());
     activate_simulated_displays(
-        &state.driver_host.discovery_runtime(),
+        &state.driver_host().discovery_runtime(),
         &state.simulated_displays,
     )
     .await

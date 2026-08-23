@@ -366,7 +366,7 @@ async fn input_source_status_serializes_macos_screen_platform() {
     });
     let state = AppState::new();
     state
-        .input_manager
+        .input_manager()
         .lock()
         .await
         .add_source(Box::new(TestStatusSource::new(platform.clone())));

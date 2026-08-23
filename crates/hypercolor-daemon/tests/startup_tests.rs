@@ -258,7 +258,7 @@ async fn assert_effect_identity_everywhere(
     );
 
     assert_eq!(
-        state.library_store.list_favorites().await[0].effect_id,
+        state.library_store().list_favorites().await[0].effect_id,
         expected_id
     );
     let library = JsonLibraryStore::open(guard.data_dir.join("library.json"))
@@ -521,7 +521,7 @@ async fn daemon_initialization_relocates_machine_state_out_of_data() {
         guard.state_path("device-aliases.json")
     );
     assert_eq!(
-        state.driver_host.driver_inventory().path(),
+        state.driver_host().driver_inventory().path(),
         guard.state_path("driver-inventory.json")
     );
     assert_eq!(state.output_power.global_brightness(), 0.42);
@@ -1311,6 +1311,27 @@ async fn api_shutdown_timeout_forces_stuck_connections_to_close() {
 // ── DaemonState Initialization ──────────────────────────────────────────────
 
 #[tokio::test]
+async fn app_state_projection_preserves_composed_authority_identity() {
+    let _guard = TestDataDirGuard::new().await;
+    let config = default_config();
+    let temp = temp_config_file();
+    let mut daemon = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    )
+    .expect("daemon state should initialize");
+    daemon.start().await.expect("daemon state should start");
+    let app = AppState::from_daemon_state(&daemon);
+
+    assert!(Arc::ptr_eq(daemon.input_manager(), app.input_manager()));
+    assert!(Arc::ptr_eq(daemon.driver_host(), app.driver_host()));
+    assert!(Arc::ptr_eq(daemon.driver_registry(), app.driver_registry()));
+    assert!(Arc::ptr_eq(daemon.library_store(), app.library_store()));
+    drop(app);
+    daemon.shutdown().await.expect("daemon state should stop");
+}
+
+#[tokio::test]
 async fn startup_migrates_registered_builtin_ports_across_every_durable_store() {
     let guard = TestDataDirGuard::new().await;
     let seeded = seed_effect_identity_stores(&guard, "breathing").await;
@@ -1888,7 +1909,7 @@ async fn runtime_state_and_driver_inventory_persist_independently() {
             ..
         }) if *effect_id == metadata.id && *candidate == preset_id
     ));
-    let wled_cache = state.driver_host.driver_inventory().driver_cache("wled");
+    let wled_cache = state.driver_host().driver_inventory().driver_cache("wled");
     let probe_ips: Vec<std::net::IpAddr> = serde_json::from_value(wled_cache["probe_ips"].clone())
         .expect("probe IP inventory should deserialize");
     assert_eq!(

@@ -32,7 +32,7 @@ pub(in crate::api::config) async fn apply_capture_config_transaction(
     };
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     let (plan, capacity_plan, capacity_preparation, admission_coordinator) = {
-        let input_manager = state.input_manager.lock().await;
+        let input_manager = state.input_manager().lock().await;
         let plan = input_manager.plan_screen_runtime_config(capture.enabled);
         let installed_capacity = input_manager.screen_resource_capacity();
         let capacity_plan = crate::startup::services::screen_capacity_plan_for_backend(
@@ -69,7 +69,7 @@ pub(in crate::api::config) async fn apply_capture_config_transaction(
     };
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     let plan = {
-        let input_manager = state.input_manager.lock().await;
+        let input_manager = state.input_manager().lock().await;
         input_manager.plan_screen_runtime_config(capture.enabled)
     };
     let (mut replacement, persistence) = if plan.enabled() {
@@ -125,7 +125,7 @@ pub(in crate::api::config) async fn apply_capture_config_transaction(
         return Err(CaptureConfigTransactionError::Prepare(error));
     }
 
-    let mut input_manager = state.input_manager.lock().await;
+    let mut input_manager = state.input_manager().lock().await;
     if let Err(error) = input_manager.validate_screen_runtime_config(&plan, &replacement) {
         if let Some(persistence) = &persistence {
             persistence.revoke();
@@ -276,7 +276,7 @@ pub(in crate::api::config) async fn capture_runtime_matches(
     let Some(manager) = state.config_manager.as_ref() else {
         return false;
     };
-    let input_manager = state.input_manager.lock().await;
+    let input_manager = state.input_manager().lock().await;
     if !manager.is_current(expected_config)
         || !manager.capture_runtime_matches(&expected_config.capture)
     {

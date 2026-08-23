@@ -168,7 +168,7 @@ async fn status_includes_latest_frame_surface_stats() {
         state.performance.write().await.record_frame(&frame);
     }
     state
-        .input_manager
+        .input_manager()
         .lock()
         .await
         .set_screen_capacity_plan(

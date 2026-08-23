@@ -572,9 +572,9 @@ mod tests {
         config: &HypercolorConfig,
     ) -> Vec<DiscoveryTarget> {
         let enabled_driver_ids =
-            crate::network::enabled_driver_module_ids(state.driver_registry.as_ref(), config);
+            crate::network::enabled_driver_module_ids(state.driver_registry().as_ref(), config);
         let finalized = state
-            .driver_registry
+            .driver_registry()
             .finalize_output_bindings(&enabled_driver_ids)
             .expect("built-in output bindings should finalize");
         let active_discovery_ids = enabled_driver_ids
@@ -587,7 +587,7 @@ mod tests {
             )
             .collect::<std::collections::HashSet<_>>();
         state
-            .driver_registry
+            .driver_registry()
             .discovery_drivers()
             .into_iter()
             .filter(|driver| active_discovery_ids.contains(driver.descriptor().id))
@@ -667,7 +667,7 @@ mod tests {
     fn resolve_targets_defaults_to_all() {
         let state = builtin_registry();
         let cfg = HypercolorConfig::default();
-        let resolved = resolve_targets(None, &cfg, state.driver_registry.as_ref())
+        let resolved = resolve_targets(None, &cfg, state.driver_registry().as_ref())
             .expect("default targets should resolve");
         assert_eq!(resolved, expected_default_targets(&state, &cfg));
     }
@@ -677,7 +677,7 @@ mod tests {
         let state = builtin_registry();
         let cfg = HypercolorConfig::default();
         let requested = vec!["unknown".to_owned()];
-        let error = resolve_targets(Some(&requested), &cfg, state.driver_registry.as_ref())
+        let error = resolve_targets(Some(&requested), &cfg, state.driver_registry().as_ref())
             .expect_err("unknown must fail");
         assert!(error.contains("Unknown discovery target"));
     }
@@ -794,7 +794,7 @@ mod tests {
         );
         let requested = vec!["blocks".to_owned()];
 
-        let error = resolve_targets(Some(&requested), &cfg, state.driver_registry.as_ref())
+        let error = resolve_targets(Some(&requested), &cfg, state.driver_registry().as_ref())
             .expect_err("blocks must fail when disabled");
 
         assert!(error.contains("drivers.blocks.enabled=false"));
@@ -817,7 +817,7 @@ mod tests {
         let mut cfg = HypercolorConfig::default();
         cfg.discovery.mdns_enabled = false;
 
-        let resolved = resolve_targets(None, &cfg, state.driver_registry.as_ref())
+        let resolved = resolve_targets(None, &cfg, state.driver_registry().as_ref())
             .expect("default targets should still resolve");
         assert_eq!(resolved, expected_default_targets(&state, &cfg));
     }

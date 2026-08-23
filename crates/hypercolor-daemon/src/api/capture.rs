@@ -188,7 +188,7 @@ pub(crate) async fn authorize_input_monitoring(
         .into_response();
     }
     let action = {
-        let input_manager = state.input_manager.lock().await;
+        let input_manager = state.input_manager().lock().await;
         input_manager.resolved_input_authorization_action()
     };
     let Some(action) = action else {
@@ -242,7 +242,7 @@ pub(crate) async fn authorize_screen_recording(
         .into_response();
     }
     let action = {
-        let input_manager = state.input_manager.lock().await;
+        let input_manager = state.input_manager().lock().await;
         input_manager.resolved_screen_authorization_action()
     };
     let Some(action) = action else {
@@ -301,7 +301,7 @@ pub(crate) async fn set_capture_source(
     }
 
     let (action, screen_status) = {
-        let input_manager = state.input_manager.lock().await;
+        let input_manager = state.input_manager().lock().await;
         if !input_manager.has_screen_source() {
             return domain_validation(
                 "No screen capture source is registered; restart the daemon or re-enable capture",

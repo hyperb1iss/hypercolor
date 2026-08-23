@@ -81,7 +81,7 @@ pub async fn create_simulated_display(
     crate::api::persist_simulated_displays(&state).await;
 
     if let Err(error) = activate_simulated_displays(
-        &state.driver_host.discovery_runtime(),
+        &state.driver_host().discovery_runtime(),
         &state.simulated_displays,
     )
     .await
@@ -132,7 +132,7 @@ pub async fn patch_simulated_display(
     crate::api::persist_simulated_displays(&state).await;
 
     if let Err(error) = activate_simulated_displays(
-        &state.driver_host.discovery_runtime(),
+        &state.driver_host().discovery_runtime(),
         &state.simulated_displays,
     )
     .await
@@ -176,7 +176,7 @@ async fn delete_simulated_display_workflow(state: Arc<AppState>, device_id: Devi
 
     prune_simulator_layout_targets(&state, device_id).await;
 
-    let runtime = state.driver_host.discovery_runtime();
+    let runtime = state.driver_host().discovery_runtime();
     if let Err(error) = crate::discovery::disconnect_tracked_device(
         &runtime,
         device_id,

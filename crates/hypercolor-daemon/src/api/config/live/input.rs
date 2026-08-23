@@ -36,7 +36,7 @@ pub(in crate::api::config) async fn apply_input_config_change(
         return route_changed;
     }
 
-    let mut input_manager = state.input_manager.lock().await;
+    let mut input_manager = state.input_manager().lock().await;
     // Only the host hardware source is consent-gated; the browser injection
     // source is always registered and must survive enable/disable toggles.
     let had_source = input_manager.has_host_capture_source();

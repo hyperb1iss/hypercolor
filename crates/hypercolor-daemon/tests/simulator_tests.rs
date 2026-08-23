@@ -162,7 +162,7 @@ async fn activate_simulated_displays_registers_virtual_display_in_runtime_surfac
         .upsert(config.clone());
 
     let activated = activate_simulated_displays(
-        &state.driver_host.discovery_runtime(),
+        &state.driver_host().discovery_runtime(),
         &state.simulated_displays,
     )
     .await
@@ -241,7 +241,7 @@ async fn simulated_display_backend_reuses_owned_jpeg_payloads() {
         .upsert(config.clone());
 
     activate_simulated_displays(
-        &state.driver_host.discovery_runtime(),
+        &state.driver_host().discovery_runtime(),
         &state.simulated_displays,
     )
     .await
@@ -285,7 +285,7 @@ async fn simulated_display_backend_ignores_empty_led_writes_but_rejects_real_led
         .upsert(config.clone());
 
     activate_simulated_displays(
-        &state.driver_host.discovery_runtime(),
+        &state.driver_host().discovery_runtime(),
         &state.simulated_displays,
     )
     .await
@@ -323,7 +323,7 @@ async fn activate_simulated_displays_keeps_disabled_simulator_non_renderable() {
         .upsert(config.clone());
 
     activate_simulated_displays(
-        &state.driver_host.discovery_runtime(),
+        &state.driver_host().discovery_runtime(),
         &state.simulated_displays,
     )
     .await
@@ -770,7 +770,7 @@ async fn simulated_display_frame_route_falls_back_to_display_preview_cache() {
         .upsert(config.clone());
 
     activate_simulated_displays(
-        &state.driver_host.discovery_runtime(),
+        &state.driver_host().discovery_runtime(),
         &state.simulated_displays,
     )
     .await

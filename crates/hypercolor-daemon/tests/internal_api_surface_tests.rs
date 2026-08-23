@@ -211,29 +211,34 @@ fn application_state_reuses_one_domain_graph() {
 #[test]
 fn application_state_dependencies_are_fixed_before_domain_assembly() {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    for relative in [
-        "src/api/config/tests.rs",
-        "src/api/ws/tests.rs",
-        "src/domain/effect/identity/tests.rs",
-        "tests/api_tests.rs",
-        "tests/mcp_tests.rs",
-        "tests/security_api_tests.rs",
-    ] {
+    for relative in ["src/app_state.rs", "src/startup/mod.rs"] {
         let source = std::fs::read_to_string(manifest.join(relative))
             .unwrap_or_else(|error| panic!("failed to read {relative}: {error}"));
-        for forbidden in [
-            "install_config_manager(",
-            "install_input_manager(",
-            "state.driver_host =",
-            "state.driver_registry =",
-            "state.library_store =",
-            "state.library_identity =",
+        for authority in [
+            "input_manager",
+            "driver_host",
+            "driver_registry",
+            "library_store",
         ] {
             assert!(
-                !source.contains(forbidden),
-                "{relative} mutates application authority after assembly: {forbidden}"
+                !source.lines().any(|line| {
+                    let line = line.trim_start();
+                    ["pub ", "pub(crate) ", "pub(super) "]
+                        .into_iter()
+                        .any(|visibility| line.starts_with(&format!("{visibility}{authority}:")))
+                }),
+                "{relative} publicly exposes replaceable authority {authority}"
+            );
+            assert!(
+                source.contains(&format!("pub const fn {authority}(&self)")),
+                "{relative} lacks a read-only accessor for {authority}"
             );
         }
+    }
+
+    for (_, source) in daemon_sources() {
+        assert!(!source.contains("fn install_config_manager("));
+        assert!(!source.contains("fn install_input_manager("));
     }
 
     let host = std::fs::read_to_string(manifest.join("src/network/host.rs"))
