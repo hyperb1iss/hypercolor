@@ -15,11 +15,11 @@ rest_reference="$repo_root/docs/content/api/rest.md"
 expected_operations="$(
   jq -r '.paths[] | .path as $path | .methods[] | "\(.) \($path)"' \
     "$target_manifest" \
-    | rg -v '^GET /api/v1/ws$' \
+    | grep -Ev '^GET /api/v1/ws$' \
     | sort -u
 )"
 documented_operations="$(
-  rg -o '<api_endpoint method="[A-Z]+" path="[^"]+"' "$rest_reference" \
+  grep -Eo '<api_endpoint method="[A-Z]+" path="[^"]+"' "$rest_reference" \
     | sed 's/<api_endpoint method="//; s/" path="/ /; s/"$//' \
     | sort -u
 )"
@@ -56,11 +56,11 @@ while IFS= read -r -d '' document; do
   esac
 
   if head -n 20 "$document" \
-    | rg -qi 'API status:.*historical|Status:.*superseded|Historical design snapshot'; then
+    | grep -Eqi 'API status:.*historical|Status:.*superseded|Historical design snapshot'; then
     continue
   fi
 
-  matches="$(rg -n "$retired_routes" "$document" || true)"
+  matches="$(grep -En "$retired_routes" "$document" || true)"
   if [[ -n "$matches" ]]; then
     printf 'retired API route in current documentation: %s\n%s\n' \
       "$relative" "$matches" >&2
