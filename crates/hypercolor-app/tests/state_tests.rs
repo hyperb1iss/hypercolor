@@ -22,7 +22,7 @@ fn default_state_is_disconnected() {
     assert!(!state.running);
     assert!(!state.paused);
     assert_eq!(state.brightness, 0);
-    assert!(state.current_effect.is_none());
+    assert!(state.active_effect.is_none());
     assert!(state.effects.is_empty());
     assert!(state.scenes.is_empty());
 }
@@ -279,7 +279,7 @@ fn state_update_applies_dynamic_tray_changes() {
     assert_eq!(state.brightness, 80);
     assert_eq!(
         state
-            .current_effect
+            .active_effect
             .as_ref()
             .map(|effect| effect.id.as_str()),
         Some("aurora")
@@ -292,7 +292,7 @@ fn websocket_snapshot_preserves_content_state() {
     let mut state = AppState {
         running: true,
         paused: true,
-        current_effect: Some(EffectInfo {
+        active_effect: Some(EffectInfo {
             id: "old".to_owned(),
             name: "Old".to_owned(),
         }),
@@ -312,7 +312,7 @@ fn websocket_snapshot_preserves_content_state() {
     assert_eq!(state.device_count, 3);
     assert_eq!(
         state
-            .current_effect
+            .active_effect
             .as_ref()
             .map(|effect| effect.id.as_str()),
         Some("old")
@@ -323,7 +323,7 @@ fn websocket_snapshot_preserves_content_state() {
 fn effect_stop_clears_stale_pause_state() {
     let mut state = AppState {
         paused: true,
-        current_effect: Some(EffectInfo {
+        active_effect: Some(EffectInfo {
             id: "old".to_owned(),
             name: "Old".to_owned(),
         }),
@@ -333,7 +333,7 @@ fn effect_stop_clears_stale_pause_state() {
     state.apply_daemon_message(DaemonMessage::StateUpdate(StateUpdate::EffectStopped));
 
     assert!(!state.paused);
-    assert!(state.current_effect.is_none());
+    assert!(state.active_effect.is_none());
 }
 
 #[test]

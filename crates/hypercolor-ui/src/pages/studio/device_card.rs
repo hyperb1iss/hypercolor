@@ -223,7 +223,7 @@ pub fn StudioDeviceCard(
                     .iter()
                     .find(|output| {
                         output.device_id == device.layout_device_id
-                            && layout_utils::zone_name_matches_slot_alias(
+                            && layout_utils::channel_name_matches_slot_alias(
                                 output.zone_name.as_deref(),
                                 Some(channel.name.as_str()),
                             )

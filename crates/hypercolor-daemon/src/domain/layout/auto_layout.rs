@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use hypercolor_core::spatial::generate_positions;
-use hypercolor_types::attachment::zone_name_matches_slot_alias;
+use hypercolor_types::attachment::channel_name_matches_slot_alias;
 use hypercolor_types::device::{DeviceInfo, DeviceTopologyHint};
 use hypercolor_types::spatial::{
     Corner, EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
@@ -113,7 +113,7 @@ pub(super) fn reconcile_auto_layout_zones_for_device(
         zone.zone_name.as_deref().is_some_and(|zone_name| {
             expected_segment_names
                 .iter()
-                .any(|expected| zone_name_matches_slot_alias(Some(zone_name), Some(expected)))
+                .any(|expected| channel_name_matches_slot_alias(Some(zone_name), Some(expected)))
         })
     });
 
@@ -150,7 +150,10 @@ pub(super) fn reconcile_auto_layout_zones_for_device(
         for zone in layout.zones.iter_mut().filter(|zone| {
             zone.device_id == layout_device_id
                 && zone.zone_name.as_deref().is_some_and(|zone_name| {
-                    zone_name_matches_slot_alias(Some(zone_name), Some(segment_info.name.as_str()))
+                    channel_name_matches_slot_alias(
+                        Some(zone_name),
+                        Some(segment_info.name.as_str()),
+                    )
                 })
                 && zone.id.starts_with(&auto_zone_prefix)
         }) {

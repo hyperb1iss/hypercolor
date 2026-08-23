@@ -4,7 +4,7 @@ use leptos::prelude::*;
 
 use crate::api;
 use crate::compound_selection::CompoundDepth;
-use crate::layout_history::{LayoutHistoryState, RemovedZoneCache};
+use crate::layout_history::{LayoutHistoryState, RemovedOutputCache};
 use hypercolor_types::spatial::SpatialLayout;
 
 use super::LayoutWriteHandle;
@@ -28,8 +28,8 @@ pub(crate) struct LayoutEditorContext {
     pub set_is_dirty: WriteSignal<bool>,
     pub set_hidden_zones: WriteSignal<HashSet<String>>,
     pub set_keep_aspect_ratio: WriteSignal<bool>,
-    pub removed_zone_cache: Signal<RemovedZoneCache>,
-    pub set_removed_zone_cache: WriteSignal<RemovedZoneCache>,
+    pub removed_zone_cache: Signal<RemovedOutputCache>,
+    pub set_removed_zone_cache: WriteSignal<RemovedOutputCache>,
     /// Push the current in-flight layout to the daemon's preview engine.
     /// Used by the canvas during drag to keep the LED preview live without
     /// committing intermediate state to the layout signal.
@@ -78,8 +78,8 @@ pub(super) struct LayoutEditorSession {
     pub(super) set_hidden_zones: WriteSignal<HashSet<String>>,
     pub(super) hovered_zone_ids: ReadSignal<HashSet<String>>,
     pub(super) set_hovered_zone_ids: WriteSignal<HashSet<String>>,
-    pub(super) removed_zone_cache: ReadSignal<RemovedZoneCache>,
-    pub(super) set_removed_zone_cache: WriteSignal<RemovedZoneCache>,
+    pub(super) removed_zone_cache: ReadSignal<RemovedOutputCache>,
+    pub(super) set_removed_zone_cache: WriteSignal<RemovedOutputCache>,
     pub(super) write: LayoutWriteHandle,
     pub(super) layout_signal: Signal<Option<SpatialLayout>>,
     pub(super) can_undo: Signal<bool>,
@@ -96,7 +96,7 @@ impl LayoutEditorSession {
         let (keep_aspect_ratio, set_keep_aspect_ratio) = signal(keep_aspect_ratio_initial);
         let (hidden_zones, set_hidden_zones) = signal(HashSet::<String>::new());
         let (hovered_zone_ids, set_hovered_zone_ids) = signal(HashSet::<String>::new());
-        let (removed_zone_cache, set_removed_zone_cache) = signal(RemovedZoneCache::new());
+        let (removed_zone_cache, set_removed_zone_cache) = signal(RemovedOutputCache::new());
         let (dirty, set_is_dirty) = signal(false);
         let history = RwSignal::new(LayoutHistoryState::default());
         let write = LayoutWriteHandle {

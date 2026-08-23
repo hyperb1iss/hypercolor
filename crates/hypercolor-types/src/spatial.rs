@@ -309,7 +309,7 @@ pub struct RingDef {
     pub direction: Winding,
 }
 
-/// Attachment metadata carried by imported layout zones.
+/// Attachment metadata carried by imported layout outputs.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct OutputComponent {
@@ -320,10 +320,10 @@ pub struct OutputComponent {
     /// Zero-based attachment instance index within the binding.
     #[serde(default)]
     pub instance: u32,
-    /// Inclusive physical LED start index for this imported attachment zone.
+    /// Inclusive physical LED start index for this imported attachment.
     #[serde(default)]
     pub led_start: Option<u32>,
-    /// Physical LED count reserved for this imported attachment zone.
+    /// Physical LED count reserved for this imported attachment.
     #[serde(default)]
     pub led_count: Option<u32>,
     /// Optional spatial-order -> physical-order LED remapping.
@@ -333,13 +333,13 @@ pub struct OutputComponent {
 
 // ── Output ──────────────────────────────────────────────────────────────
 
-/// A device zone: the spatial binding between a physical device and a
+/// A device output: the spatial binding between a physical device and a
 /// region of the effect canvas.
 ///
-/// The zone's bounding rectangle is defined by `position` (center) and
+/// The output's bounding rectangle is defined by `position` (center) and
 /// `size` (width, height), both in normalized `[0.0, 1.0]` canvas coordinates.
-/// LED positions within the zone are computed from the `topology` and stored
-/// in `led_positions` as zone-local normalized coordinates.
+/// LED positions within the output are computed from the `topology` and stored
+/// in `led_positions` as output-local normalized coordinates.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct Output {

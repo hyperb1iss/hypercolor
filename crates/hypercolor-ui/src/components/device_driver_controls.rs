@@ -162,8 +162,8 @@ fn render_surface(
                 </div>
             })}
             <div class="divide-y divide-edge-subtle/30">
-                {groups.into_iter().map(|group| {
-                    render_group(surface.clone(), group, surfaces_resource)
+                {groups.into_iter().map(|section| {
+                    render_section(surface.clone(), section, surfaces_resource)
                 }).collect_view()}
             </div>
         </section>
@@ -267,13 +267,13 @@ fn section_from_group(group: ControlGroupDescriptor) -> ControlSurfaceSection {
     }
 }
 
-fn render_group(
+fn render_section(
     surface: ControlSurfaceDocument,
-    group: ControlSurfaceSection,
+    section: ControlSurfaceSection,
     surfaces_resource: LocalResource<api::ApiResult<Vec<ControlSurfaceDocument>>>,
 ) -> impl IntoView {
-    let label = group.label.clone();
-    let items = group.items.clone();
+    let label = section.label.clone();
+    let items = section.items.clone();
 
     view! {
         <section>

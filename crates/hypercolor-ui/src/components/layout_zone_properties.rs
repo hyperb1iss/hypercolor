@@ -11,9 +11,9 @@ use crate::icons::*;
 use crate::layout_geometry::{self, SizeAxis};
 use crate::style_utils::device_accent_colors;
 
-mod group_panel;
+mod compound_panel;
 
-use group_panel::GroupZoneProperties;
+use compound_panel::CompoundZoneProperties;
 
 /// Zone properties editor (bottom panel of layout builder).
 #[component]
@@ -120,8 +120,8 @@ pub fn LayoutZoneProperties() -> impl IntoView {
     });
 
     // ── Group transform state (accumulated deltas, reset on selection change) ──
-    let (group_rot_offset, set_group_rot_offset) = signal(0.0f32);
-    let (group_scale_factor, set_group_scale_factor) = signal(1.0f32);
+    let (compound_rot_offset, set_compound_rot_offset) = signal(0.0f32);
+    let (compound_scale_factor, set_compound_scale_factor) = signal(1.0f32);
     // Track the previous selection set to detect changes
     let (prev_selection, set_prev_selection) = signal(std::collections::HashSet::<String>::new());
 
@@ -196,12 +196,12 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                     let prev = prev_selection.get_untracked();
                     if prev != ids {
                         set_prev_selection.set(ids.clone());
-                        set_group_rot_offset.set(0.0);
-                        set_group_scale_factor.set(1.0);
+                        set_compound_rot_offset.set(0.0);
+                        set_compound_scale_factor.set(1.0);
                     }
 
                     return view! {
-                        <GroupZoneProperties
+                        <CompoundZoneProperties
                             ids=ids
                             layout=layout
                             canvas_dims=canvas_dims
@@ -211,10 +211,10 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                             set_layout=set_layout
                             set_is_dirty=set_is_dirty
                             compound_depth=compound_depth
-                            group_rot_offset=group_rot_offset
-                            set_group_rot_offset=set_group_rot_offset
-                            group_scale_factor=group_scale_factor
-                            set_group_scale_factor=set_group_scale_factor
+                            compound_rot_offset=compound_rot_offset
+                            set_compound_rot_offset=set_compound_rot_offset
+                            compound_scale_factor=compound_scale_factor
+                            set_compound_scale_factor=set_compound_scale_factor
                         />
                     }.into_any();
                 }
@@ -482,13 +482,13 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                                transition-colors btn-press"
                                         title="Identify output"
                                         on:click=move |_| match target.clone() {
-                                            crate::layout_utils::ZoneIdentifyTarget::Segment { device_id, segment } => {
+                                            crate::layout_utils::OutputIdentifyTarget::Segment { device_id, segment } => {
                                                 spawn_identify(
                                                     "output",
                                                     async move { crate::api::identify_segment(&device_id, &segment).await },
                                                 );
                                             }
-                                            crate::layout_utils::ZoneIdentifyTarget::Attachment {
+                                            crate::layout_utils::OutputIdentifyTarget::Attachment {
                                                 device_id,
                                                 slot_id,
                                                 binding_index,
@@ -844,7 +844,7 @@ fn layer_icon_button(
 
 /// Icon-only button for group align/distribute/pack/mirror operations.
 /// Slightly larger than layer buttons so alignment icons read at a glance.
-fn group_op_button(
+fn compound_op_button(
     icon: icondata_core::Icon,
     title: &'static str,
     on_click: impl Fn() + 'static,

@@ -1,7 +1,7 @@
 use hypercolor_types::attachment::{
     ComponentBinding, ComponentCanvasSize, ComponentCategory, ComponentCompatibility,
     ComponentOrigin, ComponentSlot, ComponentTemplate, ComponentTemplateManifest,
-    slot_id_matches_zone_name, slugify_slot_id, zone_name_matches_slot_alias,
+    channel_name_matches_slot_alias, slot_id_matches_channel_name, slugify_slot_id,
 };
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
@@ -84,17 +84,17 @@ fn slot_alias_matching_uses_default_profile_slug_rules() {
     assert_eq!(slugify_slot_id("Channel 1"), "channel-1");
     assert_eq!(slugify_slot_id("Channel 01"), "channel-01");
     assert_eq!(slugify_slot_id("!!!"), "slot");
-    assert!(slot_id_matches_zone_name("channel-1", "Channel 1"));
-    assert!(slot_id_matches_zone_name("CHANNEL-01", "Channel 1"));
-    assert!(zone_name_matches_slot_alias(
+    assert!(slot_id_matches_channel_name("channel-1", "Channel 1"));
+    assert!(slot_id_matches_channel_name("CHANNEL-01", "Channel 1"));
+    assert!(channel_name_matches_slot_alias(
         Some("ATX Strimer"),
         Some("atx-strimer")
     ));
-    assert!(zone_name_matches_slot_alias(
+    assert!(channel_name_matches_slot_alias(
         Some("gpu_strimer"),
         Some("GPU Strimer")
     ));
-    assert!(!zone_name_matches_slot_alias(
+    assert!(!channel_name_matches_slot_alias(
         Some("channel-1"),
         Some("Channel 2")
     ));

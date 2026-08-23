@@ -8,13 +8,13 @@ use leptos::prelude::*;
 use crate::api::{self, SegmentSummary};
 use crate::channel_names;
 use crate::layout_geometry;
-use crate::layout_history::RemovedZoneCache;
+use crate::layout_history::RemovedOutputCache;
 use crate::style_utils::uuid_v4_hex;
-pub use hypercolor_types::attachment::{slot_id_matches_zone_name, zone_name_matches_slot_alias};
+pub use hypercolor_types::attachment::{slot_id_matches_channel_name, channel_name_matches_slot_alias};
 use hypercolor_types::spatial::{NormalizedPosition, Output, SpatialLayout};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ZoneIdentifyTarget {
+pub enum OutputIdentifyTarget {
     Segment {
         device_id: String,
         segment: String,
@@ -28,10 +28,10 @@ pub enum ZoneIdentifyTarget {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EffectiveZoneDisplay {
+pub struct EffectiveOutputDisplay {
     pub label: String,
     pub default_label: String,
-    pub identify_target: Option<ZoneIdentifyTarget>,
+    pub identify_target: Option<OutputIdentifyTarget>,
 }
 
 /// Compute the next `display_order` value for a new zone added to the layout.
@@ -119,13 +119,13 @@ pub fn remove_device_zone(
     set_layout: &crate::components::layout_builder::LayoutWriteHandle,
     set_selected_zone_ids: &WriteSignal<HashSet<String>>,
     set_is_dirty: &WriteSignal<bool>,
-    set_removed_zone_cache: &WriteSignal<RemovedZoneCache>,
+    set_removed_zone_cache: &WriteSignal<RemovedOutputCache>,
 ) {
     set_layout.update(|l| {
         if let Some(layout) = l
             && let Some(pos) = layout.zones.iter().position(|z| {
                 z.device_id == device_id
-                    && zone_name_matches_slot_alias(z.zone_name.as_deref(), zone_name)
+                    && channel_name_matches_slot_alias(z.zone_name.as_deref(), zone_name)
             })
         {
             let removed = layout.zones.remove(pos);
@@ -146,7 +146,7 @@ pub fn remove_all_device_zones(
     set_layout: &crate::components::layout_builder::LayoutWriteHandle,
     set_selected_zone_ids: &WriteSignal<HashSet<String>>,
     set_is_dirty: &WriteSignal<bool>,
-    set_removed_zone_cache: &WriteSignal<RemovedZoneCache>,
+    set_removed_zone_cache: &WriteSignal<RemovedOutputCache>,
 ) {
     set_layout.update(|l| {
         if let Some(layout) = l {
@@ -175,8 +175,8 @@ pub fn add_all_device_zones(
     set_layout: &crate::components::layout_builder::LayoutWriteHandle,
     set_selected_zone_ids: &WriteSignal<HashSet<String>>,
     set_is_dirty: &WriteSignal<bool>,
-    removed_zone_cache: &Signal<RemovedZoneCache>,
-    set_removed_zone_cache: &WriteSignal<RemovedZoneCache>,
+    removed_zone_cache: &Signal<RemovedOutputCache>,
+    set_removed_zone_cache: &WriteSignal<RemovedOutputCache>,
 ) {
     let (canvas_width, canvas_height) = current_canvas_dimensions(layout);
     let existing_zone_names: std::collections::HashSet<Option<String>> =
@@ -283,12 +283,12 @@ pub fn effective_zone_display(
     zone: &Output,
     devices: &[api::DeviceSummary],
     attachment_profiles: &HashMap<String, api::DeviceComponentsResponse>,
-) -> EffectiveZoneDisplay {
+) -> EffectiveOutputDisplay {
     let Some(device) = devices
         .iter()
         .find(|device| device.layout_device_id == zone.device_id)
     else {
-        return EffectiveZoneDisplay {
+        return EffectiveOutputDisplay {
             label: zone.name.clone(),
             default_label: zone.name.clone(),
             identify_target: None,
@@ -299,7 +299,7 @@ pub fn effective_zone_display(
         return effective_attachment_zone_display(zone, device, attachment, attachment_profiles);
     }
 
-    effective_device_zone_display(zone, device)
+    effective_device_output_display(zone, device)
 }
 
 pub fn effective_device_name(
@@ -320,7 +320,7 @@ pub fn effective_slot_name(
     let device = devices
         .iter()
         .find(|device| device.layout_device_id == layout_device_id)?;
-    let zone = resolve_device_zone_summary(device, Some(slot_alias))?;
+    let zone = resolve_device_segment_summary(device, Some(slot_alias))?;
     Some(channel_names::effective_channel_name(
         &device.id, &zone.id, &zone.name,
     ))
@@ -403,7 +403,7 @@ pub fn sync_channel_display_name_in_layout(
         if zone.device_id != layout_device_id || zone.attachment.is_some() {
             continue;
         }
-        if !zone_name_matches_slot_alias(zone.zone_name.as_deref(), Some(slot_id)) {
+        if !channel_name_matches_slot_alias(zone.zone_name.as_deref(), Some(slot_id)) {
             continue;
         }
         if expected_old_names.contains(zone.name.as_str()) {
@@ -415,12 +415,12 @@ pub fn sync_channel_display_name_in_layout(
     changed
 }
 
-fn effective_device_zone_display(
+fn effective_device_output_display(
     zone: &Output,
     device: &api::DeviceSummary,
-) -> EffectiveZoneDisplay {
-    let matched_zone = resolve_device_zone_summary(device, zone.zone_name.as_deref());
-    let identify_target = matched_zone.map(|matched_zone| ZoneIdentifyTarget::Segment {
+) -> EffectiveOutputDisplay {
+    let matched_zone = resolve_device_segment_summary(device, zone.zone_name.as_deref());
+    let identify_target = matched_zone.map(|matched_zone| OutputIdentifyTarget::Segment {
         device_id: device.id.clone(),
         segment: matched_zone.id.clone(),
     });
@@ -431,7 +431,7 @@ fn effective_device_zone_display(
         } else {
             zone.name.clone()
         };
-        return EffectiveZoneDisplay {
+        return EffectiveOutputDisplay {
             default_label: device.name.clone(),
             label,
             identify_target,
@@ -461,7 +461,7 @@ fn effective_device_zone_display(
             zone.name.clone()
         };
 
-    EffectiveZoneDisplay {
+    EffectiveOutputDisplay {
         label,
         default_label,
         identify_target,
@@ -473,7 +473,7 @@ fn effective_attachment_zone_display(
     device: &api::DeviceSummary,
     attachment: &hypercolor_types::spatial::OutputComponent,
     attachment_profiles: &HashMap<String, api::DeviceComponentsResponse>,
-) -> EffectiveZoneDisplay {
+) -> EffectiveOutputDisplay {
     let binding = attachment_profiles
         .get(&zone.device_id)
         .and_then(|profile| resolve_attachment_binding(profile, attachment));
@@ -484,27 +484,27 @@ fn effective_attachment_zone_display(
                 attachment_binding_display_name(profile, *binding_index, attachment.instance)
             })
     });
-    let identify_target = Some(ZoneIdentifyTarget::Attachment {
+    let identify_target = Some(OutputIdentifyTarget::Attachment {
         device_id: device.id.clone(),
         slot_id: attachment.slot_id.clone(),
         binding_index: binding.as_ref().map(|(binding_index, _)| *binding_index),
         instance: Some(attachment.instance),
     });
 
-    EffectiveZoneDisplay {
+    EffectiveOutputDisplay {
         label: label.clone().unwrap_or_else(|| zone.name.clone()),
         default_label: label.unwrap_or_else(|| zone.name.clone()),
         identify_target,
     }
 }
 
-fn resolve_device_zone_summary<'a>(
+fn resolve_device_segment_summary<'a>(
     device: &'a api::DeviceSummary,
     slot_alias: Option<&str>,
 ) -> Option<&'a api::SegmentSummary> {
     let slot_alias = slot_alias?;
     device.segments.iter().find(|zone| {
-        zone.id == slot_alias || zone_name_matches_slot_alias(Some(slot_alias), Some(&zone.name))
+        zone.id == slot_alias || channel_name_matches_slot_alias(Some(slot_alias), Some(&zone.name))
     })
 }
 
@@ -636,13 +636,13 @@ pub fn attachment_binding_matches_slot_alias(
 ) -> bool {
     zone_id_matches_attachment_slot(binding_slot_id, zone_id)
         || zone_id_matches_attachment_slot(binding_slot_id, zone_name)
-        || slot_id_matches_zone_name(binding_slot_id, display_name)
+        || slot_id_matches_channel_name(binding_slot_id, display_name)
 }
 
 fn zone_id_matches_attachment_slot(binding_slot_id: &str, candidate: Option<&str>) -> bool {
     candidate.is_some_and(|candidate| {
         binding_slot_id.eq_ignore_ascii_case(candidate)
-            || slot_id_matches_zone_name(binding_slot_id, candidate)
+            || slot_id_matches_channel_name(binding_slot_id, candidate)
     })
 }
 
@@ -683,13 +683,13 @@ pub fn representative_zone_id_for_device_slot(
     let suppressed = suppressed_attachment_source_zone_ids(layout);
     representative_zone_id_with_filter(layout, |zone| {
         zone.device_id == device_id
-            && zone_name_matches_slot_alias(zone.zone_name.as_deref(), zone_name)
+            && channel_name_matches_slot_alias(zone.zone_name.as_deref(), zone_name)
             && !suppressed.contains(&zone.id)
     })
     .or_else(|| {
         representative_zone_id_with_filter(layout, |zone| {
             zone.device_id == device_id
-                && zone_name_matches_slot_alias(zone.zone_name.as_deref(), zone_name)
+                && channel_name_matches_slot_alias(zone.zone_name.as_deref(), zone_name)
         })
     })
 }
@@ -706,7 +706,7 @@ pub fn selected_zone_matches_device_slot(
         .find(|zone| zone.id == selected_zone_id)
         .is_some_and(|zone| {
             zone.device_id == device_id
-                && zone_name_matches_slot_alias(zone.zone_name.as_deref(), zone_name)
+                && channel_name_matches_slot_alias(zone.zone_name.as_deref(), zone_name)
         })
 }
 
@@ -727,7 +727,7 @@ pub fn suppressed_attachment_source_zone_ids(layout: &SpatialLayout) -> HashSet<
             let zone_name = zone.zone_name.as_deref()?;
             (zone.attachment.is_none()
                 && attached_slots.iter().any(|(device_id, slot_id)| {
-                    zone.device_id == *device_id && slot_id_matches_zone_name(slot_id, zone_name)
+                    zone.device_id == *device_id && slot_id_matches_channel_name(slot_id, zone_name)
                 }))
             .then(|| zone.id.clone())
         })

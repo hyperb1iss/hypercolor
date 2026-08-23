@@ -20,7 +20,7 @@ pub struct AppState {
     /// Global brightness percentage (0-100).
     pub brightness: u8,
     /// Currently active effect, if any.
-    pub current_effect: Option<EffectInfo>,
+    pub active_effect: Option<EffectInfo>,
     /// Currently active scene name, if known.
     pub active_scene_name: Option<String>,
     /// Whether the active scene blocks live mutation.
@@ -48,7 +48,7 @@ impl AppState {
             running: false,
             paused: false,
             brightness: 0,
-            current_effect: None,
+            active_effect: None,
             active_scene_name: None,
             scene_snapshot_locked: false,
             device_count: 0,
@@ -68,7 +68,7 @@ impl AppState {
                 self.connected = false;
                 self.running = false;
                 self.paused = false;
-                self.current_effect = None;
+                self.active_effect = None;
                 self.active_scene_name = None;
                 self.scene_snapshot_locked = false;
                 self.device_count = 0;
@@ -85,11 +85,11 @@ impl AppState {
     fn apply_state_update(&mut self, update: StateUpdate) {
         match update {
             StateUpdate::EffectChanged { id, name } => {
-                self.current_effect = Some(EffectInfo { id, name });
+                self.active_effect = Some(EffectInfo { id, name });
                 self.paused = false;
             }
             StateUpdate::EffectStopped => {
-                self.current_effect = None;
+                self.active_effect = None;
                 self.paused = false;
             }
             StateUpdate::SceneChanged {

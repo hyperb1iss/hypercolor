@@ -15,7 +15,7 @@ use crate::components::layout_palette::LayoutPalette;
 use crate::components::layout_zone_properties::LayoutZoneProperties;
 use crate::icons::*;
 use crate::layout_geometry;
-use crate::layout_history::{LayoutEditorSnapshot, LayoutHistoryState, RemovedZoneCache};
+use crate::layout_history::{LayoutEditorSnapshot, LayoutHistoryState, RemovedOutputCache};
 use crate::storage;
 use crate::toasts;
 use hypercolor_leptos_ext::events::target_is_text_entry;
@@ -74,8 +74,8 @@ pub struct LayoutWriteHandle {
     set_selected_zone_ids: WriteSignal<std::collections::HashSet<String>>,
     compound_depth: ReadSignal<crate::compound_selection::CompoundDepth>,
     set_compound_depth: WriteSignal<crate::compound_selection::CompoundDepth>,
-    removed_zone_cache: ReadSignal<RemovedZoneCache>,
-    set_removed_zone_cache: WriteSignal<RemovedZoneCache>,
+    removed_zone_cache: ReadSignal<RemovedOutputCache>,
+    set_removed_zone_cache: WriteSignal<RemovedOutputCache>,
     history: RwSignal<LayoutHistoryState>,
     set_dirty: WriteSignal<bool>,
 }

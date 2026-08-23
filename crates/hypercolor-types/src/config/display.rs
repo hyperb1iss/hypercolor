@@ -12,7 +12,7 @@ pub const FACE_FPS_CAP_MAX: u32 = 60;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DisplayConfig {
-    /// Upper bound for HTML face rendering on the group-direct path.
+    /// Upper bound for HTML face rendering on the zone-direct path.
     /// The device transport limit still wins below this cap.
     #[serde(default = "defaults::face_fps_cap")]
     pub face_fps_cap: u32,

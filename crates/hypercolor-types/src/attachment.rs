@@ -59,22 +59,22 @@ pub fn slugify_slot_id(raw: &str) -> String {
     trimmed.to_owned()
 }
 
-/// Return true when a controller slot ID names the same physical zone.
+/// Return true when a controller slot ID names the same physical channel.
 #[must_use]
-pub fn slot_id_matches_zone_name(slot_id: &str, zone_name: &str) -> bool {
-    slot_id.eq_ignore_ascii_case(zone_name)
-        || slot_id.eq_ignore_ascii_case(&slugify_slot_id(zone_name))
-        || slot_alias_key(slot_id) == slot_alias_key(zone_name)
+pub fn slot_id_matches_channel_name(slot_id: &str, channel_name: &str) -> bool {
+    slot_id.eq_ignore_ascii_case(channel_name)
+        || slot_id.eq_ignore_ascii_case(&slugify_slot_id(channel_name))
+        || slot_alias_key(slot_id) == slot_alias_key(channel_name)
 }
 
-/// Symmetric comparison for layout zone names and attachment slot aliases.
+/// Symmetric comparison for channel names and attachment slot aliases.
 #[must_use]
-pub fn zone_name_matches_slot_alias(left: Option<&str>, right: Option<&str>) -> bool {
+pub fn channel_name_matches_slot_alias(left: Option<&str>, right: Option<&str>) -> bool {
     match (left, right) {
         (Some(left), Some(right)) => {
             left.eq_ignore_ascii_case(right)
-                || slot_id_matches_zone_name(left, right)
-                || slot_id_matches_zone_name(right, left)
+                || slot_id_matches_channel_name(left, right)
+                || slot_id_matches_channel_name(right, left)
         }
         (None, None) => true,
         _ => false,
@@ -515,10 +515,11 @@ impl Default for DeviceComponentProfile {
 }
 
 impl DeviceInfo {
-    /// Derive a default attachment profile from the device's discovered zones.
+    /// Derive a default attachment profile from the device's discovered
+    /// segments.
     ///
-    /// This gives every zone a stable slot ID and LED range even before the
-    /// daemon grows a dedicated attachment registry.
+    /// This gives every segment a stable slot ID and LED range even before
+    /// the daemon grows a dedicated attachment registry.
     #[must_use]
     pub fn default_attachment_profile(&self) -> DeviceComponentProfile {
         let mut led_start = 0_u32;
@@ -526,18 +527,18 @@ impl DeviceInfo {
         let slots = self
             .segments
             .iter()
-            .map(|zone| {
-                let slot_id = dedupe_slot_id(&mut slot_ids, &slugify_slot_id(&zone.name));
+            .map(|segment| {
+                let slot_id = dedupe_slot_id(&mut slot_ids, &slugify_slot_id(&segment.name));
                 let slot = ComponentSlot {
                     id: slot_id,
-                    name: zone.name.clone(),
+                    name: segment.name.clone(),
                     led_start,
-                    led_count: zone.led_count,
-                    suggested_categories: suggested_categories(&zone.topology),
+                    led_count: segment.led_count,
+                    suggested_categories: suggested_categories(&segment.topology),
                     allowed_templates: Vec::new(),
                     allow_custom: true,
                 };
-                led_start = led_start.saturating_add(zone.led_count);
+                led_start = led_start.saturating_add(segment.led_count);
                 slot
             })
             .collect();

@@ -4,7 +4,7 @@ use hypercolor_types::spatial::{
 };
 
 use hypercolor_ui::compound_selection::CompoundDepth;
-use hypercolor_ui::layout_history::{LayoutEditorSnapshot, LayoutHistoryState, RemovedZoneCache};
+use hypercolor_ui::layout_history::{LayoutEditorSnapshot, LayoutHistoryState, RemovedOutputCache};
 
 fn zone(id: &str, x: f32) -> Output {
     Output {
@@ -52,7 +52,7 @@ fn snapshot(layout: &SpatialLayout, selected: &[&str]) -> LayoutEditorSnapshot {
         zones: layout.zones.clone(),
         selected_zone_ids: selected.iter().map(|id| (*id).to_owned()).collect(),
         compound_depth: CompoundDepth::Root,
-        removed_zone_cache: RemovedZoneCache::new(),
+        removed_zone_cache: RemovedOutputCache::new(),
     }
 }
 

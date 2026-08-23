@@ -136,7 +136,7 @@ fn translate_zones_clamps_to_canvas() {
 // ── Group centroid ──────────────────────────────────────────────────────
 
 #[test]
-fn group_centroid_averages_zone_positions() {
+fn compound_centroid_averages_zone_positions() {
     let layout = simple_layout(vec![
         plain_zone("a", "dev", 0.2, 0.3, 0.1, 0.1),
         plain_zone("b", "dev", 0.6, 0.3, 0.1, 0.1),
@@ -145,7 +145,7 @@ fn group_centroid_averages_zone_positions() {
 
     let ids: std::collections::HashSet<String> =
         ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
-    let centroid = layout_geometry::group_centroid(&layout, &ids)
+    let centroid = layout_geometry::compound_centroid(&layout, &ids)
         .expect("should compute centroid for 3 zones");
 
     assert!((centroid.x - 0.4).abs() < 0.001);
@@ -153,16 +153,16 @@ fn group_centroid_averages_zone_positions() {
 }
 
 #[test]
-fn group_centroid_empty_returns_none() {
+fn compound_centroid_empty_returns_none() {
     let layout = simple_layout(vec![plain_zone("a", "dev", 0.5, 0.5, 0.1, 0.1)]);
     let ids = std::collections::HashSet::new();
-    assert!(layout_geometry::group_centroid(&layout, &ids).is_none());
+    assert!(layout_geometry::compound_centroid(&layout, &ids).is_none());
 }
 
 // ── Group translate ─────────────────────────────────────────────────────
 
 #[test]
-fn translate_group_moves_centroid_preserving_relative_positions() {
+fn translate_compound_moves_centroid_preserving_relative_positions() {
     let mut layout = simple_layout(vec![
         plain_zone("a", "dev", 0.3, 0.4, 0.1, 0.1),
         plain_zone("b", "dev", 0.5, 0.4, 0.1, 0.1),
@@ -171,7 +171,7 @@ fn translate_group_moves_centroid_preserving_relative_positions() {
     let ids: std::collections::HashSet<String> = ["a", "b"].iter().map(|s| s.to_string()).collect();
 
     // Centroid is (0.4, 0.4). Move it to (0.6, 0.6).
-    layout_geometry::translate_group(&mut layout, &ids, NormalizedPosition::new(0.6, 0.6));
+    layout_geometry::translate_compound(&mut layout, &ids, NormalizedPosition::new(0.6, 0.6));
 
     let a = layout.zones.iter().find(|z| z.id == "a").expect("a");
     let b = layout.zones.iter().find(|z| z.id == "b").expect("b");
@@ -188,7 +188,7 @@ fn translate_group_moves_centroid_preserving_relative_positions() {
 // ── Group rotate ────────────────────────────────────────────────────────
 
 #[test]
-fn rotate_group_90_degrees_orbits_and_rotates_zones() {
+fn rotate_compound_90_degrees_orbits_and_rotates_zones() {
     let mut layout = simple_layout(vec![
         plain_zone("a", "dev", 0.4, 0.5, 0.1, 0.1),
         plain_zone("b", "dev", 0.6, 0.5, 0.1, 0.1),
@@ -198,7 +198,7 @@ fn rotate_group_90_degrees_orbits_and_rotates_zones() {
 
     // Centroid is (0.5, 0.5). Rotate 90 degrees.
     let delta = std::f32::consts::FRAC_PI_2;
-    layout_geometry::rotate_group(&mut layout, &ids, delta);
+    layout_geometry::rotate_compound(&mut layout, &ids, delta);
 
     let a = layout.zones.iter().find(|z| z.id == "a").expect("a");
     let b = layout.zones.iter().find(|z| z.id == "b").expect("b");
@@ -218,7 +218,7 @@ fn rotate_group_90_degrees_orbits_and_rotates_zones() {
 }
 
 #[test]
-fn rotate_group_preserves_centroid() {
+fn rotate_compound_preserves_centroid() {
     let mut layout = simple_layout(vec![
         plain_zone("a", "dev", 0.3, 0.4, 0.1, 0.1),
         plain_zone("b", "dev", 0.5, 0.4, 0.1, 0.1),
@@ -228,29 +228,29 @@ fn rotate_group_preserves_centroid() {
     let ids: std::collections::HashSet<String> =
         ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
 
-    let centroid_before = layout_geometry::group_centroid(&layout, &ids).expect("centroid");
-    layout_geometry::rotate_group(&mut layout, &ids, 0.7); // ~40 degrees
-    let centroid_after = layout_geometry::group_centroid(&layout, &ids).expect("centroid");
+    let centroid_before = layout_geometry::compound_centroid(&layout, &ids).expect("centroid");
+    layout_geometry::rotate_compound(&mut layout, &ids, 0.7); // ~40 degrees
+    let centroid_after = layout_geometry::compound_centroid(&layout, &ids).expect("centroid");
 
     assert!((centroid_before.x - centroid_after.x).abs() < 0.01);
     assert!((centroid_before.y - centroid_after.y).abs() < 0.01);
 }
 
 #[test]
-fn rotate_group_zero_delta_returns_false() {
+fn rotate_compound_zero_delta_returns_false() {
     let mut layout = simple_layout(vec![
         plain_zone("a", "dev", 0.3, 0.4, 0.1, 0.1),
         plain_zone("b", "dev", 0.5, 0.4, 0.1, 0.1),
     ]);
     let ids: std::collections::HashSet<String> = ["a", "b"].iter().map(|s| s.to_string()).collect();
 
-    assert!(!layout_geometry::rotate_group(&mut layout, &ids, 0.0));
+    assert!(!layout_geometry::rotate_compound(&mut layout, &ids, 0.0));
 }
 
 // ── Group scale ─────────────────────────────────────────────────────────
 
 #[test]
-fn scale_group_doubles_spread_and_zone_scales() {
+fn scale_compound_doubles_spread_and_zone_scales() {
     let mut layout = simple_layout(vec![
         plain_zone("a", "dev", 0.4, 0.5, 0.1, 0.1),
         plain_zone("b", "dev", 0.6, 0.5, 0.1, 0.1),
@@ -259,7 +259,7 @@ fn scale_group_doubles_spread_and_zone_scales() {
     let ids: std::collections::HashSet<String> = ["a", "b"].iter().map(|s| s.to_string()).collect();
 
     // Centroid is (0.5, 0.5). Scale 2x.
-    layout_geometry::scale_group(&mut layout, &ids, 2.0);
+    layout_geometry::scale_compound(&mut layout, &ids, 2.0);
 
     let a = layout.zones.iter().find(|z| z.id == "a").expect("a");
     let b = layout.zones.iter().find(|z| z.id == "b").expect("b");
@@ -275,7 +275,7 @@ fn scale_group_doubles_spread_and_zone_scales() {
 }
 
 #[test]
-fn scale_group_preserves_centroid() {
+fn scale_compound_preserves_centroid() {
     let mut layout = simple_layout(vec![
         plain_zone("a", "dev", 0.3, 0.4, 0.1, 0.1),
         plain_zone("b", "dev", 0.5, 0.4, 0.1, 0.1),
@@ -285,29 +285,29 @@ fn scale_group_preserves_centroid() {
     let ids: std::collections::HashSet<String> =
         ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
 
-    let centroid_before = layout_geometry::group_centroid(&layout, &ids).expect("centroid");
-    layout_geometry::scale_group(&mut layout, &ids, 1.5);
-    let centroid_after = layout_geometry::group_centroid(&layout, &ids).expect("centroid");
+    let centroid_before = layout_geometry::compound_centroid(&layout, &ids).expect("centroid");
+    layout_geometry::scale_compound(&mut layout, &ids, 1.5);
+    let centroid_after = layout_geometry::compound_centroid(&layout, &ids).expect("centroid");
 
     assert!((centroid_before.x - centroid_after.x).abs() < 0.01);
     assert!((centroid_before.y - centroid_after.y).abs() < 0.01);
 }
 
 #[test]
-fn scale_group_identity_returns_false() {
+fn scale_compound_identity_returns_false() {
     let mut layout = simple_layout(vec![
         plain_zone("a", "dev", 0.3, 0.4, 0.1, 0.1),
         plain_zone("b", "dev", 0.5, 0.4, 0.1, 0.1),
     ]);
     let ids: std::collections::HashSet<String> = ["a", "b"].iter().map(|s| s.to_string()).collect();
 
-    assert!(!layout_geometry::scale_group(&mut layout, &ids, 1.0));
+    assert!(!layout_geometry::scale_compound(&mut layout, &ids, 1.0));
 }
 
 // ── Group align ─────────────────────────────────────────────────────────
 
 #[test]
-fn align_group_left_matches_bbox_left_edge() {
+fn align_compound_left_matches_bbox_left_edge() {
     let mut layout = simple_layout(vec![
         plain_zone("a", "dev", 0.20, 0.30, 0.10, 0.10),
         plain_zone("b", "dev", 0.60, 0.30, 0.20, 0.10),
@@ -316,7 +316,7 @@ fn align_group_left_matches_bbox_left_edge() {
     let ids: std::collections::HashSet<String> =
         ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
 
-    layout_geometry::align_group(
+    layout_geometry::align_compound(
         &mut layout,
         &ids,
         layout_geometry::AlignAxis::X,
@@ -344,14 +344,14 @@ fn align_group_left_matches_bbox_left_edge() {
 }
 
 #[test]
-fn align_group_right_matches_bbox_right_edge() {
+fn align_compound_right_matches_bbox_right_edge() {
     let mut layout = simple_layout(vec![
         plain_zone("a", "dev", 0.20, 0.30, 0.10, 0.10),
         plain_zone("b", "dev", 0.60, 0.30, 0.20, 0.10),
     ]);
     let ids: std::collections::HashSet<String> = ["a", "b"].iter().map(|s| s.to_string()).collect();
 
-    layout_geometry::align_group(
+    layout_geometry::align_compound(
         &mut layout,
         &ids,
         layout_geometry::AlignAxis::X,
@@ -366,7 +366,7 @@ fn align_group_right_matches_bbox_right_edge() {
 }
 
 #[test]
-fn align_group_center_x_matches_bbox_center() {
+fn align_compound_center_x_matches_bbox_center() {
     let mut layout = simple_layout(vec![
         plain_zone("a", "dev", 0.20, 0.30, 0.10, 0.10),
         plain_zone("b", "dev", 0.60, 0.30, 0.20, 0.10),
@@ -374,7 +374,7 @@ fn align_group_center_x_matches_bbox_center() {
     let ids: std::collections::HashSet<String> = ["a", "b"].iter().map(|s| s.to_string()).collect();
 
     // a spans x [0.15, 0.25], b spans x [0.50, 0.70]. Bbox center x = 0.425.
-    layout_geometry::align_group(
+    layout_geometry::align_compound(
         &mut layout,
         &ids,
         layout_geometry::AlignAxis::X,
@@ -388,7 +388,7 @@ fn align_group_center_x_matches_bbox_center() {
 }
 
 #[test]
-fn align_group_top_matches_bbox_top_edge() {
+fn align_compound_top_matches_bbox_top_edge() {
     let mut layout = simple_layout(vec![
         plain_zone("a", "dev", 0.3, 0.25, 0.10, 0.10),
         plain_zone("b", "dev", 0.5, 0.40, 0.10, 0.20),
@@ -397,7 +397,7 @@ fn align_group_top_matches_bbox_top_edge() {
     let ids: std::collections::HashSet<String> =
         ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
 
-    layout_geometry::align_group(
+    layout_geometry::align_compound(
         &mut layout,
         &ids,
         layout_geometry::AlignAxis::Y,
@@ -419,7 +419,7 @@ fn align_group_top_matches_bbox_top_edge() {
 // ── Group distribute ────────────────────────────────────────────────────
 
 #[test]
-fn distribute_group_horizontal_equalizes_gaps() {
+fn distribute_compound_horizontal_equalizes_gaps() {
     let mut layout = simple_layout(vec![
         plain_zone("a", "dev", 0.10, 0.50, 0.05, 0.10),
         plain_zone("b", "dev", 0.30, 0.50, 0.05, 0.10),
@@ -428,7 +428,7 @@ fn distribute_group_horizontal_equalizes_gaps() {
     let ids: std::collections::HashSet<String> =
         ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
 
-    layout_geometry::distribute_group(&mut layout, &ids, layout_geometry::AlignAxis::X);
+    layout_geometry::distribute_compound(&mut layout, &ids, layout_geometry::AlignAxis::X);
 
     // First and last should be unchanged
     let a = layout.zones.iter().find(|z| z.id == "a").expect("a");
@@ -444,13 +444,13 @@ fn distribute_group_horizontal_equalizes_gaps() {
 }
 
 #[test]
-fn distribute_group_under_three_zones_is_noop() {
+fn distribute_compound_under_three_zones_is_noop() {
     let mut layout = simple_layout(vec![
         plain_zone("a", "dev", 0.1, 0.5, 0.05, 0.10),
         plain_zone("b", "dev", 0.9, 0.5, 0.05, 0.10),
     ]);
     let ids: std::collections::HashSet<String> = ["a", "b"].iter().map(|s| s.to_string()).collect();
-    assert!(!layout_geometry::distribute_group(
+    assert!(!layout_geometry::distribute_compound(
         &mut layout,
         &ids,
         layout_geometry::AlignAxis::X
@@ -460,7 +460,7 @@ fn distribute_group_under_three_zones_is_noop() {
 // ── Group pack ──────────────────────────────────────────────────────────
 
 #[test]
-fn pack_group_horizontal_butts_zones_edge_to_edge() {
+fn pack_compound_horizontal_butts_zones_edge_to_edge() {
     let mut layout = simple_layout(vec![
         plain_zone("a", "dev", 0.20, 0.50, 0.10, 0.10),
         plain_zone("b", "dev", 0.50, 0.50, 0.10, 0.10),
@@ -469,7 +469,7 @@ fn pack_group_horizontal_butts_zones_edge_to_edge() {
     let ids: std::collections::HashSet<String> =
         ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
 
-    layout_geometry::pack_group(&mut layout, &ids, layout_geometry::AlignAxis::X);
+    layout_geometry::pack_compound(&mut layout, &ids, layout_geometry::AlignAxis::X);
 
     let a = layout.zones.iter().find(|z| z.id == "a").expect("a");
     let b = layout.zones.iter().find(|z| z.id == "b").expect("b");
@@ -490,7 +490,7 @@ fn pack_group_horizontal_butts_zones_edge_to_edge() {
 // ── Group mirror ────────────────────────────────────────────────────────
 
 #[test]
-fn mirror_group_horizontal_flips_positions_around_centroid() {
+fn mirror_compound_horizontal_flips_positions_around_centroid() {
     let mut layout = simple_layout(vec![
         plain_zone("a", "dev", 0.30, 0.50, 0.10, 0.10),
         plain_zone("b", "dev", 0.70, 0.50, 0.10, 0.10),
@@ -498,7 +498,7 @@ fn mirror_group_horizontal_flips_positions_around_centroid() {
     let ids: std::collections::HashSet<String> = ["a", "b"].iter().map(|s| s.to_string()).collect();
 
     // centroid x = 0.50. Mirror should swap effective X positions.
-    layout_geometry::mirror_group(&mut layout, &ids, layout_geometry::AlignAxis::X);
+    layout_geometry::mirror_compound(&mut layout, &ids, layout_geometry::AlignAxis::X);
 
     let a = layout.zones.iter().find(|z| z.id == "a").expect("a");
     let b = layout.zones.iter().find(|z| z.id == "b").expect("b");
@@ -510,7 +510,7 @@ fn mirror_group_horizontal_flips_positions_around_centroid() {
 }
 
 #[test]
-fn mirror_group_across_vertical_axis_reflects_rotation_to_pi_minus_theta() {
+fn mirror_compound_across_vertical_axis_reflects_rotation_to_pi_minus_theta() {
     // Reflecting across a vertical line through the centroid sends a
     // segment at angle θ to angle π − θ (not −θ). Use 45° so the two
     // formulas give different answers — this test catches a bug where
@@ -522,7 +522,7 @@ fn mirror_group_across_vertical_axis_reflects_rotation_to_pi_minus_theta() {
     layout.zones[0].rotation = std::f32::consts::FRAC_PI_4;
     let ids: std::collections::HashSet<String> = ["a", "b"].iter().map(|s| s.to_string()).collect();
 
-    layout_geometry::mirror_group(&mut layout, &ids, layout_geometry::AlignAxis::X);
+    layout_geometry::mirror_compound(&mut layout, &ids, layout_geometry::AlignAxis::X);
 
     let a = layout.zones.iter().find(|z| z.id == "a").expect("a");
     let expected =
@@ -535,7 +535,7 @@ fn mirror_group_across_vertical_axis_reflects_rotation_to_pi_minus_theta() {
 }
 
 #[test]
-fn mirror_group_across_horizontal_axis_negates_rotation() {
+fn mirror_compound_across_horizontal_axis_negates_rotation() {
     let mut layout = simple_layout(vec![
         plain_zone("a", "dev", 0.50, 0.30, 0.10, 0.10),
         plain_zone("b", "dev", 0.50, 0.70, 0.10, 0.10),
@@ -543,7 +543,7 @@ fn mirror_group_across_horizontal_axis_negates_rotation() {
     layout.zones[0].rotation = std::f32::consts::FRAC_PI_4;
     let ids: std::collections::HashSet<String> = ["a", "b"].iter().map(|s| s.to_string()).collect();
 
-    layout_geometry::mirror_group(&mut layout, &ids, layout_geometry::AlignAxis::Y);
+    layout_geometry::mirror_compound(&mut layout, &ids, layout_geometry::AlignAxis::Y);
 
     let a = layout.zones.iter().find(|z| z.id == "a").expect("a");
     let expected = (-std::f32::consts::FRAC_PI_4).rem_euclid(std::f32::consts::TAU);
@@ -555,12 +555,12 @@ fn mirror_group_across_horizontal_axis_negates_rotation() {
 }
 
 #[test]
-fn mirror_group_single_zone_is_noop() {
+fn mirror_compound_single_zone_is_noop() {
     let mut layout = simple_layout(vec![plain_zone("a", "dev", 0.5, 0.5, 0.1, 0.1)]);
     layout.zones[0].rotation = std::f32::consts::FRAC_PI_4;
     let ids: std::collections::HashSet<String> = ["a"].iter().map(|s| s.to_string()).collect();
 
-    assert!(!layout_geometry::mirror_group(
+    assert!(!layout_geometry::mirror_compound(
         &mut layout,
         &ids,
         layout_geometry::AlignAxis::X,

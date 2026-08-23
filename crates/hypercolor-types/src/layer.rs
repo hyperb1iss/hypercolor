@@ -89,7 +89,7 @@ pub struct SceneLayer {
     #[serde(default = "default_layer_opacity")]
     pub opacity: f32,
 
-    /// Geometric placement of the source within the group's canvas.
+    /// Geometric placement of the source within the zone's canvas.
     #[serde(default)]
     pub transform: LayerTransform,
 

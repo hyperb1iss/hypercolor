@@ -134,11 +134,11 @@ fn led_and_display_zones_split_into_lights_and_screens() {
 #[test]
 fn a_renamed_primary_zone_shows_its_typed_name_when_multi_zone() {
     let surfaces = surfaces_from_zones(&[
-        zone_resource("Living Room", ZoneRole::Primary, None),
+        zone_resource("Desk Strips", ZoneRole::Primary, None),
         zone_resource("Case Fans", ZoneRole::Custom, None),
     ]);
     // A multi-zone Primary zone keeps the user's typed name.
-    assert_eq!(surfaces[0].name, "Living Room");
+    assert_eq!(surfaces[0].name, "Desk Strips");
 }
 
 #[test]

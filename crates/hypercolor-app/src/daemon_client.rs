@@ -217,7 +217,7 @@ impl DaemonClient {
                 }
             };
 
-        let current_effect = status.active_effect.and_then(|name| {
+        let active_effect = status.active_effect.and_then(|name| {
             effects
                 .iter()
                 .find(|effect| effect.name == name)
@@ -241,7 +241,7 @@ impl DaemonClient {
             running: status.running,
             paused: power.power == OutputPowerMode::Paused,
             brightness: status.global_brightness,
-            current_effect,
+            active_effect,
             active_scene_name: status.active_scene,
             scene_snapshot_locked: status.active_scene_snapshot_locked,
             device_count: status.device_count,

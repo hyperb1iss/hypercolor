@@ -357,7 +357,7 @@ fn mark_disconnected(state: &mut AppState) {
     state.running = false;
     state.paused = false;
     state.brightness = 0;
-    state.current_effect = None;
+    state.active_effect = None;
     state.active_scene_name = None;
     state.scene_snapshot_locked = false;
     state.device_count = 0;
@@ -397,7 +397,7 @@ fn update_tray(tray_icon: &tray_icon::TrayIcon, state: &AppState) {
 
     // Update tooltip.
     let tooltip = if state.connected {
-        let effect_label = match &state.current_effect {
+        let effect_label = match &state.active_effect {
             Some(effect) => effect.name.as_str(),
             None => "No effect",
         };

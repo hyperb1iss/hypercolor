@@ -73,7 +73,7 @@ pub fn translate_zones(
 // ── Group transforms ─────────────────────────────────────────────────────
 
 /// Centroid (average position) of all zones in `zone_ids`.
-pub fn group_centroid(
+pub fn compound_centroid(
     layout: &SpatialLayout,
     zone_ids: &std::collections::HashSet<String>,
 ) -> Option<NormalizedPosition> {
@@ -88,12 +88,12 @@ pub fn group_centroid(
 }
 
 /// Translate a group so its centroid lands at `target`, preserving relative positions.
-pub fn translate_group(
+pub fn translate_compound(
     layout: &mut SpatialLayout,
     zone_ids: &std::collections::HashSet<String>,
     target: NormalizedPosition,
 ) -> bool {
-    let Some(centroid) = group_centroid(layout, zone_ids) else {
+    let Some(centroid) = compound_centroid(layout, zone_ids) else {
         return false;
     };
     let delta = NormalizedPosition::new(target.x - centroid.x, target.y - centroid.y);
@@ -122,7 +122,7 @@ pub fn translate_group(
 ///
 /// Each zone's position orbits the centroid and its individual rotation is offset
 /// by the same delta — so fans on a ring stay oriented correctly.
-pub fn rotate_group(
+pub fn rotate_compound(
     layout: &mut SpatialLayout,
     zone_ids: &std::collections::HashSet<String>,
     delta_radians: f32,
@@ -130,7 +130,7 @@ pub fn rotate_group(
     if delta_radians.abs() < GRID_EPSILON {
         return false;
     }
-    let Some(centroid) = group_centroid(layout, zone_ids) else {
+    let Some(centroid) = compound_centroid(layout, zone_ids) else {
         return false;
     };
     let (sin_d, cos_d) = delta_radians.sin_cos();
@@ -167,7 +167,7 @@ pub fn rotate_group(
 ///
 /// Each zone's distance from the centroid is multiplied by `scale_ratio`, and
 /// the zone's individual `scale` field is multiplied by the same factor.
-pub fn scale_group(
+pub fn scale_compound(
     layout: &mut SpatialLayout,
     zone_ids: &std::collections::HashSet<String>,
     scale_ratio: f32,
@@ -175,7 +175,7 @@ pub fn scale_group(
     if (scale_ratio - 1.0).abs() < GRID_EPSILON || scale_ratio <= 0.0 {
         return false;
     }
-    let Some(centroid) = group_centroid(layout, zone_ids) else {
+    let Some(centroid) = compound_centroid(layout, zone_ids) else {
         return false;
     };
     let mut changed = false;
@@ -228,7 +228,7 @@ pub enum AlignAnchor {
 
 /// Align each zone in `zone_ids` to a common edge or center of the group's
 /// bounding box on `axis`. Zones on the other axis are left untouched.
-pub fn align_group(
+pub fn align_compound(
     layout: &mut SpatialLayout,
     zone_ids: &std::collections::HashSet<String>,
     axis: AlignAxis,
@@ -281,7 +281,7 @@ pub fn align_group(
 /// positions; the middle zones are repositioned.
 ///
 /// No-op for fewer than three zones.
-pub fn distribute_group(
+pub fn distribute_compound(
     layout: &mut SpatialLayout,
     zone_ids: &std::collections::HashSet<String>,
     axis: AlignAxis,
@@ -339,7 +339,7 @@ pub fn distribute_group(
 /// Pack zones edge-to-edge along `axis`, removing all gaps. Zones are
 /// ordered by their current position on `axis` and the first zone anchors
 /// the sequence.
-pub fn pack_group(
+pub fn pack_compound(
     layout: &mut SpatialLayout,
     zone_ids: &std::collections::HashSet<String>,
     axis: AlignAxis,
@@ -396,7 +396,7 @@ pub fn pack_group(
 ///   centroid, mapping rotation θ to −θ.
 ///
 /// No-op for fewer than two zones.
-pub fn mirror_group(
+pub fn mirror_compound(
     layout: &mut SpatialLayout,
     zone_ids: &std::collections::HashSet<String>,
     axis: AlignAxis,
@@ -404,7 +404,7 @@ pub fn mirror_group(
     if zone_ids.len() < 2 {
         return false;
     }
-    let Some(centroid) = group_centroid(layout, zone_ids) else {
+    let Some(centroid) = compound_centroid(layout, zone_ids) else {
         return false;
     };
     let mut changed = false;

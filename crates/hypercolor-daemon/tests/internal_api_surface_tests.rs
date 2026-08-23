@@ -23,6 +23,45 @@ fn daemon_sources() -> Vec<(PathBuf, String)> {
     sources
 }
 
+/// Every Rust and TypeScript source in a sibling crate or workspace directory.
+fn sibling_sources(relative: &str) -> Vec<(PathBuf, String)> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("daemon crate lives under the workspace crates directory")
+        .join(relative);
+    let mut pending = vec![root];
+    let mut sources = Vec::new();
+    while let Some(directory) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&directory) else {
+            continue;
+        };
+        for entry in entries {
+            let path = entry.expect("source entry should read").path();
+            if path.is_dir() {
+                if path.file_name().is_none_or(|name| {
+                    !matches!(
+                        name.to_string_lossy().as_ref(),
+                        "target" | "node_modules" | "dist" | ".venv"
+                    )
+                }) {
+                    pending.push(path);
+                }
+                continue;
+            }
+            if !path
+                .extension()
+                .is_some_and(|extension| extension == "rs" || extension == "ts")
+            {
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).expect("source should read as UTF-8");
+            sources.push((path, source));
+        }
+    }
+    sources
+}
+
 fn references_rust_member(source: &str, member: &str) -> bool {
     source.match_indices(member).any(|(start, _)| {
         let prefix = source[..start].trim_end();
@@ -1311,7 +1350,7 @@ fn display_default_face_has_one_domain_home() {
 }
 
 #[test]
-fn renderer_and_display_output_keep_zone_vocabulary_canonical() {
+fn shared_crates_and_sdk_keep_zone_vocabulary_canonical() {
     let retired = [
         "render_groups",
         "render_group",
@@ -1328,12 +1367,21 @@ fn renderer_and_display_output_keep_zone_vocabulary_canonical() {
         "sample_group",
         "finalize_groups",
     ];
-    let offenders = daemon_sources()
+    // The daemon's own render and display-output paths are where the retired
+    // vocabulary originated; the shared crates and the SDK are where it kept
+    // reappearing after each rename, so they are scanned too.
+    let scanned = daemon_sources()
         .into_iter()
         .filter(|(path, _)| {
             path.to_string_lossy().contains("/render_thread/")
                 || path.ends_with("display_output/mod.rs")
         })
+        .chain(sibling_sources("crates/hypercolor-types/src"))
+        .chain(sibling_sources("crates/hypercolor-core/src"))
+        .chain(sibling_sources("crates/hypercolor-ui/src"))
+        .chain(sibling_sources("sdk/src"));
+
+    let offenders = scanned
         .flat_map(|(path, source)| {
             retired
                 .into_iter()

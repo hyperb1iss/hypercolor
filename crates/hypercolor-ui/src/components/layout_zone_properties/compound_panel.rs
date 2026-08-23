@@ -11,10 +11,10 @@ use crate::icons::*;
 use crate::layout_geometry;
 use hypercolor_types::spatial::SpatialLayout;
 
-use super::{group_op_button, zone_pixel_input};
+use super::{compound_op_button, zone_pixel_input};
 
 #[component]
-pub(super) fn GroupZoneProperties(
+pub(super) fn CompoundZoneProperties(
     ids: HashSet<String>,
     #[prop(into)] layout: Signal<Option<SpatialLayout>>,
     #[prop(into)] canvas_dims: Signal<(f32, f32)>,
@@ -24,10 +24,10 @@ pub(super) fn GroupZoneProperties(
     set_layout: LayoutWriteHandle,
     set_is_dirty: WriteSignal<bool>,
     #[prop(into)] compound_depth: Signal<CompoundDepth>,
-    group_rot_offset: ReadSignal<f32>,
-    set_group_rot_offset: WriteSignal<f32>,
-    group_scale_factor: ReadSignal<f32>,
-    set_group_scale_factor: WriteSignal<f32>,
+    compound_rot_offset: ReadSignal<f32>,
+    set_compound_rot_offset: WriteSignal<f32>,
+    compound_scale_factor: ReadSignal<f32>,
+    set_compound_scale_factor: WriteSignal<f32>,
 ) -> impl IntoView {
     let count = ids.len();
     let (cw, ch) = canvas_dims.get_untracked();
@@ -35,14 +35,14 @@ pub(super) fn GroupZoneProperties(
     let centroid = layout
         .with_untracked(|l| {
             l.as_ref()
-                .and_then(|l| layout_geometry::group_centroid(l, &ids))
+                .and_then(|l| layout_geometry::compound_centroid(l, &ids))
         })
         .unwrap_or(hypercolor_types::spatial::NormalizedPosition::new(0.5, 0.5));
     let cx_px = centroid.x * cw;
     let cy_px = centroid.y * ch;
 
-    let rot_offset = group_rot_offset.get_untracked();
-    let scale_factor = group_scale_factor.get_untracked();
+    let rot_offset = compound_rot_offset.get_untracked();
+    let scale_factor = compound_scale_factor.get_untracked();
 
     let depth_label = {
         let depth = compound_depth.get_untracked();
@@ -109,14 +109,14 @@ pub(super) fn GroupZoneProperties(
                             let norm_x = (px / cw).clamp(0.0, 1.0);
                             let centroid = layout.with_untracked(|l| {
                                 l.as_ref()
-                                    .and_then(|l| layout_geometry::group_centroid(l, &ids))
+                                    .and_then(|l| layout_geometry::compound_centroid(l, &ids))
                             });
                             if let Some(c) = centroid {
                                 let target =
                                     hypercolor_types::spatial::NormalizedPosition::new(norm_x, c.y);
                                 set_layout.update(|l| {
                                     if let Some(layout) = l {
-                                        layout_geometry::translate_group(layout, &ids, target);
+                                        layout_geometry::translate_compound(layout, &ids, target);
                                     }
                                 });
                                 set_is_dirty.set(true);
@@ -130,14 +130,14 @@ pub(super) fn GroupZoneProperties(
                             let norm_y = (px / ch).clamp(0.0, 1.0);
                             let centroid = layout.with_untracked(|l| {
                                 l.as_ref()
-                                    .and_then(|l| layout_geometry::group_centroid(l, &ids))
+                                    .and_then(|l| layout_geometry::compound_centroid(l, &ids))
                             });
                             if let Some(c) = centroid {
                                 let target =
                                     hypercolor_types::spatial::NormalizedPosition::new(c.x, norm_y);
                                 set_layout.update(|l| {
                                     if let Some(layout) = l {
-                                        layout_geometry::translate_group(layout, &ids, target);
+                                        layout_geometry::translate_compound(layout, &ids, target);
                                     }
                                 });
                                 set_is_dirty.set(true);
@@ -150,14 +150,14 @@ pub(super) fn GroupZoneProperties(
                         on:click=move |_| {
                             let centroid = layout.with_untracked(|l| {
                                 l.as_ref()
-                                    .and_then(|l| layout_geometry::group_centroid(l, &ids_center_h))
+                                    .and_then(|l| layout_geometry::compound_centroid(l, &ids_center_h))
                             });
                             if let Some(c) = centroid {
                                 let target =
                                     hypercolor_types::spatial::NormalizedPosition::new(0.5, c.y);
                                 set_layout.update(|l| {
                                     if let Some(layout) = l {
-                                        layout_geometry::translate_group(
+                                        layout_geometry::translate_compound(
                                             layout,
                                             &ids_center_h,
                                             target,
@@ -176,14 +176,14 @@ pub(super) fn GroupZoneProperties(
                         on:click=move |_| {
                             let centroid = layout.with_untracked(|l| {
                                 l.as_ref()
-                                    .and_then(|l| layout_geometry::group_centroid(l, &ids_center_v))
+                                    .and_then(|l| layout_geometry::compound_centroid(l, &ids_center_v))
                             });
                             if let Some(c) = centroid {
                                 let target =
                                     hypercolor_types::spatial::NormalizedPosition::new(c.x, 0.5);
                                 set_layout.update(|l| {
                                     if let Some(layout) = l {
-                                        layout_geometry::translate_group(
+                                        layout_geometry::translate_compound(
                                             layout,
                                             &ids_center_v,
                                             target,
@@ -213,12 +213,12 @@ pub(super) fn GroupZoneProperties(
                         on:input=move |ev| {
                             let event = Input::from_event(ev);
                             if let Some(new_deg) = event.value::<f32>() {
-                                let old_deg = group_rot_offset.get_untracked();
+                                let old_deg = compound_rot_offset.get_untracked();
                                 let delta_rad = (new_deg - old_deg).to_radians();
-                                set_group_rot_offset.set(new_deg);
+                                set_compound_rot_offset.set(new_deg);
                                 set_layout.update(|l| {
                                     if let Some(layout) = l {
-                                        layout_geometry::rotate_group(
+                                        layout_geometry::rotate_compound(
                                             layout,
                                             &ids_rot_slider,
                                             delta_rad,
@@ -242,12 +242,12 @@ pub(super) fn GroupZoneProperties(
                             on:change=move |ev| {
                                 let event = Change::from_event(ev);
                                 if let Some(new_deg) = event.value::<f32>() {
-                                    let old_deg = group_rot_offset.get_untracked();
+                                    let old_deg = compound_rot_offset.get_untracked();
                                     let delta_rad = (new_deg - old_deg).to_radians();
-                                    set_group_rot_offset.set(new_deg);
+                                    set_compound_rot_offset.set(new_deg);
                                     set_layout.update(|l| {
                                         if let Some(layout) = l {
-                                            layout_geometry::rotate_group(
+                                            layout_geometry::rotate_compound(
                                                 layout,
                                                 &ids_rot_input,
                                                 delta_rad,
@@ -277,13 +277,13 @@ pub(super) fn GroupZoneProperties(
                         on:input=move |ev| {
                             let event = Input::from_event(ev);
                             if let Some(new_factor) = event.value::<f32>() {
-                                let old_factor = group_scale_factor.get_untracked();
+                                let old_factor = compound_scale_factor.get_untracked();
                                 if old_factor.abs() > 0.001 {
                                     let ratio = new_factor / old_factor;
-                                    set_group_scale_factor.set(new_factor);
+                                    set_compound_scale_factor.set(new_factor);
                                     set_layout.update(|l| {
                                         if let Some(layout) = l {
-                                            layout_geometry::scale_group(
+                                            layout_geometry::scale_compound(
                                                 layout,
                                                 &ids_scale_slider,
                                                 ratio,
@@ -308,13 +308,13 @@ pub(super) fn GroupZoneProperties(
                             on:change=move |ev| {
                                 let event = Change::from_event(ev);
                                 if let Some(new_factor) = event.value::<f32>() {
-                                    let old_factor = group_scale_factor.get_untracked();
+                                    let old_factor = compound_scale_factor.get_untracked();
                                     if old_factor.abs() > 0.001 {
                                         let ratio = new_factor / old_factor;
-                                        set_group_scale_factor.set(new_factor);
+                                        set_compound_scale_factor.set(new_factor);
                                         set_layout.update(|l| {
                                             if let Some(layout) = l {
-                                                layout_geometry::scale_group(
+                                                layout_geometry::scale_compound(
                                                     layout,
                                                     &ids_scale_input,
                                                     ratio,
@@ -337,11 +337,11 @@ pub(super) fn GroupZoneProperties(
                     style="background: rgba(255, 255, 255, 0.02)"
                 >
                     <span class="text-[9px] text-fg-tertiary/40 font-mono uppercase tracking-wider shrink-0 pr-1">"Align"</span>
-                    {group_op_button(LuAlignStartVertical, "Align left edges", move || {
+                    {compound_op_button(LuAlignStartVertical, "Align left edges", move || {
                         let ids = ids_align_left.clone();
                         set_layout.update(|l| {
                             if let Some(layout) = l {
-                                layout_geometry::align_group(
+                                layout_geometry::align_compound(
                                     layout,
                                     &ids,
                                     layout_geometry::AlignAxis::X,
@@ -351,11 +351,11 @@ pub(super) fn GroupZoneProperties(
                         });
                         set_is_dirty.set(true);
                     })}
-                    {group_op_button(LuAlignCenterVertical, "Align horizontal centers", move || {
+                    {compound_op_button(LuAlignCenterVertical, "Align horizontal centers", move || {
                         let ids = ids_align_hc.clone();
                         set_layout.update(|l| {
                             if let Some(layout) = l {
-                                layout_geometry::align_group(
+                                layout_geometry::align_compound(
                                     layout,
                                     &ids,
                                     layout_geometry::AlignAxis::X,
@@ -365,11 +365,11 @@ pub(super) fn GroupZoneProperties(
                         });
                         set_is_dirty.set(true);
                     })}
-                    {group_op_button(LuAlignEndVertical, "Align right edges", move || {
+                    {compound_op_button(LuAlignEndVertical, "Align right edges", move || {
                         let ids = ids_align_right.clone();
                         set_layout.update(|l| {
                             if let Some(layout) = l {
-                                layout_geometry::align_group(
+                                layout_geometry::align_compound(
                                     layout,
                                     &ids,
                                     layout_geometry::AlignAxis::X,
@@ -380,11 +380,11 @@ pub(super) fn GroupZoneProperties(
                         set_is_dirty.set(true);
                     })}
                     <div class="w-px h-3 bg-edge-subtle mx-0.5" />
-                    {group_op_button(LuAlignStartHorizontal, "Align top edges", move || {
+                    {compound_op_button(LuAlignStartHorizontal, "Align top edges", move || {
                         let ids = ids_align_top.clone();
                         set_layout.update(|l| {
                             if let Some(layout) = l {
-                                layout_geometry::align_group(
+                                layout_geometry::align_compound(
                                     layout,
                                     &ids,
                                     layout_geometry::AlignAxis::Y,
@@ -394,11 +394,11 @@ pub(super) fn GroupZoneProperties(
                         });
                         set_is_dirty.set(true);
                     })}
-                    {group_op_button(LuAlignCenterHorizontal, "Align vertical centers", move || {
+                    {compound_op_button(LuAlignCenterHorizontal, "Align vertical centers", move || {
                         let ids = ids_align_vc.clone();
                         set_layout.update(|l| {
                             if let Some(layout) = l {
-                                layout_geometry::align_group(
+                                layout_geometry::align_compound(
                                     layout,
                                     &ids,
                                     layout_geometry::AlignAxis::Y,
@@ -408,11 +408,11 @@ pub(super) fn GroupZoneProperties(
                         });
                         set_is_dirty.set(true);
                     })}
-                    {group_op_button(LuAlignEndHorizontal, "Align bottom edges", move || {
+                    {compound_op_button(LuAlignEndHorizontal, "Align bottom edges", move || {
                         let ids = ids_align_bottom.clone();
                         set_layout.update(|l| {
                             if let Some(layout) = l {
-                                layout_geometry::align_group(
+                                layout_geometry::align_compound(
                                     layout,
                                     &ids,
                                     layout_geometry::AlignAxis::Y,
@@ -438,11 +438,11 @@ pub(super) fn GroupZoneProperties(
                     }
                 >
                     <span class="text-[9px] text-fg-tertiary/40 font-mono uppercase tracking-wider shrink-0 pr-1">"Dist"</span>
-                    {group_op_button(LuAlignHorizontalDistributeCenter, "Distribute horizontally (even gaps)", move || {
+                    {compound_op_button(LuAlignHorizontalDistributeCenter, "Distribute horizontally (even gaps)", move || {
                         let ids = ids_dist_h.clone();
                         set_layout.update(|l| {
                             if let Some(layout) = l {
-                                layout_geometry::distribute_group(
+                                layout_geometry::distribute_compound(
                                     layout,
                                     &ids,
                                     layout_geometry::AlignAxis::X,
@@ -451,11 +451,11 @@ pub(super) fn GroupZoneProperties(
                         });
                         set_is_dirty.set(true);
                     })}
-                    {group_op_button(LuAlignVerticalDistributeCenter, "Distribute vertically (even gaps)", move || {
+                    {compound_op_button(LuAlignVerticalDistributeCenter, "Distribute vertically (even gaps)", move || {
                         let ids = ids_dist_v.clone();
                         set_layout.update(|l| {
                             if let Some(layout) = l {
-                                layout_geometry::distribute_group(
+                                layout_geometry::distribute_compound(
                                     layout,
                                     &ids,
                                     layout_geometry::AlignAxis::Y,
@@ -471,11 +471,11 @@ pub(super) fn GroupZoneProperties(
                     style="background: rgba(255, 255, 255, 0.02)"
                 >
                     <span class="text-[9px] text-fg-tertiary/40 font-mono uppercase tracking-wider shrink-0 pr-1">"Pack"</span>
-                    {group_op_button(LuFoldHorizontal, "Pack horizontally (no gaps)", move || {
+                    {compound_op_button(LuFoldHorizontal, "Pack horizontally (no gaps)", move || {
                         let ids = ids_pack_h.clone();
                         set_layout.update(|l| {
                             if let Some(layout) = l {
-                                layout_geometry::pack_group(
+                                layout_geometry::pack_compound(
                                     layout,
                                     &ids,
                                     layout_geometry::AlignAxis::X,
@@ -484,11 +484,11 @@ pub(super) fn GroupZoneProperties(
                         });
                         set_is_dirty.set(true);
                     })}
-                    {group_op_button(LuFoldVertical, "Pack vertically (no gaps)", move || {
+                    {compound_op_button(LuFoldVertical, "Pack vertically (no gaps)", move || {
                         let ids = ids_pack_v.clone();
                         set_layout.update(|l| {
                             if let Some(layout) = l {
-                                layout_geometry::pack_group(
+                                layout_geometry::pack_compound(
                                     layout,
                                     &ids,
                                     layout_geometry::AlignAxis::Y,
@@ -504,11 +504,11 @@ pub(super) fn GroupZoneProperties(
                     style="background: rgba(255, 255, 255, 0.02)"
                 >
                     <span class="text-[9px] text-fg-tertiary/40 font-mono uppercase tracking-wider shrink-0 pr-1">"Mirror"</span>
-                    {group_op_button(LuFlipHorizontal, "Mirror across vertical axis", move || {
+                    {compound_op_button(LuFlipHorizontal, "Mirror across vertical axis", move || {
                         let ids = ids_mirror_h.clone();
                         set_layout.update(|l| {
                             if let Some(layout) = l {
-                                layout_geometry::mirror_group(
+                                layout_geometry::mirror_compound(
                                     layout,
                                     &ids,
                                     layout_geometry::AlignAxis::X,
@@ -517,11 +517,11 @@ pub(super) fn GroupZoneProperties(
                         });
                         set_is_dirty.set(true);
                     })}
-                    {group_op_button(LuFlipVertical, "Mirror across horizontal axis", move || {
+                    {compound_op_button(LuFlipVertical, "Mirror across horizontal axis", move || {
                         let ids = ids_mirror_v.clone();
                         set_layout.update(|l| {
                             if let Some(layout) = l {
-                                layout_geometry::mirror_group(
+                                layout_geometry::mirror_compound(
                                     layout,
                                     &ids,
                                     layout_geometry::AlignAxis::Y,
