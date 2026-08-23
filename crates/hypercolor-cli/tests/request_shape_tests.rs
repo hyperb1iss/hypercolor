@@ -1507,3 +1507,40 @@ async fn scenes_list_json_output_preserves_the_daemon_payload() -> Result<()> {
 
     Ok(())
 }
+
+#[tokio::test]
+async fn layouts_show_json_output_preserves_the_daemon_payload() -> Result<()> {
+    let payload = serde_json::json!({
+        "id": "desk",
+        "name": "Desk",
+        "description": null,
+        "canvas_width": 640,
+        "canvas_height": 480,
+        "zones": [],
+        "default_sampling_mode": { "type": "bilinear" },
+        "default_edge_behavior": "clamp",
+        "spaces": null,
+        "version": 1
+    });
+    let expected = payload.clone();
+    let router = Router::new().route(
+        "/api/v1/layouts/{id}",
+        get(move |Path(id): Path<String>| {
+            let payload = payload.clone();
+            async move {
+                assert_eq!(id, "desk");
+                Json(serde_json::json!({ "data": payload }))
+            }
+        }),
+    );
+    let (port, shutdown_tx, task) = spawn_server(router).await?;
+
+    let rendered = run_hyper_json(port, &["layouts", "show", "desk"]).await;
+
+    let _ = shutdown_tx.send(());
+    task.await.context("test server task join failed")?;
+
+    assert_eq!(rendered?, expected);
+
+    Ok(())
+}

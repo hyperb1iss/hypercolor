@@ -3,8 +3,14 @@
 use anyhow::Result;
 use clap::{Args, Subcommand};
 
+use hypercolor_types::api::layouts::{
+    ApplyLayoutResponse, DeleteLayoutResponse, LayoutListResponse, LayoutSummary,
+    PreviewLayoutResponse,
+};
+use hypercolor_types::spatial::SpatialLayout;
+
 use crate::client::DaemonClient;
-use crate::output::{OutputContext, OutputFormat, extract_str, urlencoded};
+use crate::output::{OutputContext, OutputFormat, urlencoded};
 
 /// Spatial layout management.
 #[derive(Debug, Args)]
@@ -104,42 +110,27 @@ pub async fn execute(args: &LayoutsArgs, client: &DaemonClient, ctx: &OutputCont
 }
 
 async fn execute_list(client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
-    let response: hypercolor_types::api::ListResponse<serde_json::Value> =
-        client.get_list("/layouts").await?;
+    let response: LayoutListResponse = client.get_list("/layouts").await?;
+    let layouts = &response.items;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
         OutputFormat::Plain => {
-            let layouts = &response.items;
             for layout in layouts {
-                if let Some(name) = layout.get("name").and_then(serde_json::Value::as_str) {
-                    println!("{name}");
-                }
+                println!("{}", layout.name);
             }
         }
         OutputFormat::Table => {
-            let layouts = &response.items;
             let headers = ["ID", "Layout", "Canvas", "Zones"];
             let rows: Vec<Vec<String>> = layouts
                 .iter()
                 .map(|l| {
-                    let width = l
-                        .get("canvas_width")
-                        .and_then(serde_json::Value::as_u64)
-                        .unwrap_or(0);
-                    let height = l
-                        .get("canvas_height")
-                        .and_then(serde_json::Value::as_u64)
-                        .unwrap_or(0);
                     vec![
-                        ctx.painter.id(&extract_str(l, "id")),
-                        ctx.painter.name(&extract_str(l, "name")),
-                        ctx.painter.number(&format!("{width}x{height}")),
-                        ctx.painter.number(
-                            &l.get("zone_count")
-                                .and_then(serde_json::Value::as_u64)
-                                .map_or_else(|| "?".to_string(), |c| c.to_string()),
-                        ),
+                        ctx.painter.id(&l.id),
+                        ctx.painter.name(&l.name),
+                        ctx.painter
+                            .number(&format!("{}x{}", l.canvas_width, l.canvas_height)),
+                        ctx.painter.number(&l.zone_count.to_string()),
                     ]
                 })
                 .collect();
@@ -162,34 +153,23 @@ async fn execute_show(
     ctx: &OutputContext,
 ) -> Result<()> {
     let path = format!("/layouts/{}", urlencoded(&args.name));
-    let response: serde_json::Value = client.get(&path).await?;
+    let response: SpatialLayout = client.get(&path).await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
         OutputFormat::Plain => {
-            println!("{}", extract_str(&response, "name"));
+            println!("{}", response.name);
         }
         OutputFormat::Table => {
             println!();
-            ctx.info(&format!("Layout: {}", extract_str(&response, "name")));
+            ctx.info(&format!("Layout: {}", response.name));
             println!();
-            ctx.info(&format!("ID         {}", extract_str(&response, "id")));
-            let width = response
-                .get("canvas_width")
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or(0);
-            let height = response
-                .get("canvas_height")
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or(0);
-            ctx.info(&format!("Canvas     {width}x{height}"));
+            ctx.info(&format!("ID         {}", response.id));
             ctx.info(&format!(
-                "Zones      {}",
-                response
-                    .get("zone_count")
-                    .and_then(serde_json::Value::as_u64)
-                    .unwrap_or(0)
+                "Canvas     {}x{}",
+                response.canvas_width, response.canvas_height
             ));
+            ctx.info(&format!("Zones      {}", response.zones.len()));
             println!();
         }
     }
@@ -205,7 +185,7 @@ async fn execute_update(
     let path = format!("/layouts/{}", urlencoded(&args.name));
     let body: serde_json::Value =
         serde_json::from_str(&args.data).map_err(|e| anyhow::anyhow!("Invalid JSON data: {e}"))?;
-    let response: serde_json::Value = client.put(&path, &body).await?;
+    let response: LayoutSummary = client.put(&path, &body).await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
@@ -230,7 +210,7 @@ async fn execute_create(
             serde_json::Value::String(args.name.clone()),
         );
     }
-    let response: serde_json::Value = client.post("/layouts", &body).await?;
+    let response: LayoutSummary = client.post("/layouts", &body).await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
@@ -248,7 +228,7 @@ async fn execute_delete(
     ctx: &OutputContext,
 ) -> Result<()> {
     let path = format!("/layouts/{}", urlencoded(&args.name));
-    let response: serde_json::Value = client.delete(&path).await?;
+    let response: DeleteLayoutResponse = client.delete(&path).await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
@@ -261,16 +241,13 @@ async fn execute_delete(
 }
 
 async fn execute_active(client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
-    let response: serde_json::Value = client.get("/layouts/active").await?;
+    let response: SpatialLayout = client.get("/layouts/active").await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
-        OutputFormat::Plain => println!("{}", extract_str(&response, "name")),
+        OutputFormat::Plain => println!("{}", response.name),
         OutputFormat::Table => {
-            ctx.info(&format!(
-                "Active layout: {}",
-                extract_str(&response, "name")
-            ));
+            ctx.info(&format!("Active layout: {}", response.name));
         }
     }
 
@@ -283,7 +260,7 @@ async fn execute_apply(
     ctx: &OutputContext,
 ) -> Result<()> {
     let path = format!("/layouts/{}/apply", urlencoded(&args.name));
-    let response: serde_json::Value = client.post(&path, &serde_json::json!({})).await?;
+    let response: ApplyLayoutResponse = client.post(&path, &serde_json::json!({})).await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
@@ -301,8 +278,8 @@ async fn execute_preview(
     ctx: &OutputContext,
 ) -> Result<()> {
     let path = format!("/layouts/{}", urlencoded(&args.name));
-    let layout_data: serde_json::Value = client.get(&path).await?;
-    let response: serde_json::Value = client.put("/layouts/active/preview", &layout_data).await?;
+    let layout: SpatialLayout = client.get(&path).await?;
+    let response: PreviewLayoutResponse = client.put("/layouts/active/preview", &layout).await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
