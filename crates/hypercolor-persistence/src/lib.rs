@@ -10,13 +10,17 @@ use std::ffi::OsStr;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::sync::atomic::AtomicU32;
 use std::sync::{Arc, Condvar, LazyLock, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
 #[cfg(any(test, feature = "persistence-test-hooks"))]
 use std::cell::Cell;
 #[cfg(any(test, feature = "persistence-test-hooks"))]
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::AtomicUsize;
+#[cfg(any(unix, test, feature = "persistence-test-hooks"))]
+use std::sync::atomic::Ordering;
 
 use serde::Serialize;
 
@@ -98,6 +102,16 @@ pub enum PersistenceError {
     /// The temporary file contents could not be flushed.
     #[error("failed to flush temporary persistence file for {path}: {source}")]
     SyncTemporary {
+        /// Destination path.
+        path: PathBuf,
+        /// Filesystem error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// The temporary file could not be restricted to the destination mode.
+    #[cfg(unix)]
+    #[error("failed to set persistence file mode for {path}: {source}")]
+    SetTemporaryMode {
         /// Destination path.
         path: PathBuf,
         /// Filesystem error.
@@ -247,6 +261,8 @@ struct Destination {
     parent: PathBuf,
     state: Mutex<DestinationState>,
     state_changed: Condvar,
+    #[cfg(unix)]
+    file_mode: AtomicU32,
     #[cfg(any(test, feature = "persistence-test-hooks"))]
     injected_replace_failures: AtomicUsize,
     #[cfg(all(unix, any(test, feature = "persistence-test-hooks")))]
@@ -357,6 +373,8 @@ impl AtomicFileWriter {
             parent: canonical_parent,
             state: Mutex::new(DestinationState::default()),
             state_changed: Condvar::new(),
+            #[cfg(unix)]
+            file_mode: AtomicU32::new(0),
             #[cfg(any(test, feature = "persistence-test-hooks"))]
             injected_replace_failures: AtomicUsize::new(0),
             #[cfg(all(unix, any(test, feature = "persistence-test-hooks")))]
@@ -371,6 +389,25 @@ impl AtomicFileWriter {
         #[cfg(not(windows))]
         destinations.insert(key, Arc::downgrade(&destination));
         Ok(Self { destination })
+    }
+
+    /// Resolve `path` to a destination whose replacements carry `mode`.
+    ///
+    /// The mode is a property of the destination, so the newest explicit
+    /// request wins for every writer sharing that path. Non-unix platforms
+    /// ignore it and rely on inherited directory permissions.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed filesystem error when the destination directory cannot
+    /// be created or resolved.
+    pub fn with_file_mode(path: &Path, mode: u32) -> Result<Self, PersistenceError> {
+        let writer = Self::new(path)?;
+        #[cfg(unix)]
+        writer.destination.file_mode.store(mode, Ordering::Release);
+        #[cfg(not(unix))]
+        let _ = mode;
+        Ok(writer)
     }
 
     /// Reserve the next write generation.
@@ -801,6 +838,15 @@ fn try_write_stage_aware(
             source,
         });
     }
+    #[cfg(unix)]
+    if let Err(source) = apply_file_mode(destination, temporary.as_file()) {
+        return AtomicWriteCommitResult::FailedBeforeReplacement(
+            PersistenceError::SetTemporaryMode {
+                path: destination.path.clone(),
+                source,
+            },
+        );
+    }
 
     let state = destination
         .state
@@ -942,6 +988,17 @@ pub fn flush_all(timeout: Duration) -> PersistenceFlushReport {
         }
     }
     report
+}
+
+#[cfg(unix)]
+fn apply_file_mode(destination: &Arc<Destination>, temporary: &fs::File) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let mode = destination.file_mode.load(Ordering::Acquire);
+    if mode == 0 {
+        return Ok(());
+    }
+    temporary.set_permissions(fs::Permissions::from_mode(mode))
 }
 
 fn destination_parent(path: &Path) -> &Path {

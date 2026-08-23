@@ -14,7 +14,7 @@ workspace = true
 [features]
 default = []
 allocation-contract-tests = []
-persistence-test-hooks = []
+persistence-test-hooks = ["hypercolor-persistence/persistence-test-hooks"]
 spatial-workspace-test-hooks = []
 windows-capture-fixtures = []
 macos-native-fixtures = []
@@ -54,7 +54,7 @@ hypercolor-macos-input = { workspace = true }
 hypercolor-macos-capture = { workspace = true }
 hypercolor-driver-api = { workspace = true }
 hypercolor-hal = { workspace = true }
-hypercolor-platform-fs = { workspace = true }
+hypercolor-persistence = { workspace = true }
 hypercolor-linux-gpu-interop = { workspace = true, optional = true }
 hypercolor-macos-gpu-interop = { workspace = true, optional = true }
 hypercolor-windows-gpu-interop = { workspace = true, optional = true }
@@ -124,6 +124,7 @@ wmi = { workspace = true }
 hypercolor-windows-pawnio = { path = "../hypercolor-windows-pawnio" }
 
 [dev-dependencies]
+hypercolor-persistence = { workspace = true, features = ["persistence-test-hooks"] }
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }
 tracing-subscriber = { workspace = true }

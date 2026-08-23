@@ -2,8 +2,6 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
@@ -14,19 +12,17 @@ use tokio::fs;
 use tokio::sync::RwLock;
 
 use hypercolor_driver_api::DriverCredentialStore;
-
-/// Per-process temp-file suffix counter for atomic store writes.
-static SAVE_COUNTER: AtomicU64 = AtomicU64::new(0);
+use hypercolor_persistence::AtomicFileWriter;
 
 const STORE_FILE_NAME: &str = "credentials.json.enc";
 const SEED_FILE_NAME: &str = ".credential_seed";
 const NONCE_BYTES: usize = 12;
-#[cfg(unix)]
 const CREDENTIAL_FILE_MODE: u32 = 0o600;
 
 /// Encrypted credential store rooted in Hypercolor's data directory.
 pub struct CredentialStore {
     store_path: PathBuf,
+    writer: AtomicFileWriter,
     cipher: Aes256Gcm,
     cache: RwLock<HashMap<String, Value>>,
 }
@@ -51,9 +47,11 @@ impl CredentialStore {
         let cipher = Aes256Gcm::new_from_slice(&key)
             .map_err(|error| anyhow!("failed to construct credential cipher: {error}"))?;
         let cache = load_cache_blocking(&cipher, &store_path)?;
+        let writer = store_writer(&store_path)?;
 
         Ok(Self {
             store_path,
+            writer,
             cipher,
             cache: RwLock::new(cache),
         })
@@ -76,8 +74,10 @@ impl CredentialStore {
         let cipher = Aes256Gcm::new_from_slice(&key)
             .map_err(|error| anyhow!("failed to construct credential cipher: {error}"))?;
         let cache = load_cache(&cipher, &store_path).await?;
+        let writer = store_writer(&store_path)?;
         let store = Self {
             store_path,
+            writer,
             cipher,
             cache: RwLock::new(cache),
         };
@@ -104,7 +104,7 @@ impl CredentialStore {
             cache.insert(key.to_owned(), value);
             cache.clone()
         };
-        self.persist_snapshot(&snapshot).await
+        self.persist_snapshot(&snapshot)
     }
 
     /// Store or replace a driver-scoped JSON credential payload.
@@ -123,7 +123,7 @@ impl CredentialStore {
             cache.remove(key);
             cache.clone()
         };
-        self.persist_snapshot(&snapshot).await
+        self.persist_snapshot(&snapshot)
     }
 
     /// Remove a driver-scoped credential payload if present.
@@ -142,27 +142,15 @@ impl CredentialStore {
         keys
     }
 
-    async fn persist_snapshot(&self, snapshot: &HashMap<String, Value>) -> Result<()> {
+    fn persist_snapshot(&self, snapshot: &HashMap<String, Value>) -> Result<()> {
         let payload = encrypt_snapshot(&self.cipher, snapshot)?;
 
-        let tmp_path = temp_store_path(&self.store_path);
-        write_secret_file(&tmp_path, &payload)
-            .await
-            .with_context(|| {
-                format!(
-                    "failed to write temporary credential store {}",
-                    tmp_path.display()
-                )
-            })?;
-        fs::rename(&tmp_path, &self.store_path)
-            .await
-            .with_context(|| {
-                format!(
-                    "failed to replace credential store {}",
-                    self.store_path.display()
-                )
-            })?;
-        restrict_file_permissions(&self.store_path).await?;
+        self.writer.write(&payload).with_context(|| {
+            format!(
+                "failed to persist credential store {}",
+                self.store_path.display()
+            )
+        })?;
 
         Ok(())
     }
@@ -181,6 +169,15 @@ impl DriverCredentialStore for CredentialStore {
     async fn remove(&self, driver_id: &str, key: &str) -> Result<()> {
         self.remove_driver(driver_id, key).await
     }
+}
+
+fn store_writer(store_path: &Path) -> Result<AtomicFileWriter> {
+    AtomicFileWriter::with_file_mode(store_path, CREDENTIAL_FILE_MODE).with_context(|| {
+        format!(
+            "failed to prepare credential store persistence at {}",
+            store_path.display()
+        )
+    })
 }
 
 fn scoped_credential_key(driver_id: &str, key: &str) -> String {
@@ -390,18 +387,4 @@ async fn restrict_file_permissions(path: &Path) -> Result<()> {
 #[allow(clippy::unused_async, clippy::unnecessary_wraps)]
 async fn restrict_file_permissions(_path: &Path) -> Result<()> {
     Ok(())
-}
-
-fn temp_store_path(store_path: &Path) -> PathBuf {
-    let counter = SAVE_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_nanos());
-    let pid = std::process::id();
-    let file_name = store_path.file_name().map_or_else(
-        || STORE_FILE_NAME.to_owned(),
-        |name| name.to_string_lossy().into_owned(),
-    );
-
-    store_path.with_file_name(format!("{file_name}.tmp-{pid}-{nanos}-{counter}"))
 }

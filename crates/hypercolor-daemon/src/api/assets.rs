@@ -304,6 +304,8 @@ fn asset_error(error: AssetLibraryError) -> DomainError {
         | AssetLibraryError::Sync { .. }
         | AssetLibraryError::ParseIndex { .. }
         | AssetLibraryError::SerializeIndex(_)
+        | AssetLibraryError::PrepareIndexPersistence { .. }
+        | AssetLibraryError::PersistIndex { .. }
         | AssetLibraryError::EncodeThumbnail { .. } => {
             DomainError::Internal(anyhow::anyhow!(error.to_string()))
         }

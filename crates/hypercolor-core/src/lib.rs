@@ -11,8 +11,13 @@ pub mod device;
 pub mod effect;
 pub mod engine;
 pub mod input;
-pub mod persistence;
 pub mod scene;
 pub mod session;
 pub mod spatial;
 pub mod system;
+
+/// Durable file replacement shared by every Hypercolor store.
+///
+/// The implementation lives in `hypercolor-persistence` so driver crates can
+/// register their destinations without depending on the engine.
+pub use hypercolor_persistence as persistence;

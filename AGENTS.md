@@ -60,6 +60,7 @@ crates/
   hypercolor-windows-input/        # Windows Raw Input host keyboard and pointer capture
   hypercolor-windows-helper/       # Signed elevated helper for Windows privileged operations
   hypercolor-platform-fs/          # Audited platform filesystem operations
+  hypercolor-persistence/          # Durable file replacement and the process-wide flush registry every store writes through
   hypercolor-driver-api/           # Stable trait/type boundary between the daemon and all driver implementations
   hypercolor-driver-support/       # Native credential and discovery services layered on the driver API
   hypercolor-driver-builtin/       # Compile-time bundle assembling HAL + network drivers into a registry via feature flags
@@ -105,8 +106,9 @@ graph TD
     WC[hypercolor-windows-capture] --> CORE & WGI
     WI[hypercolor-windows-input] --> CORE
     WH[hypercolor-windows-helper]
+    PER[hypercolor-persistence] --> CORE
     T --> DAPI[hypercolor-driver-api]
-    DAPI --> DS[hypercolor-driver-support]
+    DAPI & PER --> DS[hypercolor-driver-support]
     DAPI & DS --> HUE[hypercolor-driver-hue]
     DAPI & DS --> NL[hypercolor-driver-nanoleaf]
     DAPI & DS --> WLED[hypercolor-driver-wled]

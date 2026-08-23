@@ -99,6 +99,7 @@ graph TD
         WINP[hypercolor-windows-input]
         WHLP[hypercolor-windows-helper]
         PFS[hypercolor-platform-fs]
+        PER[hypercolor-persistence]
     end
 
     subgraph Drivers
@@ -130,8 +131,9 @@ graph TD
     T --> HAL
     T --> CORE
     HAL --> CORE
+    PER --> CORE
     T --> DAPI
-    DAPI --> DS
+    DAPI & PER --> DS
     DAPI & DS --> HUE
     DAPI & DS --> NL
     DAPI & DS --> WLED
@@ -160,6 +162,9 @@ Key rules:
   `hypercolor-driver-support` for concrete host services.
 - `hypercolor-driver-builtin` aggregates the optional driver crates behind
   feature flags.
+- `hypercolor-persistence` owns the durable write path and the process-wide
+  flush registry, so every store that must survive shutdown writes through it.
+  It sits below both the engine and the driver crates.
 - `hypercolor-leptos-ext` depends on no other internal crate.
 - The Platform subgraph crates isolate unsafe platform calls; `hypercolor-core`
   and the daemon consume them behind target and feature gates, so those edges

@@ -4823,7 +4823,7 @@ dependencies = [
  "hypercolor-macos-capture",
  "hypercolor-macos-gpu-interop",
  "hypercolor-macos-input",
- "hypercolor-platform-fs",
+ "hypercolor-persistence",
  "hypercolor-types",
  "hypercolor-windows-capture",
  "hypercolor-windows-gpu-interop",
@@ -5058,6 +5058,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "hypercolor-driver-api",
+ "hypercolor-persistence",
  "hypercolor-types",
  "mdns-sd",
  "rand 0.10.1",
@@ -5244,6 +5245,17 @@ version = "0.3.2"
 dependencies = [
  "thiserror 2.0.18",
  "tokio",
+]
+
+[[package]]
+name = "hypercolor-persistence"
+version = "0.3.2"
+dependencies = [
+ "hypercolor-platform-fs",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
