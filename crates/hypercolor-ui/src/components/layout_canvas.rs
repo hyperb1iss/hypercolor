@@ -39,7 +39,9 @@ use interaction::{
     update_canvas_slot_size,
 };
 use overlays::{CanvasDepthBreadcrumb, CompoundBoundingBoxOutline};
-use render::{ZoneRenderData, ring_inner_style, rotated_cursor, upright_label_style, zone_shape_style};
+use render::{
+    ZoneRenderData, ring_inner_style, rotated_cursor, upright_label_style, zone_shape_style,
+};
 
 /// Throttle the in-drag preview push to the daemon. Matches the existing
 /// debounce we use outside drags so the spatial engine isn't recomputed at
@@ -172,9 +174,7 @@ pub fn LayoutCanvas() -> impl IntoView {
     // keep display_order so the saved order still breaks equal areas.
     let stacking_rank: Memo<HashMap<String, usize>> = Memo::new(move |_| {
         layout
-            .with(|current| {
-                current.as_ref().map(|l| stacking::rank_by_area(&l.zones))
-            })
+            .with(|current| current.as_ref().map(|l| stacking::rank_by_area(&l.zones)))
             .unwrap_or_default()
     });
 
@@ -242,8 +242,12 @@ pub fn LayoutCanvas() -> impl IntoView {
         layout.with(|current| {
             current
                 .as_ref()
-                .map(|layout| render_canvas::aspect_ratio_css((layout.canvas_width, layout.canvas_height)))
-                .unwrap_or_else(|| render_canvas::aspect_ratio_css(render_canvas::DEFAULT_RENDER_CANVAS))
+                .map(|layout| {
+                    render_canvas::aspect_ratio_css((layout.canvas_width, layout.canvas_height))
+                })
+                .unwrap_or_else(|| {
+                    render_canvas::aspect_ratio_css(render_canvas::DEFAULT_RENDER_CANVAS)
+                })
         })
     });
 
@@ -263,7 +267,6 @@ pub fn LayoutCanvas() -> impl IntoView {
     // when the pointer is released or leaves the canvas slot. Idempotent:
     // safe to call when no runtime is active.
     let finish_interaction = {
-        let layout_signal = layout;
         move || {
             let Some(mut runtime) = drag_runtime.try_update_value(Option::take).flatten() else {
                 return;
@@ -291,10 +294,9 @@ pub fn LayoutCanvas() -> impl IntoView {
             set_layout.finish_interaction();
             swallow_next_click.set_value(true);
             if committed {
+                // The provider's layout-change effect pushes the committed
+                // (normalized) zones to the daemon from here.
                 set_is_dirty.set(true);
-                if let Some(snapshot) = layout_signal.get_untracked() {
-                    push_preview.run(snapshot);
-                }
             }
         }
     };

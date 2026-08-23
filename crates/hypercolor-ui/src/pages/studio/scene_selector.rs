@@ -146,7 +146,20 @@ pub fn SceneSelector() -> impl IntoView {
         });
     });
 
+    // Delete arms on the first click and fires on the second, matching the
+    // zone delete flow; closing the menu disarms it.
+    let (confirm_delete, set_confirm_delete) = signal(false);
+    Effect::new(move |_| {
+        if !menu_open.get() {
+            set_confirm_delete.set(false);
+        }
+    });
     let delete = Callback::new(move |()| {
+        if !confirm_delete.get_untracked() {
+            set_confirm_delete.set(true);
+            return;
+        }
+        set_confirm_delete.set(false);
         set_menu_open.set(false);
         let Some(id) = active_id.get_untracked() else {
             return;
@@ -307,6 +320,7 @@ pub fn SceneSelector() -> impl IntoView {
                             <button
                                 type="button"
                                 class="dropdown-option flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-status-error/70 hover:text-status-error"
+                                class=("bg-status-error/10", move || confirm_delete.get())
                                 on:click=move |_| delete.run(())
                             >
                                 <Icon
@@ -315,7 +329,7 @@ pub fn SceneSelector() -> impl IntoView {
                                     height="12px"
                                     style="color: rgba(255, 99, 99, 0.7); flex-shrink: 0"
                                 />
-                                <span>"Delete"</span>
+                                <span>{move || if confirm_delete.get() { "Delete scene? Click again" } else { "Delete" }}</span>
                             </button>
                         </div>
                     </Show>

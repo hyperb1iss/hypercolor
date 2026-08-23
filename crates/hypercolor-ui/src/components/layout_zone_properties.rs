@@ -115,7 +115,10 @@ pub fn LayoutZoneProperties() -> impl IntoView {
             current
                 .as_ref()
                 .map(|l| (l.canvas_width.max(1) as f32, l.canvas_height.max(1) as f32))
-                .unwrap_or((320.0, 200.0))
+                .unwrap_or_else(|| {
+                    let (w, h) = crate::render_canvas::DEFAULT_RENDER_CANVAS;
+                    (w as f32, h as f32)
+                })
         })
     });
 
@@ -546,7 +549,7 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                         let (canvas_width, canvas_height) = layout.with_untracked(|current| {
                                             current.as_ref()
                                                 .map(|l| (l.canvas_width.max(1), l.canvas_height.max(1)))
-                                                .unwrap_or((320, 200))
+                                                .unwrap_or(crate::render_canvas::DEFAULT_RENDER_CANVAS)
                                         });
                                         let defaults = crate::layout_geometry::default_zone_visuals(
                                             &dname,

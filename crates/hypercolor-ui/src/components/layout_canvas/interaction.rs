@@ -79,7 +79,9 @@ impl DragRuntime {
                     let press = initial_positions
                         .iter()
                         .find(|(id, _)| id == primary_zone_id)
-                        .map(|(_, pos)| NormalizedPosition::new(pos.x + offset_x, pos.y + offset_y));
+                        .map(|(_, pos)| {
+                            NormalizedPosition::new(pos.x + offset_x, pos.y + offset_y)
+                        });
                     let travelled = press.is_some_and(|press| {
                         (mouse.x - press.x).abs() >= DRAG_THRESHOLD
                             || (mouse.y - press.y).abs() >= DRAG_THRESHOLD

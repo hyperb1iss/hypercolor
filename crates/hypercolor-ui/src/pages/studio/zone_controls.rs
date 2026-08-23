@@ -199,7 +199,14 @@ pub fn NewZoneControl() -> impl IntoView {
                                 creating.set(false);
                             }
                         }
-                        on:blur=move |_| creating.set(false)
+                        // Blur commits a typed name, like the scene and rename
+                        // fields; only Escape (or an empty field) discards.
+                        on:blur=move |ev| {
+                            let value = event_target_value(&ev);
+                            if value.trim().is_empty() || create_zone_from(studio, &value) {
+                                creating.set(false);
+                            }
+                        }
                     />
                 }
                     .into_any()

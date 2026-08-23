@@ -160,7 +160,11 @@ pub fn resize_zone_from_handle(
     (rotate_about(local_center, start_center, rotation), size)
 }
 
-fn rotate_about(point: NormalizedPosition, pivot: NormalizedPosition, rotation: f32) -> NormalizedPosition {
+fn rotate_about(
+    point: NormalizedPosition,
+    pivot: NormalizedPosition,
+    rotation: f32,
+) -> NormalizedPosition {
     if rotation.abs() < GRID_EPSILON {
         return point;
     }
@@ -485,7 +489,10 @@ fn clamp_strip_size(
 fn clamp_zone_center(position: NormalizedPosition, size: NormalizedPosition) -> NormalizedPosition {
     let (min_x, max_x) = zone_center_range(size.x);
     let (min_y, max_y) = zone_center_range(size.y);
-    NormalizedPosition::new(position.x.clamp(min_x, max_x), position.y.clamp(min_y, max_y))
+    NormalizedPosition::new(
+        position.x.clamp(min_x, max_x),
+        position.y.clamp(min_y, max_y),
+    )
 }
 
 /// The centers that keep a box of `extent` inside the canvas on one axis.

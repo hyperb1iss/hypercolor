@@ -500,7 +500,6 @@ pub(crate) fn ZoneLayoutProvider(
     let saved_layout = session.saved_layout;
     let set_saved_layout = session.set_saved_layout;
     let set_selected_zone_ids = session.set_selected_zone_ids;
-    let set_hidden_zones = session.set_hidden_zones;
     let set_compound_depth = session.set_compound_depth;
     let set_layout = session.write;
     let is_dirty = session.is_dirty;
@@ -570,7 +569,6 @@ pub(crate) fn ZoneLayoutProvider(
     Effect::new(move |_| {
         set_layout.reset_history();
         set_selected_zone_ids.set(std::collections::HashSet::new());
-        set_hidden_zones.set(std::collections::HashSet::new());
         set_compound_depth.set(crate::compound_selection::CompoundDepth::Root);
 
         let Some((zone_id, _)) = zone_signature.get() else {
@@ -623,6 +621,22 @@ pub(crate) fn ZoneLayoutProvider(
             set_layout.update_without_history(stamp);
             set_saved_layout.update(stamp);
         }
+    });
+
+    // Every unsaved edit previews on the hardware, not just canvas drags:
+    // a rotation, scale, align, or undo from the properties panel lands on
+    // the LEDs the same way a drag does. Only a dirty layout pushes, so a
+    // load, a revert, or a save never re-arms a preview.
+    Effect::new(move |previous: Option<Option<Vec<Output>>>| {
+        let snapshot = layout.with(|current| current.as_ref().map(|l| l.zones.clone()));
+        let changed = previous.is_some_and(|previous| previous != snapshot);
+        if changed
+            && is_dirty.get_untracked()
+            && let Some(current) = layout.get_untracked()
+        {
+            push_preview.run(current);
+        }
+        snapshot
     });
 
     let save = Callback::new(move |()| {

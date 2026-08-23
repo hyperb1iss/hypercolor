@@ -53,7 +53,7 @@ pub fn current_canvas_dimensions(layout: &Signal<Option<SpatialLayout>>) -> (u32
         current
             .as_ref()
             .map(|layout| (layout.canvas_width.max(1), layout.canvas_height.max(1)))
-            .unwrap_or((320, 200))
+            .unwrap_or(crate::render_canvas::DEFAULT_RENDER_CANVAS)
     })
 }
 

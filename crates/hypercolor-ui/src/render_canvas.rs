@@ -9,8 +9,8 @@
 use hypercolor_types::config::HypercolorConfig;
 use leptos::prelude::*;
 
-use crate::config_state::ConfigContext;
 use crate::app::WsContext;
+use crate::config_state::ConfigContext;
 
 /// The canvas extent the daemon ships when nothing else is known.
 pub const DEFAULT_RENDER_CANVAS: (u32, u32) = (640, 480);

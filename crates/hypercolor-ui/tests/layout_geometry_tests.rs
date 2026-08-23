@@ -578,7 +578,10 @@ fn resizing_a_rotated_box_keeps_the_opposite_corner_anchored() {
         let (sin, cos) = rotation.sin_cos();
         let dx = local.x - center.x;
         let dy = local.y - center.y;
-        NormalizedPosition::new(center.x + dx * cos - dy * sin, center.y + dx * sin + dy * cos)
+        NormalizedPosition::new(
+            center.x + dx * cos - dy * sin,
+            center.y + dx * sin + dy * cos,
+        )
     };
     let local_nw = NormalizedPosition::new(0.4, 0.45);
     let anchor_before = world(local_nw, start_center);
@@ -595,12 +598,19 @@ fn resizing_a_rotated_box_keeps_the_opposite_corner_anchored() {
         false,
         rotation,
     );
-    let new_local_nw = NormalizedPosition::new(position.x - size.x * 0.5, position.y - size.y * 0.5);
+    let new_local_nw =
+        NormalizedPosition::new(position.x - size.x * 0.5, position.y - size.y * 0.5);
     // The new rect's local NW corner, expressed relative to the new center,
     // rotated about the new center, must land on the old anchor.
     let anchor_after = world(new_local_nw, position);
     assert!((size.x - 0.3).abs() < 1e-3, "width {}", size.x);
     assert!((size.y - 0.15).abs() < 1e-3, "height {}", size.y);
-    assert!((anchor_after.x - anchor_before.x).abs() < 1e-3, "{anchor_after:?} vs {anchor_before:?}");
-    assert!((anchor_after.y - anchor_before.y).abs() < 1e-3, "{anchor_after:?} vs {anchor_before:?}");
+    assert!(
+        (anchor_after.x - anchor_before.x).abs() < 1e-3,
+        "{anchor_after:?} vs {anchor_before:?}"
+    );
+    assert!(
+        (anchor_after.y - anchor_before.y).abs() < 1e-3,
+        "{anchor_after:?} vs {anchor_before:?}"
+    );
 }

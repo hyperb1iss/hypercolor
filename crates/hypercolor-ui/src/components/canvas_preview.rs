@@ -852,7 +852,11 @@ pub fn CanvasPreview(
             frame_dimensions
                 .get()
                 .map(|(width, height)| format!("{width} / {height}"))
-                .unwrap_or_else(|| "320 / 200".to_string())
+                .unwrap_or_else(|| {
+                    crate::render_canvas::aspect_ratio_css(
+                        crate::render_canvas::DEFAULT_RENDER_CANVAS,
+                    )
+                })
         })
     });
     // `aspect-ratio` plus `width: 100%` lets the wrapper grow to fill the

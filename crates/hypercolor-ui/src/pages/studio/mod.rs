@@ -50,6 +50,11 @@ pub fn hidden_outputs_storage_key(scene_id: &str, zone_id: &str) -> String {
     format!("{scene_id}::{zone_id}")
 }
 
+/// The zone half of a [`hidden_outputs_storage_key`].
+pub fn zone_id_from_storage_key(key: &str) -> Option<String> {
+    key.split_once("::").map(|(_, zone)| zone.to_owned())
+}
+
 fn load_hidden_outputs() -> HashMap<String, HashSet<String>> {
     storage::get(HIDDEN_OUTPUTS_KEY)
         .and_then(|raw| serde_json::from_str(&raw).ok())
@@ -104,6 +109,9 @@ pub struct StudioContext {
     /// Header search term. Filters the zone tree's device rows by name,
     /// filling the header toolbar the way every other page's search does.
     pub device_search: Signal<String>,
+    /// The daemon's render canvas extent. Zone layouts carry placements
+    /// only, so anything fitting a footprint to the canvas reads this.
+    pub render_canvas_size: Memo<(u32, u32)>,
 }
 
 #[component]
@@ -265,6 +273,7 @@ pub fn StudioPage() -> impl IntoView {
     });
 
     let (device_search, set_device_search) = signal(String::new());
+    let render_canvas_size = crate::render_canvas::use_render_canvas_size();
 
     provide_context(StudioContext {
         selected_surface_id,
@@ -276,6 +285,7 @@ pub fn StudioPage() -> impl IntoView {
         hovered_output_ids,
         attachment_cache,
         device_search: device_search.into(),
+        render_canvas_size,
     });
 
     view! {

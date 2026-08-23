@@ -76,7 +76,10 @@ fn SurfaceStage() -> impl IntoView {
     // `hidden_outputs` signal nothing consumed — a no-op control).
     Effect::new(move |_| {
         let next = studio.selected_output_ids.get();
-        if editor.selected_zone_ids.with_untracked(|current| *current != next) {
+        if editor
+            .selected_zone_ids
+            .with_untracked(|current| *current != next)
+        {
             editor.set_selected_zone_ids.set(next);
         }
     });
@@ -85,7 +88,10 @@ fn SurfaceStage() -> impl IntoView {
     // on both directions are what stop the two effects ping-ponging.
     Effect::new(move |_| {
         let next = editor.selected_zone_ids.get();
-        if studio.selected_output_ids.with_untracked(|current| *current != next) {
+        if studio
+            .selected_output_ids
+            .with_untracked(|current| *current != next)
+        {
             studio.selected_output_ids.set(next);
         }
     });
@@ -580,7 +586,7 @@ fn UnassignedStage() -> impl IntoView {
                         </div>
                     </div>
                     <div class="mt-3 text-[12px] leading-5 text-fg-tertiary/65">
-                        "Assign these outputs to a zone with the zone-assignment panel below the canvas."
+                        "Use the + on each device card in the rail to add it to a zone."
                     </div>
                 </div>
             </div>
