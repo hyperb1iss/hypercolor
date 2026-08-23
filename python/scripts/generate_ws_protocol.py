@@ -7,6 +7,20 @@ import json
 from pathlib import Path
 from typing import Any
 
+#: Byte width of every fixed-size field type the manifest layouts use.
+#: A type absent here is variable-length and ends the fixed prefix.
+FIXED_FIELD_WIDTHS = {
+    "u8": 1,
+    "u16_le": 2,
+    "u32_le": 4,
+    "f32_le": 4,
+    "u64_le": 8,
+    "uuid": 16,
+}
+
+#: Manifest keys that declare a layout's fixed prefix length.
+PREFIX_LENGTH_KEYS = ("header_len", "prefix_len", "fixed_header_len")
+
 PYTHON_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = PYTHON_ROOT.parent
 MANIFEST_PATH = REPO_ROOT / "protocol" / "websocket-v1.json"
@@ -60,6 +74,8 @@ def render(manifest: dict[str, Any]) -> str:
     ]
     preview_formats = expect_dict(expect_dict(manifest["preview_frame"])["formats"])
     preview_transport = render_python_value(manifest["preview_transport"], indent=0)
+    frame_layouts = render_python_value(binary_frame_layouts(manifest), indent=0)
+    message_layouts = render_python_value(binary_message_layouts(binary_messages), indent=0)
 
     lines = [
         '"""Generated WebSocket protocol constants."""',
@@ -80,6 +96,12 @@ def render(manifest: dict[str, Any]) -> str:
         "",
         f"PREVIEW_TRANSPORT: Final = {preview_transport[0]}",
         *preview_transport[1:],
+        "",
+        f"BINARY_FRAME_LAYOUTS: Final = {frame_layouts[0]}",
+        *frame_layouts[1:],
+        "",
+        f"BINARY_MESSAGE_LAYOUTS: Final = {message_layouts[0]}",
+        *message_layouts[1:],
         "",
         f"JSON_PAYLOAD_CONTRACTS: Final = {json_payload_contracts[0]}",
         *json_payload_contracts[1:],
@@ -111,6 +133,75 @@ def render(manifest: dict[str, Any]) -> str:
         "",
     ]
     return "\n".join(lines)
+
+
+def binary_frame_layouts(manifest: dict[str, Any]) -> dict[str, Any]:
+    """Project every `*_frame` layout into offsets a parser can index by name.
+
+    Offsets stop at the first variable-length field, which is where the
+    manifest's own `header_len` / `prefix_len` / `fixed_header_len` stops
+    too; the two are cross-checked so a layout edit that forgets one of
+    them fails generation instead of shipping a silently wrong parser.
+    """
+    layouts: dict[str, Any] = {}
+    for name, definition in manifest.items():
+        if not name.endswith("_frame") or not isinstance(definition, dict):
+            continue
+        layouts[name] = frame_layout(name, definition)
+    return dict(sorted(layouts.items()))
+
+
+def binary_message_layouts(binary_messages: list[Any]) -> dict[str, Any]:
+    """Project the messages whose layout is spelled inline, not by reference."""
+    layouts: dict[str, Any] = {}
+    for message in binary_messages:
+        layout = message.get("layout")
+        if not isinstance(layout, list):
+            continue
+        offsets, types, span = fixed_prefix(layout)
+        layouts[str(message["name"])] = {
+            "prefix_len": span,
+            "offsets": offsets,
+            "types": types,
+        }
+    return dict(sorted(layouts.items()))
+
+
+def fixed_prefix(layout: list[Any]) -> tuple[dict[str, int], dict[str, str], int]:
+    offsets: dict[str, int] = {}
+    types: dict[str, str] = {}
+    offset = 0
+    for field in layout:
+        field_type, field_name = (str(part) for part in expect_list(field))
+        types[field_name] = field_type
+        offsets[field_name] = offset
+        width = FIXED_FIELD_WIDTHS.get(field_type)
+        if width is None:
+            break
+        offset += width
+    return offsets, types, offset
+
+
+def frame_layout(name: str, definition: dict[str, Any]) -> dict[str, Any]:
+    offsets, types, offset = fixed_prefix(expect_list(definition["layout"]))
+
+    declared_key = next((key for key in PREFIX_LENGTH_KEYS if key in definition), None)
+    if declared_key is None:
+        raise ValueError(f"{name} declares no fixed prefix length")
+    declared = int(definition[declared_key])
+    if declared != offset:
+        raise ValueError(
+            f"{name} declares {declared_key}={declared} but its fixed fields span {offset} bytes"
+        )
+
+    layout: dict[str, Any] = {
+        "prefix_len": declared,
+        "offsets": offsets,
+        "types": types,
+    }
+    if "formats" in definition:
+        layout["formats"] = expect_dict(definition["formats"])
+    return layout
 
 
 def render_python_value(value: Any, *, indent: int) -> list[str]:

@@ -20,6 +20,8 @@ from websockets.typing import Subprotocol
 
 from .constants import WS_SUBPROTOCOL
 from .ws_protocol import (
+    BINARY_FRAME_LAYOUTS,
+    BINARY_MESSAGE_LAYOUTS,
     BINARY_MESSAGE_TAGS,
     CANVAS_FORMAT_TAGS,
     PREVIEW_TOPIC_TAGS,
@@ -29,8 +31,40 @@ from .ws_protocol import (
 type JsonObject = dict[str, Any]
 type EventHandler = Callable[[Any], Any]
 
-_PREVIEW_CHUNK_HEADER_LEN = 55
-_PREVIEW_CANCEL_HEADER_LEN = 14
+#: `struct` codes for the fixed-width field types the generated layouts use.
+_FIELD_STRUCTS = {
+    "u8": "<B",
+    "u16_le": "<H",
+    "u32_le": "<I",
+    "f32_le": "<f",
+    "u64_le": "<Q",
+}
+
+
+def _frame_layout(name: str) -> Mapping[str, Any]:
+    """Return one generated binary frame layout."""
+    return BINARY_FRAME_LAYOUTS[name]
+
+
+def _message_layout(name: str) -> Mapping[str, Any]:
+    """Return one generated binary message layout."""
+    return BINARY_MESSAGE_LAYOUTS[name]
+
+
+def _field(payload: bytes | bytearray, layout: Mapping[str, Any], name: str) -> Any:
+    """Read one fixed-width field at the offset the protocol manifest gives it.
+
+    Frame offsets are generated from `protocol/websocket-v1.json`, so a
+    layout change moves the parser with it instead of silently shifting
+    every field past the edit.
+    """
+    return struct.unpack_from(
+        _FIELD_STRUCTS[layout["types"][name]], payload, layout["offsets"][name]
+    )[0]
+
+
+_PREVIEW_CHUNK_HEADER_LEN = int(_frame_layout("preview_chunk_frame")["prefix_len"])
+_PREVIEW_CANCEL_HEADER_LEN = int(_frame_layout("preview_cancel_frame")["prefix_len"])
 _PREVIEW_TRANSPORT_LIMITS = {
     "decoded": int(PREVIEW_TRANSPORT["max_publication_decoded_bytes"]),
     "encoded": int(PREVIEW_TRANSPORT["max_publication_encoded_bytes"]),
@@ -1268,11 +1302,13 @@ class HypercolorEventStream:
 
     @staticmethod
     def _parse_led_frame(payload: bytes) -> FrameData:
-        frame_number, timestamp_ms = struct.unpack_from("<II", payload, 1)
+        layout = _message_layout("led_frame")
+        frame_number = _field(payload, layout, "frame_number")
+        timestamp_ms = _field(payload, layout, "timestamp_ms")
         # The zone count is a u16: a u8 silently dropped every zone past
         # 255 on a large rig (spec 78 section 7.1).
-        zone_count = struct.unpack_from("<H", payload, 9)[0]
-        offset = 11
+        zone_count = _field(payload, layout, "zone_count")
+        offset = int(layout["prefix_len"])
         zones: list[FrameZoneData] = []
 
         for _ in range(zone_count):
@@ -1291,12 +1327,16 @@ class HypercolorEventStream:
 
     @staticmethod
     def _parse_spectrum(payload: bytes) -> SpectrumData:
-        timestamp_ms = struct.unpack_from("<I", payload, 1)[0]
-        bin_count = payload[5]
-        level, bass, mid, treble = struct.unpack_from("<ffff", payload, 6)
-        beat = bool(payload[22])
-        beat_confidence = struct.unpack_from("<f", payload, 23)[0]
-        bins_offset = 27
+        layout = _message_layout("spectrum")
+        timestamp_ms = _field(payload, layout, "timestamp_ms")
+        bin_count = _field(payload, layout, "bin_count")
+        level = _field(payload, layout, "level")
+        bass = _field(payload, layout, "bass")
+        mid = _field(payload, layout, "mid")
+        treble = _field(payload, layout, "treble")
+        beat = bool(_field(payload, layout, "beat"))
+        beat_confidence = _field(payload, layout, "beat_confidence")
+        bins_offset = int(layout["prefix_len"])
         bins = list(struct.unpack_from(f"<{bin_count}f", payload, bins_offset))
         return SpectrumData(
             timestamp_ms=timestamp_ms,
@@ -1313,21 +1353,21 @@ class HypercolorEventStream:
     @staticmethod
     def _parse_canvas(payload: bytes) -> CanvasData:
         wide = payload[0] == BINARY_MESSAGE_TAGS["wide_preview"]
-        header_len = 19 if wide else 14
+        layout = _frame_layout("wide_preview_frame" if wide else "preview_frame")
+        header_len = int(layout["prefix_len"])
         if len(payload) < header_len:
             msg = f"Canvas frame is shorter than its {header_len}-byte header"
             raise ValueError(msg)
-        metadata_offset = 1 if wide else 0
-        channel_tag = payload[metadata_offset]
+        # The compact form has no channel byte: its own tag names the stream.
+        channel_tag = _field(payload, layout, "channel_tag" if wide else "tag")
         if channel_tag not in PREVIEW_TOPIC_TAGS:
             msg = f"Unknown Hypercolor canvas channel: {channel_tag:#x}"
             raise ValueError(msg)
-        frame_number, timestamp_ms = struct.unpack_from("<II", payload, 1 + metadata_offset)
-        if wide:
-            width, height = struct.unpack_from("<II", payload, 10)
-        else:
-            width, height = struct.unpack_from("<HH", payload, 9)
-        format_byte = payload[header_len - 1]
+        frame_number = _field(payload, layout, "frame_number")
+        timestamp_ms = _field(payload, layout, "timestamp_ms")
+        width = _field(payload, layout, "width")
+        height = _field(payload, layout, "height")
+        format_byte = _field(payload, layout, "format")
         image_format = CANVAS_FORMAT_TAGS.get(format_byte)
         if image_format is None:
             msg = f"Unknown Hypercolor canvas format: {format_byte:#x}"
@@ -1351,18 +1391,20 @@ class HypercolorEventStream:
 
     @staticmethod
     def _parse_zone_preview(payload: bytes, *, wide: bool = False) -> ZonePreviewData:
-        header_len = 50 if wide else 46
+        layout = _frame_layout("wide_zone_preview_frame" if wide else "zone_preview_frame")
+        header_len = int(layout["prefix_len"])
         if len(payload) < header_len:
             msg = f"Zone preview frame is shorter than its {header_len}-byte header"
             raise ValueError(msg)
-        frame_number, timestamp_ms = struct.unpack_from("<II", payload, 1)
-        scene_id = uuid.UUID(bytes=payload[9:25])
-        zone_id = uuid.UUID(bytes=payload[25:41])
-        if wide:
-            width, height = struct.unpack_from("<II", payload, 41)
-        else:
-            width, height = struct.unpack_from("<HH", payload, 41)
-        format_byte = payload[header_len - 1]
+        frame_number = _field(payload, layout, "frame_number")
+        timestamp_ms = _field(payload, layout, "timestamp_ms")
+        scene_offset = int(layout["offsets"]["scene_id"])
+        zone_offset = int(layout["offsets"]["zone_id"])
+        scene_id = uuid.UUID(bytes=bytes(payload[scene_offset : scene_offset + 16]))
+        zone_id = uuid.UUID(bytes=bytes(payload[zone_offset : zone_offset + 16]))
+        width = _field(payload, layout, "width")
+        height = _field(payload, layout, "height")
+        format_byte = _field(payload, layout, "format")
         image_format = CANVAS_FORMAT_TAGS.get(format_byte)
         if image_format is None:
             msg = f"Unknown zone preview format: {format_byte:#x}"
@@ -1393,7 +1435,10 @@ class HypercolorEventStream:
         to the device it actually is.
         """
         frame = HypercolorEventStream._parse_identity_preview(
-            payload, subject="Display preview device id", wide=wide
+            payload,
+            subject="Display preview device id",
+            layout_name=("wide_display_preview_frame" if wide else "display_preview_frame"),
+            identity_field="device_id",
         )
         return DisplayPreviewData(
             device_id=frame.preview_id,
@@ -1412,7 +1457,12 @@ class HypercolorEventStream:
         wide: bool = False,
     ) -> InteractivePreviewData:
         return HypercolorEventStream._parse_identity_preview(
-            payload, subject="Interactive preview id", wide=wide
+            payload,
+            subject="Interactive preview id",
+            layout_name=(
+                "wide_interactive_preview_frame" if wide else "interactive_preview_frame"
+            ),
+            identity_field="preview_id",
         )
 
     @staticmethod
@@ -1420,7 +1470,8 @@ class HypercolorEventStream:
         payload: bytes,
         *,
         subject: str,
-        wide: bool = False,
+        layout_name: str,
+        identity_field: str,
     ) -> InteractivePreviewData:
         """Decode an identity-prefixed preview frame.
 
@@ -1428,11 +1479,12 @@ class HypercolorEventStream:
         widens both dimensions to u32 and pushes the identity out by four
         bytes; nothing else moves.
         """
-        prefix_len = 19 if wide else 15
+        layout = _frame_layout(layout_name)
+        prefix_len = int(layout["prefix_len"])
         if len(payload) < prefix_len:
             msg = f"{subject} frame is shorter than its prefix"
             raise ValueError(msg)
-        preview_id_len = payload[1]
+        preview_id_len = _field(payload, layout, f"{identity_field}_len")
         if preview_id_len == 0:
             msg = f"{subject} cannot be empty"
             raise ValueError(msg)
@@ -1443,12 +1495,11 @@ class HypercolorEventStream:
         if len(payload) < payload_offset:
             msg = f"{subject} frame has a truncated identity"
             raise ValueError(msg)
-        frame_number, timestamp_ms = struct.unpack_from("<II", payload, 2)
-        if wide:
-            width, height = struct.unpack_from("<II", payload, 10)
-        else:
-            width, height = struct.unpack_from("<HH", payload, 10)
-        format_byte = payload[prefix_len - 1]
+        frame_number = _field(payload, layout, "frame_number")
+        timestamp_ms = _field(payload, layout, "timestamp_ms")
+        width = _field(payload, layout, "width")
+        height = _field(payload, layout, "height")
+        format_byte = _field(payload, layout, "format")
         image_format = CANVAS_FORMAT_TAGS.get(format_byte)
         if image_format is None:
             msg = f"Unknown {subject} preview format: {format_byte:#x}"
@@ -1504,42 +1555,31 @@ class HypercolorEventStream:
     def _parse_screen_zones(payload: bytes | bytearray) -> ScreenZonesData:
         wide_source = payload[0] == BINARY_MESSAGE_TAGS["wide_screen_zones"]
         extended = payload[0] == BINARY_MESSAGE_TAGS["extended_screen_zones"]
-        header_len = 41 if extended else 23 if wide_source else 19
+        layout = _frame_layout(
+            "extended_screen_zones_frame"
+            if extended
+            else "wide_screen_zones_frame"
+            if wide_source
+            else "screen_zones_frame"
+        )
+        header_len = int(layout["prefix_len"])
         if len(payload) < header_len:
             msg = (
                 f"Screen zones frame is shorter than its {header_len}-byte header: "
                 f"{len(payload)} bytes"
             )
             raise ValueError(msg)
-        if extended:
-            (
-                frame_number,
-                timestamp_ms,
-                source_width,
-                source_height,
-                grid_cols,
-                grid_rows,
-                letterbox_top,
-                letterbox_bottom,
-                letterbox_left,
-                letterbox_right,
-            ) = struct.unpack_from("<10I", payload, 1)
-            payload_offset = header_len
-        elif wide_source:
-            frame_number, timestamp_ms = struct.unpack_from("<II", payload, 1)
-            source_width, source_height = struct.unpack_from("<II", payload, 9)
-            grid_cols = payload[17]
-            grid_rows = payload[18]
-            letterbox_top, letterbox_bottom, letterbox_left, letterbox_right = payload[19:23]
-            payload_offset = header_len
-        else:
-            frame_number, timestamp_ms = struct.unpack_from("<II", payload, 1)
-            source_width, source_height = struct.unpack_from("<HH", payload, 9)
-            grid_cols = payload[13]
-            grid_rows = payload[14]
-            letterbox_top, letterbox_bottom, letterbox_left, letterbox_right = payload[15:19]
-            payload_offset = header_len
-        rgb = bytes(memoryview(payload)[payload_offset:])
+        frame_number = _field(payload, layout, "frame_number")
+        timestamp_ms = _field(payload, layout, "timestamp_ms")
+        source_width = _field(payload, layout, "source_width")
+        source_height = _field(payload, layout, "source_height")
+        grid_cols = _field(payload, layout, "grid_cols")
+        grid_rows = _field(payload, layout, "grid_rows")
+        letterbox_top = _field(payload, layout, "letterbox_top")
+        letterbox_bottom = _field(payload, layout, "letterbox_bottom")
+        letterbox_left = _field(payload, layout, "letterbox_left")
+        letterbox_right = _field(payload, layout, "letterbox_right")
+        rgb = bytes(memoryview(payload)[header_len:])
         expected = grid_cols * grid_rows * 3
         if len(rgb) != expected:
             msg = f"Screen zones payload must be {expected} bytes, got {len(rgb)}"

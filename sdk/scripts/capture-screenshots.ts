@@ -11,6 +11,7 @@
  * tree as WebP at quality 0.92.
  */
 
+import { readFileSync } from 'node:fs'
 import { mkdir, readdir, readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 
@@ -102,7 +103,92 @@ interface FrameHeader {
     payload: Uint8Array
 }
 
-const CANVAS_HEADER_BYTE = 0x03
+// ── Protocol manifest ─────────────────────────────────────────────────────
+//
+// protocol/websocket-v1.json is the one definition of the binary frame
+// layouts. Reading the offsets from it means a layout change moves this
+// decoder with it instead of silently shifting every field past the edit.
+
+const PROTOCOL_MANIFEST_PATH = resolve(SDK_ROOT, '..', 'protocol', 'websocket-v1.json')
+
+const FIXED_FIELD_WIDTHS: Record<string, number> = {
+    f32_le: 4,
+    u8: 1,
+    u16_le: 2,
+    u32_le: 4,
+    u64_le: 8,
+    uuid: 16,
+}
+
+interface ManifestFrameLayout {
+    prefixLen: number
+    offsets: Record<string, number>
+    types: Record<string, string>
+}
+
+interface ProtocolManifest {
+    binary_messages: { name: string; tag: number; layout: string | [string, string][]; topic: string }[]
+    preview_frame: { formats: Record<string, number> }
+    [key: string]: unknown
+}
+
+function readManifest(): ProtocolManifest {
+    return JSON.parse(readFileSync(PROTOCOL_MANIFEST_PATH, 'utf8')) as ProtocolManifest
+}
+
+function frameLayout(manifest: ProtocolManifest, name: string): ManifestFrameLayout {
+    const definition = manifest[name] as { layout: [string, string][] } | undefined
+    if (!definition) throw new Error(`protocol manifest has no ${name} layout`)
+    const offsets: Record<string, number> = {}
+    const types: Record<string, string> = {}
+    let offset = 0
+    for (const [fieldType, fieldName] of definition.layout) {
+        types[fieldName] = fieldType
+        offsets[fieldName] = offset
+        const width = FIXED_FIELD_WIDTHS[fieldType]
+        if (width === undefined) break
+        offset += width
+    }
+    return { offsets, prefixLen: offset, types }
+}
+
+function readField(view: DataView, layout: ManifestFrameLayout, name: string): number {
+    const offset = layout.offsets[name]
+    const fieldType = layout.types[name]
+    if (offset === undefined || fieldType === undefined) {
+        throw new Error(`protocol layout has no field ${name}`)
+    }
+    switch (fieldType) {
+        case 'u8':
+            return view.getUint8(offset)
+        case 'u16_le':
+            return view.getUint16(offset, true)
+        case 'u32_le':
+            return view.getUint32(offset, true)
+        default:
+            throw new Error(`unsupported protocol field type ${fieldType}`)
+    }
+}
+
+const PROTOCOL = (() => {
+    const manifest = readManifest()
+    const compact = frameLayout(manifest, 'preview_frame')
+    const wide = frameLayout(manifest, 'wide_preview_frame')
+    const canvasTag = manifest.binary_messages.find((m) => m.name === 'canvas')?.tag
+    const wideTag = manifest.binary_messages.find((m) => m.layout === 'wide_preview_frame')?.tag
+    if (canvasTag === undefined) throw new Error('protocol manifest has no canvas message')
+    if (wideTag === undefined) throw new Error('protocol manifest has no wide preview message')
+    const formats = new Map<number, string>(
+        Object.entries(manifest.preview_frame.formats).map(([name, tag]) => [tag, name]),
+    )
+    const chunkTags = new Set(
+        manifest.binary_messages
+            .filter((m) => m.layout === 'preview_chunk_frame' || m.layout === 'preview_cancel_frame')
+            .map((m) => m.tag),
+    )
+    return { canvasTag, chunkTags, compact, formats, wide, wideTag }
+})()
+
 const MIN_LUMINANCE = 0.08
 const MIN_SATURATION = 0.15
 
@@ -269,18 +355,35 @@ async function stopEffect(daemon: string): Promise<void> {
 
 // ── WebSocket frame collection ────────────────────────────────────────────
 
+let warnedAboutChunkedFrames = false
+
 function parseCanvasFrame(buffer: ArrayBuffer): FrameHeader | null {
     const bytes = new Uint8Array(buffer)
-    if (bytes.length < 14) return null
-    if (bytes[0] !== CANVAS_HEADER_BYTE) return null
+    if (bytes.length === 0) return null
+    const tag = bytes[0] as number
+    if (PROTOCOL.chunkTags.has(tag)) {
+        // Chunked publications need the v2 reassembler, which this script does
+        // not carry. Say so once instead of leaving an empty capture run
+        // looking like the effect simply rendered nothing.
+        if (!warnedAboutChunkedFrames) {
+            warnedAboutChunkedFrames = true
+            process.stderr.write('  ! canvas frames arrived chunked and were skipped\n')
+        }
+        return null
+    }
+    const wide = tag === PROTOCOL.wideTag
+    if (!wide && tag !== PROTOCOL.canvasTag) return null
+    const layout = wide ? PROTOCOL.wide : PROTOCOL.compact
+    if (bytes.length < layout.prefixLen) return null
     const view = new DataView(buffer)
-    const width = view.getUint16(9, true)
-    const height = view.getUint16(11, true)
-    const formatByte = view.getUint8(13)
-    const format = formatByte === 1 ? 'rgba' : formatByte === 0 ? 'rgb' : null
-    if (!format) return null
+    // The compact form's own tag names the channel; the wide form carries it.
+    if (wide && readField(view, layout, 'channel_tag') !== PROTOCOL.canvasTag) return null
+    const width = readField(view, layout, 'width')
+    const height = readField(view, layout, 'height')
+    const format = PROTOCOL.formats.get(readField(view, layout, 'format'))
+    if (format !== 'rgb' && format !== 'rgba') return null
     if (width === 0 || height === 0) return null
-    const payload = bytes.subarray(14)
+    const payload = bytes.subarray(layout.prefixLen)
     const bytesPerPixel = format === 'rgba' ? 4 : 3
     if (payload.length !== width * height * bytesPerPixel) return null
     return { format, height, payload, width }
