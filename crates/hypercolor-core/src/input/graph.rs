@@ -13,15 +13,6 @@ use hypercolor_types::event::TimedInputEvent;
 /// Maximum events retained per source between consumer reads.
 pub const INPUT_EVENT_RING_CAPACITY: usize = 256;
 
-/// Typed routing origin for one interaction source publication.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum InteractionSourceOrigin {
-    /// Host keyboard and pointer capture.
-    Host,
-    /// Manager-owned compatibility aggregate over browser child slots.
-    BrowserCompatibilityAggregate,
-}
-
 /// Stable latest-value and event publication for one registered source.
 #[derive(Clone)]
 pub struct InputSourceSlot {
@@ -31,7 +22,6 @@ pub struct InputSourceSlot {
 struct InputSourceSlotInner {
     id: u64,
     kind: Option<SourceKind>,
-    interaction_origin: Option<InteractionSourceOrigin>,
     status: SourceStatusHandle,
     publication: InputPublicationSlot,
 }
@@ -116,17 +106,11 @@ pub struct InputPublicationRead {
 }
 
 impl InputSourceSlot {
-    pub(crate) fn new(
-        id: u64,
-        kind: Option<SourceKind>,
-        interaction_origin: Option<InteractionSourceOrigin>,
-        status: SourceStatusHandle,
-    ) -> Self {
+    pub(crate) fn new(id: u64, kind: Option<SourceKind>, status: SourceStatusHandle) -> Self {
         Self {
             inner: Arc::new(InputSourceSlotInner {
                 id,
                 kind,
-                interaction_origin,
                 status,
                 publication: InputPublicationSlot::new(INPUT_EVENT_RING_CAPACITY),
             }),
@@ -143,12 +127,6 @@ impl InputSourceSlot {
     #[must_use]
     pub fn kind(&self) -> Option<SourceKind> {
         self.inner.kind
-    }
-
-    /// Typed interaction origin, absent for non-interaction sources.
-    #[must_use]
-    pub fn interaction_origin(&self) -> Option<InteractionSourceOrigin> {
-        self.inner.interaction_origin
     }
 
     /// Health handle bound to the same source generation as this slot.

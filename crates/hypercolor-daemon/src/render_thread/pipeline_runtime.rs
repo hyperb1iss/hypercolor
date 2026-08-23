@@ -2346,7 +2346,7 @@ mod tests {
     use hypercolor_core::bus::HypercolorBus;
     use hypercolor_core::engine::FpsTier;
     use hypercolor_core::input::browser::{
-        BrowserConnectionIncarnation, BrowserInputChildKey, BrowserInputEdge, BrowserInputSource,
+        BrowserConnectionIncarnation, BrowserInputChildKey, BrowserInputEdge, BrowserInputHandle,
         BrowserPreviewId,
     };
     use hypercolor_core::input::screen::{
@@ -2731,9 +2731,7 @@ mod tests {
     fn authoritative_route_selects_host_exact_browser_and_merge_with_releases() {
         let mut manager = InputManager::new();
         manager.add_source(Box::new(FixedInteractionSource::new("KeyA", 7)));
-        let browser_source = BrowserInputSource::new();
-        let browser = browser_source.handle();
-        manager.add_source(Box::new(browser_source));
+        let browser = BrowserInputHandle::new();
         manager.start_all().expect("input sources should start");
         manager
             .set_interaction_capture_active(true)
@@ -2903,13 +2901,13 @@ mod tests {
     #[test]
     fn browser_transients_and_scroll_are_delivered_once_across_superseded_publications() {
         let mut manager = InputManager::new();
-        let browser_source = BrowserInputSource::new();
-        let browser = browser_source.handle();
-        manager.add_source(Box::new(browser_source));
-        manager.start_all().expect("browser source should start");
+        let browser = BrowserInputHandle::new();
+        manager
+            .start_all()
+            .expect("empty input manager should start");
         manager
             .set_interaction_capture_active(true)
-            .expect("browser demand should activate");
+            .expect("empty manager should accept browser-only demand");
         let preview = browser
             .attach(preview_key(7, "motion"))
             .expect("preview should attach");

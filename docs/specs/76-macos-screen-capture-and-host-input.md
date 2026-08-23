@@ -1713,7 +1713,9 @@ Every host follows one producer rule:
   `value << 16` in `Line120` inside `hypercolor-windows-input`, instead of
   dropping horizontal wheel data; and
 - browser injection accepts two-axis `Line120` or pixel Q16.16 values and uses
-  `None` phases when the sender supplies no lifecycle.
+  `None` phases when the sender supplies no lifecycle. Each connection-scoped
+  browser child publishes directly to its selected route; no manager-sampled
+  aggregate or fallback exists.
 
 The inbound `input_inject` wire uses this tagged edge:
 
@@ -2080,7 +2082,8 @@ Repository integration tests prove:
 - `PointerScroll` round-trips through serde and the schema-1 WebSocket envelope,
   maps into LightScript, and parses in the SDK without a synthesized shadow;
 - browser injection accepts and validates the two-axis Q16.16 `scroll` edge,
-  while the UI serializes the matching form;
+  while the UI serializes the matching form, and exact browser child routes
+  preserve held state, edges, and motion without an aggregate publication;
 - screen and interaction WebSocket privacy gates remain unchanged;
 - packaged, direct launchd, Homebrew, terminal, and broker restart remedies
   target only the recorded TCC owner;

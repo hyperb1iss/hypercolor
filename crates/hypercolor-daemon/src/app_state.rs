@@ -437,16 +437,14 @@ impl AppState {
         let device_metrics = Arc::new(ArcSwap::from_pointee(DeviceMetricsSnapshot::default()));
         let lifecycle_manager = Arc::new(Mutex::new(DeviceLifecycleManager::new()));
         let reconnect_tasks = Arc::new(StdMutex::new(HashMap::new()));
-        let browser_input_source = hypercolor_core::input::BrowserInputSource::new();
-        let browser_input = browser_input_source.handle();
+        let browser_input = hypercolor_core::input::BrowserInputHandle::new();
         let interaction_routing = InteractionRoutingControl::new(
             browser_input.registry(),
             1,
             config.input.daemon_route,
             config.input.preview_route,
         );
-        let mut standalone_input_manager = InputManager::new();
-        standalone_input_manager.add_source(Box::new(browser_input_source));
+        let standalone_input_manager = InputManager::new();
         let input_status = standalone_input_manager.source_status_registry();
         let screen_capacity_status = standalone_input_manager.screen_capacity_status_handle();
         let input_manager = Arc::new(Mutex::new(standalone_input_manager));

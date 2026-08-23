@@ -2105,8 +2105,8 @@ async fn config_set_audio_device_persists_without_live_rebuild_by_default() {
         let input_manager = state.input_manager.lock().await;
         assert_eq!(
             input_manager.source_count(),
-            1,
-            "only the always-registered browser injection source remains"
+            0,
+            "the direct browser registry stays outside the input manager"
         );
     }
 
@@ -2434,8 +2434,8 @@ async fn config_set_audio_device_rebuilds_live_input_manager_when_requested() {
         let input_manager = state.input_manager.lock().await;
         assert_eq!(
             input_manager.source_count(),
-            2,
-            "browser injection source plus the rebuilt audio source"
+            1,
+            "the rebuilt audio source is the only sampled source"
         );
         assert!(
             input_manager
@@ -2521,8 +2521,8 @@ async fn config_set_legacy_audio_alias_skips_live_rebuild_when_already_canonical
         let input_manager = state.input_manager.lock().await;
         assert_eq!(
             input_manager.source_count(),
-            1,
-            "only the always-registered browser injection source remains"
+            0,
+            "the direct browser registry stays outside the input manager"
         );
     }
 
@@ -2560,8 +2560,8 @@ async fn config_set_identical_audio_value_skips_live_rebuild() {
         let input_manager = state.input_manager.lock().await;
         assert_eq!(
             input_manager.source_count(),
-            1,
-            "only the always-registered browser injection source remains"
+            0,
+            "the direct browser registry stays outside the input manager"
         );
     }
 

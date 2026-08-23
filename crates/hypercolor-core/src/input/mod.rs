@@ -1,8 +1,8 @@
-//! Input sources — audio, screen capture, and future sensor inputs.
+//! Input sources: audio, screen capture, interaction, and sensors.
 //!
 //! This module defines the [`InputSource`] trait for pluggable data sources
-//! and the [`InputManager`] that orchestrates them. The render loop calls
-//! `sample_all()` each frame to collect fresh data from every active source.
+//! and the [`InputManager`] that orchestrates sampled sources. Browser previews
+//! publish directly through connection-scoped child slots in [`browser`].
 
 pub mod audio;
 pub mod browser;
@@ -26,13 +26,13 @@ pub use browser::{
     BrowserConnectionIncarnation, BrowserInputAttachment, BrowserInputChildKey,
     BrowserInputChildSlot, BrowserInputEdge, BrowserInputHandle, BrowserInputPublicationId,
     BrowserInputRegistryError, BrowserInputRegistryHandle, BrowserInputRegistrySnapshot,
-    BrowserInputSource, BrowserPreviewId,
+    BrowserPreviewId,
 };
 #[cfg(target_os = "linux")]
 pub use evdev::{DeviceOpenState, DeviceOpenStatus, EvdevHostInput};
 pub use graph::{
     INPUT_EVENT_RING_CAPACITY, InputEventRead, InputGraphHandle, InputGraphSnapshot,
-    InputPublicationRead, InputSourceSlot, InteractionSourceOrigin, InteractionTransientTotals,
+    InputPublicationRead, InputSourceSlot, InteractionTransientTotals,
 };
 pub use macos::{MacosHostInput, MacosInputFoldDiagnostics};
 #[cfg(feature = "macos-native-fixtures")]
@@ -385,9 +385,6 @@ impl ManagedInputSource {
         screen_publication_hub: Arc<screen::ScreenPublicationHub>,
     ) -> Self {
         let declared_kind = declared_source_kind(source.as_ref());
-        let interaction_origin = source
-            .is_interaction_source()
-            .then(|| source.interaction_source_origin());
         source.set_source_graph_generation(source_graph_generation);
         if source.is_screen_source() {
             source.set_screen_publication_hub(screen_publication_hub);
@@ -411,7 +408,7 @@ impl ManagedInputSource {
                 .expect("compatibility status exists for an uninstrumented source")
                 .handle()
         });
-        let slot = InputSourceSlot::new(slot_id, declared_kind, interaction_origin, status);
+        let slot = InputSourceSlot::new(slot_id, declared_kind, status);
         Self {
             source,
             slot,
@@ -1893,9 +1890,6 @@ impl InputManager {
     }
 
     /// Whether any registered source captures from host input hardware.
-    ///
-    /// Excludes the always-present browser injection source, so consent
-    /// config can tell whether host capture is actually wired up.
     #[must_use]
     pub fn has_host_capture_source(&self) -> bool {
         self.sources
@@ -1967,9 +1961,6 @@ impl InputManager {
     }
 
     /// Stop and remove only host hardware capture sources.
-    ///
-    /// Leaves the browser injection source in place so disabling host
-    /// consent never breaks browser-preview input.
     pub fn remove_host_capture_sources(&mut self) {
         if !self
             .sources

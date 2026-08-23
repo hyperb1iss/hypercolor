@@ -262,13 +262,11 @@ fn policies_select_exact_host_and_connection_scoped_browser_sources() {
     let host_id = SourceIncarnation::host_slot(7);
     let browser_a_id = SourceIncarnation::browser_child(7);
     let browser_b_id = SourceIncarnation::browser_child(8);
-    let compatibility_id = SourceIncarnation::compatibility_aggregate(7);
     assert_ne!(host_id, browser_a_id, "source namespaces must never alias");
 
     let host = FakeSlot::with_capacity(16);
     let browser_a = FakeSlot::with_capacity(16);
     let browser_b = FakeSlot::with_capacity(16);
-    let compatibility = FakeSlot::with_capacity(16);
     let sources = vec![
         source(
             host_id,
@@ -290,13 +288,6 @@ fn policies_select_exact_host_and_connection_scoped_browser_sources() {
             InteractionRouteSourceClass::Browser,
             1,
             &browser_b,
-        ),
-        source(
-            compatibility_id,
-            "browser:compatibility-aggregate",
-            InteractionRouteSourceClass::CompatibilityAggregate,
-            1,
-            &compatibility,
         ),
     ];
     let mut router = InteractionRouter::default();
@@ -336,14 +327,6 @@ fn policies_select_exact_host_and_connection_scoped_browser_sources() {
     browser_a.publish(1, &["a"], &[]);
     browser_b.push(key_event("b", "b", InputButtonState::Pressed, 3));
     browser_b.publish(1, &["b"], &[]);
-    compatibility.push(key_event(
-        "compatibility",
-        "leak",
-        InputButtonState::Pressed,
-        4,
-    ));
-    compatibility.publish(1, &["leak"], &[]);
-
     let host_result = router.resolve(
         host_consumer,
         request(InteractionRoutePolicy::Host, None),
@@ -391,24 +374,8 @@ fn policies_select_exact_host_and_connection_scoped_browser_sources() {
     assert_eq!(merged_result.diagnostics.selected.len(), 2);
     assert_eq!(
         merged_result.diagnostics.suppressed.as_ref(),
-        [
-            Arc::<str>::from("browser:b"),
-            Arc::<str>::from("browser:compatibility-aggregate")
-        ]
+        [Arc::<str>::from("browser:b")]
     );
-    for result in [
-        &host_result,
-        &preview_a_result,
-        &preview_b_result,
-        &merged_result,
-    ] {
-        assert!(
-            !event_keys(&result.interaction)
-                .iter()
-                .any(|(key, _)| *key == "leak"),
-            "compatibility aggregate must never be routable"
-        );
-    }
 }
 
 #[test]

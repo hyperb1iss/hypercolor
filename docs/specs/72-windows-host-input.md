@@ -659,8 +659,8 @@ runs on every platform; the evdev column runs under
 Linux accumulates a virtual cursor from relative counts because Wayland will
 not tell an unfocused client where the pointer is. Windows will. `MouseData`
 already carries `PointerMode::{Absolute, Virtual, None}` for exactly this. The
-browser-preview source already reports `Absolute` (`browser.rs:285`); the
-Windows backend is the first *host* source able to.
+browser child publication already reports `Absolute`; the Windows backend is
+the first *host* source able to.
 
 - **Position** comes from `GetCursorPos`, normalized against the virtual
   desktop rect → `PointerMode::Absolute`, sampled once per drain and delivered
@@ -718,38 +718,16 @@ a cursor move that changes JS-visible `x`/`y` could leave `generation`
 unchanged and be skipped by `is_dirty_against`. The Windows `HeldStateKey`
 includes the pixel coordinates.
 
-**Merge precedence has to change, and it is a pre-existing bug.**
-`traits.rs:91` keeps the pointer from the **first** interaction source whose
-`mode != None`, and `services.rs:577-585` registers host capture **before** the
-browser source. So host capture already shadows the browser preview's injected
-pointer on Linux — it is just invisible there, because a virtual cursor nobody
-cross-checks looks as good as any other number. On Windows the host pointer is
-the user's real desktop cursor, so previewing an interactive effect in the UI
-would track the desktop instead of the canvas, visibly and wrongly.
+**Merge precedence is explicit.** Host capture occupies interaction slots in
+the manager graph. Each browser preview publishes an exact connection-scoped
+child outside that graph, and the per-consumer router selects only the requested
+child. No manager-owned browser union participates in sampling or routing.
 
-The tempting fix — register the browser source first — is wrong, because
-registration order is load-bearing for more than the pointer. `merge_from`
-concatenates `recent_keys` in source order (`traits.rs:84`), so reordering
-sources also reorders the key-press stream an effect sees. Fixing pointer
-precedence by permuting an ordering that three other fields depend on trades a
-visible bug for a subtle one.
-
-So W3 encodes the priority where it belongs: **`merge_from` gains an explicit
-pointer-precedence rule**, and registration order stays exactly as it is.
-
-The rule needs something to key on, and `InteractionDiagnostics.host_capture`
-is not it: `pipeline_runtime.rs:173-186` merges bare `InteractionData` values
-pulled from `sample_and_drain_with_delta_secs`, with no source identity
-attached at the merge point. So the *producer* declares priority in the data:
-`MouseData` gains `injected: bool`, set true by `BrowserInputSource` and false
-by every host backend. `merge_from` then prefers an injected pointer over a
-host pointer, and falls back to first-non-`None` when both sides agree — which
-preserves today's behaviour everywhere else.
-
-This fixes Linux at the same time, and gets a regression test asserting three
-things: the browser pointer wins over the host pointer regardless of
-registration order, `recent_keys` concatenation order is unchanged, and held
-keys and buttons still union across both sources.
+Under an explicit `merge` policy, `MouseData::injected` carries pointer
+precedence through the selected-source fold. Browser child publications set it
+true and host backends set it false, so `merge_from` prefers the preview pointer
+without making source registration order load-bearing. The regression coverage
+also preserves event order and the union of held keys and buttons.
 
 ## D6. Buttons and wheel
 

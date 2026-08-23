@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use hypercolor_core::config::{BootConfig, ConfigManager};
-use hypercolor_core::input::{BrowserInputSource, InputManager};
+use hypercolor_core::input::{BrowserInputHandle, InputManager};
 use hypercolor_daemon::api;
 use hypercolor_daemon::app_state::AppState;
 use hypercolor_daemon::interaction_routing::InteractionRoutingControl;
@@ -188,16 +188,14 @@ impl DaemonHarness {
 
 fn install_browser_only_input(daemon_state: &mut DaemonState) {
     let config = daemon_state.config();
-    let browser_source = BrowserInputSource::new();
-    let browser_input = browser_source.handle();
+    let browser_input = BrowserInputHandle::new();
     let interaction_routing = InteractionRoutingControl::new(
         browser_input.registry(),
         1,
         config.input.daemon_route,
         config.input.preview_route,
     );
-    let mut input_manager = InputManager::new();
-    input_manager.add_source(Box::new(browser_source));
+    let input_manager = InputManager::new();
     let input_status = input_manager.source_status_registry();
 
     daemon_state.input_manager = Arc::new(Mutex::new(input_manager));

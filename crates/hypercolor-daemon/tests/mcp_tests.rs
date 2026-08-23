@@ -227,7 +227,7 @@ async fn mcp_status_surfaces_are_exact_while_input_manager_is_held() {
         .lock()
         .await
         .start_all()
-        .expect("browser input source should start");
+        .expect("input manager should start");
     let manager_guard = state.input_manager.lock().await;
 
     let status = tokio::time::timeout(
@@ -237,7 +237,7 @@ async fn mcp_status_surfaces_are_exact_while_input_manager_is_held() {
     .await
     .expect("get_status must not wait for the input manager")
     .expect("get_status should succeed");
-    assert_eq!(status["inputs"]["sources"][0]["source_id"], "browser_input");
+    assert_eq!(status["inputs"]["sources"], json!([]));
     assert!(status["inputs"]["source_graph_generation"].is_number());
 
     let resource = tokio::time::timeout(
@@ -248,10 +248,7 @@ async fn mcp_status_surfaces_are_exact_while_input_manager_is_held() {
     .expect("state resource must not wait for the input manager")
     .expect("state resource should exist");
     assert_eq!(status, resource, "tool and resource payloads must be exact");
-    assert_eq!(
-        resource["inputs"]["sources"][0]["source_id"],
-        "browser_input"
-    );
+    assert_eq!(resource["inputs"]["sources"], json!([]));
 
     let diagnose = tokio::time::timeout(
         Duration::from_secs(1),
@@ -262,15 +259,7 @@ async fn mcp_status_surfaces_are_exact_while_input_manager_is_held() {
     .expect("diagnose should succeed");
     drop(manager_guard);
 
-    assert_eq!(
-        diagnose["snapshot"]["input"]["sources"][0]["source_id"],
-        "browser_input"
-    );
-    assert!(
-        diagnose["checks"]
-            .as_array()
-            .is_some_and(|checks| { checks.iter().all(|check| check["name"] != "browser_input") })
-    );
+    assert_eq!(diagnose["snapshot"]["input"]["sources"], json!([]));
 }
 
 #[tokio::test]

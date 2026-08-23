@@ -15,9 +15,9 @@ use hypercolor_core::input::screen::{
     PixelExtent, ScreenExtentRequest, ScreenPublicationExecutorRequest, ScreenPublicationKind,
 };
 use hypercolor_core::input::{
-    BrowserConnectionIncarnation, BrowserInputChildKey, BrowserInputHandle, BrowserInputSource,
-    BrowserPreviewId, InputData, InputGraphHandle, InputManager, InputSource, SourceIssue,
-    SourceKind, SourceSessionSlot, SourceStatusHandle, SourceStatusReporter,
+    BrowserConnectionIncarnation, BrowserInputChildKey, BrowserInputHandle, BrowserPreviewId,
+    InputData, InputGraphHandle, InputManager, InputSource, SourceIssue, SourceKind,
+    SourceSessionSlot, SourceStatusHandle, SourceStatusReporter,
 };
 use hypercolor_core::scene::SceneManager;
 use hypercolor_leptos_ext::ws::registry::{
@@ -4087,21 +4087,15 @@ fn interactive_preview_ids_are_bounded_but_otherwise_opaque() {
     }
 }
 
-fn browser_preview_test_context() -> (
-    BrowserInputSource,
-    BrowserInputHandle,
-    InteractionRoutingControl,
-) {
-    let mut source = BrowserInputSource::new();
-    source.start().expect("browser source should start");
-    let handle = source.handle();
+fn browser_preview_test_context() -> (BrowserInputHandle, InteractionRoutingControl) {
+    let handle = BrowserInputHandle::new();
     let routing = InteractionRoutingControl::new(
         handle.registry(),
         1,
         InteractionRoutePolicy::Host,
         InteractionRoutePolicy::Browser,
     );
-    (source, handle, routing)
+    (handle, routing)
 }
 
 async fn browser_preview_test_executor(
@@ -4352,7 +4346,7 @@ async fn a_refused_preview_subscribe_restores_the_shape_it_had_already_resized()
     // one's lane before it learns that. The whole subscribe is abandoned,
     // so the resize has to be abandoned with it. The keys here are
     // deliberately ordered: "alpha" is resized before "omega" refuses.
-    let (_source, handle, routing) = browser_preview_test_context();
+    let (handle, routing) = browser_preview_test_context();
     let executor = browser_preview_test_executor(routing.clone()).await;
     let (mut session, outbound, frames) = browser_preview_session(handle, routing, executor);
 
@@ -4426,7 +4420,7 @@ async fn a_refused_preview_subscribe_restores_the_shape_it_had_already_resized()
 
 #[tokio::test]
 async fn interactive_preview_input_requires_same_connection_open_and_stays_isolated() {
-    let (_source, handle, routing) = browser_preview_test_context();
+    let (handle, routing) = browser_preview_test_context();
     let executor = browser_preview_test_executor(routing.clone()).await;
     let (mut first, _first_tx, _first_rx) =
         browser_preview_session(handle.clone(), routing.clone(), Arc::clone(&executor));
@@ -4513,7 +4507,7 @@ async fn interactive_preview_input_requires_same_connection_open_and_stays_isola
 
 #[tokio::test]
 async fn interactive_preview_authoritative_claims_conflict_and_release_idempotently() {
-    let (_source, handle, routing) = browser_preview_test_context();
+    let (handle, routing) = browser_preview_test_context();
     let executor = browser_preview_test_executor(routing.clone()).await;
     let (mut first, _first_tx, _first_rx) =
         browser_preview_session(handle.clone(), routing.clone(), Arc::clone(&executor));
@@ -4571,7 +4565,7 @@ async fn interactive_preview_authoritative_claims_conflict_and_release_idempoten
 
 #[tokio::test]
 async fn interactive_preview_aborted_future_closes_all_and_releases_once() {
-    let (_source, handle, routing) = browser_preview_test_context();
+    let (handle, routing) = browser_preview_test_context();
     let observed_routing = routing.clone();
     let observed_registry = handle.registry();
     let executor = browser_preview_test_executor(routing.clone()).await;
@@ -4608,7 +4602,7 @@ async fn interactive_preview_aborted_future_closes_all_and_releases_once() {
 
 #[tokio::test]
 async fn interactive_preview_explicit_close_and_drop_are_exactly_once() {
-    let (_source, handle, routing) = browser_preview_test_context();
+    let (handle, routing) = browser_preview_test_context();
     let executor = browser_preview_test_executor(routing.clone()).await;
     let (mut session, _outbound, _frames) =
         browser_preview_session(handle.clone(), routing.clone(), Arc::clone(&executor));
@@ -4641,7 +4635,7 @@ async fn interactive_preview_explicit_close_and_drop_are_exactly_once() {
 
 #[tokio::test]
 async fn interactive_preview_sender_rejects_queued_frame_from_closed_publication() {
-    let (_source, handle, routing) = browser_preview_test_context();
+    let (handle, routing) = browser_preview_test_context();
     let executor = browser_preview_test_executor(routing.clone()).await;
     let (mut session, outbound, _frames) = browser_preview_session(handle, routing, executor);
     subscribe_interactive_preview(&mut session, "same", interactive_preview_config())
@@ -4694,7 +4688,7 @@ async fn interactive_preview_sender_rejects_queued_frame_from_closed_publication
 
 #[tokio::test]
 async fn an_interactive_preview_subscription_streams_addressed_frames_from_a_real_lane() {
-    let (_source, handle, routing) = browser_preview_test_context();
+    let (handle, routing) = browser_preview_test_context();
     let executor = browser_preview_test_executor(routing.clone()).await;
     let (mut session, _outbound, frames) = browser_preview_session(handle, routing, executor);
     let mut config = interactive_preview_config();
@@ -4733,7 +4727,7 @@ async fn an_interactive_preview_subscription_streams_addressed_frames_from_a_rea
 
 #[tokio::test]
 async fn an_interactive_preview_subscribe_without_an_executor_creates_no_input_attachment() {
-    let (_source, handle, routing) = browser_preview_test_context();
+    let (handle, routing) = browser_preview_test_context();
     let registry = handle.registry();
     let (outbound, _frames) = preview_outbound_channel();
     let mut session = BrowserPreviewSession::new(handle, routing, None, outbound);

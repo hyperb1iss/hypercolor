@@ -2,8 +2,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use arc_swap::ArcSwap;
 use hypercolor_core::input::browser::{
-    BrowserInputAttachment, BrowserInputChildKey, BrowserInputPublicationId,
-    BrowserInputRegistryHandle, BrowserInputRegistrySnapshot, BrowserInputSource,
+    BrowserInputAttachment, BrowserInputChildKey, BrowserInputHandle, BrowserInputPublicationId,
+    BrowserInputRegistryHandle, BrowserInputRegistrySnapshot,
 };
 use hypercolor_core::input::routing::{InteractionRouteRequest, SourceIncarnation};
 use hypercolor_types::config::InteractionRoutePolicy;
@@ -46,9 +46,9 @@ pub struct InteractionRoutingControl {
 
 impl Default for InteractionRoutingControl {
     fn default() -> Self {
-        let source = BrowserInputSource::new();
+        let browser = BrowserInputHandle::new();
         Self::new(
-            source.handle().registry(),
+            browser.registry(),
             0,
             InteractionRoutePolicy::Host,
             InteractionRoutePolicy::Browser,

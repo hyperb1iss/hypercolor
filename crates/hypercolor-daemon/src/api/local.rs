@@ -215,7 +215,7 @@ mod tests {
     use axum::body::{Body, to_bytes};
     use axum::extract::ws::Message;
     use axum::http::{Request, StatusCode};
-    use hypercolor_core::input::{BrowserInputSource, InputGraphHandle, InputSource};
+    use hypercolor_core::input::{BrowserInputHandle, InputGraphHandle};
     use hypercolor_types::config::InteractionRoutePolicy;
 
     use super::{MAX_TRUSTED_LOCAL_WEBSOCKET_MESSAGE_BYTES, TrustedLocalApi, TrustedLocalApiError};
@@ -368,9 +368,7 @@ mod tests {
 
     #[tokio::test]
     async fn trusted_websocket_shutdown_joins_active_preview_cleanup() {
-        let mut source = BrowserInputSource::new();
-        source.start().expect("browser input source should start");
-        let browser_input = source.handle();
+        let browser_input = BrowserInputHandle::new();
         let interaction_routing = InteractionRoutingControl::new(
             browser_input.registry(),
             1,

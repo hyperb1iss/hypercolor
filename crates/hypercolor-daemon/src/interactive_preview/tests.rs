@@ -4,8 +4,8 @@ use std::time::{Duration, Instant};
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::effect::EffectRegistry;
 use hypercolor_core::input::{
-    BrowserConnectionIncarnation, BrowserInputAttachment, BrowserInputChildKey, BrowserInputSource,
-    BrowserPreviewId, InputManager, InputSource,
+    BrowserConnectionIncarnation, BrowserInputAttachment, BrowserInputChildKey, BrowserInputHandle,
+    BrowserPreviewId, InputManager,
 };
 use hypercolor_core::scene::{SceneManager, make_scene};
 use hypercolor_types::config::InteractionRoutePolicy;
@@ -32,8 +32,7 @@ use crate::render_thread::{InputPublicationConsumer, InputPublicationDemandHandl
 
 struct PreviewTestRig {
     executor: InteractivePreviewExecutor,
-    browser: BrowserInputSource,
-    browser_handle: hypercolor_core::input::BrowserInputHandle,
+    browser_handle: BrowserInputHandle,
     demands: InputPublicationDemandHandle,
 }
 
@@ -43,9 +42,7 @@ impl PreviewTestRig {
     }
 
     async fn with_capacity(color: [f32; 4], resource_capacity_bytes: u64) -> Self {
-        let mut browser = BrowserInputSource::new();
-        browser.start().expect("browser input should start");
-        let browser_handle = browser.handle();
+        let browser_handle = BrowserInputHandle::new();
         let routing = InteractionRoutingControl::new(
             browser_handle.registry(),
             1,
@@ -75,7 +72,6 @@ impl PreviewTestRig {
         .expect("preview executor should start");
         Self {
             executor,
-            browser,
             browser_handle,
             demands,
         }
@@ -302,7 +298,6 @@ async fn active_scene_publishes_real_requested_size_frames() {
     assert_eq!(&frame.surface.rgba_bytes()[..4], &[255, 0, 0, 255]);
     assert_eq!(frame.surface.rgba_len(), 4 * 3 * 4);
     drop(lane);
-    drop(rig.browser);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

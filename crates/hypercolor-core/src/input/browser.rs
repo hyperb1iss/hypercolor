@@ -15,22 +15,19 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use arc_swap::ArcSwap;
 
-use crate::input::graph::{
-    InputEventRead, InputPublicationRead, InputPublicationSlot, InteractionTransientTotals,
-};
+use crate::input::graph::{InputEventRead, InputPublicationRead, InputPublicationSlot};
 use crate::input::input_mono_ms;
 use crate::input::routing::{
     InteractionRouteRead, InteractionRouteSlot, InteractionRouteSnapshot,
     ReusedInteractionRouteRead,
 };
-use crate::input::traits::{InputData, InputSource, InteractionData, MotionAggregate, PointerMode};
-use crate::input::{InteractionSourceOrigin, SourceKind, SourceStatusHandle, SourceStatusReporter};
+use crate::input::traits::{InputData, InteractionData, MotionAggregate, PointerMode};
+use crate::input::{SourceKind, SourceStatusHandle, SourceStatusWriter};
 use hypercolor_types::event::{
     InputButtonState, InputEvent, PointerScrollPhase, PointerScrollUnit, TimedInputEvent,
 };
 
 const DEFAULT_EVENT_LIMIT: usize = 256;
-const SHARED_SAMPLE_POOL_CAPACITY: usize = 2;
 const MAX_HELD_KEYS_PER_SOURCE: usize = 128;
 const MAX_HELD_BUTTONS_PER_SOURCE: usize = 16;
 
@@ -151,9 +148,6 @@ impl BrowserInputPublicationId {
 /// Browser child registry operation failure.
 #[derive(Debug, thiserror::Error, Eq, PartialEq)]
 pub enum BrowserInputRegistryError {
-    /// The manager-owned browser source is not accepting input.
-    #[error("browser input source is not active")]
-    SourceInactive,
     /// The addressed child has already closed or been replaced.
     #[error("browser input child is closed")]
     ChildClosed,
@@ -227,7 +221,7 @@ impl BrowserInputChildSlot {
         &self.inner.source_id
     }
 
-    /// Manager-owned browser source health shared by this child.
+    /// Always-live browser registry health shared by this child.
     #[must_use]
     pub fn status(&self) -> &SourceStatusHandle {
         &self.inner.status
@@ -322,12 +316,8 @@ impl BrowserInputChildSlot {
         self.inner.active.store(false, Ordering::Release);
     }
 
-    fn retire(&self, publish_releases: bool) {
+    fn retire(&self) {
         let mut state = lock_or_recover(&self.inner.state);
-        let mut events = publish_releases.then(Vec::new).unwrap_or_default();
-        if publish_releases {
-            synthesize_releases(&state, &self.inner.source_id, &mut events);
-        }
         state.pressed_keys.clear();
         state.held_buttons.clear();
         state.cursor = None;
@@ -342,7 +332,7 @@ impl BrowserInputChildSlot {
                 MotionAggregate::default(),
                 0,
             )))),
-            &mut events,
+            &mut Vec::new(),
         );
     }
 }
@@ -395,7 +385,6 @@ impl InteractionRouteSlot for BrowserInputChildSlot {
 pub struct BrowserInputRegistrySnapshot {
     generation: u64,
     children: Arc<[BrowserInputChildSlot]>,
-    publication_ids: Arc<[BrowserInputPublicationId]>,
 }
 
 impl BrowserInputRegistrySnapshot {
@@ -419,10 +408,6 @@ impl BrowserInputRegistrySnapshot {
             .ok()
             .map(|index| &self.children[index])
     }
-
-    fn contains_publication(&self, publication_id: BrowserInputPublicationId) -> bool {
-        self.publication_ids.binary_search(&publication_id).is_ok()
-    }
 }
 
 #[derive(Clone)]
@@ -437,9 +422,7 @@ struct BrowserInputRegistryInner {
 }
 
 struct BrowserInputRegistryWriter {
-    accepting: bool,
     generation: u64,
-    session_generation: u64,
     next_publication_id: u64,
     event_capacity: usize,
     children: BTreeMap<BrowserInputChildKey, BrowserInputChildSlot>,
@@ -453,12 +436,9 @@ impl BrowserInputRegistryHandle {
                 latest: ArcSwap::from_pointee(BrowserInputRegistrySnapshot {
                     generation: 0,
                     children: Arc::from([]),
-                    publication_ids: Arc::from([]),
                 }),
                 writer: Mutex::new(BrowserInputRegistryWriter {
-                    accepting: false,
                     generation: 0,
-                    session_generation: 0,
                     next_publication_id: 1,
                     event_capacity: DEFAULT_EVENT_LIMIT,
                     children: BTreeMap::new(),
@@ -475,44 +455,12 @@ impl BrowserInputRegistryHandle {
         self.inner.latest.load_full()
     }
 
-    fn start(&self, event_capacity: usize) {
-        let mut writer = lock_or_recover(&self.inner.writer);
-        writer.session_generation = writer
-            .session_generation
-            .checked_add(1)
-            .expect("browser registry session generation exhausted");
-        writer.accepting = true;
-        writer.event_capacity = event_capacity;
-        publish_registry(&self.inner, &mut writer);
-    }
-
-    fn stop(&self) {
-        let mut writer = lock_or_recover(&self.inner.writer);
-        writer.accepting = false;
-        let children = std::mem::take(&mut writer.children);
-        let leases = std::mem::take(&mut writer.leases);
-        for child in children.values() {
-            child.deactivate();
-        }
-        for lease in leases.values() {
-            lease.closed.store(true, Ordering::Release);
-        }
-        publish_registry(&self.inner, &mut writer);
-        drop(writer);
-        for child in children.values() {
-            child.retire(false);
-        }
-    }
-
     fn attach(
         &self,
         key: BrowserInputChildKey,
         source_id: Arc<str>,
     ) -> Result<BrowserInputAttachment, BrowserInputRegistryError> {
         let mut writer = lock_or_recover(&self.inner.writer);
-        if !writer.accepting {
-            return Err(BrowserInputRegistryError::SourceInactive);
-        }
         if let Some(lease) = writer.leases.get(&key) {
             return lease
                 .try_acquire()
@@ -564,7 +512,7 @@ impl BrowserInputRegistryHandle {
         }
         publish_registry(&self.inner, &mut writer);
         drop(writer);
-        child.retire(false);
+        child.retire();
         true
     }
 }
@@ -690,13 +638,36 @@ impl Drop for BrowserInputAttachment {
     }
 }
 
-/// Cloneable control handle for the manager-owned browser registry.
+/// Cloneable control handle for the always-live browser registry.
 #[derive(Clone)]
 pub struct BrowserInputHandle {
     registry: BrowserInputRegistryHandle,
 }
 
 impl BrowserInputHandle {
+    /// Create an always-live browser input registry.
+    #[must_use]
+    pub fn new() -> Self {
+        let (status_writer, status) = SourceStatusWriter::new(
+            "browser_input",
+            SourceKind::Interaction,
+            "browser",
+            true,
+            true,
+            true,
+        );
+        let session = status_writer
+            .begin_session(1)
+            .expect("browser registry status generation starts at one");
+        assert!(
+            session.mark_event_driven_live_without_deadline(0),
+            "browser registry session is current"
+        );
+        Self {
+            registry: BrowserInputRegistryHandle::new(status),
+        }
+    }
+
     /// Attach or idempotently resolve one active connection-scoped preview.
     pub fn attach(
         &self,
@@ -717,384 +688,10 @@ impl BrowserInputHandle {
     }
 }
 
-/// Push-based interaction source fed by browser previews.
-pub struct BrowserInputSource {
-    name: String,
-    running: bool,
-    generation: u64,
-    last_registry_generation: u64,
-    registry: BrowserInputRegistryHandle,
-    aggregate_event_cursors: BTreeMap<BrowserInputPublicationId, u64>,
-    aggregate_transient_totals: BTreeMap<BrowserInputPublicationId, InteractionTransientTotals>,
-    pending_aggregate_transients: InteractionTransientTotals,
-    aggregate_latest_generations: BTreeMap<BrowserInputPublicationId, u64>,
-    shared_samples: Vec<Arc<InputData>>,
-    next_shared_sample: usize,
-    event_limit: usize,
-    status: SourceStatusReporter,
-}
-
-impl BrowserInputSource {
-    /// Create a browser injection source.
-    #[must_use]
-    pub fn new() -> Self {
-        let status = SourceStatusReporter::new(
-            "browser_input",
-            SourceKind::Interaction,
-            "browser",
-            true,
-            true,
-            true,
-        );
-        Self {
-            name: "BrowserInput".to_owned(),
-            running: false,
-            generation: 0,
-            last_registry_generation: 0,
-            registry: BrowserInputRegistryHandle::new(status.handle()),
-            aggregate_event_cursors: BTreeMap::new(),
-            aggregate_transient_totals: BTreeMap::new(),
-            pending_aggregate_transients: InteractionTransientTotals::default(),
-            aggregate_latest_generations: BTreeMap::new(),
-            shared_samples: (0..SHARED_SAMPLE_POOL_CAPACITY)
-                .map(|_| Arc::new(InputData::Interaction(InteractionData::default())))
-                .collect(),
-            next_shared_sample: 0,
-            event_limit: DEFAULT_EVENT_LIMIT,
-            status,
-        }
-    }
-
-    fn build_snapshot(&mut self) -> InteractionData {
-        let registry = self.registry.snapshot();
-        let (mut data, mut changed) = self.begin_aggregate_snapshot(&registry);
-        merge_transient_delta(
-            &mut data,
-            std::mem::take(&mut self.pending_aggregate_transients),
-        );
-        let mut no_events = Vec::new();
-
-        for child in registry.children() {
-            let publication = child.read_publication_since(u64::MAX, &mut no_events);
-            let transients =
-                self.consume_aggregate_transients(child, publication.interaction_transients);
-            self.merge_aggregate_sample(
-                &mut data,
-                &mut changed,
-                child,
-                publication.sample,
-                transients,
-            );
-        }
-
-        self.finish_aggregate_snapshot(data, changed)
-    }
-
-    fn drain_aggregate_events(&mut self) -> Vec<TimedInputEvent> {
-        let registry = self.registry.snapshot();
-        let mut events = Vec::new();
-        for child in registry.children() {
-            let (_, child_dropped) = self.read_aggregate_child(child, &mut events);
-            self.pending_aggregate_transients.dropped_events = self
-                .pending_aggregate_transients
-                .dropped_events
-                .saturating_add(u64::from(child_dropped));
-        }
-        self.retain_active_aggregate_cursors(&registry);
-        events
-    }
-
-    fn sample_and_drain_aggregate_into(
-        &mut self,
-        events: &mut Vec<TimedInputEvent>,
-    ) -> InteractionData {
-        let registry = self.registry.snapshot();
-        let (mut data, mut changed) = self.begin_aggregate_snapshot(&registry);
-        merge_transient_delta(
-            &mut data,
-            std::mem::take(&mut self.pending_aggregate_transients),
-        );
-        let first_event = events.len();
-        let mut dropped = 0_u32;
-
-        for child in registry.children() {
-            let (publication, child_dropped) = self.read_aggregate_child(child, events);
-            dropped = dropped.saturating_add(child_dropped);
-            let transients =
-                self.consume_aggregate_transients(child, publication.interaction_transients);
-            self.merge_aggregate_sample(
-                &mut data,
-                &mut changed,
-                child,
-                publication.sample,
-                transients,
-            );
-        }
-        self.retain_active_aggregate_cursors(&registry);
-        for event in &events[first_event..] {
-            match &event.event {
-                InputEvent::PointerScroll {
-                    delta_x_q16_16,
-                    delta_y_q16_16,
-                    unit,
-                    ..
-                } => data
-                    .batch
-                    .scroll
-                    .accumulate(*unit, *delta_x_q16_16, *delta_y_q16_16),
-                InputEvent::Key { .. }
-                | InputEvent::MouseButton { .. }
-                | InputEvent::MidiNote { .. }
-                | InputEvent::MidiControlChange { .. }
-                | InputEvent::MidiPitchBend { .. }
-                | InputEvent::MidiRealtime { .. } => {}
-            }
-        }
-        data.batch.dropped_events = data.batch.dropped_events.saturating_add(dropped);
-        self.finish_aggregate_snapshot(data, changed)
-    }
-
-    fn begin_aggregate_snapshot(
-        &mut self,
-        registry: &BrowserInputRegistrySnapshot,
-    ) -> (InteractionData, bool) {
-        let changed = registry.generation() != self.last_registry_generation;
-        self.last_registry_generation = registry.generation();
-        self.aggregate_latest_generations
-            .retain(|publication_id, _| registry.contains_publication(*publication_id));
-        (InteractionData::default(), changed)
-    }
-
-    fn merge_aggregate_sample(
-        &mut self,
-        data: &mut InteractionData,
-        changed: &mut bool,
-        child: &BrowserInputChildSlot,
-        sample: Option<Arc<InputData>>,
-        transients: InteractionTransientTotals,
-    ) {
-        let Some(sample) = sample else {
-            return;
-        };
-        let InputData::Interaction(snapshot) = sample.as_ref() else {
-            return;
-        };
-        let transient_is_new = self
-            .aggregate_latest_generations
-            .insert(child.publication_id(), snapshot.generation)
-            != Some(snapshot.generation);
-        *changed |= transient_is_new;
-        let mut contribution = snapshot.clone();
-        contribution.batch.motion = MotionAggregate::default();
-        contribution.batch.window_secs = 0.0;
-        contribution.batch.dropped_events = 0;
-        merge_transient_delta(&mut contribution, transients);
-        if !transient_is_new {
-            contribution.keyboard.recent_keys.clear();
-        }
-        data.merge_from(contribution);
-    }
-
-    fn finish_aggregate_snapshot(
-        &mut self,
-        mut data: InteractionData,
-        changed: bool,
-    ) -> InteractionData {
-        if changed {
-            self.generation = self
-                .generation
-                .checked_add(1)
-                .expect("browser aggregate generation exhausted");
-        }
-        data.generation = self.generation;
-        data
-    }
-
-    fn read_aggregate_child(
-        &mut self,
-        child: &BrowserInputChildSlot,
-        events: &mut Vec<TimedInputEvent>,
-    ) -> (InputPublicationRead, u32) {
-        let publication_id = child.publication_id();
-        let cursor = self
-            .aggregate_event_cursors
-            .get(&publication_id)
-            .copied()
-            .unwrap_or(0);
-        let publication = child.read_publication_since(cursor, events);
-        self.aggregate_event_cursors
-            .insert(publication_id, publication.events.next_cursor);
-        let dropped = u32::try_from(publication.events.dropped).unwrap_or(u32::MAX);
-        (publication, dropped)
-    }
-
-    fn consume_aggregate_transients(
-        &mut self,
-        child: &BrowserInputChildSlot,
-        current: InteractionTransientTotals,
-    ) -> InteractionTransientTotals {
-        let previous = self
-            .aggregate_transient_totals
-            .insert(child.publication_id(), current)
-            .unwrap_or_default();
-        current.delta_since(previous)
-    }
-
-    fn retain_active_aggregate_cursors(&mut self, registry: &BrowserInputRegistrySnapshot) {
-        self.aggregate_event_cursors
-            .retain(|publication_id, _| registry.contains_publication(*publication_id));
-        self.aggregate_transient_totals
-            .retain(|publication_id, _| registry.contains_publication(*publication_id));
-    }
-
-    fn retain_shared_sample(&mut self, snapshot: InteractionData) -> Arc<InputData> {
-        for offset in 0..self.shared_samples.len() {
-            let index = (self.next_shared_sample + offset) % self.shared_samples.len();
-            if Arc::strong_count(&self.shared_samples[index]) != 1 {
-                continue;
-            }
-            Arc::get_mut(&mut self.shared_samples[index])
-                .expect("exclusive shared browser sample")
-                .clone_from(&InputData::Interaction(snapshot));
-            self.next_shared_sample = (index + 1) % self.shared_samples.len();
-            return Arc::clone(&self.shared_samples[index]);
-        }
-
-        Arc::new(InputData::Interaction(snapshot))
-    }
-
-    /// A cloneable handle for WebSocket control and injection.
-    #[must_use]
-    pub fn handle(&self) -> BrowserInputHandle {
-        BrowserInputHandle {
-            registry: self.registry.clone(),
-        }
-    }
-}
-
-impl Default for BrowserInputSource {
+impl Default for BrowserInputHandle {
     fn default() -> Self {
         Self::new()
     }
-}
-
-impl InputSource for BrowserInputSource {
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn start(&mut self) -> anyhow::Result<()> {
-        if self.running {
-            return Ok(());
-        }
-        let status = self.status.begin_session()?;
-        self.registry.start(self.event_limit);
-        self.running = true;
-        if let Some(status) = status {
-            status.mark_event_driven_live_without_deadline(0);
-        }
-        Ok(())
-    }
-
-    fn stop(&mut self) {
-        self.running = false;
-        self.registry.stop();
-        self.aggregate_event_cursors.clear();
-        self.aggregate_transient_totals.clear();
-        self.pending_aggregate_transients = InteractionTransientTotals::default();
-        self.aggregate_latest_generations.clear();
-        self.status.stop();
-    }
-
-    fn sample(&mut self) -> anyhow::Result<InputData> {
-        if self.running {
-            Ok(InputData::Interaction(self.build_snapshot()))
-        } else {
-            Ok(InputData::None)
-        }
-    }
-
-    fn sample_and_drain_with_delta_secs(
-        &mut self,
-        _delta_secs: f32,
-    ) -> (anyhow::Result<InputData>, Vec<TimedInputEvent>) {
-        if !self.running {
-            return (Ok(InputData::None), Vec::new());
-        }
-        let mut events = Vec::new();
-        let snapshot = self.sample_and_drain_aggregate_into(&mut events);
-        (Ok(InputData::Interaction(snapshot)), events)
-    }
-
-    fn sample_shared_and_drain_into(
-        &mut self,
-        _delta_secs: f32,
-        events: &mut Vec<TimedInputEvent>,
-    ) -> anyhow::Result<Option<Arc<InputData>>> {
-        if !self.running {
-            return Ok(None);
-        }
-        let snapshot = self.sample_and_drain_aggregate_into(events);
-        Ok(Some(self.retain_shared_sample(snapshot)))
-    }
-
-    fn is_running(&self) -> bool {
-        self.running
-    }
-
-    fn source_status_handle(&self) -> Option<SourceStatusHandle> {
-        Some(self.status.handle())
-    }
-
-    fn source_status_reporter(&mut self) -> Option<&mut SourceStatusReporter> {
-        Some(&mut self.status)
-    }
-
-    fn is_interaction_source(&self) -> bool {
-        true
-    }
-
-    fn interaction_source_origin(&self) -> InteractionSourceOrigin {
-        InteractionSourceOrigin::BrowserCompatibilityAggregate
-    }
-
-    fn interaction_diagnostics(&self) -> Option<crate::input::InteractionDiagnostics> {
-        Some(crate::input::InteractionDiagnostics {
-            backend: "browser",
-            host_capture: false,
-            capturing: self.running,
-            devices_opened: 0,
-            devices_denied: 0,
-            degraded: None,
-        })
-    }
-
-    fn drain_events(&mut self) -> Vec<TimedInputEvent> {
-        if self.running {
-            self.drain_aggregate_events()
-        } else {
-            Vec::new()
-        }
-    }
-}
-
-fn merge_transient_delta(data: &mut InteractionData, transients: InteractionTransientTotals) {
-    data.batch.motion.dx += finite_f32(transients.dx);
-    data.batch.motion.dy += finite_f32(transients.dy);
-    data.batch.motion.distance += finite_f32(transients.distance);
-    data.batch.window_secs = data
-        .batch
-        .window_secs
-        .max(finite_f32(transients.window_secs));
-    data.batch.dropped_events = data
-        .batch
-        .dropped_events
-        .saturating_add(u32::try_from(transients.dropped_events).unwrap_or(u32::MAX))
-        .saturating_add(u32::try_from(transients.invalid_events).unwrap_or(u32::MAX));
-}
-
-fn finite_f32(value: f64) -> f32 {
-    value.clamp(f64::from(f32::MIN), f64::from(f32::MAX)) as f32
 }
 
 fn publish_registry(inner: &BrowserInputRegistryInner, writer: &mut BrowserInputRegistryWriter) {
@@ -1103,15 +700,9 @@ fn publish_registry(inner: &BrowserInputRegistryInner, writer: &mut BrowserInput
         .checked_add(1)
         .expect("browser registry generation exhausted");
     let children: Arc<[BrowserInputChildSlot]> = writer.children.values().cloned().collect();
-    let mut publication_ids = children
-        .iter()
-        .map(BrowserInputChildSlot::publication_id)
-        .collect::<Vec<_>>();
-    publication_ids.sort_unstable();
     inner.latest.store(Arc::new(BrowserInputRegistrySnapshot {
         generation: writer.generation,
         children,
-        publication_ids: publication_ids.into(),
     }));
 }
 
@@ -1260,34 +851,6 @@ fn build_child_snapshot(
     data
 }
 
-fn synthesize_releases(
-    state: &BrowserChildState,
-    source_id: &str,
-    events: &mut Vec<TimedInputEvent>,
-) {
-    let at_ms = input_mono_ms();
-    events.extend(state.pressed_keys.iter().cloned().map(|key| {
-        timed_event(
-            InputEvent::Key {
-                source_id: source_id.to_owned(),
-                key,
-                state: InputButtonState::Released,
-            },
-            at_ms,
-        )
-    }));
-    events.extend(state.held_buttons.iter().cloned().map(|button| {
-        timed_event(
-            InputEvent::MouseButton {
-                source_id: source_id.to_owned(),
-                button,
-                state: InputButtonState::Released,
-            },
-            at_ms,
-        )
-    }));
-}
-
 fn timed_event(event: InputEvent, at_ms: u64) -> TimedInputEvent {
     TimedInputEvent {
         event,
@@ -1314,340 +877,5 @@ fn lock_or_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     match mutex.lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn line_scroll(delta_line120: i64) -> BrowserInputEdge {
-        BrowserInputEdge::Scroll {
-            delta_x_q16_16: 0,
-            delta_y_q16_16: delta_line120 << 16,
-            unit: PointerScrollUnit::Line120,
-            phase: PointerScrollPhase::None,
-            momentum_phase: PointerScrollPhase::None,
-        }
-    }
-
-    fn attachment(
-        handle: &BrowserInputHandle,
-        connection: u64,
-        preview: &str,
-    ) -> BrowserInputAttachment {
-        handle
-            .attach(BrowserInputChildKey::new(
-                BrowserConnectionIncarnation::new(connection),
-                BrowserPreviewId::new(preview),
-            ))
-            .expect("preview should attach")
-    }
-
-    fn drain_snapshot(source: &mut BrowserInputSource) -> InteractionData {
-        match source.sample().expect("sample") {
-            InputData::Interaction(data) => data,
-            _ => panic!("expected interaction data"),
-        }
-    }
-
-    #[test]
-    fn injected_keys_fold_into_pressed_state_and_events() {
-        let mut source = BrowserInputSource::new();
-        source.start().expect("start");
-        let handle = source.handle();
-        let attachment = attachment(&handle, 1, "browser-1");
-
-        attachment
-            .inject([BrowserInputEdge::Key {
-                key: "a".into(),
-                state: InputButtonState::Pressed,
-            }])
-            .expect("press should inject");
-
-        let events = source.drain_events();
-        assert_eq!(events.len(), 1);
-        let data = drain_snapshot(&mut source);
-        assert_eq!(data.keyboard.pressed_keys, vec!["a".to_owned()]);
-        assert_eq!(data.keyboard.recent_keys, vec!["a".to_owned()]);
-
-        attachment
-            .inject([BrowserInputEdge::Key {
-                key: "a".into(),
-                state: InputButtonState::Released,
-            }])
-            .expect("release should inject");
-        let _ = source.drain_events();
-        let data = drain_snapshot(&mut source);
-        assert!(data.keyboard.pressed_keys.is_empty());
-    }
-
-    #[test]
-    fn per_connection_state_does_not_cross_contaminate() {
-        let mut source = BrowserInputSource::new();
-        source.start().expect("start");
-        let handle = source.handle();
-        let first = attachment(&handle, 1, "browser-a");
-        let second = attachment(&handle, 2, "browser-b");
-
-        first
-            .inject([BrowserInputEdge::Key {
-                key: "x".into(),
-                state: InputButtonState::Pressed,
-            }])
-            .expect("first press should inject");
-        second
-            .inject([BrowserInputEdge::Key {
-                key: "x".into(),
-                state: InputButtonState::Pressed,
-            }])
-            .expect("second press should inject");
-        assert!(first.close());
-
-        let _ = source.drain_events();
-        let data = drain_snapshot(&mut source);
-        assert_eq!(
-            data.keyboard.pressed_keys,
-            vec!["x".to_owned()],
-            "releasing one connection keeps the other's hold"
-        );
-    }
-
-    #[test]
-    fn pointer_move_sets_absolute_position_and_motion() {
-        let mut source = BrowserInputSource::new();
-        source.start().expect("start");
-        let handle = source.handle();
-        let attachment = attachment(&handle, 1, "browser-1");
-
-        attachment
-            .inject([
-                BrowserInputEdge::Move {
-                    norm_x: 0.2,
-                    norm_y: 0.2,
-                },
-                BrowserInputEdge::Move {
-                    norm_x: 0.5,
-                    norm_y: 0.6,
-                },
-            ])
-            .expect("motion should inject");
-
-        let data = drain_snapshot(&mut source);
-        assert_eq!(data.mouse.mode, PointerMode::Absolute);
-        assert!((data.mouse.norm_x - 0.5).abs() < 1e-6);
-        assert!(data.batch.motion.distance > 0.0);
-    }
-
-    #[test]
-    fn line_scroll_preserves_exact_units() {
-        let mut source = BrowserInputSource::new();
-        source.start().expect("start");
-        let handle = source.handle();
-        let attachment = attachment(&handle, 1, "browser-1");
-
-        attachment
-            .inject([line_scroll(-240)])
-            .expect("scroll should inject");
-        let events = source.drain_events();
-        assert_eq!(events.len(), 1);
-        assert!(matches!(
-            events[0].event,
-            InputEvent::PointerScroll {
-                delta_x_q16_16: 0,
-                delta_y_q16_16,
-                unit: PointerScrollUnit::Line120,
-                phase: PointerScrollPhase::None,
-                momentum_phase: PointerScrollPhase::None,
-                ..
-            } if delta_y_q16_16 == -240 * crate::input::Q16_16_SCALE
-        ));
-    }
-
-    #[test]
-    fn exact_pixel_scroll_preserves_axes_and_phases() {
-        let mut source = BrowserInputSource::new();
-        source.start().expect("start");
-        let handle = source.handle();
-        let attachment = attachment(&handle, 1, "browser-1");
-        attachment
-            .inject([BrowserInputEdge::Scroll {
-                delta_x_q16_16: 3 * crate::input::Q16_16_SCALE,
-                delta_y_q16_16: -7 * crate::input::Q16_16_SCALE,
-                unit: PointerScrollUnit::Pixels,
-                phase: PointerScrollPhase::Changed,
-                momentum_phase: PointerScrollPhase::Began,
-            }])
-            .expect("scroll should inject");
-
-        let (data, events) = source.sample_and_drain_with_delta_secs(0.0);
-        let InputData::Interaction(data) = data.expect("sample") else {
-            panic!("expected interaction data");
-        };
-        assert_eq!(events.len(), 1);
-        assert!(matches!(
-            events[0].event,
-            InputEvent::PointerScroll {
-                delta_x_q16_16,
-                delta_y_q16_16,
-                unit: PointerScrollUnit::Pixels,
-                phase: PointerScrollPhase::Changed,
-                momentum_phase: PointerScrollPhase::Began,
-                ..
-            } if delta_x_q16_16 == 3 * crate::input::Q16_16_SCALE
-                && delta_y_q16_16 == -7 * crate::input::Q16_16_SCALE
-        ));
-        assert_eq!(
-            data.batch.scroll.pixel_x_q16_16,
-            3 * crate::input::Q16_16_SCALE
-        );
-        assert_eq!(
-            data.batch.scroll.pixel_y_q16_16,
-            -7 * crate::input::Q16_16_SCALE
-        );
-    }
-
-    #[test]
-    fn bounded_rings_keep_newest_events_in_order_and_report_overflow() {
-        let mut source = BrowserInputSource::new();
-        source.event_limit = 4;
-        source.start().expect("start");
-        let handle = source.handle();
-        let attachment = attachment(&handle, 1, "browser-1");
-
-        attachment
-            .inject((0..10).map(line_scroll))
-            .expect("scroll burst should inject");
-
-        let (data, events) = source.sample_and_drain_with_delta_secs(0.0);
-        let InputData::Interaction(data) = data.expect("sample") else {
-            panic!("expected interaction data");
-        };
-        assert_eq!(events.len(), 4);
-        assert!(matches!(
-            events[0].event,
-            InputEvent::PointerScroll { delta_y_q16_16, .. }
-                if delta_y_q16_16 == 6 * crate::input::Q16_16_SCALE
-        ));
-        assert!(matches!(
-            events[3].event,
-            InputEvent::PointerScroll { delta_y_q16_16, .. }
-                if delta_y_q16_16 == 9 * crate::input::Q16_16_SCALE
-        ));
-        assert_eq!(data.batch.dropped_events, 6);
-
-        let next = drain_snapshot(&mut source);
-        assert_eq!(next.batch.dropped_events, 0);
-    }
-
-    #[test]
-    fn event_ring_reports_a_zero_limit_without_publishing() {
-        let mut source = BrowserInputSource::new();
-        source.event_limit = 0;
-        source.start().expect("start");
-        let handle = source.handle();
-        let attachment = attachment(&handle, 1, "browser-1");
-        attachment
-            .inject([line_scroll(120)])
-            .expect("scroll should inject");
-
-        let (data, events) = source.sample_and_drain_with_delta_secs(0.0);
-        let InputData::Interaction(data) = data.expect("sample") else {
-            panic!("expected interaction data");
-        };
-        assert!(events.is_empty());
-        assert_eq!(data.batch.dropped_events, 1);
-    }
-
-    #[test]
-    fn held_state_cardinality_is_bounded_per_source() {
-        let mut source = BrowserInputSource::new();
-        source.start().expect("start");
-        let handle = source.handle();
-        let attachment = attachment(&handle, 1, "browser-1");
-
-        attachment
-            .inject(
-                (0..=MAX_HELD_KEYS_PER_SOURCE).map(|index| BrowserInputEdge::Key {
-                    key: format!("key-{index}"),
-                    state: InputButtonState::Pressed,
-                }),
-            )
-            .expect("keys should inject");
-
-        let (data, events) = source.sample_and_drain_with_delta_secs(0.0);
-        let InputData::Interaction(data) = data.expect("sample") else {
-            panic!("expected interaction data");
-        };
-        assert_eq!(data.keyboard.pressed_keys.len(), MAX_HELD_KEYS_PER_SOURCE);
-        assert_eq!(data.keyboard.recent_keys.len(), MAX_HELD_KEYS_PER_SOURCE);
-        assert_eq!(events.len(), MAX_HELD_KEYS_PER_SOURCE);
-        assert_eq!(data.batch.dropped_events, 1);
-    }
-
-    #[test]
-    fn focus_beginning_on_repeat_establishes_held_state_without_a_recent_press() {
-        let mut source = BrowserInputSource::new();
-        source.start().expect("start");
-        let handle = source.handle();
-        let attachment = attachment(&handle, 1, "browser-1");
-
-        attachment
-            .inject([BrowserInputEdge::Key {
-                key: "a".into(),
-                state: InputButtonState::Repeated,
-            }])
-            .expect("repeat should inject");
-
-        let data = drain_snapshot(&mut source);
-        assert_eq!(data.keyboard.pressed_keys, vec!["a".to_owned()]);
-        assert!(data.keyboard.recent_keys.is_empty());
-        assert!(matches!(
-            &source.drain_events()[0].event,
-            InputEvent::Key {
-                key,
-                state: InputButtonState::Repeated,
-                ..
-            } if key == "a"
-        ));
-
-        assert!(attachment.close());
-        assert!(drain_snapshot(&mut source).keyboard.pressed_keys.is_empty());
-        assert!(source.drain_events().is_empty());
-    }
-
-    #[test]
-    fn stop_clears_all_state() {
-        let mut source = BrowserInputSource::new();
-        source.start().expect("start");
-        let handle = source.handle();
-        let original = attachment(&handle, 1, "browser-1");
-        original
-            .inject([BrowserInputEdge::Key {
-                key: "a".into(),
-                state: InputButtonState::Pressed,
-            }])
-            .expect("press should inject");
-        source.stop();
-        assert_eq!(
-            original.inject([BrowserInputEdge::Key {
-                key: "b".into(),
-                state: InputButtonState::Pressed,
-            }]),
-            Err(BrowserInputRegistryError::ChildClosed)
-        );
-        assert!(handle.registry().snapshot().children().is_empty());
-        assert!(source.drain_events().is_empty());
-        source.start().expect("restart");
-        let data = drain_snapshot(&mut source);
-        assert!(data.keyboard.pressed_keys.is_empty());
-        let replacement = attachment(&handle, 1, "browser-1");
-        replacement
-            .inject([BrowserInputEdge::Key {
-                key: "c".into(),
-                state: InputButtonState::Pressed,
-            }])
-            .expect("replacement press should inject");
-        assert_eq!(source.drain_events().len(), 1);
     }
 }

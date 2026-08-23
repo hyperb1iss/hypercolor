@@ -862,12 +862,9 @@ pub(crate) fn build_input_manager(
     if let Some(source) = build_interaction_source(&config.input) {
         input_manager.add_source(source);
     }
-    // Browser-preview injection is always registered: it has no hardware and
-    // no privacy surface (the user drives their own browser), and its edges
-    // only reach effects that declare input reactivity.
-    let browser_source = hypercolor_core::input::BrowserInputSource::new();
-    let browser_input = browser_source.handle();
-    input_manager.add_source(Box::new(browser_source));
+    // Browser-preview injection is an always-live direct publication registry.
+    // Its children stay outside the manager's sampled source graph.
+    let browser_input = hypercolor_core::input::BrowserInputHandle::new();
     input_manager.add_source(Box::new(hypercolor_core::input::MediaSource::new()));
     input_manager.add_source(Box::new(hypercolor_core::input::NetSource::new()));
 

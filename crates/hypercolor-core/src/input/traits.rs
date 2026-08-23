@@ -4,7 +4,6 @@
 //! into the effect pipeline. Each source produces [`InputData`] snapshots that
 //! the render loop consumes per frame.
 
-use super::graph::InteractionSourceOrigin;
 use super::status::{
     MacosCapabilityOwner, SourceStatusError, SourceStatusHandle, SourceStatusReporter,
 };
@@ -197,21 +196,16 @@ impl InteractionData {
 
     /// Fold another source's snapshot into this one.
     ///
-    /// Multiple interaction sources (host capture plus browser injection)
-    /// each produce a full snapshot per frame; the pipeline merges them so
-    /// no source's held state clobbers another's. Held keys and buttons
-    /// union, recent keys concatenate, motion sums, and generations add so
-    /// the combined counter advances whenever any source changes.
+    /// Every interaction source selected for one consumer contributes a full
+    /// snapshot. Held keys and buttons union, recent keys concatenate, motion
+    /// sums, and generations add so the combined counter advances whenever any
+    /// selected source changes.
     ///
     /// Pointer position takes an injected pointer over a host one, then falls
     /// back to the first source that actually has one (`mode != None`), so an
-    /// idle source never blanks an active pointer. The injected preference
-    /// exists because host capture registers before the browser source, and
-    /// first-wins alone would make previewing an interactive effect in the UI
-    /// track the desktop cursor instead of the canvas. Fixing that by
-    /// reordering registration would be worse: `recent_keys` concatenates in
-    /// source order right above, so permuting sources would reorder the key
-    /// stream an effect sees.
+    /// idle source never blanks an active pointer. The injected preference keeps
+    /// an explicitly merged preview route bound to its canvas pointer instead of
+    /// the host desktop cursor.
     pub fn merge_from(&mut self, other: InteractionData) {
         for key in other.keyboard.pressed_keys {
             if !self.keyboard.pressed_keys.contains(&key) {
@@ -383,9 +377,8 @@ pub struct MouseData {
     /// Whether this pointer was injected by a preview surface rather than read
     /// from host hardware.
     ///
-    /// The producer declares its own priority here because the merge point has
-    /// no source identity to key on: the render pipeline merges bare
-    /// [`InteractionData`] values pulled from `sample_and_drain_with_delta_secs`.
+    /// The producer declares its pointer priority here because the
+    /// selected-source fold merges bare [`InteractionData`] values.
     pub injected: bool,
 }
 
@@ -765,15 +758,6 @@ pub trait InputSource: Send {
         false
     }
 
-    /// Typed routing origin for an interaction source.
-    ///
-    /// The manager ignores this value unless [`Self::is_interaction_source`]
-    /// returns `true`. Third-party interaction sources capture host input unless
-    /// they explicitly declare a different aggregate origin.
-    fn interaction_source_origin(&self) -> InteractionSourceOrigin {
-        InteractionSourceOrigin::Host
-    }
-
     /// Health snapshot for interaction sources, for status and remediation UX.
     ///
     /// Non-interaction sources return `None`. Interaction sources report
@@ -787,9 +771,8 @@ pub trait InputSource: Send {
     /// Whether this source captures from host input hardware (evdev, OS
     /// event tap) rather than an injected feed like the browser preview.
     ///
-    /// Consent config only governs host capture; the browser source is
-    /// always registered and is not a host source, so live enable/disable
-    /// of host input must not add or remove it.
+    /// Consent config only governs host capture. Browser children publish
+    /// directly outside the sampled input-manager graph.
     fn is_host_capture_source(&self) -> bool {
         false
     }
