@@ -363,9 +363,15 @@ pub fn LayoutCanvas() -> impl IntoView {
                                         }
                                     });
                                 }
-                                CompoundDepth::Device { .. } => {
+                                CompoundDepth::Device { device_id } => {
+                                    // Stepping out keeps the device you were inside as
+                                    // the selection, mirroring the slot → device step.
                                     set_compound_depth.set(CompoundDepth::Root);
-                                    set_selected_zone_ids.set(std::collections::HashSet::new());
+                                    layout.with_untracked(|l| {
+                                        if let Some(l) = l.as_ref() {
+                                            set_selected_zone_ids.set(compound_selection::device_compound_ids(l, &device_id));
+                                        }
+                                    });
                                 }
                                 CompoundDepth::Root => {
                                     set_selected_zone_ids.set(std::collections::HashSet::new());
