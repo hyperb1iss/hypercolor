@@ -1226,20 +1226,32 @@ fn transport_label(transport: &str) -> Option<&'static str> {
 /// surface. The surface switch clears the selection, so the output is
 /// selected after it.
 fn select_output_in_zone(studio: StudioContext, zone_id: Option<&str>, output_id: String) {
-    if let Some(zone_id) = zone_id
-        && studio.selected_surface_id.get_untracked().as_deref() != Some(zone_id)
-    {
+    match zone_id {
+        Some(zone_id) => select_outputs_in_zone(studio, zone_id, HashSet::from([output_id])),
+        None => studio.selected_output_ids.set(HashSet::from([output_id])),
+    }
+}
+
+/// Select outputs on the canvas, bringing their zone onto the Stage first
+/// when it is not the current surface. The switch's effects (which clear
+/// the selection and reload the canvas) run after the calling handler, so
+/// the outputs land a frame later, and only if nothing newer claimed the
+/// selection in between.
+fn select_outputs_in_zone(studio: StudioContext, zone_id: &str, outputs: HashSet<String>) {
+    if studio.selected_surface_id.get_untracked().as_deref() != Some(zone_id) {
         studio.selected_surface_id.set(Some(zone_id.to_owned()));
-        // The switch's effects (which clear the selection and reload the
-        // canvas) run after this handler, so the output lands a frame later.
         request_animation_frame(move || {
-            studio
+            let untouched = studio
                 .selected_output_ids
-                .try_set(HashSet::from([output_id]));
+                .try_with_untracked(HashSet::is_empty)
+                .unwrap_or(false);
+            if untouched {
+                studio.selected_output_ids.try_set(outputs);
+            }
         });
         return;
     }
-    studio.selected_output_ids.set(HashSet::from([output_id]));
+    studio.selected_output_ids.set(outputs);
 }
 
 /// A hovered card or row can unmount without a `mouseleave` (collapse,

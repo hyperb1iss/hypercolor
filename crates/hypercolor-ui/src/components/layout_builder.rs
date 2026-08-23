@@ -606,10 +606,22 @@ pub(crate) fn ZoneLayoutProvider(
     // is not an edit: no history entry, no dirty flag.
     Effect::new(move |_| {
         let (canvas_width, canvas_height) = render_canvas_size.get();
+        // Circular zones are normalized against the pixel aspect, so a live
+        // extent change re-normalizes them for the new canvas too.
         let stamp = |layout: &mut Option<SpatialLayout>| {
             if let Some(layout) = layout.as_mut() {
                 layout.canvas_width = canvas_width;
                 layout.canvas_height = canvas_height;
+                let aspect = layout_geometry::canvas_pixel_aspect(canvas_width, canvas_height);
+                for zone in &mut layout.zones {
+                    zone.size = layout_geometry::normalize_zone_size_for_editor(
+                        zone.position,
+                        zone.size,
+                        &zone.topology,
+                        zone.shape.as_ref(),
+                        aspect,
+                    );
+                }
             }
         };
         let stale = layout.with_untracked(|current| {

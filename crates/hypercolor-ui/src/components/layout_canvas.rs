@@ -664,6 +664,15 @@ pub fn LayoutCanvas() -> impl IntoView {
                                             (ids, different)
                                         });
 
+                                        // prevent_default above also stops the browser moving
+                                        // focus; hand it to the viewport before any early return
+                                        // so Escape works after shift-clicks too.
+                                        let Some(viewport) = viewport_ref.try_get_untracked().flatten() else {
+                                            return;
+                                        };
+                                        let viewport_el: web_sys::HtmlElement = (*viewport).clone();
+                                        let _ = viewport_el.focus();
+
                                         let is_shift = ev.shift_key();
                                         if is_shift {
                                             // Shift+click: toggle compound in/out of selection (no
@@ -685,14 +694,6 @@ pub fn LayoutCanvas() -> impl IntoView {
                                         }
                                         set_selected_zone_ids.set(ids);
 
-                                        let Some(viewport) = viewport_ref.try_get_untracked().flatten() else {
-                                            return;
-                                        };
-                                        let viewport_el: web_sys::HtmlElement = (*viewport).clone();
-                                        // prevent_default above also stops the browser moving
-                                        // focus, so hand it to the viewport by hand: Escape and
-                                        // the nudge keys are bound there.
-                                        let _ = viewport_el.focus();
                                         let Some(mouse_norm) = pointer_to_normalized(
                                             &viewport_el,
                                             ev.client_x(),

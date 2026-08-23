@@ -202,13 +202,22 @@ pub fn LayoutZoneProperties() -> impl IntoView {
     // undo steps back over the whole drag. Keyboard nudges on a slider
     // still record per step, which is what a keyboard user expects.
     let slider_interaction = StoredValue::new(false);
-    let release = window_event_listener(leptos::ev::pointerup, move |_| {
+    let close_slider_interaction = move || {
         if slider_interaction.get_value() {
             slider_interaction.set_value(false);
             set_layout.finish_interaction();
         }
+    };
+    let release = window_event_listener(leptos::ev::pointerup, move |_| close_slider_interaction());
+    // A cancelled pointer (touch pan, window switch) never sends pointerup,
+    // so it must close the interaction too or history stays suspended.
+    let cancel = window_event_listener(leptos::ev::pointercancel, move |_| {
+        close_slider_interaction()
     });
-    on_cleanup(move || release.remove());
+    on_cleanup(move || {
+        release.remove();
+        cancel.remove();
+    });
 
     view! {
         <div
