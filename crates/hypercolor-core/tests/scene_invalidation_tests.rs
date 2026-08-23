@@ -45,7 +45,7 @@ fn sample_layout() -> SpatialLayout {
 }
 
 #[test]
-fn invalidate_active_render_groups_bumps_revision_without_mutating_groups() {
+fn invalidate_resolved_zones_bumps_revision_without_mutating_zones() {
     let mut manager = SceneManager::with_default();
     manager
         .upsert_primary_zone(
@@ -56,18 +56,18 @@ fn invalidate_active_render_groups_bumps_revision_without_mutating_groups() {
         )
         .expect("primary zone should be created");
 
-    let groups_before = manager.active_render_groups();
-    let revision_before = manager.active_render_groups_revision();
+    let zones_before = manager.resolved_zones();
+    let revision_before = manager.resolved_zones_revision();
 
-    manager.invalidate_active_render_groups();
+    manager.invalidate_resolved_zones();
 
     assert!(
-        manager.active_render_groups_revision() > revision_before,
+        manager.resolved_zones_revision() > revision_before,
         "invalidating active zones should advance the revision"
     );
     assert_eq!(
-        manager.active_render_groups().as_ref(),
-        groups_before.as_ref(),
+        manager.resolved_zones().as_ref(),
+        zones_before.as_ref(),
         "invalidating external dependencies should not rewrite the active zones"
     );
 }
@@ -82,18 +82,18 @@ fn effect_id_migration_rewrites_scene_and_overlay_and_fences_stale_layouts() {
     manager
         .upsert_primary_zone(&effect, HashMap::new(), None, sample_layout())
         .expect("primary zone should be created");
-    let mut overlay = manager.active_render_groups()[0].clone();
+    let mut overlay = manager.resolved_zones()[0].clone();
     overlay.display_target = Some(DisplayFaceTarget::new(DeviceId::new()));
     manager.set_default_display_zone(overlay);
-    let revision_before = manager.active_render_groups_revision();
+    let revision_before = manager.resolved_zones_revision();
 
     let migrated = manager.remap_effect_ids(&HashMap::from([(legacy_id, canonical_id)]));
 
     assert_eq!(migrated, 2);
-    assert!(manager.active_render_groups_revision() > revision_before);
+    assert!(manager.resolved_zones_revision() > revision_before);
     assert!(
         manager
-            .active_render_groups()
+            .resolved_zones()
             .iter()
             .flat_map(hypercolor_types::scene::Zone::effect_ids)
             .all(|effect_id| effect_id == canonical_id)

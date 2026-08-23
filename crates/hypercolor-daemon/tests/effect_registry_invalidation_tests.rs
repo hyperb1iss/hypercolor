@@ -89,7 +89,7 @@ fn sample_layout() -> SpatialLayout {
 }
 
 #[tokio::test]
-async fn install_effect_invalidates_active_render_group_revision() {
+async fn install_effect_invalidates_resolved_zone_revision() {
     let (state, _tempdir) = isolated_state_with_tempdir();
     let state = Arc::new(state);
     let app = api::build_router(Arc::clone(&state), None);
@@ -112,7 +112,7 @@ async fn install_effect_invalidates_active_render_group_revision() {
 
     let revision_before = {
         let scene_manager = state.scene_manager.snapshot().await;
-        scene_manager.active_render_groups_revision()
+        scene_manager.resolved_zones_revision()
     };
 
     let html = r#"<!DOCTYPE html>
@@ -141,17 +141,17 @@ async fn install_effect_invalidates_active_render_group_revision() {
 
     let revision_after = {
         let scene_manager = state.scene_manager.snapshot().await;
-        scene_manager.active_render_groups_revision()
+        scene_manager.resolved_zones_revision()
     };
 
     assert!(
         revision_after > revision_before,
-        "effect registry updates should invalidate active render-group caches"
+        "effect registry updates should invalidate resolved-zone caches"
     );
 }
 
 #[tokio::test]
-async fn rescan_effects_invalidates_active_render_group_revision() {
+async fn rescan_effects_invalidates_resolved_zone_revision() {
     let (state, tempdir) = isolated_state_with_tempdir();
     let state = Arc::new(state);
     let app = api::build_router(Arc::clone(&state), None);
@@ -174,7 +174,7 @@ async fn rescan_effects_invalidates_active_render_group_revision() {
 
     let revision_before = {
         let scene_manager = state.scene_manager.snapshot().await;
-        scene_manager.active_render_groups_revision()
+        scene_manager.resolved_zones_revision()
     };
 
     let user_effects_dir = tempdir.path().join("data/effects");
@@ -206,11 +206,11 @@ async fn rescan_effects_invalidates_active_render_group_revision() {
 
     let revision_after = {
         let scene_manager = state.scene_manager.snapshot().await;
-        scene_manager.active_render_groups_revision()
+        scene_manager.resolved_zones_revision()
     };
 
     assert!(
         revision_after > revision_before,
-        "manual rescans should invalidate active render-group caches"
+        "manual rescans should invalidate resolved-zone caches"
     );
 }

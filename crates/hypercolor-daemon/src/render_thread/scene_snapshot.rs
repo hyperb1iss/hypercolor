@@ -49,8 +49,8 @@ pub(crate) struct SceneRuntimeSnapshot {
     pub active_scene_id: Option<SceneId>,
     pub active_scene_name: Option<String>,
     pub active_transition: Option<SceneTransitionSnapshot>,
-    pub active_render_groups: Arc<[Zone]>,
-    pub active_render_groups_revision: u64,
+    pub resolved_zones: Arc<[Zone]>,
+    pub resolved_zones_revision: u64,
     pub zone_layout_preview_generation: u64,
     pub active_render_group_count: u32,
     pub active_display_group_target_fps: HashMap<ZoneId, u32>,
@@ -67,7 +67,7 @@ impl SceneRuntimeSnapshot {
 
     pub(crate) fn dependency_key(&self, dependency_generation: u64) -> SceneDependencyKey {
         scene_dependency_key(
-            self.active_render_groups_revision,
+            self.resolved_zones_revision,
             dependency_generation,
             self.device_registry_generation,
             self.zone_layout_preview_generation,
@@ -261,14 +261,14 @@ async fn snapshot_scene_runtime(
     transition_frame: Option<TransitionFrame>,
 ) -> SceneRuntimeSnapshot {
     let active_scene_id = plan.active_scene_id;
-    let mut active_render_groups = Arc::clone(&plan.zones);
-    let active_render_groups_revision = plan.zones_revision;
+    let mut resolved_zones = Arc::clone(&plan.zones);
+    let resolved_zones_revision = plan.zones_revision;
     let zone_layout_preview_generation = if let Some(scene_id) = active_scene_id {
         let (generation, overrides) = state
             .zone_layout_previews
             .scene_overrides_with_generation(scene_id)
             .await;
-        active_render_groups = apply_zone_layout_previews(active_render_groups, &overrides);
+        resolved_zones = apply_zone_layout_previews(resolved_zones, &overrides);
         generation
     } else {
         state.zone_layout_previews.generation()
@@ -280,8 +280,8 @@ async fn snapshot_scene_runtime(
         snapshot_display_group_target_metadata(
             &state.device_registry,
             scene_snapshot_cache,
-            active_render_groups_revision,
-            active_render_groups.as_ref(),
+            resolved_zones_revision,
+            resolved_zones.as_ref(),
             state.face_fps_cap,
         )
         .await;
@@ -290,7 +290,7 @@ async fn snapshot_scene_runtime(
         &active_display_group_output_routes,
     );
     let active_render_group_count = u32::try_from(
-        active_render_groups
+        resolved_zones
             .iter()
             .filter(|group| group_has_enabled_layer(group))
             .count(),
@@ -309,8 +309,8 @@ async fn snapshot_scene_runtime(
                 color_interpolation: transition.spec.color_interpolation.clone(),
             },
         ),
-        active_render_groups,
-        active_render_groups_revision,
+        resolved_zones,
+        resolved_zones_revision,
         zone_layout_preview_generation,
         active_render_group_count,
         active_display_group_target_fps,
@@ -322,15 +322,15 @@ async fn snapshot_scene_runtime(
 }
 
 pub(super) fn apply_zone_layout_previews(
-    active_render_groups: Arc<[Zone]>,
+    resolved_zones: Arc<[Zone]>,
     overrides: &HashMap<ZoneId, SpatialLayout>,
 ) -> Arc<[Zone]> {
     if overrides.is_empty() {
-        return active_render_groups;
+        return resolved_zones;
     }
 
     let mut changed = false;
-    let groups = active_render_groups
+    let groups = resolved_zones
         .iter()
         .cloned()
         .map(|mut group| {
@@ -347,7 +347,7 @@ pub(super) fn apply_zone_layout_previews(
     if changed {
         groups.into()
     } else {
-        active_render_groups
+        resolved_zones
     }
 }
 
@@ -364,14 +364,14 @@ fn combine_scene_dependency_generation(
 }
 
 pub(super) fn scene_dependency_key(
-    active_render_groups_revision: u64,
+    resolved_zones_revision: u64,
     registry_generation: u64,
     device_registry_generation: u64,
     zone_layout_preview_generation: u64,
     unassigned_behavior: &UnassignedBehavior,
 ) -> SceneDependencyKey {
     SceneDependencyKey::new(
-        active_render_groups_revision,
+        resolved_zones_revision,
         combine_scene_dependency_generation(
             registry_generation,
             device_registry_generation,
@@ -565,7 +565,7 @@ async fn current_effect_scene_snapshot(
     let mut media_input_active = false;
     let mut network_input_active = false;
 
-    for group in scene_runtime.active_render_groups.iter() {
+    for group in scene_runtime.resolved_zones.iter() {
         if !group.enabled {
             continue;
         }
@@ -1101,7 +1101,7 @@ mod tests {
         let plan = state.scene_plan.load();
         let snapshot = snapshot_scene_runtime(&state, &mut scene_snapshot_cache, &plan, None).await;
 
-        assert_eq!(snapshot.active_render_groups[0].layout, preview_layout);
+        assert_eq!(snapshot.resolved_zones[0].layout, preview_layout);
         assert_eq!(
             snapshot.zone_layout_preview_generation,
             state.zone_layout_previews.generation()
@@ -1118,8 +1118,8 @@ mod tests {
             active_scene_id: None,
             active_scene_name: None,
             active_transition: None,
-            active_render_groups: vec![sample_group(effect_id)].into(),
-            active_render_groups_revision: 7,
+            resolved_zones: vec![sample_group(effect_id)].into(),
+            resolved_zones_revision: 7,
             zone_layout_preview_generation: 0,
             active_render_group_count: 1,
             active_display_group_target_fps: HashMap::new(),
@@ -1174,8 +1174,8 @@ mod tests {
             active_scene_id: None,
             active_scene_name: None,
             active_transition: None,
-            active_render_groups: vec![group].into(),
-            active_render_groups_revision: 7,
+            resolved_zones: vec![group].into(),
+            resolved_zones_revision: 7,
             zone_layout_preview_generation: 0,
             active_render_group_count: 1,
             active_display_group_target_fps: HashMap::new(),
@@ -1208,8 +1208,8 @@ mod tests {
             active_scene_id: None,
             active_scene_name: None,
             active_transition: None,
-            active_render_groups: vec![sample_group(effect_id)].into(),
-            active_render_groups_revision: 7,
+            resolved_zones: vec![sample_group(effect_id)].into(),
+            resolved_zones_revision: 7,
             zone_layout_preview_generation: 0,
             active_render_group_count: 1,
             active_display_group_target_fps: HashMap::new(),
@@ -1245,8 +1245,8 @@ mod tests {
             active_scene_id: None,
             active_scene_name: None,
             active_transition: None,
-            active_render_groups: vec![sample_group(effect_id)].into(),
-            active_render_groups_revision: 7,
+            resolved_zones: vec![sample_group(effect_id)].into(),
+            resolved_zones_revision: 7,
             zone_layout_preview_generation: 0,
             active_render_group_count: 1,
             active_display_group_target_fps: HashMap::new(),
@@ -1275,8 +1275,8 @@ mod tests {
             active_scene_id: None,
             active_scene_name: None,
             active_transition: None,
-            active_render_groups: vec![sample_group(effect_id)].into(),
-            active_render_groups_revision: 7,
+            resolved_zones: vec![sample_group(effect_id)].into(),
+            resolved_zones_revision: 7,
             zone_layout_preview_generation: 0,
             active_render_group_count: 1,
             active_display_group_target_fps: HashMap::new(),

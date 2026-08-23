@@ -131,7 +131,7 @@ impl LayoutConvergence {
             .scenes()
             .snapshot()
             .await
-            .active_render_groups()
+            .resolved_zones()
             .iter()
             .flat_map(|group| group.layout.zones.iter())
             .any(|zone| candidate_ids.contains(&zone.device_id))

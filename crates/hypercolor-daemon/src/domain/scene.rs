@@ -583,7 +583,7 @@ impl SceneService {
     {
         let mut manager = self.0.manager.write().await;
         let source_is_current = manager.active_scene_id().copied() == expected_active_scene_id
-            && manager.active_render_groups_revision() == expected_active_zones_revision
+            && manager.resolved_zones_revision() == expected_active_zones_revision
             && spatial_engine.has_layout(expected_layout);
         if !source_is_current {
             return Err(LayoutTransactionRejection::Superseded);
@@ -1191,7 +1191,7 @@ impl SceneMutation {
     /// The resolved zones are derived state, so this bumps the
     /// render-zone revision without touching persisted scene content.
     pub fn invalidate_active_zones(&mut self) {
-        self.candidate.invalidate_active_render_groups();
+        self.candidate.invalidate_resolved_zones();
     }
 
     // ── Layer stacks ─────────────────────────────────────────────────

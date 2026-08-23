@@ -67,10 +67,10 @@ pub(crate) async fn service_scene_transactions(
                     spatial_engine,
                     expected_layout,
                     active_scene_id,
-                    source_active_render_groups_revision,
+                    source_resolved_zones_revision,
                     prepared_resize,
                     sampling_preparation,
-                    prepared_groups,
+                    prepared_zones,
                     prepared_projected_scene,
                     activation,
                     width,
@@ -84,11 +84,11 @@ pub(crate) async fn service_scene_transactions(
                         spatial_engine,
                         &expected_layout,
                         active_scene_id,
-                        source_active_render_groups_revision,
+                        source_resolved_zones_revision,
                         |spatial_engine| {
                             render
                                 .render_group_runtime
-                                .commit_reconcile(prepared_groups)
+                                .commit_reconcile(prepared_zones)
                                 .map_err(|error| LayoutTransactionRejection::PreparationFailed {
                                     message: error.to_string(),
                                 })?;
@@ -135,14 +135,13 @@ pub(crate) async fn service_scene_transactions(
                 let height = layout.canvas_height;
                 let needs_resize =
                     state.canvas_dims.width() != width || state.canvas_dims.height() != height;
-                let candidate_groups = transaction.active_render_groups();
+                let candidate_zones = transaction.resolved_zones();
                 let active_scene_id = transaction.active_scene_id();
-                let source_active_render_groups_revision =
-                    transaction.source_active_render_groups_revision();
-                let active_render_groups_revision = transaction.active_render_groups_revision();
+                let source_resolved_zones_revision = transaction.source_resolved_zones_revision();
+                let resolved_zones_revision = transaction.resolved_zones_revision();
                 let unassigned_behavior = transaction.unassigned_behavior().clone();
                 let preparation = async {
-                    let (zone_layout_preview_generation, candidate_groups) =
+                    let (zone_layout_preview_generation, candidate_zones) =
                         if let Some(scene_id) = active_scene_id {
                             let (generation, overrides) = state
                                 .zone_layout_previews
@@ -150,17 +149,17 @@ pub(crate) async fn service_scene_transactions(
                                 .await;
                             (
                                 generation,
-                                apply_zone_layout_previews(candidate_groups, &overrides),
+                                apply_zone_layout_previews(candidate_zones, &overrides),
                             )
                         } else {
-                            (state.zone_layout_previews.generation(), candidate_groups)
+                            (state.zone_layout_previews.generation(), candidate_zones)
                         };
                     let (display_target_fps, display_output_routes) =
                         snapshot_display_group_target_metadata(
                             &state.device_registry,
                             &mut scene.snapshot_cache,
-                            active_render_groups_revision,
-                            candidate_groups.as_ref(),
+                            resolved_zones_revision,
+                            candidate_zones.as_ref(),
                             state.face_fps_cap,
                         )
                         .await;
@@ -168,7 +167,7 @@ pub(crate) async fn service_scene_transactions(
                         display_descriptors_for_groups(&display_target_fps, &display_output_routes);
                     let registry = state.effect_registry.read().await;
                     let dependency_key = scene_dependency_key(
-                        active_render_groups_revision,
+                        resolved_zones_revision,
                         registry.generation(),
                         state.device_registry.generation(),
                         zone_layout_preview_generation,
@@ -191,10 +190,10 @@ pub(crate) async fn service_scene_transactions(
                             Some(render.prepare_spatial_sampling_plan(&spatial_engine)?),
                         )
                     };
-                    let mut prepared_groups = render
+                    let mut prepared_zones = render
                         .render_group_runtime
                         .prepare_reconcile_for_scene_dimensions(
-                            candidate_groups.as_ref(),
+                            candidate_zones.as_ref(),
                             active_scene_id,
                             dependency_key,
                             &registry,
@@ -210,10 +209,10 @@ pub(crate) async fn service_scene_transactions(
                     );
                     #[cfg(not(feature = "wgpu"))]
                     let gpu_projection_admitted = false;
-                    let (scene_width, scene_height) = prepared_groups.scene_dimensions();
+                    let (scene_width, scene_height) = prepared_zones.scene_dimensions();
                     let prepared_projected_scene =
                         render.sparkleflinger.prepare_projected_scene_resources(
-                            prepared_groups.projected_group_texture_requirements(),
+                            prepared_zones.projected_group_texture_requirements(),
                             gpu_projection_admitted,
                             scene_width,
                             scene_height,
@@ -227,7 +226,7 @@ pub(crate) async fn service_scene_transactions(
                     {
                         prepared_resize.prepare_scene_cpu_backing()?;
                     }
-                    prepared_groups.resolve_scene_backing(
+                    prepared_zones.resolve_scene_backing(
                         &render.render_group_runtime,
                         gpu_projection_admitted,
                         prepared_resize.is_some(),
@@ -235,7 +234,7 @@ pub(crate) async fn service_scene_transactions(
                     Ok::<_, anyhow::Error>((
                         prepared_resize,
                         sampling_preparation,
-                        prepared_groups,
+                        prepared_zones,
                         prepared_projected_scene,
                     ))
                 }
@@ -243,7 +242,7 @@ pub(crate) async fn service_scene_transactions(
                 let (
                     prepared_resize,
                     sampling_preparation,
-                    prepared_groups,
+                    prepared_zones,
                     prepared_projected_scene,
                 ) = match preparation {
                     Ok(prepared) => prepared,
@@ -266,10 +265,10 @@ pub(crate) async fn service_scene_transactions(
                     spatial_engine,
                     expected_layout,
                     active_scene_id,
-                    source_active_render_groups_revision,
+                    source_resolved_zones_revision,
                     prepared_resize,
                     sampling_preparation,
-                    prepared_groups,
+                    prepared_zones,
                     prepared_projected_scene,
                     activation: transaction.activation(),
                     width,
@@ -429,8 +428,8 @@ pub(crate) async fn execute_frame(
         let registry = state.effect_registry.read().await;
         Some(frame_loop.lighting_feed.lighting_for_frame(
             scene_snapshot.scene_runtime.active_scene_name.as_deref(),
-            scene_snapshot.scene_runtime.active_render_groups.as_ref(),
-            scene_snapshot.scene_runtime.active_render_groups_revision,
+            scene_snapshot.scene_runtime.resolved_zones.as_ref(),
+            scene_snapshot.scene_runtime.resolved_zones_revision,
             &registry,
         ))
     };
@@ -566,7 +565,7 @@ pub(crate) async fn execute_frame(
         let unassigned_output_plan = match unassigned_output_planner.plan(
             Arc::clone(&layout),
             &scene_snapshot.scene_runtime.unassigned_behavior,
-            scene_snapshot.scene_runtime.active_render_groups.as_ref(),
+            scene_snapshot.scene_runtime.resolved_zones.as_ref(),
             &render_stage.zone_canvases,
         ) {
             Ok(plan) => plan,
@@ -576,7 +575,7 @@ pub(crate) async fn execute_frame(
                     .plan(
                         Arc::clone(&layout),
                         &hypercolor_types::scene::UnassignedBehavior::Off,
-                        scene_snapshot.scene_runtime.active_render_groups.as_ref(),
+                        scene_snapshot.scene_runtime.resolved_zones.as_ref(),
                         &render_stage.zone_canvases,
                     )
                     .expect("black unassigned output does not construct a sampling plan")

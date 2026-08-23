@@ -132,7 +132,7 @@ struct AcceptedPublication {
     spatial_engine: SpatialEngine,
     expected_layout: SpatialLayout,
     active_scene_id: Option<hypercolor_types::scene::SceneId>,
-    source_active_render_groups_revision: u64,
+    source_resolved_zones_revision: u64,
 }
 
 fn accept_publication(transaction: super::PrepareLayoutTransaction) -> AcceptedPublication {
@@ -141,7 +141,7 @@ fn accept_publication(transaction: super::PrepareLayoutTransaction) -> AcceptedP
         spatial_engine: transaction.spatial_engine().clone(),
         expected_layout: transaction.expected_layout().clone(),
         active_scene_id: transaction.active_scene_id(),
-        source_active_render_groups_revision: transaction.source_active_render_groups_revision(),
+        source_resolved_zones_revision: transaction.source_resolved_zones_revision(),
     };
     transaction.accept();
     accepted
@@ -159,7 +159,7 @@ async fn publish_commit(
             accepted.spatial_engine,
             &accepted.expected_layout,
             accepted.active_scene_id,
-            accepted.source_active_render_groups_revision,
+            accepted.source_resolved_zones_revision,
             |_| Ok(()),
         )
         .await;
@@ -180,7 +180,7 @@ async fn renderer_rejection_does_not_publish_layout_authority() {
             SpatialEngine::try_new(candidate).expect("candidate layout should prepare"),
             &initial,
             scenes.active_scene_id().copied(),
-            scenes.active_render_groups_revision(),
+            scenes.resolved_zones_revision(),
             |_| {
                 Err(LayoutTransactionRejection::PreparationFailed {
                     message: "injected renderer rejection".into(),
@@ -196,9 +196,7 @@ async fn renderer_rejection_does_not_publish_layout_authority() {
     ));
     assert_eq!(spatial_engine.layout().id, initial.id);
     assert_eq!(
-        scene_manager.snapshot().await.active_render_groups()[0]
-            .layout
-            .id,
+        scene_manager.snapshot().await.resolved_zones()[0].layout.id,
         initial.id
     );
 }
@@ -355,7 +353,7 @@ async fn render_snapshot_reads_old_generation_while_activation_waits() {
     tokio::time::timeout(Duration::from_secs(1), async {
         let manager = scene_manager.snapshot().await;
         let authoritative = spatial_engine.snapshot();
-        assert_eq!(manager.active_render_groups()[0].layout.id, initial.id);
+        assert_eq!(manager.resolved_zones()[0].layout.id, initial.id);
         assert_eq!(authoritative.layout().id, initial.id);
     })
     .await
@@ -414,9 +412,7 @@ async fn newer_scene_state_supersedes_prepared_layout_before_publication() {
     ));
     assert_eq!(spatial_engine.snapshot().layout().as_ref(), &initial);
     assert_eq!(
-        scene_manager.snapshot().await.active_render_groups()[0]
-            .layout
-            .id,
+        scene_manager.snapshot().await.resolved_zones()[0].layout.id,
         initial.id
     );
 }
@@ -681,7 +677,7 @@ async fn admitted_persistence_failure_aborts_and_persists_fresh_rollback() {
         ["precommit", "rollback"]
     );
     assert_eq!(spatial_engine.snapshot().layout().as_ref(), &initial);
-    let manager_layout = scene_manager.snapshot().await.active_render_groups()[0]
+    let manager_layout = scene_manager.snapshot().await.resolved_zones()[0]
         .layout
         .clone();
     assert_eq!(manager_layout.id, initial.id);
@@ -739,9 +735,7 @@ async fn superseded_precommit_aborts_renderer_admission() {
     ));
     assert_eq!(spatial_engine.snapshot().layout().as_ref(), &initial);
     assert_eq!(
-        scene_manager.snapshot().await.active_render_groups()[0]
-            .layout
-            .id,
+        scene_manager.snapshot().await.resolved_zones()[0].layout.id,
         initial.id
     );
 }
@@ -808,9 +802,7 @@ async fn persistence_finishes_before_armed_renderer_publication() {
         .expect("armed candidate should commit");
     assert_eq!(spatial_engine.snapshot().layout().id, candidate.id);
     assert_eq!(
-        scene_manager.snapshot().await.active_render_groups()[0]
-            .layout
-            .id,
+        scene_manager.snapshot().await.resolved_zones()[0].layout.id,
         candidate.id
     );
 }
@@ -877,7 +869,7 @@ async fn renderer_shutdown_after_persistence_rolls_disk_back_to_live_generation(
             SpatialEngine::try_new(newer.clone()).expect("newer live layout should prepare"),
             &source_layout,
             scenes.active_scene_id().copied(),
-            scenes.active_render_groups_revision(),
+            scenes.resolved_zones_revision(),
             |_| Ok(()),
         )
         .await
@@ -896,9 +888,7 @@ async fn renderer_shutdown_after_persistence_rolls_disk_back_to_live_generation(
     );
     assert_eq!(spatial_engine.snapshot().layout().id, newer.id);
     assert_eq!(
-        scene_manager.snapshot().await.active_render_groups()[0]
-            .layout
-            .id,
+        scene_manager.snapshot().await.resolved_zones()[0].layout.id,
         newer.id
     );
 }

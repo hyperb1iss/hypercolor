@@ -138,10 +138,10 @@ pub struct SceneManager {
     activation_history: Vec<SceneId>,
 
     /// Cached active zones for cheap frame snapshot reads.
-    active_render_groups: Arc<[Zone]>,
+    resolved_zones: Arc<[Zone]>,
 
     /// Monotonic revision for the active render-zone cache.
-    active_render_groups_revision: u64,
+    resolved_zones_revision: u64,
 
     /// Runtime-only default face zones, keyed by display device. Merged
     /// into the active render zones whenever the active scene has no
@@ -159,8 +159,8 @@ impl SceneManager {
             transition_plan: None,
             transition_epoch: 0,
             activation_history: Vec::new(),
-            active_render_groups: Arc::default(),
-            active_render_groups_revision: 0,
+            resolved_zones: Arc::default(),
+            resolved_zones_revision: 0,
             default_display_zones: Vec::new(),
         }
     }
@@ -205,7 +205,7 @@ impl SceneManager {
         self.scenes.insert(default.id, default);
         self.priority_stack
             .push(SceneId::DEFAULT, ScenePriority::AMBIENT);
-        self.refresh_active_render_groups();
+        self.refresh_resolved_zones();
     }
 
     // ── CRUD ────────────────────────────────────────────────────────
@@ -254,7 +254,7 @@ impl SceneManager {
         let active_scene_id = self.active_scene_id().copied();
         self.scenes.insert(scene_id, scene);
         if active_scene_id == Some(scene_id) {
-            self.refresh_active_render_groups();
+            self.refresh_resolved_zones();
         }
         Ok(())
     }
@@ -273,7 +273,7 @@ impl SceneManager {
 
         self.priority_stack.remove(id);
         self.activation_history.retain(|sid| sid != id);
-        self.refresh_active_render_groups();
+        self.refresh_resolved_zones();
 
         Ok(scene)
     }
@@ -332,7 +332,7 @@ impl SceneManager {
             self.transition_plan = None;
         }
 
-        self.refresh_active_render_groups();
+        self.refresh_resolved_zones();
 
         Ok(())
     }
@@ -357,7 +357,7 @@ impl SceneManager {
             self.activation_history.retain(|sid| *sid != entry.scene_id);
         }
 
-        self.refresh_active_render_groups();
+        self.refresh_resolved_zones();
     }
 
     /// Get the currently active scene ID (top of the priority stack).
@@ -374,14 +374,14 @@ impl SceneManager {
 
     /// Get the cached active zones for cheap frame snapshots.
     #[must_use]
-    pub fn active_render_groups(&self) -> Arc<[Zone]> {
-        Arc::clone(&self.active_render_groups)
+    pub fn resolved_zones(&self) -> Arc<[Zone]> {
+        Arc::clone(&self.resolved_zones)
     }
 
     /// Monotonic revision of the cached active zones.
     #[must_use]
-    pub fn active_render_groups_revision(&self) -> u64 {
-        self.active_render_groups_revision
+    pub fn resolved_zones_revision(&self) -> u64 {
+        self.resolved_zones_revision
     }
 
     /// Capture one commit-stable authored plan for lock-free frame work.
@@ -392,8 +392,8 @@ impl SceneManager {
             active_scene_id: self.active_scene_id().copied(),
             active_scene_name: self.active_scene().map(|scene| scene.name.clone()),
             transition: self.transition_plan.clone(),
-            zones: self.active_render_groups(),
-            zones_revision: self.active_render_groups_revision,
+            zones: self.resolved_zones(),
+            zones_revision: self.resolved_zones_revision,
             unassigned_behavior: self
                 .active_scene()
                 .map(|scene| scene.unassigned_behavior.clone())
@@ -403,8 +403,8 @@ impl SceneManager {
 
     /// Invalidate caches derived from the active zones when an
     /// external dependency changes without mutating the scene graph itself.
-    pub fn invalidate_active_render_groups(&mut self) {
-        self.active_render_groups_revision = self.active_render_groups_revision.saturating_add(1);
+    pub fn invalidate_resolved_zones(&mut self) {
+        self.resolved_zones_revision = self.resolved_zones_revision.saturating_add(1);
     }
 
     /// Replace effect identities throughout authored and runtime-only scene state.
@@ -435,8 +435,8 @@ impl SceneManager {
                 migrated += zone_migrated;
             }
         }
-        self.refresh_active_render_groups();
-        self.invalidate_active_render_groups();
+        self.refresh_resolved_zones();
+        self.invalidate_resolved_zones();
         migrated
     }
 
@@ -545,7 +545,7 @@ impl SceneManager {
             bump_zones_revision(scene);
         }
 
-        self.refresh_active_render_groups();
+        self.refresh_resolved_zones();
         Ok(self
             .active_scene()
             .and_then(Scene::primary_zone)
@@ -598,7 +598,7 @@ impl SceneManager {
             scene.zones.push(zone);
         }
 
-        self.refresh_active_render_groups();
+        self.refresh_resolved_zones();
         Ok(self
             .active_scene()
             .and_then(|scene| scene.display_zone_for(device_id))
@@ -666,7 +666,7 @@ impl SceneManager {
 
         if structural_changed {
             bump_zones_revision(scene);
-            self.refresh_active_render_groups();
+            self.refresh_resolved_zones();
         }
 
         Ok(self
@@ -725,7 +725,7 @@ impl SceneManager {
 
         if structural_changed {
             bump_zones_revision(scene);
-            self.refresh_active_render_groups();
+            self.refresh_resolved_zones();
         }
 
         Ok(self
@@ -779,7 +779,7 @@ impl SceneManager {
         });
         bump_zones_revision(scene);
         if active_scene_id == Some(*scene_id) {
-            self.refresh_active_render_groups();
+            self.refresh_resolved_zones();
         }
         Ok(id)
     }
@@ -808,7 +808,7 @@ impl SceneManager {
         scene.zones.remove(index);
         bump_zones_revision(scene);
         if active_scene_id == Some(*scene_id) {
-            self.refresh_active_render_groups();
+            self.refresh_resolved_zones();
         }
         Ok(())
     }
@@ -862,7 +862,7 @@ impl SceneManager {
         }
         let zone = zone.clone();
         if active_scene_id == Some(*scene_id) {
-            self.refresh_active_render_groups();
+            self.refresh_resolved_zones();
         }
         Ok(zone)
     }
@@ -921,7 +921,7 @@ impl SceneManager {
 
         bump_zones_revision(scene);
         if active_scene_id == Some(*scene_id) {
-            self.refresh_active_render_groups();
+            self.refresh_resolved_zones();
         }
         Ok(())
     }
@@ -950,7 +950,7 @@ impl SceneManager {
         }
         bump_zones_revision(scene);
         if active_scene_id == Some(*scene_id) {
-            self.refresh_active_render_groups();
+            self.refresh_resolved_zones();
         }
         Ok(())
     }
@@ -980,8 +980,8 @@ impl SceneManager {
         bump_zones_revision(scene);
         let behavior = scene.unassigned_behavior.clone();
         if active_scene_id == Some(*scene_id) {
-            self.refresh_active_render_groups();
-            self.invalidate_active_render_groups();
+            self.refresh_resolved_zones();
+            self.invalidate_resolved_zones();
         }
         Ok(behavior)
     }
@@ -1082,7 +1082,7 @@ impl SceneManager {
         // unchanged and no other zone is touched.
         bump_zones_revision(scene);
         if active_scene_id == Some(*scene_id) {
-            self.refresh_active_render_groups();
+            self.refresh_resolved_zones();
         }
         Ok(updated)
     }
@@ -1106,7 +1106,7 @@ impl SceneManager {
             next_target.opacity = 1.0;
         }
         zone.display_target = Some(next_target);
-        self.refresh_active_render_groups();
+        self.refresh_resolved_zones();
         self.active_scene()
             .and_then(|active| active.zones.iter().find(|zone| zone.id == zone_id))
     }
@@ -1302,7 +1302,7 @@ impl SceneManager {
                 .iter()
                 .any(|(removed_scene_id, _)| *removed_scene_id == scene_id)
         }) {
-            self.refresh_active_render_groups();
+            self.refresh_resolved_zones();
         }
 
         removed_groups
@@ -1327,7 +1327,7 @@ impl SceneManager {
         };
         controls.extend(updates);
         zone.controls_version = zone.controls_version.saturating_add(1);
-        self.refresh_active_render_groups();
+        self.refresh_resolved_zones();
         self.active_scene()
             .and_then(|active| active.zones.iter().find(|zone| zone.id == zone_id))
     }
@@ -1371,7 +1371,7 @@ impl SceneManager {
         zone.enabled = true;
         // Keep compatibility observers aligned with the source replacement.
         zone.controls_version = zone.controls_version.saturating_add(1);
-        self.refresh_active_render_groups();
+        self.refresh_resolved_zones();
         self.active_scene()
             .and_then(|scene| scene.zones.iter().find(|zone| zone.id == zone_id))
             .ok_or_else(|| anyhow::anyhow!("zone vanished after effect apply"))
@@ -1386,7 +1386,7 @@ impl SceneManager {
         }
         // Keep the internal generation aligned with the cleared source.
         zone.controls_version = zone.controls_version.saturating_add(1);
-        self.refresh_active_render_groups();
+        self.refresh_resolved_zones();
         self.active_scene()
             .and_then(|active| active.zones.iter().find(|zone| zone.id == zone_id))
     }
@@ -1421,7 +1421,7 @@ impl SceneManager {
         }
         if changed {
             bump_zones_revision(scene);
-            self.refresh_active_render_groups();
+            self.refresh_resolved_zones();
         }
         changed
     }
@@ -1429,26 +1429,23 @@ impl SceneManager {
     /// Build the active render zones that would result from synchronizing the
     /// primary layout, without changing scene state.
     #[must_use]
-    pub fn active_render_groups_for_primary_layout(
-        &self,
-        layout: &SpatialLayout,
-    ) -> (Arc<[Zone]>, u64) {
+    pub fn resolved_zones_for_primary_layout(&self, layout: &SpatialLayout) -> (Arc<[Zone]>, u64) {
         let Some(scene) = self.active_scene() else {
             return (
-                Arc::clone(&self.active_render_groups),
-                self.active_render_groups_revision,
+                Arc::clone(&self.resolved_zones),
+                self.resolved_zones_revision,
             );
         };
         if scene_has_custom_led_zones(scene) {
             return (
-                Arc::clone(&self.active_render_groups),
-                self.active_render_groups_revision,
+                Arc::clone(&self.resolved_zones),
+                self.resolved_zones_revision,
             );
         }
 
         let mut changed = false;
         let zones = self
-            .active_render_groups
+            .resolved_zones
             .iter()
             .cloned()
             .map(|mut zone| {
@@ -1463,14 +1460,11 @@ impl SceneManager {
             })
             .collect::<Vec<_>>();
         if changed {
-            (
-                zones.into(),
-                self.active_render_groups_revision.saturating_add(1),
-            )
+            (zones.into(), self.resolved_zones_revision.saturating_add(1))
         } else {
             (
-                Arc::clone(&self.active_render_groups),
-                self.active_render_groups_revision,
+                Arc::clone(&self.resolved_zones),
+                self.resolved_zones_revision,
             )
         }
     }
@@ -1514,7 +1508,7 @@ impl SceneManager {
         let new_version = zone.layers_version;
 
         if active_scene_id == Some(scene_id) {
-            self.refresh_active_render_groups();
+            self.refresh_resolved_zones();
         }
         let current = self
             .scenes
@@ -1524,13 +1518,13 @@ impl SceneManager {
         Ok((current, new_version))
     }
 
-    fn refresh_active_render_groups(&mut self) {
-        let mut next_groups: Vec<Zone> = self
+    fn refresh_resolved_zones(&mut self) {
+        let mut next_zones: Vec<Zone> = self
             .active_scene()
             .map(|scene| scene.zones.clone())
             .unwrap_or_default();
-        for default_group in &self.default_display_zones {
-            let Some(target) = default_group.display_target.as_ref() else {
+        for default_zone in &self.default_display_zones {
+            let Some(target) = default_zone.display_target.as_ref() else {
                 continue;
             };
             let covered = self
@@ -1538,15 +1532,14 @@ impl SceneManager {
                 .and_then(|scene| scene.display_zone_for(target.device_id))
                 .is_some_and(|zone| effect_layer_id(zone).is_some());
             if !covered {
-                next_groups.push(default_group.clone());
+                next_zones.push(default_zone.clone());
             }
         }
-        let next_groups = Arc::<[Zone]>::from(next_groups);
-        if self.active_render_groups.as_ref() != next_groups.as_ref() {
-            self.active_render_groups_revision =
-                self.active_render_groups_revision.saturating_add(1);
+        let next_zones = Arc::<[Zone]>::from(next_zones);
+        if self.resolved_zones.as_ref() != next_zones.as_ref() {
+            self.resolved_zones_revision = self.resolved_zones_revision.saturating_add(1);
         }
-        self.active_render_groups = next_groups;
+        self.resolved_zones = next_zones;
     }
 
     // ── Default display faces (spec 69 §3.6) ───────────────────────
@@ -1571,7 +1564,7 @@ impl SceneManager {
         } else {
             self.default_display_zones.push(zone);
         }
-        self.refresh_active_render_groups();
+        self.refresh_resolved_zones();
     }
 
     /// Remove the runtime default face zone for a display, if present.
@@ -1584,7 +1577,7 @@ impl SceneManager {
         });
         let removed = self.default_display_zones.len() != before;
         if removed {
-            self.refresh_active_render_groups();
+            self.refresh_resolved_zones();
         }
         removed
     }

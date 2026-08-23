@@ -48,7 +48,7 @@ struct PreparedLayoutUpdate {
 pub(crate) struct LayoutPersistenceState {
     pub(crate) layout: SpatialLayout,
     pub(crate) active_scene_id: Option<SceneId>,
-    pub(crate) active_render_groups: Arc<[Zone]>,
+    pub(crate) resolved_zones: Arc<[Zone]>,
 }
 
 #[derive(Debug, Clone)]
@@ -83,9 +83,9 @@ pub(crate) struct PrepareLayoutTransaction {
     spatial_engine: SpatialEngine,
     expected_layout: SpatialLayout,
     active_scene_id: Option<SceneId>,
-    active_render_groups: Arc<[Zone]>,
-    source_active_render_groups_revision: u64,
-    active_render_groups_revision: u64,
+    resolved_zones: Arc<[Zone]>,
+    source_resolved_zones_revision: u64,
+    resolved_zones_revision: u64,
     unassigned_behavior: UnassignedBehavior,
     activation: LayoutActivationControl,
     acknowledgment: oneshot::Sender<Result<(), LayoutTransactionRejection>>,
@@ -108,18 +108,18 @@ impl PrepareLayoutTransaction {
     }
 
     #[must_use]
-    pub(crate) fn active_render_groups(&self) -> Arc<[Zone]> {
-        Arc::clone(&self.active_render_groups)
+    pub(crate) fn resolved_zones(&self) -> Arc<[Zone]> {
+        Arc::clone(&self.resolved_zones)
     }
 
     #[must_use]
-    pub(crate) const fn source_active_render_groups_revision(&self) -> u64 {
-        self.source_active_render_groups_revision
+    pub(crate) const fn source_resolved_zones_revision(&self) -> u64 {
+        self.source_resolved_zones_revision
     }
 
     #[must_use]
-    pub(crate) const fn active_render_groups_revision(&self) -> u64 {
-        self.active_render_groups_revision
+    pub(crate) const fn resolved_zones_revision(&self) -> u64 {
+        self.resolved_zones_revision
     }
 
     #[must_use]
@@ -154,7 +154,7 @@ impl PrepareLayoutTransaction {
         let candidate_spatial_engine = self.spatial_engine.clone();
         let expected_layout = self.expected_layout.clone();
         let expected_active_scene_id = self.active_scene_id;
-        let expected_active_render_groups_revision = self.source_active_render_groups_revision;
+        let expected_resolved_zones_revision = self.source_resolved_zones_revision;
         self.accept();
         while activation.decision() == LayoutActivationDecision::Pending {
             tokio::task::yield_now().await;
@@ -171,7 +171,7 @@ impl PrepareLayoutTransaction {
                 candidate_spatial_engine,
                 &expected_layout,
                 expected_active_scene_id,
-                expected_active_render_groups_revision,
+                expected_resolved_zones_revision,
                 |_| Ok(()),
             )
             .await;
@@ -381,21 +381,21 @@ impl LayoutTransactionAuthority {
             let (
                 expected_layout,
                 active_scene_id,
-                active_render_groups,
-                source_active_render_groups_revision,
-                active_render_groups_revision,
+                resolved_zones,
+                source_resolved_zones_revision,
+                resolved_zones_revision,
                 unassigned_behavior,
             ) = {
                 let manager = scene_manager.snapshot().await;
                 let authoritative_spatial_engine = spatial_engine.snapshot();
-                let (active_render_groups, active_render_groups_revision) = manager
-                    .active_render_groups_for_primary_layout(prepared_engine.layout().as_ref());
+                let (resolved_zones, resolved_zones_revision) =
+                    manager.resolved_zones_for_primary_layout(prepared_engine.layout().as_ref());
                 (
                     authoritative_spatial_engine.layout().as_ref().clone(),
                     manager.active_scene_id().copied(),
-                    active_render_groups,
-                    manager.active_render_groups_revision(),
-                    active_render_groups_revision,
+                    resolved_zones,
+                    manager.resolved_zones_revision(),
+                    resolved_zones_revision,
                     manager
                         .active_scene()
                         .map(|scene| scene.unassigned_behavior.clone())
@@ -406,16 +406,16 @@ impl LayoutTransactionAuthority {
                 prepared_engine.clone(),
                 expected_layout,
                 active_scene_id,
-                Arc::clone(&active_render_groups),
-                source_active_render_groups_revision,
-                active_render_groups_revision,
+                Arc::clone(&resolved_zones),
+                source_resolved_zones_revision,
+                resolved_zones_revision,
                 unassigned_behavior,
             )?;
             submission.preparation.wait().await?;
             let commit_state = LayoutPersistenceState {
                 layout: prepared_engine.layout().as_ref().clone(),
                 active_scene_id,
-                active_render_groups: Arc::clone(&active_render_groups),
+                resolved_zones: Arc::clone(&resolved_zones),
             };
             match persist(LayoutPersistencePhase::Precommit(commit_state)).await {
                 LayoutPersistenceOutcome::Written => {}
@@ -500,9 +500,9 @@ impl SceneTransactionQueue {
         spatial_engine: SpatialEngine,
         expected_layout: SpatialLayout,
         active_scene_id: Option<SceneId>,
-        active_render_groups: Arc<[Zone]>,
-        source_active_render_groups_revision: u64,
-        active_render_groups_revision: u64,
+        resolved_zones: Arc<[Zone]>,
+        source_resolved_zones_revision: u64,
+        resolved_zones_revision: u64,
         unassigned_behavior: UnassignedBehavior,
     ) -> Result<PreparedLayoutSubmission, LayoutTransactionRejection> {
         let (acknowledgment, receipt) = oneshot::channel();
@@ -511,9 +511,9 @@ impl SceneTransactionQueue {
             spatial_engine,
             expected_layout,
             active_scene_id,
-            active_render_groups,
-            source_active_render_groups_revision,
-            active_render_groups_revision,
+            resolved_zones,
+            source_resolved_zones_revision,
+            resolved_zones_revision,
             unassigned_behavior,
             activation: activation.clone(),
             acknowledgment,

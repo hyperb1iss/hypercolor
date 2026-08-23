@@ -308,7 +308,7 @@ fn scene_manager_activate_and_active_tracking() {
 }
 
 #[test]
-fn scene_manager_caches_active_render_groups() {
+fn scene_manager_caches_resolved_zones() {
     let mut mgr = SceneManager::new();
     let zoned_scene = scene_with_zone("Grouped", "desk:main", EffectId::from(Uuid::now_v7()));
     let zoned_scene_id = zoned_scene.id;
@@ -318,42 +318,36 @@ fn scene_manager_caches_active_render_groups() {
     mgr.create(zoned_scene).expect("create zoned_scene");
     mgr.create(plain).expect("create plain");
 
-    assert!(mgr.active_render_groups().is_empty());
-    assert_eq!(mgr.active_render_groups_revision(), 0);
+    assert!(mgr.resolved_zones().is_empty());
+    assert_eq!(mgr.resolved_zones_revision(), 0);
 
     mgr.activate(&zoned_scene_id, None)
         .expect("activate zoned_scene");
-    assert_eq!(mgr.active_render_groups().len(), 1);
-    let resolved_revision = mgr.active_render_groups_revision();
+    assert_eq!(mgr.resolved_zones().len(), 1);
+    let resolved_revision = mgr.resolved_zones_revision();
     assert!(resolved_revision > 0);
 
     mgr.activate(&plain_id, None).expect("activate plain");
-    assert!(mgr.active_render_groups().is_empty());
-    assert!(mgr.active_render_groups_revision() > resolved_revision);
+    assert!(mgr.resolved_zones().is_empty());
+    assert!(mgr.resolved_zones_revision() > resolved_revision);
 }
 
 #[test]
-fn scene_manager_refreshes_active_render_group_cache_on_update() {
+fn scene_manager_refreshes_resolved_zone_cache_on_update() {
     let mut mgr = SceneManager::new();
     let mut scene = scene_with_zone("Grouped", "desk:main", EffectId::from(Uuid::now_v7()));
     let id = scene.id;
 
     mgr.create(scene.clone()).expect("create zoned_scene");
     mgr.activate(&id, None).expect("activate zoned_scene");
-    let initial_revision = mgr.active_render_groups_revision();
-    assert_eq!(
-        mgr.active_render_groups()[0].layout.zones[0].id,
-        "desk:main"
-    );
+    let initial_revision = mgr.resolved_zones_revision();
+    assert_eq!(mgr.resolved_zones()[0].layout.zones[0].id, "desk:main");
 
     scene.zones[0].layout = sample_layout("desk:updated");
     mgr.update(scene).expect("update zoned_scene");
 
-    assert_eq!(
-        mgr.active_render_groups()[0].layout.zones[0].id,
-        "desk:updated"
-    );
-    assert!(mgr.active_render_groups_revision() > initial_revision);
+    assert_eq!(mgr.resolved_zones()[0].layout.zones[0].id, "desk:updated");
+    assert!(mgr.resolved_zones_revision() > initial_revision);
 }
 
 #[test]
@@ -371,7 +365,7 @@ fn scene_manager_upsert_primary_zone_replaces_authored_layer_stack() {
     mgr.create(scene).expect("create primary scene");
     mgr.activate(&scene_id, None)
         .expect("activate primary scene");
-    let initial_revision = mgr.active_render_groups_revision();
+    let initial_revision = mgr.resolved_zones_revision();
 
     let updated = mgr
         .upsert_primary_zone(
@@ -404,12 +398,12 @@ fn scene_manager_upsert_primary_zone_replaces_authored_layer_stack() {
     assert!(control_bindings.is_empty());
     assert_eq!(*preset_id, None);
 
-    let active_layers = mgr.active_render_groups()[0].layers.clone();
+    let active_layers = mgr.resolved_zones()[0].layers.clone();
     let LayerSource::Effect { effect_id, .. } = active_layers[0].source else {
         panic!("active zone should expose the replacement effect layer");
     };
     assert_eq!(effect_id, new_id);
-    assert!(mgr.active_render_groups_revision() > initial_revision);
+    assert!(mgr.resolved_zones_revision() > initial_revision);
 }
 
 #[test]
@@ -471,7 +465,7 @@ fn scene_manager_clear_zone_effect_clears_effect_layers() {
     assert!(updated.layers.is_empty());
     assert!(updated.layers.clone().is_empty());
     assert_eq!(updated.layers_version, 3);
-    assert!(mgr.active_render_groups()[0].layers.clone().is_empty());
+    assert!(mgr.resolved_zones()[0].layers.clone().is_empty());
 }
 
 #[test]
@@ -491,7 +485,7 @@ fn scene_manager_add_layer_preserves_authored_effect_and_refreshes_cache() {
         .expect("zoned_scene scene should retain its authored effect layer");
     mgr.activate(&scene_id, None)
         .expect("activate zoned_scene scene");
-    let initial_revision = mgr.active_render_groups_revision();
+    let initial_revision = mgr.resolved_zones_revision();
 
     let overlay = color_layer([1.0, 0.0, 0.5, 1.0]);
     let overlay_id = overlay.id;
@@ -507,8 +501,8 @@ fn scene_manager_add_layer_preserves_authored_effect_and_refreshes_cache() {
     assert_ne!(updated.layers[0].id.as_uuid(), zone_id.0);
     assert_eq!(updated.layers[1].id, overlay_id);
     assert_eq!(zone_effect_id(&updated), Some(effect_id));
-    assert!(mgr.active_render_groups_revision() > initial_revision);
-    assert_eq!(mgr.active_render_groups()[0].layers[1].id, overlay_id);
+    assert!(mgr.resolved_zones_revision() > initial_revision);
+    assert_eq!(mgr.resolved_zones()[0].layers[1].id, overlay_id);
 }
 
 #[test]

@@ -189,7 +189,7 @@ async fn default_only_is_live_on_the_default_layer() {
 
     // The default zone reaches the render groups.
     let scene_manager = state.scene_manager.snapshot().await;
-    assert!(scene_manager.active_render_groups().iter().any(|zone| {
+    assert!(scene_manager.resolved_zones().iter().any(|zone| {
         zone.display_target
             .as_ref()
             .is_some_and(|target| target.device_id == device_id)
@@ -233,7 +233,7 @@ async fn scene_layer_wins_when_both_are_assigned() {
     // Only the scene zone renders for the device — the overlay is suppressed.
     let scene_manager = state.scene_manager.snapshot().await;
     let zones_for_device = scene_manager
-        .active_render_groups()
+        .resolved_zones()
         .iter()
         .filter(|zone| {
             zone.display_target
@@ -474,7 +474,7 @@ async fn default_face_survives_scene_switches() {
         );
         let scene_manager = state.scene_manager.snapshot().await;
         assert!(
-            scene_manager.active_render_groups().iter().any(|zone| {
+            scene_manager.resolved_zones().iter().any(|zone| {
                 zone.display_target
                     .as_ref()
                     .is_some_and(|target| target.device_id == device_id)
@@ -518,7 +518,7 @@ async fn deleting_a_display_prunes_its_default_face_and_preference() {
         "deleted display must not keep a runtime default face zone"
     );
     assert!(
-        !scene_manager.active_render_groups().iter().any(|zone| {
+        !scene_manager.resolved_zones().iter().any(|zone| {
             zone.display_target
                 .as_ref()
                 .is_some_and(|target| target.device_id == device_id)

@@ -1454,10 +1454,10 @@ pub(crate) struct PreparedLayoutActivation {
     pub(crate) spatial_engine: SpatialEngine,
     pub(crate) expected_layout: SpatialLayout,
     pub(crate) active_scene_id: Option<SceneId>,
-    pub(crate) source_active_render_groups_revision: u64,
+    pub(crate) source_resolved_zones_revision: u64,
     pub(crate) prepared_resize: Option<PreparedCanvasResize>,
     pub(crate) sampling_preparation: Option<SparkleFlingerSamplingPreparation>,
-    pub(crate) prepared_groups: PreparedZoneReconcile,
+    pub(crate) prepared_zones: PreparedZoneReconcile,
     pub(crate) prepared_projected_scene:
         super::sparkleflinger::SparkleFlingerProjectedScenePreparation,
     pub(crate) activation: LayoutActivationControl,
@@ -1636,7 +1636,7 @@ impl ComposeRuntime<'_> {
             .take_render_delta(dependency_key, frame_delta);
 
         if let Err(error) = self.render_group_runtime.admit_reconcile(
-            scene_snapshot.scene_runtime.active_render_groups.as_ref(),
+            scene_snapshot.scene_runtime.resolved_zones.as_ref(),
             scene_snapshot.scene_runtime.active_scene_id,
             dependency_key,
             registry,
@@ -1651,7 +1651,7 @@ impl ComposeRuntime<'_> {
 
         let zones = self.output_artifacts.zones_mut();
         let context = RenderSceneContext {
-            groups: scene_snapshot.scene_runtime.active_render_groups.as_ref(),
+            groups: scene_snapshot.scene_runtime.resolved_zones.as_ref(),
             active_scene_id: scene_snapshot.scene_runtime.active_scene_id,
             dependency_key,
             elapsed_ms: scene_snapshot.elapsed_ms,

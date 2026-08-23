@@ -84,7 +84,7 @@ fn create_and_delete_custom_zone_refreshes_resolved_zone_cache() {
         .active_scene()
         .expect("default scene should be active")
         .zones_revision;
-    let cache_revision = manager.active_render_groups_revision();
+    let cache_revision = manager.resolved_zones_revision();
 
     let zone_id = manager
         .create_zone(
@@ -106,10 +106,10 @@ fn create_and_delete_custom_zone_refreshes_resolved_zone_cache() {
     assert_eq!(zone.role, ZoneRole::Custom);
     assert!(zone.layout.zones.is_empty());
     assert!(scene.zones_revision > zones_revision);
-    assert!(manager.active_render_groups_revision() > cache_revision);
+    assert!(manager.resolved_zones_revision() > cache_revision);
     assert!(
         manager
-            .active_render_groups()
+            .resolved_zones()
             .iter()
             .any(|zone| zone.id == zone_id)
     );

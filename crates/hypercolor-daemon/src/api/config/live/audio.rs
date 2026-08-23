@@ -117,7 +117,7 @@ async fn current_live_audio_capture_demand(state: &Arc<AppState>) -> bool {
     let active_effect_ids = {
         let scene_manager = state.scene_manager.snapshot().await;
         scene_manager
-            .active_render_groups()
+            .resolved_zones()
             .iter()
             .filter(|group| group.enabled)
             .flat_map(hypercolor_types::scene::Zone::effect_ids)

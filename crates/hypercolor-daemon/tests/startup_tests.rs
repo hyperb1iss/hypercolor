@@ -1495,7 +1495,7 @@ async fn daemon_state_default_scene_starts_with_default_zone() {
         scenes.active_scene_id().is_some_and(SceneId::is_default),
         "default scene should be active initially"
     );
-    let groups = scenes.active_render_groups();
+    let groups = scenes.resolved_zones();
     assert_eq!(groups.len(), 1, "default scene should start with a zone");
     assert_eq!(groups[0].name, "Default zone");
     assert_eq!(groups[0].role, ZoneRole::Primary);

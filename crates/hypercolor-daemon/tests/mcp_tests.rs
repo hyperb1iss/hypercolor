@@ -2705,7 +2705,7 @@ async fn stateful_display_face_tool_defaults_to_the_persistent_scope() {
             .scene_manager
             .snapshot()
             .await
-            .active_render_groups()
+            .resolved_zones()
             .iter()
             .any(|zone| zone.has_effect(face.id))
     );

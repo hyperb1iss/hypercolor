@@ -1521,8 +1521,8 @@ async fn capture_catalog(
             .into();
         (
             manager.active_scene_id().copied(),
-            manager.active_render_groups_revision(),
-            manager.active_render_groups(),
+            manager.resolved_zones_revision(),
+            manager.resolved_zones(),
             scenes,
         )
     };

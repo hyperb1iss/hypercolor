@@ -114,7 +114,7 @@ async fn clear_inactive_render_groups(state: &RenderThreadState, runtime: &mut P
     let active_group_count = {
         let manager = state.scene_manager.snapshot().await;
         manager
-            .active_render_groups()
+            .resolved_zones()
             .iter()
             .filter(|group| group.enabled && group.effect_ids().next().is_some())
             .count()

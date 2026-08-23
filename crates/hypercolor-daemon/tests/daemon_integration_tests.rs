@@ -201,7 +201,7 @@ async fn daemon_lifecycle_initialize_start_shutdown() {
         let scenes = state.scene_manager.snapshot().await;
         assert_eq!(scenes.scene_count(), 1);
         assert!(scenes.active_scene_id().is_some_and(SceneId::is_default));
-        assert_eq!(scenes.active_render_groups().len(), 1);
+        assert_eq!(scenes.resolved_zones().len(), 1);
     }
     {
         let loop_guard = state.render_loop.read().await;
@@ -230,7 +230,7 @@ async fn daemon_lifecycle_initialize_start_shutdown() {
     {
         let scenes = state.scene_manager.snapshot().await;
         assert!(scenes.active_scene_id().is_some_and(SceneId::is_default));
-        assert_eq!(scenes.active_render_groups().len(), 1);
+        assert_eq!(scenes.resolved_zones().len(), 1);
     }
 }
 
@@ -562,7 +562,7 @@ async fn api_state_default_scene_starts_with_default_zone() {
     {
         let scenes = state.scene_manager.snapshot().await;
         assert!(scenes.active_scene_id().is_some_and(SceneId::is_default));
-        assert_eq!(scenes.active_render_groups().len(), 1);
+        assert_eq!(scenes.resolved_zones().len(), 1);
     }
 }
 
