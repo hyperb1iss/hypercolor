@@ -112,6 +112,44 @@ pub struct StudioContext {
     /// The daemon's render canvas extent. Zone layouts carry placements
     /// only, so anything fitting a footprint to the canvas reads this.
     pub render_canvas_size: Memo<(u32, u32)>,
+    /// Which rail disclosure (zone menu, device kebab, add-device picker)
+    /// is open, by key. The rail rebuilds on scene events and search
+    /// keystrokes, so openness must outlive the DOM that renders it; one
+    /// shared slot also means opening a menu closes the previous one.
+    pub rail_disclosure: RwSignal<Option<String>>,
+    /// An in-flight zone rename: `(zone id, draft text)`. Lives here so a
+    /// rail rebuild mid-typing does not eat the field or the text.
+    pub zone_rename_draft: RwSignal<Option<(String, String)>>,
+    /// The output box under the pointer on the canvas, mirrored from the
+    /// editor so the rail can softly highlight the card that owns it.
+    pub pointer_output_id: RwSignal<Option<String>>,
+}
+
+/// A local open/closed signal whose truth lives in a shared keyed slot,
+/// so it survives its component being rebuilt. Opening claims the slot
+/// (closing whichever disclosure held it); closing releases it.
+pub(crate) fn keyed_disclosure(slot: RwSignal<Option<String>>, key: String) -> RwSignal<bool> {
+    let open = RwSignal::new(slot.with_untracked(|held| held.as_deref() == Some(key.as_str())));
+    Effect::new({
+        let key = key.clone();
+        move |_| {
+            let is_open = open.get();
+            if is_open {
+                if slot.with_untracked(|held| held.as_deref() != Some(key.as_str())) {
+                    slot.set(Some(key.clone()));
+                }
+            } else if slot.with_untracked(|held| held.as_deref() == Some(key.as_str())) {
+                slot.set(None);
+            }
+        }
+    });
+    Effect::new(move |_| {
+        let foreign = slot.with(|held| held.as_deref() != Some(key.as_str()));
+        if foreign && open.get_untracked() {
+            open.set(false);
+        }
+    });
+    open
 }
 
 #[component]
@@ -274,6 +312,9 @@ pub fn StudioPage() -> impl IntoView {
 
     let (device_search, set_device_search) = signal(String::new());
     let render_canvas_size = crate::render_canvas::use_render_canvas_size();
+    let rail_disclosure = RwSignal::new(None::<String>);
+    let zone_rename_draft = RwSignal::new(None::<(String, String)>);
+    let pointer_output_id = RwSignal::new(None::<String>);
 
     provide_context(StudioContext {
         selected_surface_id,
@@ -286,6 +327,9 @@ pub fn StudioPage() -> impl IntoView {
         attachment_cache,
         device_search: device_search.into(),
         render_canvas_size,
+        rail_disclosure,
+        zone_rename_draft,
+        pointer_output_id,
     });
 
     view! {

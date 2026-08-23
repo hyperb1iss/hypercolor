@@ -100,6 +100,17 @@ fn SurfaceStage() -> impl IntoView {
             .set_hovered_zone_ids
             .set(studio.hovered_output_ids.get());
     });
+    // Mirror the canvas's box-under-pointer out to the rail, so hovering
+    // a box softly highlights the card that owns it.
+    Effect::new(move |_| {
+        let next = editor.pointer_zone_id.get();
+        if studio
+            .pointer_output_id
+            .with_untracked(|current| *current != next)
+        {
+            studio.pointer_output_id.set(next);
+        }
+    });
     Effect::new(move |_| {
         let hidden = match (studio.active_scene.get(), studio.selected_surface_id.get()) {
             (Some(scene), Some(zone)) => {

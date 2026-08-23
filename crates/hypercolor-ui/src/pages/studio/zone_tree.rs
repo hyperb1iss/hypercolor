@@ -296,7 +296,8 @@ fn ZoneNode(
         })
     });
 
-    let controls_open = RwSignal::new(false);
+    let controls_open =
+        super::keyed_disclosure(studio.rail_disclosure, format!("zone-menu::{zone_id}"));
     let dimmed = !surface.enabled;
     let row_name = surface.name.clone();
     let swatch = surface.color.clone();

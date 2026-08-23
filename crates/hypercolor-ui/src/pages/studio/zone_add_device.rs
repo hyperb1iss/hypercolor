@@ -31,7 +31,7 @@ use super::StudioContext;
 pub fn ZoneAddDevice(zone_id: String) -> impl IntoView {
     let studio = expect_context::<StudioContext>();
     let devices = expect_context::<DevicesContext>();
-    let picking = RwSignal::new(false);
+    let picking = super::keyed_disclosure(studio.rail_disclosure, format!("add-picker::{zone_id}"));
     let zone_id = StoredValue::new(zone_id);
 
     let options = Memo::new(move |_| {

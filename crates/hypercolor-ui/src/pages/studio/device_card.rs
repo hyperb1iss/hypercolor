@@ -279,7 +279,10 @@ pub fn StudioDeviceCard(
     // inline below the body and is toggled by the action cluster's kebab.
     // Capture what it needs before `select` and `device_output_ids` move
     // into `card_actions`.
-    let ops_open = RwSignal::new(false);
+    let ops_open = super::keyed_disclosure(
+        studio.rail_disclosure,
+        format!("device-menu::{select}::{row_device_id}"),
+    );
     let menu_select = select.clone();
     let menu_physical_id = device.id.clone();
     let menu_output_ids = device_output_ids.clone();
@@ -302,6 +305,17 @@ pub fn StudioDeviceCard(
                 .selected_output_ids
                 .with(|sel| sel_check_ids.iter().all(|id| sel.contains(id)))
     });
+    // Canvas hover, mirrored back: the pointer resting on one of this
+    // device's boxes softly lights the card, the counterpart of rail
+    // hover lifting the box.
+    let pointer_check_ids = device_output_ids.clone();
+    let is_under_canvas_pointer = Memo::new(move |_| {
+        studio.pointer_output_id.with(|under| {
+            under
+                .as_ref()
+                .is_some_and(|id| pointer_check_ids.contains(id))
+        })
+    });
     let card_outline_style = move || {
         if is_card_selected.get() {
             format!(
@@ -319,8 +333,12 @@ pub fn StudioDeviceCard(
         >
             // A flat low-alpha hover wash — clean and bandless, no scale,
             // no brightness pump. Replaces card-hover, which squished the
-            // whole card on click and pumped a janky radial glow.
-            <div class="pointer-events-none absolute inset-0 bg-white/0 transition-colors duration-150 group-hover/card:bg-white/[0.03]" />
+            // whole card on click and pumped a janky radial glow. The same
+            // wash answers the canvas: pointing at a box lights its card.
+            <div
+                class="pointer-events-none absolute inset-0 bg-white/0 transition-colors duration-150 group-hover/card:bg-white/[0.03]"
+                class=("bg-white/[0.04]", move || is_under_canvas_pointer.get())
+            />
             <div class="flex items-stretch">
                 <button
                     type="button"
@@ -901,6 +919,14 @@ fn component_row_view(
     let row_zone_id = scene_key.as_deref().and_then(zone_id_from_storage_key);
     let key_zone_id = row_zone_id.clone();
     release_hover_on_unmount(studio, output_id.iter().cloned().collect());
+    let pointer_row_id = output_id.clone();
+    let is_row_under_canvas_pointer = Memo::new(move |_| {
+        pointer_row_id.as_ref().is_some_and(|id| {
+            studio
+                .pointer_output_id
+                .with(|under| under.as_deref() == Some(id.as_str()))
+        })
+    });
     let is_row_selected = Signal::derive(move || {
         row_selected_id
             .as_ref()
@@ -912,6 +938,7 @@ fn component_row_view(
             class="flex items-center gap-2 rounded px-1 py-1 transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/60"
             class=("cursor-pointer", move || interactive)
             class=("bg-accent/12", move || is_row_selected.get())
+            class=("bg-surface-hover/30", move || is_row_under_canvas_pointer.get())
             class=("hover:bg-surface-hover/30", move || interactive)
             role=interactive.then_some("button")
             tabindex=interactive.then_some("0")

@@ -193,8 +193,9 @@ pub fn LayoutCanvas() -> impl IntoView {
 
     // The box under the pointer on the canvas itself. Lifts only the
     // stacking order, never the focus dimming, so sweeping across a dense
-    // canvas reads each box without the rest flickering.
-    let pointer_zone_id = RwSignal::new(None::<String>);
+    // canvas reads each box without the rest flickering. Lives in the
+    // editor context so the host rail can mirror the hover.
+    let pointer_zone_id = editor.pointer_zone_id;
 
     // Per-id zone lookup memo — lets every per-zone style closure resolve
     // its zone in O(1). Replaces the O(N) `zones.iter().find(|z| z.id == zid)`
