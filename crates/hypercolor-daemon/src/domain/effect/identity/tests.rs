@@ -14,6 +14,7 @@ use hypercolor_types::device::{
     DeviceInfo, DeviceOrigin, DeviceTopologyHint, SegmentInfo,
 };
 use hypercolor_types::effect::{EffectCategory, EffectId};
+use hypercolor_types::event::HypercolorEvent;
 use hypercolor_types::layer::{BlendMode, LayerSource, SceneLayer, SceneLayerId};
 use hypercolor_types::library::{
     EffectPlaylist, EffectPreset, PlaylistId, PlaylistItem, PlaylistItemId, PlaylistItemTarget,
@@ -474,6 +475,7 @@ async fn late_rescan_migrates_every_live_and_durable_reference_before_publicatio
     let fixture = late_migration_fixture(&temp).await;
     let stale_mutation = fixture.state.scene_manager.begin_mutation().await;
     let revision_before = fixture.state.scene_manager.revision();
+    let mut events = fixture.state.event_bus.subscribe_all();
 
     let report = fixture
         .state
@@ -482,6 +484,20 @@ async fn late_rescan_migrates_every_live_and_durable_reference_before_publicatio
         .rescan_registry()
         .await
         .expect("late rescan should migrate");
+    let registry_updates = std::iter::from_fn(|| events.try_recv().ok())
+        .filter_map(|event| match event.event {
+            HypercolorEvent::EffectRegistryUpdated {
+                added,
+                removed,
+                updated,
+            } => Some((added, removed, updated)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        registry_updates,
+        vec![(report.added, report.removed, report.updated)]
+    );
 
     assert_eq!(
         report.legacy_effect_ids.get(&fixture.legacy_id),

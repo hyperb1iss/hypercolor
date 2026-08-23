@@ -801,7 +801,33 @@ fn registry_refreshes_share_the_effect_domain_identity_authority() {
 
     let identity = source("domain/effect/identity.rs");
     assert!(!identity.contains("AppState"));
-    assert!(identity.contains("self.publish_registry_update(&report)"));
+    assert_eq!(
+        identity
+            .matches("self.publish_registry_update(&report)")
+            .count(),
+        2,
+        "both registry publication paths must emit through the domain helper"
+    );
+
+    let publishers = sources
+        .iter()
+        .filter_map(|(path, source)| {
+            let count = source
+                .match_indices(".publish(")
+                .filter(|(start, _)| {
+                    source[*start..]
+                        .chars()
+                        .take(200)
+                        .collect::<String>()
+                        .contains("EffectRegistryUpdated")
+                })
+                .count();
+            (count > 0).then_some((path, count))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(publishers.len(), 1, "registry events need one producer");
+    assert!(publishers[0].0.ends_with("domain/effect.rs"));
+    assert_eq!(publishers[0].1, 1, "registry events need one publish site");
 
     let app_state = source("app_state.rs");
     assert!(app_state.contains("playlist_runtime: Arc::clone(&daemon.playlist_runtime)"));
