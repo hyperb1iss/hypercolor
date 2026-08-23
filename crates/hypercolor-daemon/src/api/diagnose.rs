@@ -10,10 +10,10 @@ use crate::api::capture::protected_control_rejection;
 use crate::api::envelope;
 use crate::api::security::RequestAuthContext;
 use crate::app_state::AppState;
-use crate::domain::diagnostics::{collect_diagnostics, default_safe_checks};
+use crate::domain::diagnostics::default_safe_checks;
 
-pub(crate) use crate::domain::diagnostics::DiagnoseResponse;
 pub use hypercolor_types::api::diagnose::DiagnoseRequest;
+pub(crate) use hypercolor_types::api::diagnose::DiagnoseResponse;
 
 /// `POST /api/v1/diagnose` runs lightweight daemon diagnostics.
 pub(crate) async fn run_diagnostics(
@@ -37,5 +37,11 @@ pub(crate) async fn run_diagnostics(
         .as_ref()
         .and_then(|request| request.system)
         .unwrap_or(false);
-    envelope::ok(collect_diagnostics(&state, &requested, include_system).await)
+    envelope::ok(
+        state
+            .domains
+            .diagnostics
+            .collect(&requested, include_system)
+            .await,
+    )
 }

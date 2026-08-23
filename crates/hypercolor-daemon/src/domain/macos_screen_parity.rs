@@ -16,7 +16,7 @@ use hypercolor_types::event::ZoneColors;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-use crate::app_state::AppState;
+use crate::domain::spatial::SpatialService;
 use crate::render_thread::sparkleflinger::{CompositionLayer, CompositionPlan, SparkleFlinger};
 use crate::render_thread::{
     MacosScreenParityDiagnosticHandle, MacosScreenParityLiveSnapshot,
@@ -215,19 +215,13 @@ fn reference_zones(
 }
 
 pub(crate) async fn run_macos_screen_parity(
-    state: &AppState,
+    diagnostics: &MacosScreenParityDiagnosticHandle,
+    input_manager: &tokio::sync::Mutex<hypercolor_core::input::InputManager>,
+    spatial: &SpatialService,
 ) -> Result<MacosScreenParityReport, MacosScreenParityDiagnosticError> {
     let deadline = Instant::now() + DIAGNOSTIC_TIMEOUT;
-    let diagnostics = state
-        .macos_screen_parity_diagnostics
-        .clone()
-        .ok_or_else(|| {
-            MacosScreenParityDiagnosticError::unsupported(
-                "macOS screen parity requires the active Metal render thread",
-            )
-        })?;
     let screenshot_action = {
-        let input = state.input_manager().lock().await;
+        let input = input_manager.lock().await;
         input.macos_screenshot_reference_action()
     };
     let screenshot_action = screenshot_action.ok_or_else(|| {
@@ -236,7 +230,7 @@ pub(crate) async fn run_macos_screen_parity(
         )
     })?;
 
-    let first = capture_live_snapshot(&diagnostics, deadline).await?;
+    let first = capture_live_snapshot(diagnostics, deadline).await?;
     let first_layout = first.spatial_engine.layout();
     let first_layout_generation = first.spatial_engine.plan_generation();
     if first.spatial_engine.sampling_plan().is_empty() {
@@ -250,7 +244,7 @@ pub(crate) async fn run_macos_screen_parity(
     let screenshot_capture = receive_screenshot_capture(screenshot_rx, deadline).await?;
     validate_capture_identity(&first.publication, &screenshot_capture)?;
 
-    let second = capture_live_snapshot(&diagnostics, deadline).await?;
+    let second = capture_live_snapshot(diagnostics, deadline).await?;
     validate_live_identity(&first, &second)?;
     if second.spatial_engine.plan_generation() != first_layout_generation
         || layout_sha256(second.spatial_engine.layout().as_ref())? != layout_hash
@@ -261,7 +255,7 @@ pub(crate) async fn run_macos_screen_parity(
     }
     let stability = require_static_live_content(&first, &second)?;
 
-    let current_spatial = state.spatial_engine.snapshot();
+    let current_spatial = spatial.snapshot();
     let current_layout = current_spatial.layout();
     if current_spatial.plan_generation() != first_layout_generation
         || !Arc::ptr_eq(&current_layout, &first_layout)

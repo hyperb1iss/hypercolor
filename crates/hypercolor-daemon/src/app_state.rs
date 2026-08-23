@@ -178,11 +178,6 @@ pub struct AppState {
     /// Aggregate typed input demand shared with render and connection consumers.
     pub input_publication_demands: InputPublicationDemandHandle,
 
-    /// Active-renderer mailbox for explicit macOS screen parity snapshots.
-    #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
-    pub(crate) macos_screen_parity_diagnostics:
-        Option<crate::render_thread::MacosScreenParityDiagnosticHandle>,
-
     /// Push handle for browser-preview input injection over WebSocket.
     pub browser_input: hypercolor_core::input::BrowserInputHandle,
 
@@ -577,6 +572,8 @@ impl AppState {
                 ),
                 display_preferences: Arc::clone(&display_preferences),
                 display_frames: Arc::clone(&display_frames),
+                device_metrics: Arc::clone(&device_metrics),
+                input_manager: Arc::clone(&input_manager),
             },
             |layout| {
                 let discovery_runtime = crate::discovery::DiscoveryRuntime {
@@ -645,8 +642,6 @@ impl AppState {
             #[cfg(target_os = "macos")]
             capture_picker_persistence_task: Arc::new(StdMutex::new(None)),
             input_publication_demands: InputPublicationDemandHandle::new(),
-            #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
-            macos_screen_parity_diagnostics: None,
             browser_input,
             interaction_routing,
             discovery_in_progress,
@@ -750,8 +745,6 @@ impl AppState {
             input_publication_demands: daemon
                 .input_publication_demands()
                 .expect("live API state requires a running input publication pump"),
-            #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
-            macos_screen_parity_diagnostics: daemon.macos_screen_parity_diagnostics(),
             browser_input: daemon.browser_input.clone(),
             interaction_routing: daemon.interaction_routing.clone(),
             discovery_in_progress: Arc::clone(&daemon.discovery_in_progress),

@@ -152,6 +152,12 @@ impl DaemonState {
             RenderThread::try_spawn(rt_state)
                 .context("failed to spawn render thread with resolved compositor mode")?,
         );
+        #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
+        if let Some(render_thread) = self.render_thread.as_ref() {
+            self.domains
+                .diagnostics
+                .install_macos_screen_parity(Some(render_thread.macos_screen_parity_diagnostics()));
+        }
         let (input_graph, sensor_snapshots) = {
             let input_manager = self.input_manager.lock().await;
             (
@@ -287,6 +293,8 @@ impl DaemonState {
         info!("Render loop stopped");
 
         // 2. Wait for render thread to exit.
+        #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
+        self.domains.diagnostics.install_macos_screen_parity(None);
         if let Some(mut rt) = self.render_thread.take()
             && let Err(e) = rt.shutdown().await
         {

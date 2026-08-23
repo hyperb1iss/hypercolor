@@ -1,294 +1,289 @@
 //! Transport-independent daemon diagnostics.
 
+use std::sync::Arc;
+use std::time::Duration;
+
 use hypercolor_core::device::{UsbActorMetricsSnapshot, usb_actor_metrics_snapshot};
+use hypercolor_core::input::InputManager;
+use hypercolor_types::api::diagnose::{
+    DiagnoseCheck, DiagnoseDeviceOutputItem, DiagnoseDeviceOutputSnapshot,
+    DiagnoseDisplayOutputSnapshot, DiagnoseLatestFrameSnapshot, DiagnoseRenderSnapshot,
+    DiagnoseRenderWindowSnapshot, DiagnoseResponse, DiagnoseSnapshot, DiagnoseSummary,
+    DiagnoseUsbActorSnapshot,
+};
 use hypercolor_types::api::system::InputStatus;
 use hypercolor_types::device::USB_OUTPUT_BACKEND_ID;
-use serde::Serialize;
-use utoipa::ToSchema;
+use tokio::sync::Mutex;
 
-use crate::app_state::AppState;
-use crate::device_metrics::{DeviceMetrics, DeviceMetricsSnapshot};
+use crate::device_metrics::{DeviceMetrics, DeviceMetricsSnapshot, DeviceMetricsSnapshotStore};
 use crate::display_frames::DisplayOutputMetricsSnapshot;
+use crate::domain::context::{DeviceContext, PlatformContext};
+use crate::domain::display::DisplayContext;
 use crate::domain::input_status::{actionable_input_diagnostics, input_status_snapshot};
+use crate::domain::output::{OutputContext, RenderLoopStatus};
+use crate::domain::spatial::SpatialService;
 use crate::performance::{LatestFrameMetrics, PerformanceSnapshot};
 
 const RENDER_FRAME_STALE_WARNING_MS: f64 = 2_000.0;
 const RENDER_FRAME_STALE_FAIL_MS: f64 = 10_000.0;
 const DEFAULT_SAFE_CHECKS: [&str; 6] = ["daemon", "render", "devices", "config", "input", "memory"];
 
-#[derive(Debug, Serialize, ToSchema)]
-pub(crate) struct DiagnoseResponse {
-    checks: Vec<DiagnoseCheck>,
-    summary: DiagnoseSummary,
-    snapshot: DiagnoseSnapshot,
+/// The macOS screen-parity probe, armed only while a Metal render thread runs.
+///
+/// The render thread owns the mailbox the probe talks to, so the handle
+/// is installed when that thread starts and dropped when it stops. Every
+/// projection shares this one slot, so a restarted render thread re-arms
+/// the check instead of leaving stale mailboxes behind.
+#[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
+#[derive(Clone)]
+struct MacosScreenParityCapability {
+    handle: Arc<arc_swap::ArcSwapOption<crate::render_thread::MacosScreenParityDiagnosticHandle>>,
+    input: Arc<Mutex<InputManager>>,
+    spatial: SpatialService,
 }
 
-#[derive(Debug, Serialize, ToSchema)]
-struct DiagnoseCheck {
-    category: String,
-    name: String,
-    status: String,
-    detail: String,
+#[cfg(not(all(target_os = "macos", feature = "wgpu", feature = "screen-capture")))]
+#[derive(Clone)]
+struct MacosScreenParityCapability;
+
+impl MacosScreenParityCapability {
+    #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
+    fn new(input: Arc<Mutex<InputManager>>, spatial: SpatialService) -> Self {
+        Self {
+            handle: Arc::new(arc_swap::ArcSwapOption::empty()),
+            input,
+            spatial,
+        }
+    }
+
+    #[cfg(not(all(target_os = "macos", feature = "wgpu", feature = "screen-capture")))]
+    fn new(_input: Arc<Mutex<InputManager>>, _spatial: SpatialService) -> Self {
+        Self
+    }
+
+    #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
+    fn install(&self, handle: Option<crate::render_thread::MacosScreenParityDiagnosticHandle>) {
+        self.handle.store(handle.map(Arc::new));
+    }
+
+    #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
+    async fn run(&self, snapshot: &mut DiagnoseSnapshot) -> DiagnoseCheck {
+        let Some(handle) = self.handle.load_full() else {
+            return DiagnoseCheck {
+                category: "input".to_owned(),
+                name: "macos_screen_parity".to_owned(),
+                status: "warning".to_owned(),
+                detail: "macOS screen parity requires the active Metal render thread".to_owned(),
+            };
+        };
+        match super::macos_screen_parity::run_macos_screen_parity(
+            handle.as_ref(),
+            &self.input,
+            &self.spatial,
+        )
+        .await
+        {
+            Ok(report) => {
+                let detail = report.detail();
+                match serde_json::to_value(report) {
+                    Ok(report) => {
+                        snapshot.macos_screen_parity = Some(report);
+                        DiagnoseCheck {
+                            category: "input".to_owned(),
+                            name: "macos_screen_parity".to_owned(),
+                            status: "pass".to_owned(),
+                            detail,
+                        }
+                    }
+                    Err(_) => DiagnoseCheck {
+                        category: "input".to_owned(),
+                        name: "macos_screen_parity".to_owned(),
+                        status: "fail".to_owned(),
+                        detail: "the parity report could not be serialized".to_owned(),
+                    },
+                }
+            }
+            Err(error) => DiagnoseCheck {
+                category: "input".to_owned(),
+                name: "macos_screen_parity".to_owned(),
+                status: error.status().to_owned(),
+                detail: error.detail().to_owned(),
+            },
+        }
+    }
+
+    #[cfg(not(all(target_os = "macos", feature = "wgpu", feature = "screen-capture")))]
+    fn run(&self, _snapshot: &mut DiagnoseSnapshot) -> std::future::Ready<DiagnoseCheck> {
+        std::future::ready(DiagnoseCheck {
+            category: "input".to_owned(),
+            name: "macos_screen_parity".to_owned(),
+            status: "warning".to_owned(),
+            detail: "macOS screen parity is unavailable in this build".to_owned(),
+        })
+    }
 }
 
-#[derive(Debug, Serialize, ToSchema)]
-struct DiagnoseSummary {
-    passed: usize,
-    warnings: usize,
-    failed: usize,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-struct DiagnoseSnapshot {
+/// Everything one diagnostics transaction reads, captured once.
+///
+/// The checks and the reported snapshot are derived from the same
+/// values, so a report can never describe a render loop from one instant
+/// and a frame from another.
+struct DiagnosticsInputs {
+    uptime: Duration,
+    performance: PerformanceSnapshot,
+    render_loop: RenderLoopStatus,
+    usb_actor: UsbActorMetricsSnapshot,
+    display_output: DisplayOutputMetricsSnapshot,
+    device_metrics: Arc<DeviceMetricsSnapshot>,
     input: InputStatus,
-    render: DiagnoseRenderSnapshot,
-    usb: DiagnoseUsbActorSnapshot,
-    display_output: DiagnoseDisplayOutputSnapshot,
-    device_output: DiagnoseDeviceOutputSnapshot,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    macos_screen_parity: Option<serde_json::Value>,
+    tracked_devices: usize,
+    config_available: bool,
 }
 
-#[derive(Debug, Serialize, ToSchema)]
-struct DiagnoseRenderSnapshot {
-    latest_frame: Option<DiagnoseLatestFrameSnapshot>,
-    recent_window: DiagnoseRenderWindowSnapshot,
+impl DiagnosticsInputs {
+    fn render_elapsed_ms(&self) -> f64 {
+        self.uptime.as_secs_f64() * 1000.0
+    }
 }
 
-#[derive(Debug, Serialize, ToSchema)]
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "diagnostics snapshot mirrors independent frame freshness flags"
-)]
-struct DiagnoseLatestFrameSnapshot {
-    frame_token: u64,
-    frame_age_ms: f64,
-    compositor_backend: String,
-    output_frame_source: String,
-    output_reuses_published_frame: bool,
-    output_brightness_bits: u32,
-    output_brightness_generation: u64,
-    output_routing_signature: u64,
-    output_zone_shape_signature: u64,
-    output_unassigned_behavior_generation: u64,
-    devices_written: u32,
-    total_leds: u32,
-    gpu_zone_sampling: bool,
-    gpu_sample_deferred: bool,
-    gpu_sample_stale: bool,
-    gpu_sample_retry_hit: bool,
-    gpu_sample_queue_saturated: bool,
-    gpu_sample_wait_blocked: bool,
-    gpu_sample_cpu_fallback: bool,
-    cpu_readback_skipped: bool,
-    gpu_readback_failed: bool,
-    input_us: u32,
-    render_us: u32,
-    producer_us: u32,
-    composition_us: u32,
-    sample_us: u32,
-    push_us: u32,
-    publish_us: u32,
-    overhead_us: u32,
-    total_us: u32,
-    output_errors: u32,
+struct DiagnosticsAuthorities {
+    platform: PlatformContext,
+    output: OutputContext,
+    devices: DeviceContext,
+    display: DisplayContext,
+    device_metrics: DeviceMetricsSnapshotStore,
+    parity: MacosScreenParityCapability,
 }
 
-#[derive(Debug, Serialize, ToSchema)]
-struct DiagnoseRenderWindowSnapshot {
-    frames: u32,
-    gpu_sample_deferred: u32,
-    gpu_sample_stale: u32,
-    gpu_sample_retry_hit: u32,
-    gpu_sample_queue_saturated: u32,
-    gpu_sample_wait_blocked: u32,
-    gpu_sample_cpu_fallback: u32,
-    output_current_frame: u32,
-    output_published_frame: u32,
-    output_routed_reuse: u32,
-    output_reused_published_frame: u32,
-    output_error_frames: u32,
-    push_avg_ms: f64,
-    push_p95_ms: f64,
-    publish_avg_ms: f64,
-    publish_p95_ms: f64,
+/// Daemon health authority shared by every diagnostics transport.
+///
+/// Diagnostics reads across the whole daemon, so the authorities sit
+/// behind one `Arc` and every projection shares them rather than
+/// carrying its own copy of the graph.
+#[derive(Clone)]
+pub struct DiagnosticsContext {
+    authorities: Arc<DiagnosticsAuthorities>,
 }
 
-#[derive(Debug, Serialize, ToSchema)]
-#[allow(
-    clippy::struct_field_names,
-    reason = "JSON names mirror the USB actor metrics exported elsewhere"
-)]
-struct DiagnoseUsbActorSnapshot {
-    display_frames_total: u64,
-    display_frames_delayed_for_led_total: u64,
-    display_led_priority_wait_total_ms: f64,
-    display_led_priority_wait_avg_ms: f64,
-    display_led_priority_wait_max_ms: f64,
-}
+impl DiagnosticsContext {
+    pub(crate) fn new(
+        platform: PlatformContext,
+        output: OutputContext,
+        devices: DeviceContext,
+        display: DisplayContext,
+        device_metrics: DeviceMetricsSnapshotStore,
+        input: Arc<Mutex<InputManager>>,
+        spatial: SpatialService,
+    ) -> Self {
+        Self {
+            authorities: Arc::new(DiagnosticsAuthorities {
+                platform,
+                output,
+                devices,
+                display,
+                device_metrics,
+                parity: MacosScreenParityCapability::new(input, spatial),
+            }),
+        }
+    }
 
-#[derive(Debug, Serialize, ToSchema)]
-struct DiagnoseDisplayOutputSnapshot {
-    captured_devices: usize,
-    preview_subscribers: usize,
-    encode_attempts_total: u64,
-    encode_successes_total: u64,
-    encode_failures_total: u64,
-    encode_avg_ms: f64,
-    encode_max_ms: f64,
-    encode_last_ms: Option<f64>,
-    encoded_bytes_total: u64,
-    encoded_last_bytes: u64,
-    write_attempts_total: u64,
-    write_successes_total: u64,
-    write_failures_total: u64,
-    retry_attempts_total: u64,
-    last_failure_age_ms: Option<u64>,
-}
+    /// Arm or disarm the macOS screen-parity probe around the render thread.
+    #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
+    pub(crate) fn install_macos_screen_parity(
+        &self,
+        handle: Option<crate::render_thread::MacosScreenParityDiagnosticHandle>,
+    ) {
+        self.authorities.parity.install(handle);
+    }
 
-#[derive(Debug, Serialize, ToSchema)]
-struct DiagnoseDeviceOutputSnapshot {
-    queues: usize,
-    usb_queues: usize,
-    lagging_queues: usize,
-    worker_finished_queues: usize,
-    dropped_frames_total: u64,
-    errors_total: u64,
-    items: Vec<DiagnoseDeviceOutputItem>,
-}
+    /// Run the safe default check set.
+    pub async fn collect_default(&self) -> DiagnoseResponse {
+        self.collect(&default_safe_checks(), false).await
+    }
 
-#[derive(Debug, Serialize, ToSchema)]
-struct DiagnoseDeviceOutputItem {
-    id: String,
-    backend_id: String,
-    mapped_layout_ids: Vec<String>,
-    uses_frame_sink: bool,
-    worker_finished: bool,
-    delivered_fps: f32,
-    accepted_fps: f32,
-    fps_sent: f32,
-    fps_queued: f32,
-    fps_target: u32,
-    frames_received: u64,
-    accepted: u64,
-    frames_sent: u64,
-    transport_started: u64,
-    transport_completed: u64,
-    transport_failed: u64,
-    completed_payload_bytes: u64,
-    frames_dropped: u64,
-    coalesced: u64,
-    coalesced_target_cadence: u64,
-    coalesced_backend_overrun: u64,
-    errors_total: u64,
-    avg_latency_ms: u32,
-    avg_queue_wait_ms: u32,
-    avg_write_ms: u32,
-    avg_transport_latency_ms: u32,
-    last_sent_ago_ms: Option<u64>,
-    last_error: Option<String>,
-    last_sequence: u64,
-    queue_generation: u64,
-    last_transport_started_sequence: u64,
-    last_transport_completed_sequence: u64,
-    last_transport_failed_sequence: u64,
-    display_queue_generation: Option<u64>,
-    display_transport_started: u64,
-    display_transport_completed: u64,
-    display_transport_failed: u64,
-}
+    /// Run the requested checks against one consistent set of readings.
+    pub async fn collect(&self, requested: &[String], include_system: bool) -> DiagnoseResponse {
+        let inputs = self.read_inputs().await;
+        let mut snapshot = build_diagnose_snapshot(&inputs);
+        let mut checks = Vec::new();
 
-pub(crate) async fn collect_default_diagnostics(state: &AppState) -> DiagnoseResponse {
-    let checks = default_safe_checks();
-    collect_diagnostics(state, &checks, false).await
+        for check in requested {
+            match check.as_str() {
+                "daemon" => checks.push(daemon_check()),
+                "render" => checks.extend(render_checks(&inputs)),
+                "devices" => checks.extend(device_checks(&inputs, &snapshot)),
+                "config" => checks.push(config_check(&inputs)),
+                "input" => checks.extend(input_checks(&snapshot.input)),
+                "memory" => checks.push(servo_memory_check().await),
+                "macos_screen_parity" => {
+                    checks.push(self.authorities.parity.run(&mut snapshot).await);
+                }
+                other => {
+                    checks.push(DiagnoseCheck {
+                        category: "custom".to_owned(),
+                        name: other.to_owned(),
+                        status: "warning".to_owned(),
+                        detail: "unknown check".to_owned(),
+                    });
+                }
+            }
+        }
+
+        if include_system {
+            checks.push(DiagnoseCheck {
+                category: "system".to_owned(),
+                name: "uptime_seconds".to_owned(),
+                status: "pass".to_owned(),
+                detail: inputs.uptime.as_secs().to_string(),
+            });
+        }
+
+        let mut passed = 0usize;
+        let mut warnings = 0usize;
+        let mut failed = 0usize;
+
+        for check in &checks {
+            match check.status.as_str() {
+                "pass" => passed += 1,
+                "fail" => failed += 1,
+                _ => warnings += 1,
+            }
+        }
+
+        DiagnoseResponse {
+            checks,
+            summary: DiagnoseSummary {
+                passed,
+                warnings,
+                failed,
+            },
+            snapshot,
+        }
+    }
+
+    async fn read_inputs(&self) -> DiagnosticsInputs {
+        DiagnosticsInputs {
+            uptime: self.authorities.output.uptime(),
+            performance: self.authorities.output.performance_snapshot().await,
+            render_loop: self.authorities.output.render_loop_status().await,
+            usb_actor: usb_actor_metrics_snapshot(),
+            display_output: self
+                .authorities
+                .display
+                .frames()
+                .read()
+                .await
+                .metrics_snapshot(),
+            device_metrics: self.authorities.device_metrics.load_full(),
+            input: input_status_snapshot(&self.authorities.platform),
+            tracked_devices: self.authorities.devices.device_registry().len().await,
+            config_available: self.authorities.platform.config_available(),
+        }
+    }
 }
 
 pub(crate) fn default_safe_checks() -> Vec<String> {
     DEFAULT_SAFE_CHECKS.into_iter().map(str::to_owned).collect()
-}
-
-pub(crate) async fn collect_diagnostics(
-    state: &AppState,
-    requested: &[String],
-    include_system: bool,
-) -> DiagnoseResponse {
-    let render_elapsed_ms = state.start_time.elapsed().as_secs_f64() * 1000.0;
-    let performance = state.performance.read().await.snapshot();
-    let usb_actor_metrics = usb_actor_metrics_snapshot();
-    let display_output_metrics = state
-        .domains
-        .display
-        .frames()
-        .read()
-        .await
-        .metrics_snapshot();
-    let device_metrics = state.device_metrics.load_full();
-    let input = input_status_snapshot(&state.domains.platform);
-    let mut snapshot = build_diagnose_snapshot(
-        input,
-        &performance,
-        render_elapsed_ms,
-        usb_actor_metrics,
-        display_output_metrics,
-        device_metrics.as_ref(),
-    );
-
-    let mut checks = Vec::new();
-
-    for check in requested {
-        match check.as_str() {
-            "daemon" => checks.push(daemon_check()),
-            "render" => {
-                checks.extend(render_checks(state, &performance, render_elapsed_ms).await);
-            }
-            "devices" => checks.extend(device_checks(state, &snapshot).await),
-            "config" => checks.push(config_check(state)),
-            "input" => checks.extend(input_checks(&snapshot.input)),
-            "memory" => checks.push(servo_memory_check().await),
-            "macos_screen_parity" => {
-                checks.push(macos_screen_parity_check(state, &mut snapshot).await);
-            }
-            other => {
-                checks.push(DiagnoseCheck {
-                    category: "custom".to_owned(),
-                    name: other.to_owned(),
-                    status: "warning".to_owned(),
-                    detail: "unknown check".to_owned(),
-                });
-            }
-        }
-    }
-
-    if include_system {
-        checks.push(DiagnoseCheck {
-            category: "system".to_owned(),
-            name: "uptime_seconds".to_owned(),
-            status: "pass".to_owned(),
-            detail: state.start_time.elapsed().as_secs().to_string(),
-        });
-    }
-
-    let mut passed = 0usize;
-    let mut warnings = 0usize;
-    let mut failed = 0usize;
-
-    for check in &checks {
-        match check.status.as_str() {
-            "pass" => passed += 1,
-            "fail" => failed += 1,
-            _ => warnings += 1,
-        }
-    }
-
-    DiagnoseResponse {
-        checks,
-        summary: DiagnoseSummary {
-            passed,
-            warnings,
-            failed,
-        },
-        snapshot,
-    }
 }
 
 fn daemon_check() -> DiagnoseCheck {
@@ -300,14 +295,11 @@ fn daemon_check() -> DiagnoseCheck {
     }
 }
 
-async fn render_checks(
-    state: &AppState,
-    performance: &PerformanceSnapshot,
-    render_elapsed_ms: f64,
-) -> Vec<DiagnoseCheck> {
-    let loop_guard = state.render_loop.read().await;
-    let running = loop_guard.is_running();
-    let render_loop_stats = loop_guard.stats();
+fn render_checks(inputs: &DiagnosticsInputs) -> Vec<DiagnoseCheck> {
+    let performance = &inputs.performance;
+    let render_elapsed_ms = inputs.render_elapsed_ms();
+    let running = inputs.render_loop.running;
+    let render_loop_stats = inputs.render_loop.stats;
     let mut checks = vec![DiagnoseCheck {
         category: "render".to_owned(),
         name: "render_loop".to_owned(),
@@ -354,8 +346,8 @@ async fn render_checks(
     checks
 }
 
-async fn device_checks(state: &AppState, snapshot: &DiagnoseSnapshot) -> Vec<DiagnoseCheck> {
-    let count = state.device_registry.len().await;
+fn device_checks(inputs: &DiagnosticsInputs, snapshot: &DiagnoseSnapshot) -> Vec<DiagnoseCheck> {
+    let count = inputs.tracked_devices;
     let output_status = if snapshot.device_output.worker_finished_queues > 0
         || snapshot.device_output.errors_total > 0
     {
@@ -431,8 +423,8 @@ async fn device_checks(state: &AppState, snapshot: &DiagnoseSnapshot) -> Vec<Dia
     ]
 }
 
-fn config_check(state: &AppState) -> DiagnoseCheck {
-    let has_manager = state.config_manager.is_some();
+fn config_check(inputs: &DiagnosticsInputs) -> DiagnoseCheck {
+    let has_manager = inputs.config_available;
     DiagnoseCheck {
         category: "config".to_owned(),
         name: "config_manager".to_owned(),
@@ -469,54 +461,6 @@ fn input_checks(input: &InputStatus) -> Vec<DiagnoseCheck> {
             detail: diagnostic.detail,
         })
         .collect()
-}
-
-#[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
-async fn macos_screen_parity_check(
-    state: &AppState,
-    snapshot: &mut DiagnoseSnapshot,
-) -> DiagnoseCheck {
-    match super::macos_screen_parity::run_macos_screen_parity(state).await {
-        Ok(report) => {
-            let detail = report.detail();
-            match serde_json::to_value(report) {
-                Ok(report) => {
-                    snapshot.macos_screen_parity = Some(report);
-                    DiagnoseCheck {
-                        category: "input".to_owned(),
-                        name: "macos_screen_parity".to_owned(),
-                        status: "pass".to_owned(),
-                        detail,
-                    }
-                }
-                Err(_) => DiagnoseCheck {
-                    category: "input".to_owned(),
-                    name: "macos_screen_parity".to_owned(),
-                    status: "fail".to_owned(),
-                    detail: "the parity report could not be serialized".to_owned(),
-                },
-            }
-        }
-        Err(error) => DiagnoseCheck {
-            category: "input".to_owned(),
-            name: "macos_screen_parity".to_owned(),
-            status: error.status().to_owned(),
-            detail: error.detail().to_owned(),
-        },
-    }
-}
-
-#[cfg(not(all(target_os = "macos", feature = "wgpu", feature = "screen-capture")))]
-fn macos_screen_parity_check(
-    _state: &AppState,
-    _snapshot: &mut DiagnoseSnapshot,
-) -> std::future::Ready<DiagnoseCheck> {
-    std::future::ready(DiagnoseCheck {
-        category: "input".to_owned(),
-        name: "macos_screen_parity".to_owned(),
-        status: "warning".to_owned(),
-        detail: "macOS screen parity is unavailable in this build".to_owned(),
-    })
 }
 
 fn render_frame_liveness_status(
@@ -585,20 +529,13 @@ fn render_led_freshness_status(
     )
 }
 
-fn build_diagnose_snapshot(
-    input: InputStatus,
-    performance: &PerformanceSnapshot,
-    render_elapsed_ms: f64,
-    usb_actor_metrics: UsbActorMetricsSnapshot,
-    display_output_metrics: DisplayOutputMetricsSnapshot,
-    device_metrics: &DeviceMetricsSnapshot,
-) -> DiagnoseSnapshot {
+fn build_diagnose_snapshot(inputs: &DiagnosticsInputs) -> DiagnoseSnapshot {
     DiagnoseSnapshot {
-        input,
-        render: build_render_snapshot(performance, render_elapsed_ms),
-        usb: build_usb_actor_snapshot(usb_actor_metrics),
-        display_output: build_display_output_snapshot(display_output_metrics),
-        device_output: build_device_output_snapshot(device_metrics),
+        input: inputs.input.clone(),
+        render: build_render_snapshot(&inputs.performance, inputs.render_elapsed_ms()),
+        usb: build_usb_actor_snapshot(inputs.usb_actor),
+        display_output: build_display_output_snapshot(inputs.display_output.clone()),
+        device_output: build_device_output_snapshot(inputs.device_metrics.as_ref()),
         macos_screen_parity: None,
     }
 }

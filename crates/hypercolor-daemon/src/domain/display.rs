@@ -633,8 +633,7 @@ pub fn normalize_display_face_target(target: DisplayFaceTarget) -> DisplayFaceTa
 /// run into a runtime overlay zone. Every transport enters here, so an
 /// assignment reaches the store, the catalog guard, and the scene in one
 /// order no adapter can reorder.
-#[derive(Clone)]
-pub struct DisplayContext {
+struct DisplayAuthorities {
     preferences: Arc<RwLock<DisplayPreferencesStore>>,
     frames: Arc<RwLock<DisplayFrameRuntime>>,
     scene: SceneContext,
@@ -643,8 +642,13 @@ pub struct DisplayContext {
     devices: DeviceContext,
 }
 
+#[derive(Clone)]
+pub struct DisplayContext {
+    authorities: Arc<DisplayAuthorities>,
+}
+
 impl DisplayContext {
-    pub(crate) const fn new(
+    pub(crate) fn new(
         preferences: Arc<RwLock<DisplayPreferencesStore>>,
         frames: Arc<RwLock<DisplayFrameRuntime>>,
         scene: SceneContext,
@@ -653,36 +657,43 @@ impl DisplayContext {
         devices: DeviceContext,
     ) -> Self {
         Self {
-            preferences,
-            frames,
-            scene,
-            effects,
-            layout,
-            devices,
+            authorities: Arc::new(DisplayAuthorities {
+                preferences,
+                frames,
+                scene,
+                effects,
+                layout,
+                devices,
+            }),
         }
     }
 
     /// Latest composited frame per display, for preview surfaces.
     #[must_use]
-    pub const fn frames(&self) -> &Arc<RwLock<DisplayFrameRuntime>> {
-        &self.frames
+    pub fn frames(&self) -> &Arc<RwLock<DisplayFrameRuntime>> {
+        &self.authorities.frames
     }
 
     /// Persisted per-display default face preferences.
     #[must_use]
-    pub const fn preferences(&self) -> &Arc<RwLock<DisplayPreferencesStore>> {
-        &self.preferences
+    pub fn preferences(&self) -> &Arc<RwLock<DisplayPreferencesStore>> {
+        &self.authorities.preferences
     }
 
     /// Whether a display carries a stored default face.
     pub async fn has_default_face(&self, device_id: DeviceId) -> bool {
-        self.preferences.read().await.get(device_id).is_some()
+        self.authorities
+            .preferences
+            .read()
+            .await
+            .get(device_id)
+            .is_some()
     }
 
     /// Resolve both assignment layers for a display.
     pub async fn face_layers(&self, device_id: DeviceId) -> DisplayFaceLayers {
         let scene_assigned = {
-            let scenes = self.scene.snapshot().await;
+            let scenes = self.authorities.scene.snapshot().await;
             scenes
                 .active_scene()
                 .and_then(|scene| scene.display_zone_for(device_id))
@@ -695,7 +706,7 @@ impl DisplayContext {
     }
 
     async fn active_scene_id(&self) -> SceneId {
-        let scenes = self.scene.snapshot().await;
+        let scenes = self.authorities.scene.snapshot().await;
         scenes
             .active_scene()
             .map_or(SceneId::DEFAULT, |scene| scene.id)
@@ -720,10 +731,11 @@ impl DisplayContext {
             target,
         } = command;
         let target = normalize_display_face_target(target);
-        let admitted = admit_display_face_controls(&self.effects, effect, &controls).await?;
+        let admitted =
+            admit_display_face_controls(&self.authorities.effects, effect, &controls).await?;
         let (effect, controls, admission) = admitted.into_parts();
         {
-            let mut store = self.preferences.write().await;
+            let mut store = self.authorities.preferences.write().await;
             store
                 .set(
                     device_id,
@@ -769,7 +781,7 @@ impl DisplayContext {
         device_id: DeviceId,
     ) -> Result<DefaultDisplayFaceCleared, DomainError> {
         let removed = {
-            let mut store = self.preferences.write().await;
+            let mut store = self.authorities.preferences.write().await;
             store
                 .remove(device_id)
                 .map_err(|error| {
@@ -780,7 +792,7 @@ impl DisplayContext {
                 .is_some()
         };
         let layers = self.face_layers(device_id).await;
-        let cleared = remove_default_display_overlay(&self.scene, device_id).await?;
+        let cleared = remove_default_display_overlay(&self.authorities.scene, device_id).await?;
         let retracted = if removed && !layers.scene_assigned {
             cleared.map(|mut zone| {
                 zone.layers.clear();
@@ -810,7 +822,7 @@ impl DisplayContext {
         blend_mode: Option<BlendMode>,
         opacity: Option<f32>,
     ) -> Result<(), DomainError> {
-        let mut store = self.preferences.write().await;
+        let mut store = self.authorities.preferences.write().await;
         let Some(mut updated) = store.get(device_id).cloned() else {
             return Err(DomainError::not_found(
                 ResourceKind::Zone,
@@ -846,7 +858,7 @@ impl DisplayContext {
     ) -> Result<(), DomainError> {
         loop {
             let preference = {
-                let store = self.preferences.read().await;
+                let store = self.authorities.preferences.read().await;
                 let Some(preference) = store.get(device_id).cloned() else {
                     return Err(DomainError::not_found(
                         ResourceKind::Zone,
@@ -855,12 +867,15 @@ impl DisplayContext {
                 };
                 preference
             };
-            let admitted =
-                admit_current_display_face_controls(&self.effects, preference.effect_id, controls)
-                    .await?;
+            let admitted = admit_current_display_face_controls(
+                &self.authorities.effects,
+                preference.effect_id,
+                controls,
+            )
+            .await?;
             let (_effect, normalized_controls, admission) = admitted.into_parts();
             let updated = {
-                let mut store = self.preferences.write().await;
+                let mut store = self.authorities.preferences.write().await;
                 store.merge_controls_if_unchanged(device_id, &preference, &normalized_controls)
             };
             drop(admission);
@@ -883,13 +898,13 @@ impl DisplayContext {
     /// longer resolves. Returns the installed zone, if any.
     pub async fn apply_preference_overlay(&self, device_id: DeviceId) -> Option<Zone> {
         loop {
-            let admission = self.effects.admit_current().await;
+            let admission = self.authorities.effects.admit_current().await;
             let candidate = {
-                let store = self.preferences.read().await;
+                let store = self.authorities.preferences.read().await;
                 store.get(device_id).cloned()
             };
             let Some(mut preference) = candidate else {
-                let store = self.preferences.read().await;
+                let store = self.authorities.preferences.read().await;
                 if store.get(device_id).is_some() {
                     continue;
                 }
@@ -899,19 +914,19 @@ impl DisplayContext {
                 return retracted;
             };
 
-            let registry = self.devices.device_registry();
+            let registry = self.authorities.devices.device_registry();
             let tracked = registry.get(&device_id).await;
             let surface = tracked
                 .as_ref()
                 .and_then(|tracked| display_surface_info(&tracked.info));
             let resolved = resolve_display_face_controls_under_admission(
-                &self.effects,
+                &self.authorities.effects,
                 &admission,
                 preference.effect_id,
                 &preference.controls,
             )
             .await;
-            let store = self.preferences.read().await;
+            let store = self.authorities.preferences.read().await;
             if store.get(device_id) != Some(&preference) {
                 drop(store);
                 drop(admission);
@@ -947,7 +962,8 @@ impl DisplayContext {
                 &preference,
                 display_face_layout(device_id, tracked.info.name.as_str(), surface),
             );
-            let installed = set_default_display_overlay(&self.scene, device_id, zone).await;
+            let installed =
+                set_default_display_overlay(&self.authorities.scene, device_id, zone).await;
             drop(store);
             drop(admission);
             return match installed {
@@ -963,7 +979,8 @@ impl DisplayContext {
     /// Drop a display's runtime default overlay, reporting `None` either
     /// way so the caller reads it as "no overlay is installed".
     async fn retract_preference_overlay(&self, device_id: DeviceId) -> Option<Zone> {
-        if let Err(error) = remove_default_display_overlay(&self.scene, device_id).await {
+        if let Err(error) = remove_default_display_overlay(&self.authorities.scene, device_id).await
+        {
             tracing::warn!(%error, %device_id, "Failed to retract the default face overlay");
         }
         None
@@ -973,7 +990,7 @@ impl DisplayContext {
     /// store, so defaults follow devices as they appear.
     pub async fn sync_preference_overlays(&self) {
         let device_ids = {
-            let store = self.preferences.read().await;
+            let store = self.authorities.preferences.read().await;
             store
                 .iter()
                 .map(|(device_id, _)| device_id)
@@ -987,10 +1004,13 @@ impl DisplayContext {
     /// Refresh native geometry for every connected display's scene zone.
     pub async fn sync_connected_surfaces(&self) {
         let displays = self
+            .authorities
             .layout
-            .connected_display_surface_layouts(&self.devices.layout_runtime())
+            .connected_display_surface_layouts(&self.authorities.devices.layout_runtime())
             .await;
-        if let Err(error) = hydrate_existing_display_surfaces(&self.scene, displays).await {
+        if let Err(error) =
+            hydrate_existing_display_surfaces(&self.authorities.scene, displays).await
+        {
             tracing::warn!(%error, "Failed to hydrate connected display surfaces");
         }
     }

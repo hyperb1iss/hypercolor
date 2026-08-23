@@ -56,7 +56,7 @@ use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 
 use crate::attachment_profiles::ComponentProfileStore;
-use crate::device_metrics::DeviceMetricsSnapshot;
+use crate::device_metrics::{DeviceMetricsSnapshot, DeviceMetricsSnapshotStore};
 use crate::device_settings::DeviceSettingsStore;
 use crate::display_frames::DisplayFrameRuntime;
 use crate::display_preferences::DisplayPreferencesStore;
@@ -696,6 +696,8 @@ impl DaemonState {
                 ),
                 display_preferences: Arc::clone(&display_preferences),
                 display_frames: Arc::clone(&display_frames),
+                device_metrics: Arc::clone(&device_metrics),
+                input_manager: Arc::clone(&input_manager),
             },
             |layout| {
                 let discovery_runtime = crate::discovery::DiscoveryRuntime {
@@ -1525,6 +1527,8 @@ pub(crate) struct DomainAssemblyResources {
     pub effect_identity: EffectIdentityResources,
     pub display_preferences: Arc<RwLock<DisplayPreferencesStore>>,
     pub display_frames: Arc<RwLock<DisplayFrameRuntime>>,
+    pub device_metrics: DeviceMetricsSnapshotStore,
+    pub input_manager: Arc<Mutex<InputManager>>,
 }
 
 /// The assembled domain graph and the driver host it was wired around.
@@ -1563,6 +1567,8 @@ pub(crate) fn assemble_domains(
         effect_identity,
         display_preferences,
         display_frames,
+        device_metrics,
+        input_manager,
     } = resources;
 
     let runtime_projection = RuntimeSessionProjection::new(
@@ -1621,6 +1627,8 @@ pub(crate) fn assemble_domains(
             event_bus,
             display_preferences,
             display_frames,
+            device_metrics,
+            input_manager,
         },
     );
 

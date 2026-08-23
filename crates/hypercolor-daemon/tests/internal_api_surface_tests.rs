@@ -286,13 +286,13 @@ fn input_status_projection_uses_platform_context() {
     assert!(projection.contains("use crate::domain::context::PlatformContext;"));
     assert!(!projection.contains("AppState"));
 
-    for creditor in [
-        source("api/system.rs"),
-        source("domain/diagnostics.rs"),
-        source("mcp/payload.rs"),
-    ] {
+    for creditor in [source("api/system.rs"), source("mcp/payload.rs")] {
         assert!(creditor.contains("&state.domains.platform"));
     }
+    assert!(
+        source("domain/diagnostics.rs")
+            .contains("input_status_snapshot(&self.authorities.platform)")
+    );
 }
 
 #[test]
@@ -539,15 +539,6 @@ fn domain_errors_do_not_render_transport_responses() {
     );
 }
 
-/// The two domain modules still holding `serde_json`, and why.
-///
-/// `diagnostics.rs` pre-serializes the macOS screen parity report into
-/// its snapshot and `macos_screen_parity.rs` canonicalizes a layout to
-/// bytes before hashing it. Both lose their `serde_json` when the
-/// diagnostics report becomes a typed contract; until then they are
-/// named here rather than silently unfenced.
-const DOMAIN_JSON_EXEMPT: [&str; 2] = ["diagnostics.rs", "macos_screen_parity.rs"];
-
 /// `DomainErrorDetails::Adapter` is the one place a domain type names
 /// `serde_json::Value`: it carries whatever context a transport shaped
 /// for itself. Domain services cannot build one, because the ban below
@@ -565,9 +556,6 @@ fn domain_services_do_not_shape_wire_json() {
         .filter(|(path, _)| {
             path.components()
                 .any(|component| component.as_os_str() == "domain")
-                && !DOMAIN_JSON_EXEMPT
-                    .iter()
-                    .any(|exempt| path.ends_with(exempt))
         })
         .flat_map(|(path, source)| {
             source
@@ -599,6 +587,93 @@ fn domain_services_do_not_shape_wire_json() {
         "domain modules must raise typed DomainErrorDetails, not JSON:\n{}",
         offenders.join("\n")
     );
+}
+
+/// The one domain module still deriving wire traits, and why.
+///
+/// `macos_screen_parity.rs` compiles only on macOS with the Metal
+/// render path, so its report types cannot be moved or verified from
+/// any other host. Naming it here keeps the exemption visible instead
+/// of leaving the rule silently unenforced.
+const DOMAIN_WIRE_DERIVE_EXEMPT: [&str; 1] = ["macos_screen_parity.rs"];
+
+#[test]
+fn domain_services_do_not_derive_wire_traits() {
+    let offenders = daemon_sources()
+        .into_iter()
+        .filter(|(path, _)| {
+            path.components()
+                .any(|component| component.as_os_str() == "domain")
+                && !DOMAIN_WIRE_DERIVE_EXEMPT
+                    .iter()
+                    .any(|exempt| path.ends_with(exempt))
+        })
+        .flat_map(|(path, source)| {
+            source
+                .lines()
+                .enumerate()
+                .filter(|(_, line)| {
+                    let line = line.trim();
+                    line.starts_with("#[derive(")
+                        && (line.contains("Serialize") || line.contains("ToSchema"))
+                })
+                .map(|(index, line)| {
+                    format!("{}:{} derives {}", path.display(), index + 1, line.trim())
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        offenders.is_empty(),
+        "domain modules must not shape the wire; move the type to hypercolor-types::api:\n{}",
+        offenders.join("\n")
+    );
+}
+
+#[test]
+fn diagnostics_reads_one_consistent_transaction() {
+    let sources = daemon_sources();
+    let source = |suffix: &str| {
+        sources
+            .iter()
+            .find(|(path, _)| path.ends_with(suffix))
+            .map(|(_, source)| source.as_str())
+            .unwrap_or_else(|| panic!("missing daemon source {suffix}"))
+    };
+
+    let diagnostics = source("domain/diagnostics.rs");
+    assert!(diagnostics.contains("pub struct DiagnosticsContext"));
+    assert!(diagnostics.contains("struct DiagnosticsInputs"));
+    assert!(diagnostics.contains("async fn read_inputs(&self) -> DiagnosticsInputs"));
+    assert!(
+        !diagnostics.contains("AppState"),
+        "diagnostics must not project the API state"
+    );
+    let parity = source("domain/macos_screen_parity.rs");
+    assert!(
+        !parity.contains("AppState"),
+        "screen parity must not project the API state"
+    );
+
+    let contexts = source("domain/context.rs");
+    assert!(contexts.contains("pub diagnostics: DiagnosticsContext"));
+
+    let app_state = source("app_state.rs");
+    assert!(!app_state.contains("macos_screen_parity_diagnostics"));
+
+    let lifecycle = source("startup/lifecycle.rs");
+    assert_eq!(
+        lifecycle.matches("install_macos_screen_parity").count(),
+        2,
+        "the parity probe arms on render-thread start and disarms on stop"
+    );
+
+    let rest = source("api/diagnose.rs");
+    assert!(rest.contains("hypercolor_types::api::diagnose::DiagnoseResponse"));
+    let mcp = source("mcp/tools/system.rs");
+    assert!(mcp.contains("state.domains.diagnostics.collect_default()"));
+    assert!(mcp.contains("hypercolor_types::api::diagnose::DiagnoseResponse"));
 }
 
 #[test]
@@ -1177,7 +1252,7 @@ fn effect_mutations_require_generation_qualified_admission() {
         .find("resolve_display_face_controls_under_admission")
         .expect("display overlay should resolve controls under admission");
     let scene_commit = overlay
-        .find("set_default_display_overlay(&self.scene")
+        .find("set_default_display_overlay(&self.authorities.scene")
         .expect("display overlay should commit under effect admission");
     assert!(admission < scene_commit);
 }

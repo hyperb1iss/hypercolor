@@ -32,6 +32,15 @@ use crate::output_power::{OutputOverride, OutputPower, OutputPowerState};
 use crate::performance::PerformanceTracker;
 use crate::preview_runtime::PreviewRuntime;
 
+/// Render loop liveness and pacing tier, read under one guard.
+#[derive(Debug, Clone, Copy)]
+pub struct RenderLoopStatus {
+    /// Whether the loop is ticking.
+    pub running: bool,
+    /// Pacing state and tier at the moment of the read.
+    pub stats: hypercolor_core::engine::RenderLoopStats,
+}
+
 /// Owning authority for global output power, brightness, and quiescence.
 #[derive(Clone)]
 pub struct OutputContext {
@@ -75,6 +84,26 @@ impl OutputContext {
             preview_runtime,
             devices,
             start_time,
+        }
+    }
+
+    /// How long the daemon's subsystems have been up.
+    #[must_use]
+    pub fn uptime(&self) -> std::time::Duration {
+        self.start_time.elapsed()
+    }
+
+    /// Capture the rolling render-performance window.
+    pub(crate) async fn performance_snapshot(&self) -> crate::performance::PerformanceSnapshot {
+        self.performance.read().await.snapshot()
+    }
+
+    /// Read render loop liveness and pacing under one guard.
+    pub async fn render_loop_status(&self) -> RenderLoopStatus {
+        let guard = self.render_loop.read().await;
+        RenderLoopStatus {
+            running: guard.is_running(),
+            stats: guard.stats(),
         }
     }
 

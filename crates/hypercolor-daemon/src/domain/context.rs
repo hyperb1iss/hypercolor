@@ -19,11 +19,13 @@ use hypercolor_types::layer::{LayerSource, SceneLayer};
 use hypercolor_types::scene::{Scene, SceneId};
 use tokio::sync::{OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
 
+use crate::device_metrics::DeviceMetricsSnapshotStore;
 use crate::discovery;
 use crate::display_frames::DisplayFrameRuntime;
 use crate::display_preferences::DisplayPreferencesStore;
 use crate::domain::DomainError;
 use crate::domain::commit::SceneCommit;
+use crate::domain::diagnostics::DiagnosticsContext;
 use crate::domain::display::DisplayContext;
 use crate::domain::effect::{EffectContext, EffectIdentityResources};
 use crate::domain::layout::{LayoutContext, LayoutRuntime};
@@ -56,6 +58,8 @@ pub struct DomainContexts {
     pub platform: PlatformContext,
     /// Display default-face and preview-frame authority.
     pub display: DisplayContext,
+    /// Daemon health and diagnostics authority.
+    pub diagnostics: DiagnosticsContext,
     /// Effect catalog, validation, and activation authority.
     pub effects: EffectContext,
     /// Live scene-tree mutation authority.
@@ -71,6 +75,8 @@ pub(crate) struct DomainContextResources {
     pub event_bus: Arc<HypercolorBus>,
     pub display_preferences: Arc<RwLock<DisplayPreferencesStore>>,
     pub display_frames: Arc<RwLock<DisplayFrameRuntime>>,
+    pub device_metrics: DeviceMetricsSnapshotStore,
+    pub input_manager: Arc<tokio::sync::Mutex<hypercolor_core::input::InputManager>>,
 }
 
 impl DomainContexts {
@@ -86,7 +92,7 @@ impl DomainContexts {
         let effects = EffectContext::new(
             Arc::clone(&resources.effect_registry),
             scene.clone(),
-            resources.spatial,
+            resources.spatial.clone(),
             output.clone(),
             resources.effect_identity,
             Arc::clone(&resources.event_bus),
@@ -112,6 +118,15 @@ impl DomainContexts {
             layout.clone(),
             devices.clone(),
         );
+        let diagnostics = DiagnosticsContext::new(
+            platform.clone(),
+            output.clone(),
+            devices.clone(),
+            display.clone(),
+            resources.device_metrics,
+            resources.input_manager,
+            resources.spatial,
+        );
         Self {
             runtime_session,
             devices,
@@ -120,6 +135,7 @@ impl DomainContexts {
             output,
             platform,
             display,
+            diagnostics,
             effects,
             scene_tree,
             scene_library,
@@ -148,6 +164,12 @@ impl PlatformContext {
     #[must_use]
     pub(crate) fn source_status_snapshot(&self) -> Arc<SourceStatusRegistrySnapshot> {
         self.input_status.snapshot()
+    }
+
+    /// Whether a live configuration manager backs this projection.
+    #[must_use]
+    pub(crate) fn config_available(&self) -> bool {
+        self.config_manager.is_some()
     }
 
     #[must_use]
