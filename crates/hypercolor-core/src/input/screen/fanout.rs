@@ -1667,7 +1667,7 @@ fn surface_materializer_allocation_quote(
     }
     if matches!(
         profile.smoothing(),
-        ScreenSmoothingPolicy::Exponential { .. }
+        ScreenSmoothingPolicy::Frozen { .. } | ScreenSmoothingPolicy::Exponential { .. }
     ) {
         retained_bytes = retained_bytes
             .checked_add(surface_requested_bytes(
@@ -1733,7 +1733,7 @@ fn zone_materializer_allocation_quote(
     }
     if matches!(
         profile.smoothing(),
-        ScreenSmoothingPolicy::Exponential { .. }
+        ScreenSmoothingPolicy::Frozen { .. } | ScreenSmoothingPolicy::Exponential { .. }
     ) {
         retained_bytes = retained_bytes
             .checked_add(zone_requested_bytes(zone_count, size_of::<[f32; 3]>() * 2)?)

@@ -56,11 +56,12 @@ use crate::input::screen::{
     ScreenColorTransformCapabilities, ScreenComputeCapacityPolicy, ScreenCursorCapabilities,
     ScreenCursorPolicy, ScreenExecutorColorCapabilities, ScreenGpuSurfacePayload,
     ScreenNativePreparationPayload, ScreenPhysicalGpuDeviceIdentity,
-    ScreenPhysicalReductionDescriptor, ScreenPreparedWorkerToken, ScreenPublicationColorimetry,
-    ScreenPublicationExecutor, ScreenPublicationExecutorRequest, ScreenPublicationHealth,
-    ScreenPublicationHub, ScreenPublicationKind, ScreenPublicationMetadata, ScreenReductionFilter,
-    ScreenRequiredResourceMinimum, ScreenResourceApi, ScreenResourceKind, ScreenResourceLifetime,
-    ScreenSourceReflection, ScreenSourceSelector, ScreenWorkerBinding, ScreenWorkerBindingState,
+    ScreenPhysicalReductionDescriptor, ScreenPreparedWorkerToken, ScreenProcessingProfile,
+    ScreenPublicationColorimetry, ScreenPublicationExecutor, ScreenPublicationExecutorRequest,
+    ScreenPublicationHealth, ScreenPublicationHub, ScreenPublicationKind,
+    ScreenPublicationMetadata, ScreenReductionFilter, ScreenRequiredResourceMinimum,
+    ScreenResourceApi, ScreenResourceKind, ScreenResourceLifetime, ScreenSourceReflection,
+    ScreenSourceSelector, ScreenWorkerBinding, ScreenWorkerBindingState,
     ScreenWorkerExactLedgerBuilder, ScreenWorkerPreparation, ScreenWorkerPreparationTicket,
     ScreenWorkerRetirement, SourceScale, analyze_screen_frame,
 };
@@ -397,6 +398,14 @@ struct ExactPublicationShared {
 }
 
 impl ExactPublicationShared {
+    fn advance_resolution_revision(&self) {
+        self.resolution_revision
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |revision| {
+                revision.checked_add(1)
+            })
+            .expect("Windows screen publication resolution revision exhausted");
+    }
+
     fn replace_source(&self, next: Option<WindowsPublicationSource>) {
         let mut source = self
             .source
@@ -406,11 +415,7 @@ impl ExactPublicationShared {
             return;
         }
         *source = next;
-        self.resolution_revision
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |revision| {
-                revision.checked_add(1)
-            })
-            .expect("Windows screen publication resolution revision exhausted");
+        self.advance_resolution_revision();
     }
 
     fn source(&self) -> Option<WindowsPublicationSource> {
@@ -1421,10 +1426,12 @@ impl WindowsScreenCaptureInput {
     /// Publish new settings and bump the generation the worker polls.
     fn reconfigure(&mut self, config: CaptureConfig) -> anyhow::Result<()> {
         CaptureCadence::new(config.target_fps)?;
+        config.exact_processing_profile(&ScreenProcessingProfile::default())?;
         let snapshot = self.settings.snapshot();
         if snapshot.config == config {
             return Ok(());
         }
+        let processing_changed = snapshot.config.processing_controls_differ(&config);
         let source_generation = if snapshot.config.source == config.source {
             snapshot.source_generation
         } else {
@@ -1436,6 +1443,9 @@ impl WindowsScreenCaptureInput {
             #[cfg(feature = "windows-capture-fixtures")]
             if self.fixture.is_some() {
                 self.adopt_fixture_settings(prepared);
+                if processing_changed {
+                    self.exact.advance_resolution_revision();
+                }
                 return Ok(());
             }
             if self.running {
@@ -1446,10 +1456,16 @@ impl WindowsScreenCaptureInput {
             if snapshot.source_generation != source_generation {
                 self.exact.replace_source(None);
             }
+            if processing_changed {
+                self.exact.advance_resolution_revision();
+            }
             return Ok(());
         }
         self.settings
             .commit_values(&config, source_generation, self.capture_demand);
+        if processing_changed {
+            self.exact.advance_resolution_revision();
+        }
         Ok(())
     }
 }
@@ -1641,7 +1657,12 @@ impl InputSource for WindowsScreenCaptureInput {
         let Some(source) = self.exact.source() else {
             return Ok(None);
         };
-        resolve_windows_publication_branch(&source, demand)
+        let configured = self
+            .settings
+            .snapshot()
+            .config
+            .bind_exact_processing_profile(demand)?;
+        resolve_windows_publication_branch(&source, &configured)
     }
 
     fn owns_screen_publication_source(&self, source_id: &CaptureSourceId) -> bool {

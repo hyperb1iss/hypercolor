@@ -3648,6 +3648,78 @@ fn screen_branch_observer_revisions_change_only_with_their_routes() {
     assert_eq!(retained_zones.branch_revision(), Some(zones_revision));
 }
 
+#[test]
+fn screen_branch_observer_sees_live_capture_profile_commit() {
+    let source = resolved_source(ScreenSourceSelector::Configured, "display-a", 16, 9);
+    let requested = ScreenProcessingProfile::default();
+    let initial_config = CaptureConfig::default();
+    let initial_profile = initial_config
+        .exact_processing_profile(&requested)
+        .expect("default capture controls derive an exact profile");
+    let registration = registered(
+        ScreenSourceSelector::Configured,
+        ScreenPublicationKind::Surface,
+        ScreenExtentRequest::Native,
+        ScreenAspectPolicy::Contain,
+        Arc::new(initial_profile),
+        60,
+    );
+    let mut builder = ScreenPlanBuilder::new();
+    let hub = builder.publication_hub();
+    let observer = registration.observer(&hub);
+    commit_demands(&mut builder, [resolve(&registration, &source)], None)
+        .expect("initial configured profile commits");
+    let initial_revision = observer
+        .snapshot()
+        .branch_revision()
+        .expect("initial configured route has a revision");
+
+    let changed_config = CaptureConfig {
+        smoothing_alpha: 0.0,
+        scene_cut_threshold: 765.0,
+        letterbox_enabled: true,
+        letterbox_threshold: 0.05,
+        ..initial_config
+    };
+    let changed_profile = changed_config
+        .exact_processing_profile(&requested)
+        .expect("changed capture controls derive an exact profile");
+    let request = registration.request();
+    let changed = RegisteredScreenBranchDemand::with_id(
+        registration.consumer_branch_id(),
+        ScreenPublicationRequest::new(
+            request.selector().clone(),
+            request.kind(),
+            request.executor().clone(),
+            request.extent(),
+            request.aspect(),
+            Arc::new(changed_profile.clone()),
+        ),
+        registration.requested_hz(),
+    );
+    let changed_plan = commit_demands(&mut builder, [resolve(&changed, &source)], None)
+        .expect("changed configured profile commits");
+    let observed = observer.snapshot();
+
+    assert_ne!(observed.branch_revision(), Some(initial_revision));
+    assert_eq!(
+        observed
+            .branch_revision()
+            .expect("changed configured route has a revision")
+            .get(),
+        changed_plan.generation().get()
+    );
+    assert_eq!(
+        observed
+            .lease()
+            .expect("changed configured route remains leased")
+            .descriptor()
+            .processing_profile()
+            .as_ref(),
+        &changed_profile
+    );
+}
+
 #[tokio::test]
 async fn screen_branch_observer_notifies_plan_swaps() {
     let source = resolved_source(ScreenSourceSelector::Configured, "display-a", 16, 9);

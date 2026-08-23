@@ -42,9 +42,9 @@ use super::{
     ScreenComputeCapacityPolicy, ScreenCursorCapabilities, ScreenCursorPolicy,
     ScreenExecutorColorCapabilities, ScreenGpuSurfacePayload, ScreenNativePreparationPayload,
     ScreenNativeWorkPayload, ScreenPhysicalGpuDeviceIdentity, ScreenPreparedWorkerToken,
-    ScreenPublicationColorimetry, ScreenPublicationExecutor, ScreenPublicationExecutorRequest,
-    ScreenPublicationHealth, ScreenPublicationHub, ScreenPublicationHubError,
-    ScreenPublicationMetadata, ScreenPublicationRequest, ScreenRequiredResourceMinimum,
+    ScreenProcessingProfile, ScreenPublicationColorimetry, ScreenPublicationExecutor,
+    ScreenPublicationExecutorRequest, ScreenPublicationHealth, ScreenPublicationHub,
+    ScreenPublicationHubError, ScreenPublicationMetadata, ScreenRequiredResourceMinimum,
     ScreenResourceApi, ScreenResourceKind, ScreenResourceLifetime, ScreenSourceReflection,
     ScreenSourceSelector, ScreenWorkerBinding, ScreenWorkerBindingState,
     ScreenWorkerExactLedgerBuilder, ScreenWorkerPreparation, ScreenWorkerPreparationTicket,
@@ -769,7 +769,7 @@ enum WorkerCommand {
         completion: Option<oneshot::Sender<anyhow::Result<()>>>,
     },
     ReconfigureProcessing {
-        calibration: LedToneMapCalibration,
+        config: CaptureConfig,
         completion: mpsc::SyncSender<anyhow::Result<()>>,
     },
 }
@@ -1514,32 +1514,8 @@ impl InputSource for MacosScreenCaptureInput {
             );
             return Ok(None);
         };
-        let calibration = LedToneMapCalibration::try_new(
-            self.config.target_led_white_x,
-            self.config.target_led_white_y,
-            self.config.target_led_reference_white_nits,
-            self.config.target_led_peak_nits,
-            self.config.exposure_ev,
-        )?;
-        let request = demand.request();
-        let processing_profile = request
-            .processing_profile()
-            .as_ref()
-            .clone()
-            .with_led_tone_map(calibration);
-        let calibrated = RegisteredScreenBranchDemand::with_id(
-            demand.consumer_branch_id(),
-            ScreenPublicationRequest::new(
-                request.selector().clone(),
-                request.kind(),
-                request.executor().clone(),
-                request.extent(),
-                request.aspect(),
-                Arc::new(processing_profile),
-            ),
-            demand.requested_hz(),
-        );
-        resolve_macos_publication_branch_with_telemetry(&source, &calibrated, &self.telemetry)
+        let configured = self.config.bind_exact_processing_profile(demand)?;
+        resolve_macos_publication_branch_with_telemetry(&source, &configured, &self.telemetry)
     }
 
     fn owns_screen_publication_source(&self, source_id: &CaptureSourceId) -> bool {
@@ -1605,8 +1581,13 @@ impl InputSource for MacosScreenCaptureInput {
     }
 
     fn reconfigure_screen_capture(&mut self, config: &CaptureConfig) -> anyhow::Result<()> {
+        config.exact_processing_profile(&ScreenProcessingProfile::default())?;
+        let processing_changed = self.config.processing_controls_differ(config);
         if !self.demand.is_active() {
             self.config.clone_from(config);
+            if processing_changed {
+                self.exact.advance_resolution_revision();
+            }
             return Ok(());
         }
         let request =
@@ -1650,25 +1631,17 @@ impl InputSource for MacosScreenCaptureInput {
             self.install_worker(prepared);
         }
         self.config.clone_from(config);
+        if processing_changed {
+            self.exact.advance_resolution_revision();
+        }
         Ok(())
     }
 
     fn reconfigure_screen_processing(&mut self, config: &CaptureConfig) -> anyhow::Result<()> {
-        let next = LedToneMapCalibration::try_new(
-            config.target_led_white_x,
-            config.target_led_white_y,
-            config.target_led_reference_white_nits,
-            config.target_led_peak_nits,
-            config.exposure_ev,
-        )?;
-        let current = LedToneMapCalibration::try_new(
-            self.config.target_led_white_x,
-            self.config.target_led_white_y,
-            self.config.target_led_reference_white_nits,
-            self.config.target_led_peak_nits,
-            self.config.exposure_ev,
-        )?;
-        if current == next {
+        let mut next = self.config.clone();
+        next.copy_processing_controls_from(config);
+        next.exact_processing_profile(&ScreenProcessingProfile::default())?;
+        if !self.config.processing_controls_differ(&next) {
             return Ok(());
         }
         if let Some(worker) = self.worker.as_ref() {
@@ -1676,7 +1649,7 @@ impl InputSource for MacosScreenCaptureInput {
             worker
                 .command_tx
                 .send(WorkerCommand::ReconfigureProcessing {
-                    calibration: next,
+                    config: next.clone(),
                     completion: completion_tx,
                 })
                 .map_err(|_| anyhow!("macOS capture worker rejected processing reconfiguration"))?;
@@ -1685,11 +1658,7 @@ impl InputSource for MacosScreenCaptureInput {
                 anyhow!("macOS capture worker exited during processing reconfiguration")
             })??;
         }
-        self.config.target_led_white_x = next.target_white_x();
-        self.config.target_led_white_y = next.target_white_y();
-        self.config.target_led_reference_white_nits = next.target_reference_white_nits();
-        self.config.target_led_peak_nits = next.target_peak_nits();
-        self.config.exposure_ev = next.exposure_ev();
+        self.config = next;
         self.exact.advance_resolution_revision();
         Ok(())
     }
@@ -2227,12 +2196,12 @@ fn handle_worker_commands(
                     let _ = completion.send(Ok(()));
                 }
             }
-            WorkerCommand::ReconfigureProcessing {
-                calibration,
-                completion,
-            } => {
-                prepared.analyzer.set_led_tone_map_calibration(calibration);
-                let _ = completion.send(Ok(()));
+            WorkerCommand::ReconfigureProcessing { config, completion } => {
+                let result = prepared
+                    .analyzer
+                    .apply_settings(config)
+                    .map_err(anyhow::Error::from);
+                let _ = completion.send(result);
             }
         }
     }
@@ -3682,15 +3651,16 @@ impl MacosScreenCaptureFixture {
 mod tests {
     use super::*;
     use crate::input::screen::{
-        CpuReductionLayout, CpuReductionRequest, InputPublicationDemandRevision,
+        ColorTuning, CpuReductionLayout, CpuReductionRequest, InputPublicationDemandRevision,
         PreparedLedToneMap, ResolvedScreenColorTransform, ScreenAdmissionCapacity,
         ScreenAspectPolicy, ScreenBranchDeliveryLifecycle, ScreenBranchPublication,
-        ScreenExtentRequest, ScreenHdrPolicy, ScreenInputGraphGeneration,
-        ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId, ScreenNativeTargetPreparation,
-        ScreenNativeTargetPreparer, ScreenPayloadKind, ScreenPlanBuilder, ScreenProcessingProfile,
-        ScreenProcessingProfileConfig, ScreenProfileScalar, ScreenPublicationFreshness,
-        ScreenPublicationKind, ScreenPublicationRequest, ScreenReductionFilter,
-        ScreenSceneCutPolicy, ScreenSmoothingPolicy, ScreenToneMapOperator, ScreenToneMapPolicy,
+        ScreenColorTuning, ScreenContentBarsPolicy, ScreenExtentRequest, ScreenHdrPolicy,
+        ScreenInputGraphGeneration, ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId,
+        ScreenNativeTargetPreparation, ScreenNativeTargetPreparer, ScreenPayloadKind,
+        ScreenPlanBuilder, ScreenProcessingProfile, ScreenProcessingProfileConfig,
+        ScreenProfileScalar, ScreenPublicationFreshness, ScreenPublicationKind,
+        ScreenPublicationRequest, ScreenReductionFilter, ScreenSceneCutPolicy,
+        ScreenSmoothingPolicy, ScreenToneMapOperator, ScreenToneMapPolicy,
     };
     use hypercolor_macos_capture::{
         MacosAttachment, MacosCaptureColorimetry, MacosCaptureSurface, MacosColorRange,
@@ -5844,6 +5814,15 @@ mod tests {
         let worker_generation = input.worker_generation;
         let revision = input.screen_publication_resolution_revision();
         let mut config = input.config.clone();
+        config.smoothing_alpha = 0.0;
+        config.scene_cut_threshold = 765.0;
+        config.letterbox_enabled = true;
+        config.letterbox_threshold = 0.05;
+        config.tuning = ColorTuning {
+            saturation: 1.4,
+            brightness: 0.8,
+            gamma: 1.2,
+        };
         config.target_led_white_x = 0.3000;
         config.target_led_white_y = 0.3200;
         config.target_led_reference_white_nits = 180.0;
@@ -5889,6 +5868,21 @@ mod tests {
                 LedToneMapCalibration::try_new(0.3000, 0.3200, 180.0, 500.0, 1.25)
                     .expect("fixture calibration is valid")
             )
+        );
+        assert!(matches!(
+            resolved.descriptor().processing_profile().content_bars(),
+            ScreenContentBarsPolicy::DetectAndCrop { luminance_threshold }
+                if luminance_threshold.value() == 0.05
+        ));
+        assert!(matches!(
+            resolved.descriptor().processing_profile().smoothing(),
+            ScreenSmoothingPolicy::Frozen {
+                scene_cut: ScreenSceneCutPolicy::MeanAbsoluteDelta { threshold }
+            } if threshold.value() == 1.0
+        ));
+        assert_eq!(
+            resolved.descriptor().processing_profile().tuning(),
+            ScreenColorTuning::try_new(1.4, 0.8, 1.2).expect("test tuning is finite")
         );
     }
 

@@ -43,9 +43,9 @@ use crate::input::screen::{
     ScreenAnalysisWorkPlan, ScreenBackendResourceIdentity, ScreenByteAdmissionCoordinator,
     ScreenByteLease, ScreenCaptureBackend, ScreenCaptureDemand, ScreenCaptureInput,
     ScreenColorTransformCapabilities, ScreenComputeCapacityPolicy, ScreenPreparedWorkerToken,
-    ScreenPublicationHealth, ScreenPublicationHub, ScreenRequiredResourceMinimum,
-    ScreenResourceApi, ScreenResourceKind, ScreenResourceLifetime, ScreenSourceReflection,
-    ScreenSourceSelector, ScreenWorkerBinding, ScreenWorkerBindingState,
+    ScreenProcessingProfile, ScreenPublicationHealth, ScreenPublicationHub,
+    ScreenRequiredResourceMinimum, ScreenResourceApi, ScreenResourceKind, ScreenResourceLifetime,
+    ScreenSourceReflection, ScreenSourceSelector, ScreenWorkerBinding, ScreenWorkerBindingState,
     ScreenWorkerExactLedgerBuilder, ScreenWorkerPreparation, ScreenWorkerPreparationTicket,
     ScreenWorkerRetirement, SourceScale, analyze_screen_frame,
 };
@@ -539,6 +539,14 @@ struct WaylandExactPublicationShared {
 }
 
 impl WaylandExactPublicationShared {
+    fn advance_resolution_revision(&self) {
+        self.resolution_revision
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |revision| {
+                revision.checked_add(1)
+            })
+            .expect("Wayland screen publication resolution revision exhausted");
+    }
+
     fn replace_source(&self, next: Option<WaylandPublicationSource>) {
         let mut source = self
             .source
@@ -548,11 +556,7 @@ impl WaylandExactPublicationShared {
             return;
         }
         *source = next;
-        self.resolution_revision
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |revision| {
-                revision.checked_add(1)
-            })
-            .expect("Wayland screen publication resolution revision exhausted");
+        self.advance_resolution_revision();
     }
 
     fn source(&self) -> Option<WaylandPublicationSource> {
@@ -1730,7 +1734,9 @@ impl WaylandScreenCaptureInput {
     /// then adopted by both workers without interrupting the portal session.
     fn reconfigure(&mut self, config: CaptureConfig) -> anyhow::Result<()> {
         CaptureCadence::new(config.target_fps)?;
+        config.exact_processing_profile(&ScreenProcessingProfile::default())?;
         let current = self.settings.config_snapshot();
+        let processing_changed = current.processing_controls_differ(&config);
         let reconnecting =
             self.running && self.capture_demand.is_active() && self.request_active_worker_demand();
         if reconnecting {
@@ -1742,6 +1748,9 @@ impl WaylandScreenCaptureInput {
                 analyzer: prepared.analyzer,
             };
             self.settings.commit_runtime(&next);
+            if processing_changed {
+                self.settings.exact.advance_resolution_revision();
+            }
             return Ok(());
         }
         if current == config {
@@ -1762,9 +1771,15 @@ impl WaylandScreenCaptureInput {
                 };
                 self.settings.commit_runtime(&next);
             }
+            if processing_changed {
+                self.settings.exact.advance_resolution_revision();
+            }
             return Ok(());
         }
         self.settings.commit_values(&config, self.capture_demand);
+        if processing_changed {
+            self.settings.exact.advance_resolution_revision();
+        }
         Ok(())
     }
 
@@ -2324,8 +2339,12 @@ impl InputSource for WaylandScreenCaptureInput {
         if !source.matches_selector(demand.request().selector()) {
             return Ok(None);
         }
+        let configured = self
+            .settings
+            .config_snapshot()
+            .bind_exact_processing_profile(demand)?;
         let resolved = source.resolved(demand.request().selector().clone());
-        Ok(Some(demand.resolve_with_color_capabilities(
+        Ok(Some(configured.resolve_with_color_capabilities(
             &resolved,
             ScreenColorTransformCapabilities::new(true, false, false, NonZeroU32::MIN),
         )?))

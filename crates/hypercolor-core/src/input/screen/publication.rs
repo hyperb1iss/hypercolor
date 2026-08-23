@@ -1360,7 +1360,7 @@ pub enum ScreenSceneCutPolicy {
     /// Never reset smoothing based on scene content.
     #[default]
     Disabled,
-    /// Reset when mean absolute channel delta reaches the threshold.
+    /// Reset when mean absolute channel delta exceeds the threshold.
     MeanAbsoluteDelta {
         /// Canonical finite scene-change threshold.
         threshold: ScreenProfileScalar,
@@ -1373,6 +1373,11 @@ pub enum ScreenSmoothingPolicy {
     /// Publish every processed sample without temporal smoothing.
     #[default]
     Disabled,
+    /// Hold the committed sample until history resets.
+    Frozen {
+        /// Rule that resets history across discontinuous scenes.
+        scene_cut: ScreenSceneCutPolicy,
+    },
     /// Apply exponential smoothing with optional scene-cut resets.
     Exponential {
         /// Time constant controlling the smoothing response.
