@@ -5,9 +5,60 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::Args;
 use hypercolor_types::api::diagnose::DiagnoseRequest;
+use serde::{Deserialize, Serialize};
 
 use crate::client::DaemonClient;
 use crate::output::{OutputContext, OutputFormat};
+
+/// The CLI's tolerant view of the daemon's diagnostics report.
+///
+/// The report body is deliberately daemon-local: its snapshot section
+/// is internal telemetry with no shared contract, and a bug report
+/// needs it verbatim. So this type names only the two sections the CLI
+/// renders and carries the whole body alongside them, which keeps
+/// --json and --report byte-for-byte what the daemon sent.
+#[derive(Debug, Clone)]
+struct DiagnoseReport {
+    body: serde_json::Value,
+    view: DiagnoseView,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct DiagnoseView {
+    #[serde(default)]
+    checks: Vec<DiagnoseCheckView>,
+    #[serde(default)]
+    summary: DiagnoseSummaryView,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct DiagnoseCheckView {
+    category: String,
+    name: String,
+    status: String,
+    detail: String,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+struct DiagnoseSummaryView {
+    passed: u64,
+    warnings: u64,
+    failed: u64,
+}
+
+impl<'de> Deserialize<'de> for DiagnoseReport {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let body = serde_json::Value::deserialize(deserializer)?;
+        let view = DiagnoseView::deserialize(&body).map_err(serde::de::Error::custom)?;
+        Ok(Self { body, view })
+    }
+}
+
+impl Serialize for DiagnoseReport {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.body.serialize(serializer)
+    }
+}
 
 /// Run system diagnostics and health checks.
 #[derive(Debug, Args)]
@@ -40,7 +91,7 @@ pub async fn execute(
         system: Some(args.system),
     };
 
-    let response: serde_json::Value = client.post("/diagnose", &body).await?;
+    let response: DiagnoseReport = client.post("/diagnose", &body).await?;
 
     // Write report file if requested
     if let Some(report_path) = &args.report {
@@ -65,43 +116,24 @@ pub async fn execute(
 }
 
 /// Print the diagnostic check results as a styled table.
-fn print_diagnostics_table(data: &serde_json::Value, ctx: &OutputContext) {
+fn print_diagnostics_table(data: &DiagnoseReport, ctx: &OutputContext) {
     println!();
     ctx.info("Hypercolor Diagnostics");
     println!();
 
-    if let Some(checks) = data.get("checks").and_then(serde_json::Value::as_array) {
-        let mut current_category = String::new();
-
-        for check in checks {
-            let category = check
-                .get("category")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("unknown");
-            let name = check
-                .get("name")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("?");
-            let status = check
-                .get("status")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("?");
-            let detail = check
-                .get("detail")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("");
-
-            // Print category header when it changes
-            if category != current_category {
-                let separator = "\u{2500}".repeat(50);
-                println!("  \u{2500}\u{2500} {category} {separator}");
-                current_category = category.to_string();
-            }
-
-            let icon = ctx.painter.diagnose_icon(status);
-            let display_name = name.replace('_', " ");
-            println!("  {icon} {display_name:<30} {detail}");
+    let mut current_category = String::new();
+    for check in &data.view.checks {
+        // Print category header when it changes
+        if check.category != current_category {
+            let separator = "\u{2500}".repeat(50);
+            println!("  \u{2500}\u{2500} {} {separator}", check.category);
+            current_category.clone_from(&check.category);
         }
+
+        let icon = ctx.painter.diagnose_icon(&check.status);
+        let display_name = check.name.replace('_', " ");
+        let detail = &check.detail;
+        println!("  {icon} {display_name:<30} {detail}");
     }
 
     println!();
@@ -109,21 +141,10 @@ fn print_diagnostics_table(data: &serde_json::Value, ctx: &OutputContext) {
 }
 
 /// Print the summary line.
-fn print_summary(data: &serde_json::Value) {
-    if let Some(summary) = data.get("summary") {
-        let passed = summary
-            .get("passed")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0);
-        let warnings = summary
-            .get("warnings")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0);
-        let failed = summary
-            .get("failed")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0);
-
-        println!("  Summary: {passed} passed, {warnings} warnings, {failed} failed");
-    }
+fn print_summary(data: &DiagnoseReport) {
+    let summary = data.view.summary;
+    println!(
+        "  Summary: {} passed, {} warnings, {} failed",
+        summary.passed, summary.warnings, summary.failed
+    );
 }

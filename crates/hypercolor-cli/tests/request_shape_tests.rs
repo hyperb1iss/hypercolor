@@ -31,6 +31,31 @@ async fn run_hyper_output(port: u16, args: &[&str]) -> Result<std::process::Outp
     Ok(output)
 }
 
+/// Run the CLI in plain text mode, where --json would otherwise win.
+async fn run_hyper_plain(port: u16, args: &[&str]) -> Result<String> {
+    let mut cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_hypercolor"));
+    cmd.arg("--host")
+        .arg("127.0.0.1")
+        .arg("--port")
+        .arg(port.to_string())
+        .arg("--format")
+        .arg("plain")
+        .args(args);
+
+    let output = tokio::time::timeout(Duration::from_secs(10), cmd.output())
+        .await
+        .context("timed out waiting for hyper CLI process")?
+        .context("failed to execute hyper CLI")?;
+    if !output.status.success() {
+        bail!(
+            "hyper CLI failed (status={}):\nstderr:\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
 async fn run_hyper(port: u16, args: &[&str]) -> Result<()> {
     let output = run_hyper_output(port, args).await?;
     if !output.status.success() {
@@ -1766,18 +1791,77 @@ async fn audio_devices_reads_the_daemon_device_list() -> Result<()> {
     );
     let (port, shutdown_tx, task) = spawn_server(router).await?;
 
-    let output = run_hyper_output(port, &["--format", "plain", "audio", "devices"]).await;
+    let stdout = run_hyper_plain(port, &["audio", "devices"]).await;
 
     let _ = shutdown_tx.send(());
     task.await.context("test server task join failed")?;
 
-    let output = output?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(output.status.success(), "audio devices should succeed");
+    let stdout = stdout?;
     assert!(
         stdout.contains("System default") && stdout.contains("Scarlett 2i2"),
         "every enumerated device should render, got: {stdout}"
     );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn diagnose_json_output_preserves_the_whole_daemon_report() -> Result<()> {
+    let payload = serde_json::json!({
+        "checks": [{
+            "category": "daemon",
+            "name": "daemon_running",
+            "status": "pass",
+            "detail": "up 1h"
+        }],
+        "summary": { "passed": 1, "warnings": 0, "failed": 0 },
+        "snapshot": {
+            "input": { "keyboard_events": 42 },
+            "render": { "elapsed_ms": 3_600_000.0 }
+        }
+    });
+    let expected = payload.clone();
+    let router = Router::new().route(
+        "/api/v1/diagnose",
+        post(move |Json(_body): Json<serde_json::Value>| {
+            let payload = payload.clone();
+            async move { Json(serde_json::json!({ "data": payload })) }
+        }),
+    );
+    let (port, shutdown_tx, task) = spawn_server(router).await?;
+
+    let rendered = run_hyper_json(port, &["diagnose"]).await;
+
+    let _ = shutdown_tx.send(());
+    task.await.context("test server task join failed")?;
+
+    assert_eq!(
+        rendered?, expected,
+        "the daemon-local snapshot section must survive the CLI untouched"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn config_get_prints_the_daemon_key_value() -> Result<()> {
+    let router = Router::new().route(
+        "/api/v1/config/keys/{key}",
+        get(|Path(key): Path<String>| async move {
+            assert_eq!(key, "daemon.port");
+            Json(serde_json::json!({
+                "data": { "key": "daemon.port", "value": 9420 }
+            }))
+        }),
+    );
+    let (port, shutdown_tx, task) = spawn_server(router).await?;
+
+    let stdout = run_hyper_plain(port, &["config", "get", "daemon.port"]).await;
+
+    let _ = shutdown_tx.send(());
+    task.await.context("test server task join failed")?;
+
+    assert_eq!(stdout?.trim(), "9420");
 
     Ok(())
 }

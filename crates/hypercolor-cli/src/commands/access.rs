@@ -3,6 +3,10 @@
 use anyhow::Result;
 use clap::{Args, Subcommand};
 
+use hypercolor_types::api::capture::{
+    CaptureAuthorizationResponse, CapturePickerResponse, ProtectedSourceGrantOwner,
+};
+
 use crate::client::DaemonClient;
 use crate::output::{OutputContext, OutputFormat};
 
@@ -41,26 +45,24 @@ impl AccessCommand {
         }
     }
 
-    fn human_success_message(self, response: &serde_json::Value) -> String {
-        let owner = response
-            .get("grant_owner")
-            .and_then(serde_json::Value::as_str)
-            .map(grant_owner_label)
-            .unwrap_or("unavailable from this daemon");
-        format!("{}; grant owner: {owner}", self.success_message())
+    fn human_success_message(self, grant_owner: ProtectedSourceGrantOwner) -> String {
+        format!(
+            "{}; grant owner: {}",
+            self.success_message(),
+            grant_owner_label(grant_owner)
+        )
     }
 }
 
-fn grant_owner_label(owner: &str) -> &str {
+const fn grant_owner_label(owner: ProtectedSourceGrantOwner) -> &'static str {
     match owner {
-        "app_sidecar" => "Hypercolor.app sidecar",
-        "app" => "Hypercolor.app",
-        "launchd_service" => "direct launchd service",
-        "homebrew_service" => "Homebrew service",
-        "broker" => "authenticated app broker",
-        "standalone" => "standalone daemon",
-        "platform_backend" => "active platform backend",
-        _ => "unknown process topology",
+        ProtectedSourceGrantOwner::AppSidecar => "Hypercolor.app sidecar",
+        ProtectedSourceGrantOwner::App => "Hypercolor.app",
+        ProtectedSourceGrantOwner::LaunchdService => "direct launchd service",
+        ProtectedSourceGrantOwner::HomebrewService => "Homebrew service",
+        ProtectedSourceGrantOwner::Broker => "authenticated app broker",
+        ProtectedSourceGrantOwner::Standalone => "standalone daemon",
+        ProtectedSourceGrantOwner::PlatformBackend => "active platform backend",
     }
 }
 
@@ -72,22 +74,32 @@ fn grant_owner_label(owner: &str) -> &str {
 /// cannot execute the requested action. Headless picker failures preserve the
 /// daemon's typed `requires_app_ui` response.
 pub async fn execute(args: &AccessArgs, client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
-    let response: serde_json::Value = match args.command {
+    match args.command {
         AccessCommand::ChooseScreenSource => {
-            client
+            let response: CapturePickerResponse = client
                 .put(args.command.route(), &serde_json::json!({}))
-                .await?
+                .await?;
+            render(args.command, response.grant_owner, &response, ctx)
         }
         AccessCommand::AuthorizeInputMonitoring | AccessCommand::AuthorizeScreenRecording => {
-            client
+            let response: CaptureAuthorizationResponse = client
                 .post(args.command.route(), &serde_json::json!({}))
-                .await?
+                .await?;
+            render(args.command, response.grant_owner, &response, ctx)
         }
-    };
+    }
+}
+
+fn render(
+    command: AccessCommand,
+    grant_owner: ProtectedSourceGrantOwner,
+    response: &impl serde::Serialize,
+    ctx: &OutputContext,
+) -> Result<()> {
     if ctx.format == OutputFormat::Json {
-        ctx.print_json(&response)?;
+        ctx.print_json(response)?;
     } else {
-        ctx.success(&args.command.human_success_message(&response));
+        ctx.success(&command.human_success_message(grant_owner));
     }
     Ok(())
 }
@@ -95,6 +107,8 @@ pub async fn execute(args: &AccessArgs, client: &DaemonClient, ctx: &OutputConte
 #[cfg(test)]
 mod tests {
     use clap::Parser;
+
+    use hypercolor_types::api::capture::ProtectedSourceGrantOwner;
 
     use super::{AccessCommand, grant_owner_label};
     use crate::{Cli, Commands};
@@ -136,19 +150,23 @@ mod tests {
 
     #[test]
     fn protected_actions_name_the_exact_grant_owner() {
-        let response = serde_json::json!({"grant_owner": "broker"});
         assert_eq!(
-            AccessCommand::AuthorizeInputMonitoring.human_success_message(&response),
+            AccessCommand::AuthorizeInputMonitoring
+                .human_success_message(ProtectedSourceGrantOwner::Broker),
             "Input Monitoring request completed; grant owner: authenticated app broker"
         );
-        assert_eq!(grant_owner_label("homebrew_service"), "Homebrew service");
         assert_eq!(
-            grant_owner_label("platform_backend"),
+            grant_owner_label(ProtectedSourceGrantOwner::HomebrewService),
+            "Homebrew service"
+        );
+        assert_eq!(
+            grant_owner_label(ProtectedSourceGrantOwner::PlatformBackend),
             "active platform backend"
         );
         assert_eq!(
-            AccessCommand::ChooseScreenSource.human_success_message(&serde_json::json!({})),
-            "Screen source picker completed; grant owner: unavailable from this daemon"
+            AccessCommand::ChooseScreenSource
+                .human_success_message(ProtectedSourceGrantOwner::Standalone),
+            "Screen source picker completed; grant owner: standalone daemon"
         );
     }
 }
