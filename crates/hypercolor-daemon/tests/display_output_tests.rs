@@ -862,12 +862,12 @@ fn transparent_white_canvas() -> Canvas {
 
 fn publish_display_face_route(
     event_bus: &HypercolorBus,
-    group_id: ZoneId,
+    zone_id: ZoneId,
     display_target: DisplayFaceTarget,
 ) {
     let display_target = display_target.normalized();
     event_bus.upsert_display_zone_target(
-        group_id,
+        zone_id,
         DisplayZoneTarget {
             device_id: display_target.device_id,
             blend_mode: display_target.blend_mode,
@@ -880,9 +880,9 @@ fn publish_display_face_route(
 fn publish_direct_display_face_route(
     event_bus: &HypercolorBus,
     device_id: DeviceId,
-    group_id: ZoneId,
+    zone_id: ZoneId,
 ) {
-    publish_display_face_route(event_bus, group_id, DisplayFaceTarget::new(device_id));
+    publish_display_face_route(event_bus, zone_id, DisplayFaceTarget::new(device_id));
 }
 
 async fn wait_for_display_writes(display_writes: &Arc<Mutex<Vec<Vec<u8>>>>) -> Vec<Vec<u8>> {
@@ -2639,7 +2639,7 @@ async fn display_zone_canvas_routes_to_device_worker() {
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
-    let group_id = ZoneId::new();
+    let zone_id = ZoneId::new();
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
@@ -2661,7 +2661,7 @@ async fn display_zone_canvas_routes_to_device_worker() {
             .await
     );
 
-    publish_direct_display_face_route(event_bus.as_ref(), device_id, group_id);
+    publish_direct_display_face_route(event_bus.as_ref(), device_id, zone_id);
 
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
@@ -2677,7 +2677,7 @@ async fn display_zone_canvas_routes_to_device_worker() {
     });
 
     event_bus
-        .zone_canvas_sender(group_id)
+        .zone_canvas_sender(zone_id)
         .send_replace(DisplayZoneFrame::Canvas(display_zone_frame(
             &solid_canvas(Rgba::new(0, 0, 255, 255)),
             1,
@@ -2716,7 +2716,7 @@ async fn automatic_display_output_updates_direct_faces_without_scene_canvas_tick
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
-    let group_id = ZoneId::new();
+    let zone_id = ZoneId::new();
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
@@ -2738,7 +2738,7 @@ async fn automatic_display_output_updates_direct_faces_without_scene_canvas_tick
             .await
     );
 
-    publish_direct_display_face_route(event_bus.as_ref(), device_id, group_id);
+    publish_direct_display_face_route(event_bus.as_ref(), device_id, zone_id);
 
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
@@ -2754,7 +2754,7 @@ async fn automatic_display_output_updates_direct_faces_without_scene_canvas_tick
     });
 
     event_bus
-        .zone_canvas_sender(group_id)
+        .zone_canvas_sender(zone_id)
         .send_replace(DisplayZoneFrame::Canvas(display_zone_frame(
             &solid_canvas(Rgba::new(0, 0, 255, 255)),
             1,
@@ -2766,7 +2766,7 @@ async fn automatic_display_output_updates_direct_faces_without_scene_canvas_tick
     assert!(first_pixel[2] > 200);
 
     event_bus
-        .zone_canvas_sender(group_id)
+        .zone_canvas_sender(zone_id)
         .send_replace(DisplayZoneFrame::Canvas(display_zone_frame(
             &solid_canvas(Rgba::new(0, 255, 0, 255)),
             2,
@@ -2798,7 +2798,7 @@ async fn display_preview_survives_display_face_worker_config_restart() {
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let display_frames = Arc::new(RwLock::new(DisplayFrameRuntime::new()));
     let device_id = DeviceId::new();
-    let group_id = ZoneId::new();
+    let zone_id = ZoneId::new();
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
@@ -2820,7 +2820,7 @@ async fn display_preview_survives_display_face_worker_config_restart() {
             .await
     );
 
-    publish_direct_display_face_route(event_bus.as_ref(), device_id, group_id);
+    publish_direct_display_face_route(event_bus.as_ref(), device_id, zone_id);
 
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
@@ -2836,7 +2836,7 @@ async fn display_preview_survives_display_face_worker_config_restart() {
     });
 
     event_bus
-        .zone_canvas_sender(group_id)
+        .zone_canvas_sender(zone_id)
         .send_replace(DisplayZoneFrame::Canvas(display_zone_frame(
             &solid_canvas(Rgba::new(0, 0, 255, 255)),
             1,
@@ -2848,7 +2848,7 @@ async fn display_preview_survives_display_face_worker_config_restart() {
     let mut preview_rx = display_frames.write().await.subscribe(device_id);
     assert!(preview_rx.borrow_and_update().is_some());
     event_bus.upsert_display_zone_target(
-        group_id,
+        zone_id,
         DisplayZoneTarget {
             device_id,
             blend_mode: BlendMode::Alpha,
@@ -2895,7 +2895,7 @@ async fn display_zone_alpha_blends_face_with_effect_canvas() {
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
-    let group_id = ZoneId::new();
+    let zone_id = ZoneId::new();
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
@@ -2919,7 +2919,7 @@ async fn display_zone_alpha_blends_face_with_effect_canvas() {
 
     publish_display_face_route(
         event_bus.as_ref(),
-        group_id,
+        zone_id,
         DisplayFaceTarget {
             device_id,
             blend_mode: BlendMode::Alpha,
@@ -2952,7 +2952,7 @@ async fn display_zone_alpha_blends_face_with_effect_canvas() {
     tokio::time::sleep(Duration::from_millis(40)).await;
     display_writes.lock().await.clear();
     event_bus
-        .zone_canvas_sender(group_id)
+        .zone_canvas_sender(zone_id)
         .send_replace(DisplayZoneFrame::Canvas(display_zone_frame(
             &solid_canvas(Rgba::new(0, 0, 255, 255)),
             2,
@@ -2984,7 +2984,7 @@ async fn display_zone_alpha_composes_against_black_before_effect_frame() {
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
-    let group_id = ZoneId::new();
+    let zone_id = ZoneId::new();
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
@@ -3008,7 +3008,7 @@ async fn display_zone_alpha_composes_against_black_before_effect_frame() {
 
     publish_display_face_route(
         event_bus.as_ref(),
-        group_id,
+        zone_id,
         DisplayFaceTarget {
             device_id,
             blend_mode: BlendMode::Alpha,
@@ -3032,7 +3032,7 @@ async fn display_zone_alpha_composes_against_black_before_effect_frame() {
     wait_for_scene_canvas_receiver_count(event_bus.as_ref(), 1).await;
 
     event_bus
-        .zone_canvas_sender(group_id)
+        .zone_canvas_sender(zone_id)
         .send_replace(DisplayZoneFrame::Canvas(display_zone_frame(
             &solid_canvas(Rgba::new(0, 0, 255, 255)),
             1,
@@ -3080,7 +3080,7 @@ async fn display_output_uses_render_published_face_route_metadata() {
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
-    let group_id = ZoneId::new();
+    let zone_id = ZoneId::new();
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
@@ -3116,7 +3116,7 @@ async fn display_output_uses_render_published_face_route_metadata() {
     });
 
     event_bus.upsert_display_zone_target(
-        group_id,
+        zone_id,
         DisplayZoneTarget {
             device_id,
             blend_mode: BlendMode::Replace,
@@ -3135,7 +3135,7 @@ async fn display_output_uses_render_published_face_route_metadata() {
     tokio::time::sleep(Duration::from_millis(40)).await;
     display_writes.lock().await.clear();
     event_bus
-        .zone_canvas_sender(group_id)
+        .zone_canvas_sender(zone_id)
         .send_replace(DisplayZoneFrame::Canvas(display_zone_frame(
             &solid_canvas(Rgba::new(0, 0, 255, 255)),
             2,
@@ -3167,7 +3167,7 @@ async fn display_zone_replace_keeps_transparent_face_pixels_from_bleeding_effect
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
-    let group_id = ZoneId::new();
+    let zone_id = ZoneId::new();
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
@@ -3193,7 +3193,7 @@ async fn display_zone_replace_keeps_transparent_face_pixels_from_bleeding_effect
     // blends — so this isolation contract publishes it deliberately.
     let mut replace_target = DisplayFaceTarget::new(device_id);
     replace_target.blend_mode = BlendMode::Replace;
-    publish_display_face_route(event_bus.as_ref(), group_id, replace_target);
+    publish_display_face_route(event_bus.as_ref(), zone_id, replace_target);
 
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
@@ -3218,7 +3218,7 @@ async fn display_zone_replace_keeps_transparent_face_pixels_from_bleeding_effect
     tokio::time::sleep(Duration::from_millis(40)).await;
     display_writes.lock().await.clear();
     event_bus
-        .zone_canvas_sender(group_id)
+        .zone_canvas_sender(zone_id)
         .send_replace(DisplayZoneFrame::Canvas(display_zone_frame(
             &transparent_white_canvas(),
             2,
@@ -3247,7 +3247,7 @@ async fn alpha_display_faces_keep_default_30_fps_cadence_on_60_fps_devices() {
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let display_write_times = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
-    let group_id = ZoneId::new();
+    let zone_id = ZoneId::new();
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(
@@ -3273,7 +3273,7 @@ async fn alpha_display_faces_keep_default_30_fps_cadence_on_60_fps_devices() {
 
     publish_display_face_route(
         event_bus.as_ref(),
-        group_id,
+        zone_id,
         DisplayFaceTarget {
             device_id,
             blend_mode: BlendMode::Alpha,
@@ -3295,7 +3295,7 @@ async fn alpha_display_faces_keep_default_30_fps_cadence_on_60_fps_devices() {
     });
 
     event_bus
-        .zone_canvas_sender(group_id)
+        .zone_canvas_sender(zone_id)
         .send_replace(DisplayZoneFrame::Canvas(display_zone_frame(
             &solid_canvas(Rgba::new(0, 0, 255, 255)),
             1,
@@ -3355,7 +3355,7 @@ async fn display_zone_screen_blends_face_color_with_effect_canvas() {
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
-    let group_id = ZoneId::new();
+    let zone_id = ZoneId::new();
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
@@ -3379,7 +3379,7 @@ async fn display_zone_screen_blends_face_color_with_effect_canvas() {
 
     publish_display_face_route(
         event_bus.as_ref(),
-        group_id,
+        zone_id,
         DisplayFaceTarget {
             device_id,
             blend_mode: BlendMode::Screen,
@@ -3412,7 +3412,7 @@ async fn display_zone_screen_blends_face_color_with_effect_canvas() {
     tokio::time::sleep(Duration::from_millis(40)).await;
     display_writes.lock().await.clear();
     event_bus
-        .zone_canvas_sender(group_id)
+        .zone_canvas_sender(zone_id)
         .send_replace(DisplayZoneFrame::Canvas(display_zone_frame(
             &solid_canvas(Rgba::new(0, 0, 255, 255)),
             2,
@@ -3444,7 +3444,7 @@ async fn display_zone_tint_turns_face_into_effect_tinted_material() {
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
-    let group_id = ZoneId::new();
+    let zone_id = ZoneId::new();
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
@@ -3468,7 +3468,7 @@ async fn display_zone_tint_turns_face_into_effect_tinted_material() {
 
     publish_display_face_route(
         event_bus.as_ref(),
-        group_id,
+        zone_id,
         DisplayFaceTarget {
             device_id,
             blend_mode: BlendMode::Tint,
@@ -3501,7 +3501,7 @@ async fn display_zone_tint_turns_face_into_effect_tinted_material() {
     tokio::time::sleep(Duration::from_millis(40)).await;
     display_writes.lock().await.clear();
     event_bus
-        .zone_canvas_sender(group_id)
+        .zone_canvas_sender(zone_id)
         .send_replace(DisplayZoneFrame::Canvas(display_zone_frame(
             &solid_canvas(Rgba::new(0, 0, 255, 255)),
             2,
@@ -3533,7 +3533,7 @@ async fn display_zone_luma_reveal_lets_bright_face_regions_adopt_effect_color() 
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
-    let group_id = ZoneId::new();
+    let zone_id = ZoneId::new();
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
@@ -3557,7 +3557,7 @@ async fn display_zone_luma_reveal_lets_bright_face_regions_adopt_effect_color() 
 
     publish_display_face_route(
         event_bus.as_ref(),
-        group_id,
+        zone_id,
         DisplayFaceTarget {
             device_id,
             blend_mode: BlendMode::LumaReveal,
@@ -3590,7 +3590,7 @@ async fn display_zone_luma_reveal_lets_bright_face_regions_adopt_effect_color() 
     tokio::time::sleep(Duration::from_millis(40)).await;
     display_writes.lock().await.clear();
     event_bus
-        .zone_canvas_sender(group_id)
+        .zone_canvas_sender(zone_id)
         .send_replace(DisplayZoneFrame::Canvas(display_zone_frame(
             &solid_canvas(Rgba::new(255, 255, 255, 255)),
             2,
@@ -4571,7 +4571,7 @@ async fn automatic_display_output_refreshes_cached_targets_when_display_face_rou
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
-    let group_id = ZoneId::new();
+    let zone_id = ZoneId::new();
     let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
 
     let spatial_engine = spatial_with_zones(vec![display_zone(
@@ -4627,9 +4627,9 @@ async fn automatic_display_output_refreshes_cached_targets_when_display_face_rou
         "expected scene canvas route to start red, got {first_pixel:?}"
     );
 
-    publish_direct_display_face_route(event_bus.as_ref(), device_id, group_id);
+    publish_direct_display_face_route(event_bus.as_ref(), device_id, zone_id);
     event_bus
-        .zone_canvas_sender(group_id)
+        .zone_canvas_sender(zone_id)
         .send_replace(DisplayZoneFrame::Canvas(display_zone_frame(&blue, 2, 32)));
     event_bus
         .scene_canvas_lane()

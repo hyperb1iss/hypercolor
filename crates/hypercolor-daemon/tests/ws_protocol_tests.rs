@@ -383,7 +383,7 @@ async fn hello_handshake_names_the_scene_but_not_its_contents() {
             hypercolor_types::event::ChangeTrigger::System,
             None,
         )
-        .expect("hello test should install a primary group");
+        .expect("hello test should install a primary zone");
     hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
         .await
         .expect("hello test scene should commit");

@@ -503,10 +503,10 @@ async fn seed_multi_zone_primary_assignment(
             hypercolor_types::event::ChangeTrigger::System,
             None,
         )
-        .expect("primary group should be seeded");
+        .expect("primary zone should be seeded");
     let custom_id = mutation
         .create_zone(SceneId::DEFAULT, "Custom".to_owned(), None, (320, 200))
-        .expect("custom group should be created");
+        .expect("custom zone should be created");
     mutation
         .assign_output(
             SceneId::DEFAULT,
@@ -514,7 +514,7 @@ async fn seed_multi_zone_primary_assignment(
             custom_zone,
             OutputPlacement::AutoGrid,
         )
-        .expect("custom group should claim a zone");
+        .expect("custom zone should claim a zone");
     hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
         .await
         .expect("multi-zone scene should commit");
@@ -1022,7 +1022,7 @@ async fn stateful_scene_tools_persist_named_scenes_and_activation_state() {
 }
 
 #[tokio::test]
-async fn stateful_display_face_tool_assigns_and_clears_face_groups() {
+async fn stateful_display_face_tool_assigns_and_clears_face_zones() {
     let (state, _tmp) = isolated_state_with_tempdir();
     let state = Arc::new(state);
     let display_id = insert_test_display_device(&state, "Pump LCD").await;
@@ -1111,7 +1111,7 @@ async fn stateful_display_face_tool_assigns_and_clears_face_groups() {
     let display_zone = clear_snapshot
         .default_scene_zones
         .iter()
-        .find(|group| group.role == hypercolor_types::scene::ZoneRole::Display)
+        .find(|zone| zone.role == hypercolor_types::scene::ZoneRole::Display)
         .expect("display screen surface should survive face clear");
     assert_eq!(display_zone.effect_ids().next(), None);
     assert!(display_zone.layers.is_empty());
@@ -1917,7 +1917,7 @@ async fn stateful_set_effect_and_clear_zone_sync_scene_runtime_and_events() {
         effect.id.to_string()
     );
 
-    let (scene_id, active_group) = {
+    let (scene_id, active_zone) = {
         let manager = state.scene_manager.snapshot().await;
         (
             manager
@@ -1928,12 +1928,12 @@ async fn stateful_set_effect_and_clear_zone_sync_scene_runtime_and_events() {
                 .active_scene()
                 .and_then(|scene| scene.primary_zone())
                 .cloned()
-                .expect("primary group should exist after MCP set_effect"),
+                .expect("primary zone should exist after MCP set_effect"),
         )
     };
-    assert_eq!(active_group.effect_ids().next(), Some(effect.id));
+    assert_eq!(active_zone.effect_ids().next(), Some(effect.id));
     assert_eq!(
-        effect_controls(&active_group).and_then(|controls| controls.get("speed")),
+        effect_controls(&active_zone).and_then(|controls| controls.get("speed")),
         Some(&ControlValue::Float(7.5))
     );
 
@@ -1964,7 +1964,7 @@ async fn stateful_set_effect_and_clear_zone_sync_scene_runtime_and_events() {
     assert_eq!(resource_state["effect"]["name"], effect.name);
 
     let mut saw_started_event = false;
-    let mut saw_group_event = false;
+    let mut saw_zone_event = false;
     while let Ok(timestamped) = start_events.try_recv() {
         match timestamped.event {
             HypercolorEvent::EffectStarted {
@@ -1985,13 +1985,13 @@ async fn stateful_set_effect_and_clear_zone_sync_scene_runtime_and_events() {
                 assert_eq!(event_scene_id, scene_id);
                 assert_eq!(role, hypercolor_types::scene::ZoneRole::Primary);
                 assert_eq!(kind, ZoneChangeKind::Updated);
-                saw_group_event = true;
+                saw_zone_event = true;
             }
             _ => {}
         }
     }
     assert!(saw_started_event, "expected MCP effect-start event");
-    assert!(saw_group_event, "expected MCP render-zone event");
+    assert!(saw_zone_event, "expected MCP render-zone event");
 
     let mut stop_events = state.event_bus.subscribe_all();
     let clear_result = execute_tool_with_state("clear_zone", &json!({}), state.as_ref())
@@ -2006,18 +2006,18 @@ async fn stateful_set_effect_and_clear_zone_sync_scene_runtime_and_events() {
     assert_eq!(stopped_snapshot.default_scene_zones.len(), 1);
     assert!(stopped_snapshot.default_scene_zones[0].layers.is_empty());
 
-    let cleared_group = {
+    let cleared_zone = {
         let manager = state.scene_manager.snapshot().await;
         manager
             .active_scene()
             .and_then(|scene| scene.primary_zone())
             .cloned()
-            .expect("primary group should remain present after stop")
+            .expect("primary zone should remain present after stop")
     };
-    assert!(cleared_group.layers.is_empty());
+    assert!(cleared_zone.layers.is_empty());
 
     let mut saw_stopped_event = false;
-    let mut saw_updated_group = false;
+    let mut saw_updated_zone = false;
     while let Ok(timestamped) = stop_events.try_recv() {
         match timestamped.event {
             HypercolorEvent::EffectStopped {
@@ -2032,13 +2032,13 @@ async fn stateful_set_effect_and_clear_zone_sync_scene_runtime_and_events() {
             HypercolorEvent::ZoneChanged { kind, role, .. } => {
                 assert_eq!(role, hypercolor_types::scene::ZoneRole::Primary);
                 assert_eq!(kind, ZoneChangeKind::Updated);
-                saw_updated_group = true;
+                saw_updated_zone = true;
             }
             _ => {}
         }
     }
     assert!(saw_stopped_event, "expected MCP effect-stop event");
-    assert!(saw_updated_group, "expected MCP group-clear event");
+    assert!(saw_updated_zone, "expected MCP zone-clear event");
 }
 
 #[tokio::test]
@@ -2062,16 +2062,16 @@ async fn stateful_set_effect_preserves_primary_assignment_when_custom_zones_exis
     .await
     .expect("set_effect should succeed");
 
-    let active_group = {
+    let active_zone = {
         let manager = state.scene_manager.snapshot().await;
         manager
             .active_scene()
             .and_then(|scene| scene.primary_zone())
             .cloned()
-            .expect("primary group should exist after MCP set_effect")
+            .expect("primary zone should exist after MCP set_effect")
     };
-    assert_eq!(active_group.effect_ids().next(), Some(next.id));
-    assert_eq!(active_group.layout, expected_layout);
+    assert_eq!(active_zone.effect_ids().next(), Some(next.id));
+    assert_eq!(active_zone.layout, expected_layout);
 }
 
 #[tokio::test]
@@ -2142,16 +2142,16 @@ async fn stateful_set_color_preserves_primary_assignment_when_custom_zones_exist
     .await
     .expect("set_color should succeed");
 
-    let active_group = {
+    let active_zone = {
         let manager = state.scene_manager.snapshot().await;
         manager
             .active_scene()
             .and_then(|scene| scene.primary_zone())
             .cloned()
-            .expect("primary group should exist after MCP set_color")
+            .expect("primary zone should exist after MCP set_color")
     };
-    assert_eq!(active_group.effect_ids().next(), Some(solid_effect.id));
-    assert_eq!(active_group.layout, expected_layout);
+    assert_eq!(active_zone.effect_ids().next(), Some(solid_effect.id));
+    assert_eq!(active_zone.layout, expected_layout);
 }
 
 #[tokio::test]

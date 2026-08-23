@@ -105,10 +105,10 @@ async fn install_effect_invalidates_resolved_zone_revision() {
             hypercolor_types::event::ChangeTrigger::System,
             None,
         )
-        .expect("primary group should be created");
+        .expect("primary zone should be created");
     hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
         .await
-        .expect("primary group should commit");
+        .expect("primary zone should commit");
 
     let revision_before = {
         let scene_manager = state.scene_manager.snapshot().await;
@@ -167,10 +167,10 @@ async fn rescan_effects_invalidates_resolved_zone_revision() {
             hypercolor_types::event::ChangeTrigger::System,
             None,
         )
-        .expect("primary group should be created");
+        .expect("primary zone should be created");
     hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
         .await
-        .expect("primary group should commit");
+        .expect("primary zone should commit");
 
     let revision_before = {
         let scene_manager = state.scene_manager.snapshot().await;

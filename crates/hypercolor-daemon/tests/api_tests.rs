@@ -5855,7 +5855,7 @@ async fn get_effect_returns_controls() {
 }
 
 #[tokio::test]
-async fn apply_effect_upserts_primary_group() {
+async fn apply_effect_upserts_primary_zone() {
     let state = Arc::new(isolated_state());
     insert_test_effect(&state, "solid_color").await;
     let app = test_app_with_state(Arc::clone(&state));
@@ -5877,7 +5877,7 @@ async fn apply_effect_upserts_primary_group() {
     let primary = manager
         .active_scene()
         .and_then(Scene::primary_zone)
-        .expect("active scene should contain a primary group");
+        .expect("active scene should contain a primary zone");
     assert_eq!(primary.role, ZoneRole::Primary);
     assert!(primary.effect_ids().next().is_some());
 }
@@ -5948,7 +5948,7 @@ async fn apply_effect_accepts_canonical_gradient_controls() {
     let primary = manager
         .active_scene()
         .and_then(Scene::primary_zone)
-        .expect("active scene should contain a primary group");
+        .expect("active scene should contain a primary zone");
     assert_eq!(
         zone_effect_controls(primary).and_then(|controls| controls.get("palette")),
         Some(&gradient)
@@ -5972,7 +5972,7 @@ async fn apply_effect_targets_a_named_zone_via_zone_id() {
             .scenes()
             .active_scene()
             .and_then(Scene::primary_zone)
-            .and_then(|group| group.effect_ids().next());
+            .and_then(|zone| zone.effect_ids().next());
         hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
             .await
             .expect("custom zone should commit");
@@ -6003,7 +6003,7 @@ async fn apply_effect_targets_a_named_zone_via_zone_id() {
     let custom = scene
         .zones
         .iter()
-        .find(|group| group.id == custom_id)
+        .find(|zone| zone.id == custom_id)
         .expect("the targeted zone should still exist");
     assert!(
         custom.effect_ids().next().is_some(),
@@ -6012,7 +6012,7 @@ async fn apply_effect_targets_a_named_zone_via_zone_id() {
     assert_eq!(
         scene
             .primary_zone()
-            .and_then(|group| group.effect_ids().next()),
+            .and_then(|zone| zone.effect_ids().next()),
         primary_effect_before,
         "a named-zone apply must leave the Primary zone untouched",
     );
@@ -6131,9 +6131,9 @@ async fn get_effect_cover_returns_webp_image() {
 #[tokio::test]
 async fn pausing_output_darkens_display_zones_without_an_active_effect() {
     let state = Arc::new(isolated_state());
-    let group_id = hypercolor_types::scene::ZoneId::new();
+    let zone_id = hypercolor_types::scene::ZoneId::new();
     state.event_bus.upsert_display_zone_target(
-        group_id,
+        zone_id,
         DisplayZoneTarget {
             device_id: DeviceId::new(),
             blend_mode: BlendMode::Alpha,
@@ -6141,11 +6141,11 @@ async fn pausing_output_darkens_display_zones_without_an_active_effect() {
             finalized: false,
         },
     );
-    let group_sender = state.event_bus.zone_canvas_sender(group_id);
+    let zone_sender = state.event_bus.zone_canvas_sender(zone_id);
     let mut red_canvas = Canvas::new(2, 2);
     red_canvas.fill(Rgba::new(255, 0, 0, 255));
-    group_sender.send_replace(display_zone_frame(&red_canvas, 7, 7));
-    let group_receiver = group_sender.subscribe();
+    zone_sender.send_replace(display_zone_frame(&red_canvas, 7, 7));
+    let zone_receiver = zone_sender.subscribe();
     let app = test_app_with_state(Arc::clone(&state));
 
     let response = app
@@ -6158,7 +6158,7 @@ async fn pausing_output_darkens_display_zones_without_an_active_effect() {
     let response_json = body_json(response).await;
     assert_eq!(response_json["data"]["power"], "paused");
     assert!(state.output_power.snapshot().manually_paused());
-    assert_display_zone_frame_black(&group_receiver.borrow());
+    assert_display_zone_frame_black(&zone_receiver.borrow());
     let snapshot = runtime_state::load(&state.runtime_state_path)
         .expect("runtime snapshot should load")
         .expect("pause should persist runtime state");
@@ -6647,8 +6647,8 @@ async fn apply_effect_swap_replaces_primary_effect_id() {
         manager
             .active_scene()
             .and_then(Scene::primary_zone)
-            .and_then(|group| group.effect_ids().next())
-            .expect("first effect apply should populate the primary group")
+            .and_then(|zone| zone.effect_ids().next())
+            .expect("first effect apply should populate the primary zone")
     };
 
     let second_response = app
@@ -6669,13 +6669,13 @@ async fn apply_effect_swap_replaces_primary_effect_id() {
     assert_eq!(active_scene.zones.len(), 1);
     let primary = active_scene
         .primary_zone()
-        .expect("primary group should exist after effect swap");
+        .expect("primary zone should exist after effect swap");
     assert_ne!(primary.effect_ids().next(), Some(first_primary_effect_id));
     assert!(primary.effect_ids().next().is_some());
 }
 
 #[tokio::test]
-async fn apply_effect_with_preset_id_sets_group_preset_atomically() {
+async fn apply_effect_with_preset_id_sets_zone_preset_atomically() {
     let state = Arc::new(isolated_state());
     insert_test_effect(&state, "solid_color").await;
     let app = test_app_with_state(Arc::clone(&state));
@@ -6722,7 +6722,7 @@ async fn apply_effect_with_preset_id_sets_group_preset_atomically() {
     let primary = manager
         .active_scene()
         .and_then(Scene::primary_zone)
-        .expect("primary group should exist after apply");
+        .expect("primary zone should exist after apply");
     assert_eq!(
         zone_effect_preset(primary),
         Some(preset_id),
@@ -6731,7 +6731,7 @@ async fn apply_effect_with_preset_id_sets_group_preset_atomically() {
     let speed = zone_effect_controls(primary)
         .expect("primary effect layer should exist")
         .get("speed")
-        .expect("preset controls should be baked into the group");
+        .expect("preset controls should be baked into the zone");
     assert!(matches!(
         speed,
         hypercolor_types::control::ControlValue::Float(value) if (*value - 3.5).abs() < 0.01
@@ -10157,7 +10157,7 @@ async fn activating_named_scene_then_applying_effect_mutates_named_scene() {
     assert!(
         active_scene
             .primary_zone()
-            .and_then(|group| group.effect_ids().next())
+            .and_then(|zone| zone.effect_ids().next())
             .is_some()
     );
 }
@@ -11199,7 +11199,7 @@ async fn patch_display_face_controls_rejects_binding_clears() {
 }
 
 #[tokio::test]
-async fn delete_face_idempotent_when_no_group_present() {
+async fn delete_face_idempotent_when_no_zone_present() {
     let state = Arc::new(isolated_state());
     let display_id = insert_test_display_device(&state, "Pump LCD").await;
     let app = test_app_with_state(Arc::clone(&state));
@@ -11440,11 +11440,11 @@ async fn patch_face_composition_updates_material_blend_mode_and_normalizes_repla
     );
 
     let manager = state.scene_manager.snapshot().await;
-    let group = manager
+    let zone = manager
         .active_scene()
         .and_then(|scene| scene.display_zone_for(display_id))
         .expect("display face should remain assigned");
-    let target = group
+    let target = zone
         .display_target
         .clone()
         .expect("display target should remain present");
@@ -11521,11 +11521,11 @@ async fn reassigning_display_face_resets_composition_to_blended_default() {
     );
 
     let manager = state.scene_manager.snapshot().await;
-    let group = manager
+    let zone = manager
         .active_scene()
         .and_then(|scene| scene.display_zone_for(display_id))
         .expect("display face should remain assigned");
-    let target = group
+    let target = zone
         .display_target
         .clone()
         .expect("display target should remain present");
@@ -12371,13 +12371,13 @@ async fn deleting_display_device_prunes_scene_display_zones_and_persists_cleanup
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                    panic!("event bus closed before display-group removal events arrived");
+                    panic!("event bus closed before display-zone removal events arrived");
                 }
             }
         }
     })
     .await
-    .expect("timed out waiting for display-group removal events");
+    .expect("timed out waiting for display-zone removal events");
     assert!(removed_scene_ids.contains(&SceneId::DEFAULT));
     assert!(removed_scene_ids.contains(&named_scene_id));
 
@@ -12397,9 +12397,8 @@ async fn deleting_display_device_prunes_scene_display_zones_and_persists_cleanup
         runtime_state::load(&state.runtime_state_path).expect("runtime state should load");
     let persisted = persisted.expect("runtime state should exist");
     assert!(
-        persisted.default_scene_zones.iter().all(|group| {
-            group
-                .display_target
+        persisted.default_scene_zones.iter().all(|zone| {
+            zone.display_target
                 .as_ref()
                 .is_none_or(|target| target.device_id != display_id)
         }),
@@ -12413,9 +12412,8 @@ async fn deleting_display_device_prunes_scene_display_zones_and_persists_cleanup
         .find(|scene| scene.id == named_scene_id)
         .expect("named scene should be persisted");
     assert!(
-        named_scene.zones.iter().all(|group| {
-            group
-                .display_target
+        named_scene.zones.iter().all(|zone| {
+            zone.display_target
                 .as_ref()
                 .is_none_or(|target| target.device_id != display_id)
         }),

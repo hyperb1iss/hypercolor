@@ -1495,10 +1495,10 @@ async fn daemon_state_default_scene_starts_with_default_zone() {
         scenes.active_scene_id().is_some_and(SceneId::is_default),
         "default scene should be active initially"
     );
-    let groups = scenes.resolved_zones();
-    assert_eq!(groups.len(), 1, "default scene should start with a zone");
-    assert_eq!(groups[0].name, "Default zone");
-    assert_eq!(groups[0].role, ZoneRole::Primary);
+    let zones = scenes.resolved_zones();
+    assert_eq!(zones.len(), 1, "default scene should start with a zone");
+    assert_eq!(zones[0].name, "Default zone");
+    assert_eq!(zones[0].role, ZoneRole::Primary);
 }
 
 #[tokio::test]
@@ -1898,15 +1898,15 @@ async fn runtime_state_and_driver_inventory_persist_independently() {
 }
 
 #[tokio::test]
-async fn daemon_start_restores_named_active_scene_and_default_groups() {
+async fn daemon_start_restores_named_active_scene_and_default_zones() {
     let guard = TestDataDirGuard::new().await;
     let named_scene = hypercolor_core::scene::make_scene("Focus");
     let named_scene_id = named_scene.id;
     write_scene_store(&guard.scenes_path(), [named_scene]);
 
-    let default_group = Zone {
+    let default_zone = Zone {
         id: ZoneId::new(),
-        name: "Saved Default Group".to_owned(),
+        name: "Saved Default Zone".to_owned(),
         description: None,
         layers: Vec::new(),
         layout: SpatialLayout {
@@ -1933,7 +1933,7 @@ async fn daemon_start_restores_named_active_scene_and_default_groups() {
         &guard.runtime_state_path(),
         &runtime_state::RuntimeSessionSnapshot {
             active_scene_id: Some(named_scene_id.to_string()),
-            default_scene_zones: vec![default_group.clone()],
+            default_scene_zones: vec![default_zone.clone()],
             active_layout_id: None,
             manual_paused: false,
         },
@@ -1956,7 +1956,7 @@ async fn daemon_start_restores_named_active_scene_and_default_groups() {
     let default_scene = scenes
         .get(&SceneId::DEFAULT)
         .expect("default scene should exist");
-    assert_eq!(default_scene.zones, vec![default_group]);
+    assert_eq!(default_scene.zones, vec![default_zone]);
     drop(scenes);
 
     state.shutdown().await.expect("shutdown should succeed");
@@ -2071,7 +2071,7 @@ async fn default_scene_contents_restore_on_restart() {
             active_scene_id: Some(SceneId::DEFAULT.to_string()),
             default_scene_zones: vec![Zone {
                 id: zone_id,
-                name: "Saved Default Group".to_owned(),
+                name: "Saved Default Zone".to_owned(),
                 description: Some("Restored from runtime snapshot".to_owned()),
                 layers: vec![SceneLayer::from_effect(
                     SceneLayerId::new(),
@@ -2114,7 +2114,7 @@ async fn default_scene_contents_restore_on_restart() {
         .get(&SceneId::DEFAULT)
         .expect("default scene should exist");
     assert_eq!(default_scene.zones.len(), 1);
-    assert_eq!(default_scene.zones[0].name, "Saved Default Group");
+    assert_eq!(default_scene.zones[0].name, "Saved Default Zone");
     assert!(matches!(
         default_scene.zones[0]
             .layers
@@ -2498,14 +2498,14 @@ async fn effect_error_fallback_worker_clears_active_zones_when_configured() {
         entry.metadata.clone()
     };
 
-    let group_id = {
+    let zone_id = {
         let layout = {
             let spatial = state.spatial_engine.snapshot();
             spatial.layout().as_ref().clone()
         };
         let api_state = AppState::from_daemon_state(&state);
         let mut mutation = api_state.scene_manager.begin_mutation().await;
-        let group_id = mutation
+        let zone_id = mutation
             .upsert_primary_zone(
                 &metadata,
                 std::collections::HashMap::new(),
@@ -2519,7 +2519,7 @@ async fn effect_error_fallback_worker_clears_active_zones_when_configured() {
         hypercolor_daemon::domain::scene::commit_scene(&api_state.domains.scene, mutation)
             .await
             .expect("native effect should commit");
-        group_id
+        zone_id
     };
 
     let mut rx = state.event_bus.subscribe_all();
@@ -2531,10 +2531,10 @@ async fn effect_error_fallback_worker_clears_active_zones_when_configured() {
 
     let mut saw_stopped = false;
     let mut saw_fallback_event = false;
-    let mut saw_group_update = false;
+    let mut saw_zone_update = false;
     let expected_effect_id = metadata.id.to_string();
     tokio::time::timeout(Duration::from_secs(3), async {
-        while !(saw_stopped && saw_fallback_event && saw_group_update) {
+        while !(saw_stopped && saw_fallback_event && saw_zone_update) {
             let event = rx.recv().await.expect("effect-error fallback event");
             match event.event {
                 HypercolorEvent::EffectStopped { effect, reason, .. }
@@ -2553,8 +2553,8 @@ async fn effect_error_fallback_worker_clears_active_zones_when_configured() {
                 }
                 HypercolorEvent::ZoneChanged {
                     zone_id: changed, ..
-                } if changed == group_id => {
-                    saw_group_update = true;
+                } if changed == zone_id => {
+                    saw_zone_update = true;
                 }
                 _ => {}
             }
@@ -2567,8 +2567,8 @@ async fn effect_error_fallback_worker_clears_active_zones_when_configured() {
         let scene_manager = state.scene_manager.snapshot().await;
         scene_manager
             .active_scene()
-            .and_then(|scene| scene.zones.iter().find(|group| group.id == group_id))
-            .and_then(|group| group.effect_ids().next())
+            .and_then(|scene| scene.zones.iter().find(|zone| zone.id == zone_id))
+            .and_then(|zone| zone.effect_ids().next())
     };
     assert_eq!(cleared_effect, None);
 

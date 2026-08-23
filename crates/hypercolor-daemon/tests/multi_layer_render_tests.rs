@@ -118,13 +118,13 @@ fn render_zone(name: &str, _effect_id: EffectId, layers: Vec<SceneLayer>) -> Zon
 }
 
 fn display_zone(
-    group_id: ZoneId,
+    zone_id: ZoneId,
     device_id: DeviceId,
     effect_id: EffectId,
     layers: Vec<SceneLayer>,
 ) -> Zone {
     let mut zone = render_zone("Display", effect_id, layers);
-    zone.id = group_id;
+    zone.id = zone_id;
     zone.layout = test_layout(Vec::new());
     zone.display_target = Some(DisplayFaceTarget::new(device_id));
     zone.role = ZoneRole::Display;
@@ -279,7 +279,7 @@ async fn display_layer_stack_publishes_separately_from_scene_canvas() {
             1.0,
         )],
     );
-    let face_group = display_zone(
+    let face_zone = display_zone(
         display_zone_id,
         display_device_id,
         solid_id,
@@ -290,7 +290,7 @@ async fn display_layer_stack_publishes_separately_from_scene_canvas() {
             1.0,
         )],
     );
-    install_scene(&mut state, vec![scene_zone, face_group]).await;
+    install_scene(&mut state, vec![scene_zone, face_zone]).await;
 
     let scene_frame = run_until_canvas_frame(&state).await;
     tokio::time::timeout(Duration::from_secs(2), zone_canvas_rx.changed())
