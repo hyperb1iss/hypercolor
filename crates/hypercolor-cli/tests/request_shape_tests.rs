@@ -1034,7 +1034,10 @@ async fn capture_control_patch(
             "surface_id": "driver:wled",
             "previous_revision": 3,
             "revision": 4,
-            "accepted": ["default_protocol"],
+            "accepted": [{
+                "field_id": "default_protocol",
+                "value": { "kind": "enum", "value": "ddp" }
+            }],
             "rejected": [],
             "impacts": [],
             "values": {
@@ -1103,9 +1106,7 @@ async fn confirmed_driver_control_surface(
             "message": "Factory reset this driver?"
         },
         "apply_impact": "hardware_persist",
-        "availability": {
-            "always": {}
-        },
+        "availability": { "kind": "always" },
         "ordering": 0,
         "owner": {
             "driver": {
@@ -1154,7 +1155,10 @@ async fn capture_device_control_patch(
             "surface_id": format!("driver:wled:device:{}", test_device_id()),
             "previous_revision": 2,
             "revision": 3,
-            "accepted": ["color_order"],
+            "accepted": [{
+                "field_id": "color_order",
+                "value": { "kind": "enum", "value": "grb" }
+            }],
             "rejected": [],
             "impacts": [],
             "values": {
@@ -1183,12 +1187,12 @@ fn device_control_surface_response() -> serde_json::Value {
             "fields": [],
             "actions": [{
                 "id": "identify",
+                "owner": "host",
                 "label": "Identify",
-                "description": null,
-                "group_id": null,
-                "input": [],
-                "confirmation": null,
-                "apply_impact": "live"
+                "input_fields": [],
+                "apply_impact": "live",
+                "availability": { "kind": "always" },
+                "ordering": 0
             }],
             "values": {},
             "availability": {},
@@ -1212,28 +1216,21 @@ fn driver_device_control_surface_response() -> serde_json::Value {
             "groups": [],
             "fields": [{
                 "id": "color_order",
+                "owner": { "driver": { "driver_id": "wled" } },
                 "label": "Color order",
-                "description": null,
-                "group_id": null,
                 "value_type": {
                     "kind": "enum",
                     "options": [{
                         "value": "grb",
                         "label": "GRB",
-                        "description": null
+                        "deprecated": false
                     }]
                 },
                 "access": "read_write",
                 "persistence": "device_config",
                 "apply_impact": "live",
-                "visibility": "normal",
-                "required": false,
-                "owner": {
-                    "driver": {
-                        "driver_id": "wled"
-                    }
-                },
-                "availability": null,
+                "visibility": "standard",
+                "availability": { "kind": "always" },
                 "ordering": 0
             }],
             "actions": [],
@@ -1536,6 +1533,127 @@ async fn layouts_show_json_output_preserves_the_daemon_payload() -> Result<()> {
     let (port, shutdown_tx, task) = spawn_server(router).await?;
 
     let rendered = run_hyper_json(port, &["layouts", "show", "desk"]).await;
+
+    let _ = shutdown_tx.send(());
+    task.await.context("test server task join failed")?;
+
+    assert_eq!(rendered?, expected);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn devices_list_json_output_preserves_the_daemon_payload() -> Result<()> {
+    let payload = serde_json::json!({
+        "items": [{
+            "id": test_device_id(),
+            "layout_device_id": test_device_id(),
+            "name": "Desk Strip",
+            "origin": {
+                "driver_id": "wled",
+                "backend_id": "wled",
+                "transport": "network"
+            },
+            "presentation": { "label": "WLED" },
+            "status": "connected",
+            "brightness": 80,
+            "firmware_version": "0.15.0",
+            "connection": {
+                "transport": "network",
+                "label": null,
+                "endpoint": null,
+                "ip": "10.0.0.4",
+                "hostname": null
+            },
+            "total_leds": 144,
+            "segments": []
+        }],
+        "total": 1
+    });
+    let expected = payload.clone();
+    let router = Router::new().route(
+        "/api/v1/devices",
+        get(move || {
+            let payload = payload.clone();
+            async move { Json(serde_json::json!({ "data": payload })) }
+        }),
+    );
+    let (port, shutdown_tx, task) = spawn_server(router).await?;
+
+    let rendered = run_hyper_json(port, &["devices", "list"]).await;
+
+    let _ = shutdown_tx.send(());
+    task.await.context("test server task join failed")?;
+
+    assert_eq!(rendered?, expected);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn controls_show_json_output_preserves_the_daemon_payload() -> Result<()> {
+    let expected = driver_control_surface_response()["data"].clone();
+    let router = Router::new().route(
+        "/api/v1/drivers/{driver}/controls",
+        get(|Path(driver): Path<String>| async move {
+            assert_eq!(driver, "wled");
+            Json(driver_control_surface_response())
+        }),
+    );
+    let (port, shutdown_tx, task) = spawn_server(router).await?;
+
+    let rendered = run_hyper_json(port, &["controls", "show", "driver:wled"]).await;
+
+    let _ = shutdown_tx.send(());
+    task.await.context("test server task join failed")?;
+
+    assert_eq!(rendered?, expected);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn drivers_list_json_output_preserves_the_daemon_payload() -> Result<()> {
+    let payload = serde_json::json!({
+        "items": [{
+            "descriptor": {
+                "id": "wled",
+                "display_name": "WLED",
+                "module_kind": "network",
+                "transports": ["network"],
+                "capabilities": {
+                    "config": true,
+                    "discovery": true,
+                    "pairing": false,
+                    "output_backend": true,
+                    "protocol_catalog": false,
+                    "runtime_cache": false,
+                    "credentials": false,
+                    "presentation": true,
+                    "controls": true
+                },
+                "api_schema_version": 1,
+                "config_version": 1,
+                "default_enabled": true
+            },
+            "presentation": { "label": "WLED" },
+            "enabled": true,
+            "config_key": "wled",
+            "protocols": [],
+            "control_surface_id": "driver:wled"
+        }]
+    });
+    let expected = payload.clone();
+    let router = Router::new().route(
+        "/api/v1/drivers",
+        get(move || {
+            let payload = payload.clone();
+            async move { Json(serde_json::json!({ "data": payload })) }
+        }),
+    );
+    let (port, shutdown_tx, task) = spawn_server(router).await?;
+
+    let rendered = run_hyper_json(port, &["drivers", "list"]).await;
 
     let _ = shutdown_tx.send(());
     task.await.context("test server task join failed")?;

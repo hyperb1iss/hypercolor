@@ -4,15 +4,21 @@ use std::collections::HashMap;
 
 use anyhow::{Result, bail};
 use clap::{Args, Subcommand};
-use hypercolor_types::api::controls::InvokeControlActionRequest;
-use hypercolor_types::api::devices::{DiscoverRequest, IdentifyRequest};
+use hypercolor_types::api::controls::{ControlSurfaceListResponse, InvokeControlActionRequest};
+use hypercolor_types::api::devices::{
+    DeviceListResponse, DeviceSummary, DiscoverRequest, DiscoverResponse, IdentifyDeviceResponse,
+    IdentifyRequest, PairDeviceResponse,
+};
 use hypercolor_types::api::scene::PatchControlsRequest;
-use hypercolor_types::pairing::PairDeviceRequest;
-use serde_json::Value;
+use hypercolor_types::controls::{
+    ApplyControlChangesResponse, ControlActionResult, ControlSurfaceDocument,
+};
+use hypercolor_types::device::{DeviceOrigin, DriverTransportKind};
+use hypercolor_types::pairing::{PairDeviceRequest, PairDeviceStatus};
 
 use crate::client::DaemonClient;
 use crate::commands::controls;
-use crate::output::{OutputContext, OutputFormat, extract_str, urlencoded};
+use crate::output::{OutputContext, OutputFormat, urlencoded};
 
 /// Device discovery and management.
 #[derive(Debug, Args)]
@@ -185,50 +191,36 @@ async fn execute_list(
         path = format!("{path}?{}", query_parts.join("&"));
     }
 
-    let response: hypercolor_types::api::ListResponse<serde_json::Value> =
-        client.get_list(&path).await?;
+    let response: DeviceListResponse = client.get_list(&path).await?;
+    let devices = &response.items;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
         OutputFormat::Plain => {
-            let devices = &response.items;
             for device in devices {
-                if let Some(name) = device.get("name").and_then(serde_json::Value::as_str) {
-                    println!("{name}");
-                }
+                println!("{}", device.name);
             }
         }
         OutputFormat::Table => {
-            let devices = &response.items;
             let headers = ["Device", "Driver", "Route", "LEDs", "Status", "Firmware"];
             let rows: Vec<Vec<String>> = devices
                 .iter()
                 .map(|d| {
                     vec![
-                        ctx.painter.name(&extract_str(d, "name")),
-                        ctx.painter.muted(&origin_field(d, "driver_id")),
-                        ctx.painter.muted(&origin_field(d, "backend_id")),
-                        ctx.painter.number(
-                            &d.get("total_leds")
-                                .and_then(serde_json::Value::as_u64)
-                                .map_or_else(|| "?".to_string(), |l| l.to_string()),
-                        ),
-                        ctx.painter.device_state(&extract_str(d, "status")),
-                        ctx.painter.muted(
-                            d.get("firmware_version")
-                                .and_then(serde_json::Value::as_str)
-                                .unwrap_or("-"),
-                        ),
+                        ctx.painter.name(&d.name),
+                        ctx.painter.muted(&d.origin.driver_id),
+                        ctx.painter.muted(&d.origin.backend_id),
+                        ctx.painter.number(&d.total_leds.to_string()),
+                        ctx.painter.device_state(&d.status),
+                        ctx.painter
+                            .muted(d.firmware_version.as_deref().unwrap_or("-")),
                     ]
                 })
                 .collect();
 
             ctx.print_table(&headers, &rows);
             println!();
-            let total_leds: u64 = devices
-                .iter()
-                .filter_map(|d| d.get("total_leds").and_then(serde_json::Value::as_u64))
-                .sum();
+            let total_leds: u64 = devices.iter().map(|d| u64::from(d.total_leds)).sum();
             ctx.info(&format!(
                 "{} devices \u{00b7} {} LEDs",
                 ctx.painter.number(&devices.len().to_string()),
@@ -246,7 +238,7 @@ async fn execute_pair(
     ctx: &OutputContext,
 ) -> Result<()> {
     let path = format!("/devices/{}/pair", urlencoded(&args.device));
-    let response: serde_json::Value = client
+    let response: PairDeviceResponse = client
         .post(
             &path,
             &PairDeviceRequest {
@@ -271,19 +263,15 @@ async fn execute_discover(
     };
 
     ctx.info("Discovering devices...");
-    let response: serde_json::Value = client.post("/devices/discover", &body).await?;
+    let response: DiscoverResponse = client.post("/devices/discover", &body).await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
         OutputFormat::Plain | OutputFormat::Table => {
-            let scan_id = response
-                .get("scan_id")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("scan_unknown");
-            let status = response
-                .get("status")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("queued");
+            let (status, scan_id) = match &response {
+                DiscoverResponse::Scanning { scan_id, .. } => ("scanning", scan_id),
+                DiscoverResponse::Completed { scan_id, .. } => ("completed", scan_id),
+            };
             ctx.success(&format!("Discovery {status}: {scan_id}"));
         }
     }
@@ -297,44 +285,26 @@ async fn execute_info(
     ctx: &OutputContext,
 ) -> Result<()> {
     let path = format!("/devices/{}", urlencoded(&args.device));
-    let response: serde_json::Value = client.get(&path).await?;
+    let response: DeviceSummary = client.get(&path).await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
         OutputFormat::Plain => {
-            println!("{}", extract_str(&response, "name"));
+            println!("{}", response.name);
         }
         OutputFormat::Table => {
             println!();
-            ctx.info(&extract_str(&response, "name"));
+            ctx.info(&response.name);
             println!();
-            ctx.info(&format!(
-                "Driver       {}",
-                origin_field(&response, "driver_id")
-            ));
-            ctx.info(&format!(
-                "Route        {}",
-                origin_field(&response, "backend_id")
-            ));
+            ctx.info(&format!("Driver       {}", response.origin.driver_id));
+            ctx.info(&format!("Route        {}", response.origin.backend_id));
             ctx.info(&format!(
                 "Transport    {}",
-                origin_field(&response, "transport")
+                transport_label(&response.origin)
             ));
-            ctx.info(&format!(
-                "LED Count    {}",
-                response
-                    .get("total_leds")
-                    .and_then(serde_json::Value::as_u64)
-                    .unwrap_or(0)
-            ));
-            ctx.info(&format!(
-                "Status       {}",
-                extract_str(&response, "status")
-            ));
-            if let Some(fw) = response
-                .get("firmware_version")
-                .and_then(serde_json::Value::as_str)
-            {
+            ctx.info(&format!("LED Count    {}", response.total_leds));
+            ctx.info(&format!("Status       {}", response.status));
+            if let Some(fw) = &response.firmware_version {
                 ctx.info(&format!("Firmware     {fw}"));
             }
             println!();
@@ -344,13 +314,18 @@ async fn execute_info(
     Ok(())
 }
 
-fn origin_field(value: &serde_json::Value, key: &str) -> String {
-    value
-        .get("origin")
-        .and_then(|origin| origin.get(key))
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("-")
-        .to_owned()
+/// Wire spelling of the transport a device speaks.
+fn transport_label(origin: &DeviceOrigin) -> String {
+    match &origin.transport {
+        DriverTransportKind::Network => "network".to_owned(),
+        DriverTransportKind::Usb => "usb".to_owned(),
+        DriverTransportKind::Smbus => "smbus".to_owned(),
+        DriverTransportKind::Midi => "midi".to_owned(),
+        DriverTransportKind::Serial => "serial".to_owned(),
+        DriverTransportKind::Virtual => "virtual".to_owned(),
+        DriverTransportKind::Bridge => "bridge".to_owned(),
+        DriverTransportKind::Custom(kind) => kind.clone(),
+    }
 }
 
 async fn execute_controls(
@@ -358,7 +333,7 @@ async fn execute_controls(
     client: &DaemonClient,
     ctx: &OutputContext,
 ) -> Result<()> {
-    let response: serde_json::Value = client
+    let response: ControlSurfaceListResponse = client
         .get(&format!(
             "/control-surfaces?device_id={}",
             urlencoded(&args.device)
@@ -379,7 +354,7 @@ async fn execute_set_control(
         clear_bindings: Vec::new(),
     };
 
-    let response: serde_json::Value = client
+    let response: ApplyControlChangesResponse = client
         .patch(
             &format!("/control-surfaces/{}/values", urlencoded(&surface_id)),
             &body,
@@ -395,9 +370,9 @@ async fn execute_action(
 ) -> Result<()> {
     let surface = device_control_surface_for_action(client, &args.device, &args.action).await?;
     controls::ensure_action_confirmed(&surface, &args.action, args.yes, ctx)?;
-    let surface_id = extract_str(&surface, "surface_id");
+    let surface_id = surface.surface_id.clone();
     let input = controls::assignments_to_map(&args.input)?;
-    let response: serde_json::Value = client
+    let response: ControlActionResult = client
         .post(
             &format!(
                 "/control-surfaces/{}/actions/{}",
@@ -420,7 +395,7 @@ async fn execute_identify(
         duration_ms: Some(u64::from(args.duration).saturating_mul(1000)),
         color: None,
     };
-    let response: serde_json::Value = client.post(&path, &body).await?;
+    let response: IdentifyDeviceResponse = client.post(&path, &body).await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
@@ -437,25 +412,19 @@ async fn execute_identify(
 
 fn render_pair_response(
     target_label: &str,
-    response: &serde_json::Value,
+    response: &PairDeviceResponse,
     ctx: &OutputContext,
 ) -> Result<()> {
     match ctx.format {
         OutputFormat::Json => ctx.print_json(response)?,
         OutputFormat::Plain | OutputFormat::Table => {
-            let status = response
-                .get("status")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("unknown");
-            let message = response
-                .get("message")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("Pairing request completed.");
-
-            if matches!(status, "paired" | "already_paired") {
-                ctx.success(message);
+            if matches!(
+                response.status,
+                PairDeviceStatus::Paired | PairDeviceStatus::AlreadyPaired
+            ) {
+                ctx.success(&response.message);
             } else {
-                ctx.info(&format!("{target_label}: {message}"));
+                ctx.info(&format!("{target_label}: {}", response.message));
             }
         }
     }
@@ -469,85 +438,73 @@ async fn device_control_surface_id_for_field(
     field: &str,
 ) -> Result<String> {
     let surfaces = device_control_surfaces(client, device).await?;
-    find_surface_with_item(&surfaces, "fields", field).ok_or_else(|| {
-        let available = available_surface_items(&surfaces, "fields");
-        anyhow::anyhow!(
-            "Device control field '{field}' was not found on {device}. Available fields: {available}"
-        )
-    })
+    surfaces
+        .iter()
+        .find(|surface| surface.fields.iter().any(|item| item.id == field))
+        .map(|surface| surface.surface_id.clone())
+        .ok_or_else(|| {
+            let available = available_field_ids(&surfaces);
+            anyhow::anyhow!(
+                "Device control field '{field}' was not found on {device}. Available fields: {available}"
+            )
+        })
 }
 
 async fn device_control_surface_for_action(
     client: &DaemonClient,
     device: &str,
     action: &str,
-) -> Result<Value> {
+) -> Result<ControlSurfaceDocument> {
     let surfaces = device_control_surfaces(client, device).await?;
-    find_surface_value_with_item(&surfaces, "actions", action).ok_or_else(|| {
-        let available = available_surface_items(&surfaces, "actions");
-        anyhow::anyhow!(
-            "Device control action '{action}' was not found on {device}. Available actions: {available}"
-        )
-    })
+    surfaces
+        .iter()
+        .find(|surface| surface.actions.iter().any(|item| item.id == action))
+        .cloned()
+        .ok_or_else(|| {
+            let available = available_action_ids(&surfaces);
+            anyhow::anyhow!(
+                "Device control action '{action}' was not found on {device}. Available actions: {available}"
+            )
+        })
 }
 
-async fn device_control_surfaces(client: &DaemonClient, device: &str) -> Result<Vec<Value>> {
-    let response: serde_json::Value = client
+async fn device_control_surfaces(
+    client: &DaemonClient,
+    device: &str,
+) -> Result<Vec<ControlSurfaceDocument>> {
+    let response: ControlSurfaceListResponse = client
         .get(&format!(
             "/control-surfaces?device_id={}",
             urlencoded(device)
         ))
         .await?;
-    let surfaces = response
-        .get("surfaces")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    if surfaces.is_empty() {
+    if response.surfaces.is_empty() {
         bail!("Device {device} does not expose control surfaces");
     }
-    Ok(surfaces)
+    Ok(response.surfaces)
 }
 
-fn find_surface_with_item(surfaces: &[Value], collection: &str, item_id: &str) -> Option<String> {
-    find_surface_value_with_item(surfaces, collection, item_id)
-        .as_ref()
-        .and_then(|surface| surface.get("surface_id"))
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned)
+fn available_field_ids(surfaces: &[ControlSurfaceDocument]) -> String {
+    join_ids(
+        surfaces
+            .iter()
+            .flat_map(|surface| surface.fields.iter().map(|field| field.id.as_str())),
+    )
 }
 
-fn find_surface_value_with_item(
-    surfaces: &[Value],
-    collection: &str,
-    item_id: &str,
-) -> Option<Value> {
-    surfaces.iter().find_map(|surface| {
-        surface
-            .get(collection)
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .any(|item| item.get("id").and_then(Value::as_str) == Some(item_id))
-            .then(|| surface.clone())
-    })
+fn available_action_ids(surfaces: &[ControlSurfaceDocument]) -> String {
+    join_ids(
+        surfaces
+            .iter()
+            .flat_map(|surface| surface.actions.iter().map(|action| action.id.as_str())),
+    )
 }
 
-fn available_surface_items(surfaces: &[Value], collection: &str) -> String {
-    let items = surfaces
-        .iter()
-        .flat_map(|surface| {
-            surface
-                .get(collection)
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(|item| item.get("id").and_then(Value::as_str))
-        })
-        .collect::<Vec<_>>();
-    if items.is_empty() {
+fn join_ids<'a>(ids: impl Iterator<Item = &'a str>) -> String {
+    let ids = ids.collect::<Vec<_>>();
+    if ids.is_empty() {
         "none".to_owned()
     } else {
-        items.join(", ")
+        ids.join(", ")
     }
 }

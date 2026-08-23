@@ -5,14 +5,17 @@ use std::collections::BTreeMap;
 use anyhow::{Context, Result, bail};
 use clap::{Args, Subcommand};
 use hypercolor_color::{Rgb, Rgba};
-use hypercolor_types::api::controls::InvokeControlActionRequest;
+use hypercolor_types::api::controls::{ControlSurfaceListResponse, InvokeControlActionRequest};
 use hypercolor_types::api::scene::PatchControlsRequest;
 use hypercolor_types::control::{ControlValue, SecretRef};
-use hypercolor_types::controls::ControlValueMap;
-use serde_json::Value;
+use hypercolor_types::controls::{
+    ApplyControlChangesResponse, ControlAccess, ControlActionResult, ControlActionStatus,
+    ControlAvailabilityState, ControlSurfaceDocument, ControlSurfaceScope, ControlValueMap,
+    ControlValueType,
+};
 
 use crate::client::DaemonClient;
-use crate::output::{OutputContext, OutputFormat, extract_str, urlencoded};
+use crate::output::{OutputContext, OutputFormat, urlencoded};
 
 /// Dynamic control surface inspection and mutation.
 #[derive(Debug, Args)]
@@ -133,7 +136,7 @@ async fn execute_list(
         query_parts.push("include_driver=true".to_string());
     }
 
-    let response: serde_json::Value = client
+    let response: ControlSurfaceListResponse = client
         .get(&format!("/control-surfaces?{}", query_parts.join("&")))
         .await?;
     render_surface_list(&response, ctx)
@@ -145,7 +148,7 @@ async fn execute_show(
     ctx: &OutputContext,
 ) -> Result<()> {
     if is_driver_device_surface(&args.target) {
-        let response: serde_json::Value = client
+        let response: ControlSurfaceDocument = client
             .get(&format!("/control-surfaces/{}", urlencoded(&args.target)))
             .await?;
         return render_surface(&response, ctx);
@@ -161,7 +164,7 @@ async fn execute_show(
         bail!("surface target must be driver:<id>, device:<id>, --driver <id>, or --device <id>");
     };
 
-    let response: serde_json::Value = client.get(&path).await?;
+    let response: ControlSurfaceDocument = client.get(&path).await?;
     render_surface(&response, ctx)
 }
 
@@ -176,7 +179,7 @@ async fn execute_set(
     };
 
     let path = format!("/control-surfaces/{}/values", urlencoded(&args.surface));
-    let response: serde_json::Value = client.patch(&path, &body).await?;
+    let response: ApplyControlChangesResponse = client.patch(&path, &body).await?;
     render_apply_response(&response, ctx)
 }
 
@@ -185,7 +188,7 @@ async fn execute_action(
     client: &DaemonClient,
     ctx: &OutputContext,
 ) -> Result<()> {
-    let surface: serde_json::Value = client
+    let surface: ControlSurfaceDocument = client
         .get(&format!("/control-surfaces/{}", urlencoded(&args.surface)))
         .await?;
     ensure_action_confirmed(&surface, &args.action, args.yes, ctx)?;
@@ -198,61 +201,46 @@ async fn execute_action(
         urlencoded(&args.surface),
         urlencoded(&args.action)
     );
-    let response: serde_json::Value = client.post(&path, &body).await?;
+    let response: ControlActionResult = client.post(&path, &body).await?;
     render_action_response(&response, ctx)
 }
 
 pub(crate) fn ensure_action_confirmed(
-    surface: &Value,
+    surface: &ControlSurfaceDocument,
     action_id: &str,
     yes: bool,
     ctx: &OutputContext,
 ) -> Result<()> {
-    let Some(confirmation) = action_confirmation(surface, action_id) else {
+    let Some(confirmation) = surface
+        .actions
+        .iter()
+        .find(|action| action.id == action_id)
+        .and_then(|action| action.confirmation.as_ref())
+    else {
         return Ok(());
     };
     if yes {
         return Ok(());
     }
 
-    let message = confirmation
-        .get("message")
-        .and_then(Value::as_str)
-        .unwrap_or("This action requires confirmation.");
-    ctx.warning(message);
+    ctx.warning(&confirmation.message);
     bail!("Use --yes to confirm action '{action_id}'");
 }
 
-fn action_confirmation<'a>(surface: &'a Value, action_id: &str) -> Option<&'a Value> {
-    surface
-        .get("actions")
-        .and_then(Value::as_array)?
-        .iter()
-        .find(|action| action.get("id").and_then(Value::as_str) == Some(action_id))?
-        .get("confirmation")
-        .filter(|confirmation| !confirmation.is_null())
-}
-
-pub(crate) fn render_surface_list(response: &Value, ctx: &OutputContext) -> Result<()> {
+pub(crate) fn render_surface_list(
+    response: &ControlSurfaceListResponse,
+    ctx: &OutputContext,
+) -> Result<()> {
     match ctx.format {
         OutputFormat::Json => ctx.print_json(response)?,
         OutputFormat::Plain => {
-            for surface in response
-                .get("surfaces")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-            {
-                println!("{}", extract_str(surface, "surface_id"));
+            for surface in &response.surfaces {
+                println!("{}", surface.surface_id);
             }
         }
         OutputFormat::Table => {
-            let surfaces = response
-                .get("surfaces")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default();
-            let rows = surfaces
+            let rows = response
+                .surfaces
                 .iter()
                 .map(|surface| surface_row(surface, ctx))
                 .collect::<Vec<_>>();
@@ -262,16 +250,16 @@ pub(crate) fn render_surface_list(response: &Value, ctx: &OutputContext) -> Resu
     Ok(())
 }
 
-pub(crate) fn render_surface(surface: &Value, ctx: &OutputContext) -> Result<()> {
+pub(crate) fn render_surface(surface: &ControlSurfaceDocument, ctx: &OutputContext) -> Result<()> {
     match ctx.format {
         OutputFormat::Json => ctx.print_json(surface)?,
-        OutputFormat::Plain => println!("{}", extract_str(surface, "surface_id")),
+        OutputFormat::Plain => println!("{}", surface.surface_id),
         OutputFormat::Table => {
             let rows = field_rows(surface, ctx);
             ctx.info(&format!(
                 "{} {}",
-                ctx.painter.name(&extract_str(surface, "surface_id")),
-                ctx.painter.muted(&format!("rev {}", revision(surface)))
+                ctx.painter.name(&surface.surface_id),
+                ctx.painter.muted(&format!("rev {}", surface.revision))
             ));
             if !rows.is_empty() {
                 println!();
@@ -287,85 +275,84 @@ pub(crate) fn render_surface(surface: &Value, ctx: &OutputContext) -> Result<()>
     Ok(())
 }
 
-pub(crate) fn render_apply_response(response: &Value, ctx: &OutputContext) -> Result<()> {
+pub(crate) fn render_apply_response(
+    response: &ApplyControlChangesResponse,
+    ctx: &OutputContext,
+) -> Result<()> {
     match ctx.format {
         OutputFormat::Json => ctx.print_json(response)?,
         OutputFormat::Plain | OutputFormat::Table => {
-            let accepted = response
-                .get("accepted")
-                .and_then(Value::as_array)
-                .map_or(0, Vec::len);
-            let rejected = response
-                .get("rejected")
-                .and_then(Value::as_array)
-                .map_or(0, Vec::len);
             ctx.success(&format!(
-                "Applied {accepted} change(s), rejected {rejected}; revision {}",
-                revision(response)
+                "Applied {} change(s), rejected {}; revision {}",
+                response.accepted.len(),
+                response.rejected.len(),
+                response.revision
             ));
         }
     }
     Ok(())
 }
 
-pub(crate) fn render_action_response(response: &Value, ctx: &OutputContext) -> Result<()> {
+pub(crate) fn render_action_response(
+    response: &ControlActionResult,
+    ctx: &OutputContext,
+) -> Result<()> {
     match ctx.format {
         OutputFormat::Json => ctx.print_json(response)?,
         OutputFormat::Plain | OutputFormat::Table => {
-            let action = extract_str(response, "action_id");
-            let status = extract_str(response, "status");
-            ctx.success(&format!("{action}: {status}"));
+            ctx.success(&format!(
+                "{}: {}",
+                response.action_id,
+                action_status_label(response.status)
+            ));
         }
     }
     Ok(())
 }
 
-fn surface_row(surface: &Value, ctx: &OutputContext) -> Vec<String> {
+fn surface_row(surface: &ControlSurfaceDocument, ctx: &OutputContext) -> Vec<String> {
     vec![
-        ctx.painter.name(&extract_str(surface, "surface_id")),
-        ctx.painter.muted(&scope_label(surface)),
-        ctx.painter
-            .number(&array_len(surface, "fields").to_string()),
-        ctx.painter
-            .number(&array_len(surface, "actions").to_string()),
-        ctx.painter.number(&revision(surface).to_string()),
+        ctx.painter.name(&surface.surface_id),
+        ctx.painter.muted(scope_label(&surface.scope)),
+        ctx.painter.number(&surface.fields.len().to_string()),
+        ctx.painter.number(&surface.actions.len().to_string()),
+        ctx.painter.number(&surface.revision.to_string()),
     ]
 }
 
-fn field_rows(surface: &Value, ctx: &OutputContext) -> Vec<Vec<String>> {
+fn field_rows(surface: &ControlSurfaceDocument, ctx: &OutputContext) -> Vec<Vec<String>> {
     surface
-        .get("fields")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
+        .fields
+        .iter()
         .map(|field| {
-            let field_id = extract_str(field, "id");
             let value = surface
-                .get("values")
-                .and_then(|values| values.get(&field_id))
+                .values
+                .get(&field.id)
                 .map_or_else(|| "-".to_string(), value_summary);
             vec![
-                ctx.painter.name(&field_id),
-                ctx.painter.muted(&value_type_label(field)),
-                ctx.painter.muted(&extract_str(field, "access")),
+                ctx.painter.name(&field.id),
+                ctx.painter.muted(value_type_label(&field.value_type)),
+                ctx.painter.muted(access_label(field.access)),
                 value,
             ]
         })
         .collect()
 }
 
-fn action_rows(surface: &Value, ctx: &OutputContext) -> Vec<Vec<String>> {
+fn action_rows(surface: &ControlSurfaceDocument, ctx: &OutputContext) -> Vec<Vec<String>> {
     surface
-        .get("actions")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
+        .actions
+        .iter()
         .map(|action| {
-            let action_id = extract_str(action, "id");
+            let availability = surface
+                .action_availability
+                .get(&action.id)
+                .map_or("unknown", |availability| {
+                    availability_label(availability.state)
+                });
             vec![
-                ctx.painter.name(&action_id),
-                ctx.painter
-                    .muted(&action_availability_label(surface, &action_id)),
+                ctx.painter.name(&action.id),
+                ctx.painter.muted(availability),
             ]
         })
         .collect()
@@ -474,70 +461,90 @@ fn split_list(value: &str) -> Vec<String> {
         .collect()
 }
 
-fn scope_label(surface: &Value) -> String {
-    let Some(scope) = surface.get("scope").and_then(Value::as_object) else {
-        return "?".to_string();
-    };
-    if scope.contains_key("driver") {
-        "driver".to_string()
-    } else if scope.contains_key("device") {
-        "device".to_string()
-    } else if let Some(kind) = scope.get("kind").and_then(Value::as_str) {
-        kind.to_string()
-    } else {
-        "?".to_string()
+const fn scope_label(scope: &ControlSurfaceScope) -> &'static str {
+    match scope {
+        ControlSurfaceScope::Driver { .. } => "driver",
+        ControlSurfaceScope::Device { .. } => "device",
     }
 }
 
-fn value_type_label(field: &Value) -> String {
-    field
-        .get("value_type")
-        .and_then(Value::as_object)
-        .and_then(|value_type| value_type.get("kind").and_then(Value::as_str))
-        .unwrap_or("?")
-        .to_string()
-}
-
-fn action_availability_label(surface: &Value, action_id: &str) -> String {
-    surface
-        .get("action_availability")
-        .and_then(|availability| availability.get(action_id))
-        .and_then(Value::as_object)
-        .and_then(|availability| availability.get("state").and_then(Value::as_str))
-        .unwrap_or("unknown")
-        .to_string()
-}
-
-fn value_summary(value: &Value) -> String {
-    match serde_json::from_value::<ControlValue>(value.clone()) {
-        Ok(ControlValue::SecretRef(_)) => return "configured".to_string(),
-        Ok(ControlValue::Unknown) | Err(_) => return "unsupported value".to_string(),
-        Ok(_) => {}
+const fn value_type_label(value_type: &ControlValueType) -> &'static str {
+    match value_type {
+        ControlValueType::Bool => "bool",
+        ControlValueType::Integer { .. } => "integer",
+        ControlValueType::Float { .. } => "float",
+        ControlValueType::String { .. } => "string",
+        ControlValueType::Secret => "secret",
+        ControlValueType::ColorRgb => "color_rgb",
+        ControlValueType::ColorRgba => "color_rgba",
+        ControlValueType::IpAddress => "ip_address",
+        ControlValueType::MacAddress => "mac_address",
+        ControlValueType::DurationMs { .. } => "duration_ms",
+        ControlValueType::Enum { .. } => "enum",
+        ControlValueType::Flags { .. } => "flags",
+        ControlValueType::List { .. } => "list",
+        ControlValueType::Object { .. } => "object",
+        ControlValueType::Unknown => "unknown",
     }
+}
 
-    match value.get("value") {
-        Some(Value::String(value)) => value.clone(),
-        Some(Value::Number(value)) => value.to_string(),
-        Some(Value::Bool(value)) => value.to_string(),
-        Some(Value::Array(values)) => values
+const fn access_label(access: ControlAccess) -> &'static str {
+    match access {
+        ControlAccess::ReadOnly => "read_only",
+        ControlAccess::ReadWrite => "read_write",
+        ControlAccess::WriteOnly => "write_only",
+    }
+}
+
+const fn availability_label(state: ControlAvailabilityState) -> &'static str {
+    match state {
+        ControlAvailabilityState::Available => "available",
+        ControlAvailabilityState::Disabled => "disabled",
+        ControlAvailabilityState::ReadOnly => "read_only",
+        ControlAvailabilityState::Unsupported => "unsupported",
+        ControlAvailabilityState::Hidden => "hidden",
+    }
+}
+
+const fn action_status_label(status: ControlActionStatus) -> &'static str {
+    match status {
+        ControlActionStatus::Accepted => "accepted",
+        ControlActionStatus::Running => "running",
+        ControlActionStatus::Completed => "completed",
+        ControlActionStatus::Failed => "failed",
+    }
+}
+
+/// One control value as a single table cell.
+///
+/// Secret references never render their target, and a value this build
+/// does not understand says so rather than printing a decoded shape it
+/// cannot vouch for.
+fn value_summary(value: &ControlValue) -> String {
+    match value {
+        ControlValue::SecretRef(_) => "configured".to_string(),
+        ControlValue::Unknown => "unsupported value".to_string(),
+        ControlValue::Null => "-".to_string(),
+        ControlValue::Bool(value) => value.to_string(),
+        ControlValue::Int(value) => value.to_string(),
+        ControlValue::Float(value) => value.to_string(),
+        ControlValue::Text(value) | ControlValue::Enum(value) => value.clone(),
+        ControlValue::Ip(value) => value.as_str().to_string(),
+        ControlValue::Mac(value) => value.as_str().to_string(),
+        ControlValue::Duration(value) => value.as_millis().to_string(),
+        ControlValue::Flags(values) => values.join(","),
+        ControlValue::List(values) => values
             .iter()
-            .map(Value::to_string)
+            .map(value_summary)
             .collect::<Vec<_>>()
             .join(","),
-        Some(Value::Object(_)) => "{...}".to_string(),
-        Some(Value::Null) | None => "-".to_string(),
+        ControlValue::ColorRgb(_)
+        | ControlValue::ColorRgba(_)
+        | ControlValue::ColorLinear(_)
+        | ControlValue::Gradient(_)
+        | ControlValue::Rect(_)
+        | ControlValue::Map(_) => "{...}".to_string(),
     }
-}
-
-fn array_len(value: &Value, field: &str) -> usize {
-    value
-        .get(field)
-        .and_then(Value::as_array)
-        .map_or(0, Vec::len)
-}
-
-fn revision(value: &Value) -> u64 {
-    value.get("revision").and_then(Value::as_u64).unwrap_or(0)
 }
 
 fn is_bare_driver_surface(target: &str) -> bool {
@@ -557,7 +564,7 @@ fn is_driver_device_surface(target: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use hypercolor_types::control::ControlValue;
+    use hypercolor_types::control::{ControlValue, SecretRef};
 
     use super::{parse_tagged_control_value, value_summary};
 
@@ -578,21 +585,19 @@ mod tests {
 
     #[test]
     fn value_summary_hides_secret_refs() {
-        let value = serde_json::json!({
-            "kind": "secret_ref",
-            "value": "driver-owned-secret"
-        });
+        let value = ControlValue::SecretRef(SecretRef::new("driver-owned-secret"));
 
         assert_eq!(value_summary(&value), "configured");
     }
 
     #[test]
-    fn value_summary_marks_future_control_values_unsupported() {
-        let value = serde_json::json!({
-            "kind": "spline_curve",
-            "value": "opaque-driver-data"
-        });
+    fn value_summary_marks_unknown_control_values_unsupported() {
+        let value: ControlValue = serde_json::from_value(serde_json::json!({
+            "kind": "unknown"
+        }))
+        .expect("the unknown sentinel is part of the canonical algebra");
 
+        assert_eq!(value, ControlValue::Unknown);
         assert_eq!(value_summary(&value), "unsupported value");
     }
 }
