@@ -53,7 +53,6 @@ fn test_layout(zones: Vec<Output>) -> SpatialLayout {
         zones,
         default_sampling_mode: hypercolor_types::spatial::SamplingMode::Bilinear,
         default_edge_behavior: hypercolor_types::spatial::EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     }
 }

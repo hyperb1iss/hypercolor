@@ -325,7 +325,6 @@ fn axis_aligned_bilinear_fast_path_matches_general_projection() {
         zones: vec![zone.clone()],
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     };
     let mut source = Canvas::new(4, 4);
@@ -378,7 +377,6 @@ fn axis_aligned_nearest_fast_path_matches_general_projection() {
         zones: vec![zone.clone()],
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     };
     let mut source = Canvas::new(4, 4);
@@ -437,7 +435,6 @@ fn full_scene_identity_fast_path_matches_projected_path() {
             zones: vec![output.clone()],
             default_sampling_mode: SamplingMode::Bilinear,
             default_edge_behavior: EdgeBehavior::Clamp,
-            spaces: None,
             version: 1,
         },
         brightness: 1.0,
@@ -806,7 +803,6 @@ fn gpu_projected_composition_matches_nearest_projection() {
         zones: vec![sample_zone],
         default_sampling_mode: SamplingMode::Nearest,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     });
     let expected = sampling_engine.sample(&projected);
@@ -2002,7 +1998,6 @@ fn sample_full_gpu_canvas(
         zones: vec![zone],
         default_sampling_mode: SamplingMode::Nearest,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     });
     sample_gpu_plan(sparkleflinger, &engine)

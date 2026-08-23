@@ -277,7 +277,6 @@ fn make_layout(zones: Vec<Output>) -> SpatialLayout {
         zones,
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     }
 }
@@ -874,7 +873,6 @@ fn full_pipeline_render_sample_extract_colors() {
         zones: vec![zone.clone()],
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     };
 
@@ -955,7 +953,6 @@ fn full_pipeline_with_advancing_solid_renderer() {
         zones: vec![zone.clone()],
         default_sampling_mode: SamplingMode::Nearest,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     };
 
@@ -1238,7 +1235,6 @@ fn spatial_layout_with_multiple_zones() {
         zones: vec![zone_tl.clone(), zone_br.clone()],
         default_sampling_mode: SamplingMode::Nearest,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     };
 

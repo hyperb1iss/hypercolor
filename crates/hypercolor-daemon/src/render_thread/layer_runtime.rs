@@ -178,7 +178,6 @@ mod tests {
                 zones: Vec::new(),
                 default_sampling_mode: SamplingMode::Bilinear,
                 default_edge_behavior: EdgeBehavior::Clamp,
-                spaces: None,
                 version: 1,
             },
             brightness: 1.0,

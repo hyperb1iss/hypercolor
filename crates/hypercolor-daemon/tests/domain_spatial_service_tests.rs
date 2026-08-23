@@ -12,7 +12,6 @@ fn layout(id: &str, width: u32) -> SpatialLayout {
         zones: Vec::new(),
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     }
 }

@@ -41,7 +41,6 @@ fn sample_layout() -> SpatialLayout {
 
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     }
 }
@@ -86,7 +85,6 @@ fn ensure_default_layout_inserts_missing_default_entry_once() {
 
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     };
     let mut store = HashMap::new();

@@ -117,7 +117,6 @@ fn layout_with_zones_for(width: u32, height: u32, zones: Vec<Output>) -> Spatial
         zones,
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     }
 }

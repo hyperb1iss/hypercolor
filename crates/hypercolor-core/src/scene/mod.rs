@@ -1070,7 +1070,7 @@ impl SceneManager {
             })
             .collect();
         // Canvas dimensions and sampling defaults are mutable; the
-        // layout's own identity (id, name, description, version, spaces)
+        // layout's own identity (id, name, description, version)
         // is preserved from the stored layout.
         zone.layout.canvas_width = layout.canvas_width;
         zone.layout.canvas_height = layout.canvas_height;
@@ -1683,7 +1683,6 @@ fn empty_scene_zone_layout(
         zones: Vec::new(),
         default_sampling_mode: hypercolor_types::spatial::SamplingMode::Bilinear,
         default_edge_behavior: hypercolor_types::spatial::EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     }
 }
@@ -1698,7 +1697,6 @@ fn empty_default_spatial_layout() -> SpatialLayout {
         zones: Vec::new(),
         default_sampling_mode: hypercolor_types::spatial::SamplingMode::Bilinear,
         default_edge_behavior: hypercolor_types::spatial::EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     }
 }

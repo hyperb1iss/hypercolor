@@ -161,7 +161,6 @@ fn prism_attachment_layout() -> SpatialLayout {
         ],
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     }
 }
@@ -431,7 +430,6 @@ fn sync_device_display_name_in_layout_updates_plain_and_prefixed_defaults() {
         ],
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     };
 

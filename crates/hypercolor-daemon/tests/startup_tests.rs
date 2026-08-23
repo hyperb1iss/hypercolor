@@ -134,7 +134,6 @@ async fn seed_effect_identity_stores(
         zones: Vec::new(),
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     });
     zone.layers = vec![SceneLayer::from_effect(
@@ -1686,7 +1685,6 @@ async fn daemon_start_restores_persisted_active_layout_from_disk() {
 
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     };
     layouts.insert(restored_layout.id.clone(), restored_layout.clone());
@@ -1788,7 +1786,6 @@ async fn daemon_initialize_inserts_missing_default_layout_into_store() {
 
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     };
     layouts.insert(custom_layout.id.clone(), custom_layout);
@@ -1938,7 +1935,6 @@ async fn daemon_start_restores_named_active_scene_and_default_zones() {
             zones: Vec::new(),
             default_sampling_mode: SamplingMode::Bilinear,
             default_edge_behavior: EdgeBehavior::Clamp,
-            spaces: None,
             version: 1,
         },
         brightness: 1.0,
@@ -1994,7 +1990,6 @@ async fn daemon_start_activates_configured_scene_name_without_runtime_snapshot()
         zones: Vec::new(),
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     };
     write_layout_store_fixture(
@@ -2109,7 +2104,6 @@ async fn default_scene_contents_restore_on_restart() {
                     zones: Vec::new(),
                     default_sampling_mode: SamplingMode::Bilinear,
                     default_edge_behavior: EdgeBehavior::Clamp,
-                    spaces: None,
                     version: 1,
                 },
                 brightness: 0.75,
@@ -2231,7 +2225,6 @@ async fn paused_startup_seeds_and_reasserts_late_connected_device_output() {
             zones: vec![test_zone("late-paused-zone", &layout_device_id)],
             default_sampling_mode: SamplingMode::Bilinear,
             default_edge_behavior: EdgeBehavior::Clamp,
-            spaces: None,
             version: 1,
         }),
     )
@@ -2339,7 +2332,6 @@ fn collect_unmapped_prefixed_layout_targets_returns_only_missing_matching_prefix
 
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     };
     let routing = BackendRoutingDebugSnapshot {
@@ -2388,7 +2380,6 @@ fn collect_unmapped_driver_layout_targets_groups_missing_registered_driver_prefi
 
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     };
     let routing = BackendRoutingDebugSnapshot {
@@ -2443,7 +2434,6 @@ fn collect_unmapped_prefixed_layout_targets_ignores_unmatched_prefixes() {
 
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     };
     let routing = BackendRoutingDebugSnapshot {

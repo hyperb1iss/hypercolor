@@ -2879,7 +2879,6 @@ fn zone_layout_preview_client_messages_deserialize() {
             "zones": [],
             "default_sampling_mode": {"type": "bilinear"},
             "default_edge_behavior": "clamp",
-            "spaces": null,
             "version": 1
         }
     }))

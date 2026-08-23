@@ -3786,7 +3786,6 @@ async fn activate_display_face_test_scene_with_layers(
                 zones: Vec::new(),
                 default_sampling_mode: SamplingMode::Bilinear,
                 default_edge_behavior: EdgeBehavior::Clamp,
-                spaces: None,
                 version: 1,
             },
             brightness: 1.0,
@@ -4082,7 +4081,6 @@ async fn set_layout_targeting_device(
 
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     };
     let publisher = tokio::spawn(run_layout_publications(Arc::clone(state), 1));
@@ -7829,7 +7827,6 @@ fn layout_with_sampling_modes(
         }],
         default_sampling_mode,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     }
 }
@@ -12296,7 +12293,6 @@ async fn deleting_display_device_prunes_scene_display_zones_and_persists_cleanup
                     zones: Vec::new(),
                     default_sampling_mode: SamplingMode::Bilinear,
                     default_edge_behavior: EdgeBehavior::Clamp,
-                    spaces: None,
                     version: 1,
                 },
                 hypercolor_types::scene::DisplayFaceTarget::new(display_id),

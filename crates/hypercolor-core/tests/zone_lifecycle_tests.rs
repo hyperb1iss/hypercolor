@@ -44,7 +44,6 @@ fn sample_layout(zone_id: &str) -> SpatialLayout {
         zones: vec![sample_zone(zone_id)],
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     }
 }

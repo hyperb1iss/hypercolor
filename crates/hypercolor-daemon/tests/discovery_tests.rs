@@ -329,7 +329,6 @@ fn empty_layout() -> SpatialLayout {
 
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     }
 }
@@ -492,7 +491,6 @@ fn layout_with_device(layout_device_id: &str) -> SpatialLayout {
 
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     }
 }

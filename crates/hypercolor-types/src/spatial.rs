@@ -508,11 +508,6 @@ pub struct SpatialLayout {
     #[serde(default = "default_edge_behavior")]
     pub default_edge_behavior: EdgeBehavior,
 
-    // ── Multi-Room ────────────────────────────────────────────────────
-    /// Space hierarchy for multi-room layouts.
-    /// `None` means all zones live in a flat canvas (device/desk scale).
-    pub spaces: Option<Vec<SpaceDefinition>>,
-
     // ── Metadata ──────────────────────────────────────────────────────
     /// Schema version for forward-compatible migrations.
     pub version: u32,
@@ -577,70 +572,4 @@ pub enum EdgeBehavior {
 
     /// Mirror coordinates at canvas edges for symmetric reflections.
     Mirror,
-}
-
-// ── Multi-Room Types ────────────────────────────────────────────────────────
-
-/// A physical space (room) containing a subset of zones.
-///
-/// Used for multi-room orchestration and per-room canvas rendering.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-pub struct SpaceDefinition {
-    /// Unique space identifier.
-    pub id: String,
-
-    /// Human-readable name (e.g., "Office", "Living Room").
-    pub name: String,
-
-    /// Physical dimensions of the room. Optional when measurements are unknown.
-    pub dimensions: Option<RoomDimensions>,
-
-    /// Region of the unified canvas this space occupies. Normalized coordinates.
-    pub canvas_region: Option<NormalizedRect>,
-
-    /// IDs of zones belonging to this space.
-    pub zone_ids: Vec<String>,
-
-    /// Neighboring spaces that share walls with this one.
-    pub adjacency: Vec<RoomAdjacency>,
-}
-
-/// Physical room dimensions in centimeters.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-pub struct RoomDimensions {
-    /// X-axis (left to right).
-    pub width: f64,
-    /// Y-axis (floor to ceiling).
-    pub height: f64,
-    /// Z-axis (front to back).
-    pub depth: f64,
-}
-
-/// Declares adjacency between two rooms for cross-room effects.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-pub struct RoomAdjacency {
-    /// ID of the neighboring space.
-    pub neighbor_id: String,
-    /// Which wall is shared.
-    pub shared_wall: Wall,
-    /// Canvas pixels for cross-room blending zone.
-    pub blend_width: u32,
-}
-
-/// Cardinal wall for room adjacency.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-#[serde(rename_all = "snake_case")]
-pub enum Wall {
-    /// Top wall.
-    North,
-    /// Bottom wall.
-    South,
-    /// Right wall.
-    East,
-    /// Left wall.
-    West,
 }

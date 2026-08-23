@@ -1,7 +1,6 @@
 use hypercolor_types::spatial::{
-    Corner, EdgeBehavior, LedTopology, NormalizedPosition, NormalizedRect, Orientation, Output,
-    OutputComponent, RingDef, RoomAdjacency, RoomDimensions, SamplingMode, SpaceDefinition,
-    SpatialLayout, StripDirection, Wall, Winding, ZoneShape,
+    Corner, EdgeBehavior, LedTopology, NormalizedPosition, Orientation, Output, OutputComponent,
+    RingDef, SamplingMode, SpatialLayout, StripDirection, Winding, ZoneShape,
 };
 use serde_json::json;
 
@@ -339,14 +338,12 @@ fn spatial_layout_empty_zones() {
         zones: vec![],
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     };
 
     assert_eq!(layout.canvas_width, 320);
     assert_eq!(layout.canvas_height, 200);
     assert!(layout.zones.is_empty());
-    assert!(layout.spaces.is_none());
 }
 
 #[test]
@@ -386,7 +383,6 @@ fn spatial_layout_with_zones() {
         zones: vec![zone],
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     };
 
@@ -517,76 +513,6 @@ fn zone_shape_arc_json_roundtrip() {
     let json = serde_json::to_string(&shape).expect("serialize ZoneShape::Arc");
     let recovered: ZoneShape = serde_json::from_str(&json).expect("deserialize ZoneShape::Arc");
     assert!(matches!(recovered, ZoneShape::Arc { .. }));
-}
-
-// ── Multi-Room Types ────────────────────────────────────────────────────────
-
-#[test]
-fn space_definition_construction() {
-    let space = SpaceDefinition {
-        id: "office".into(),
-        name: "Office".into(),
-        dimensions: Some(RoomDimensions {
-            width: 400.0,
-            height: 280.0,
-            depth: 350.0,
-        }),
-        canvas_region: Some(NormalizedRect {
-            x: 0.0,
-            y: 0.0,
-            width: 0.5,
-            height: 1.0,
-        }),
-        zone_ids: vec!["zone-1".into(), "zone-2".into()],
-        adjacency: vec![RoomAdjacency {
-            neighbor_id: "living-room".into(),
-            shared_wall: Wall::East,
-            blend_width: 16,
-        }],
-    };
-
-    assert_eq!(space.id, "office");
-    assert_eq!(space.zone_ids.len(), 2);
-    assert_eq!(space.adjacency.len(), 1);
-    assert_eq!(space.adjacency[0].shared_wall, Wall::East);
-}
-
-#[test]
-fn layout_with_spaces_json_roundtrip() {
-    let layout = SpatialLayout {
-        id: "multi-room".into(),
-        name: "Full House".into(),
-        description: Some("Multi-room layout".into()),
-        canvas_width: 640,
-        canvas_height: 400,
-        zones: vec![],
-        default_sampling_mode: SamplingMode::Bilinear,
-        default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: Some(vec![SpaceDefinition {
-            id: "room-1".into(),
-            name: "Room 1".into(),
-            dimensions: None,
-            canvas_region: None,
-            zone_ids: vec![],
-            adjacency: vec![],
-        }]),
-        version: 1,
-    };
-
-    let json = serde_json::to_string_pretty(&layout).expect("serialize SpatialLayout");
-    let recovered: SpatialLayout = serde_json::from_str(&json).expect("deserialize SpatialLayout");
-    assert_eq!(recovered.id, "multi-room");
-    assert_eq!(recovered.canvas_width, 640);
-    assert!(recovered.spaces.is_some());
-}
-
-// ── Wall Enum ───────────────────────────────────────────────────────────────
-
-#[test]
-fn wall_all_variants() {
-    let walls = [Wall::North, Wall::South, Wall::East, Wall::West];
-    assert_eq!(walls.len(), 4);
-    assert_ne!(Wall::North, Wall::South);
 }
 
 // ── Winding Enum ────────────────────────────────────────────────────────────

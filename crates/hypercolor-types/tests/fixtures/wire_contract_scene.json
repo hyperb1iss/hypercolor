@@ -97,7 +97,6 @@
           "type": "bilinear"
         },
         "default_edge_behavior": "clamp",
-        "spaces": null,
         "version": 1
       },
       "brightness": 1.0,

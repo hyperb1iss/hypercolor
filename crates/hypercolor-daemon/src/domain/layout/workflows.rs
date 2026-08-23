@@ -133,7 +133,6 @@ impl LayoutContext {
             zones: Vec::new(),
             default_sampling_mode: SamplingMode::Bilinear,
             default_edge_behavior: hypercolor_types::spatial::EdgeBehavior::Clamp,
-            spaces: None,
             version: 1,
         };
         let summary = layout_summary(&layout, false);

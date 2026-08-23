@@ -123,7 +123,6 @@ fn composer_requires_cpu_sampling_canvas_for_gaussian_gpu_sampling_plan() {
         }],
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     });
 
@@ -143,7 +142,6 @@ fn render_zone_full_composition_is_required_when_sparkleflinger_owns_led_samplin
         zones: Vec::new(),
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     }));
     assert!(render_zone_requires_full_composition(false, &strategy));
@@ -160,7 +158,6 @@ fn render_zone_presampled_leds_can_bypass_full_composition_without_transition() 
         zones: Vec::new(),
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     }));
     assert!(!render_zone_requires_full_composition(false, &strategy));

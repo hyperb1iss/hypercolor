@@ -192,7 +192,6 @@ fn layout_with_unassigned_zones(
         zones,
         default_sampling_mode: layout.default_sampling_mode.clone(),
         default_edge_behavior: layout.default_edge_behavior,
-        spaces: layout.spaces.clone(),
         version: layout.version,
     }
 }
@@ -288,7 +287,6 @@ mod tests {
                 .collect(),
             default_sampling_mode: SamplingMode::Nearest,
             default_edge_behavior: EdgeBehavior::Clamp,
-            spaces: None,
             version: 1,
         }
     }

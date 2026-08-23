@@ -323,7 +323,6 @@ async fn set_active_layout_for_device(state: &Arc<AppState>, device_id: DeviceId
 
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     };
 

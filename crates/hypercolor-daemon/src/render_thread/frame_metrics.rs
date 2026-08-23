@@ -491,7 +491,6 @@ mod tests {
                 zones: Vec::new(),
                 default_sampling_mode: SamplingMode::Nearest,
                 default_edge_behavior: EdgeBehavior::Clamp,
-                spaces: None,
                 version: 1,
             }),
         }

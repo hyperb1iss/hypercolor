@@ -1511,7 +1511,6 @@ fn sampling_layout_with_led_count(mode: SamplingMode, led_count: u32) -> Spatial
         }],
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     }
 }
@@ -1546,7 +1545,6 @@ fn fade_sampling_layout(mode: SamplingMode) -> SpatialLayout {
         }],
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     }
 }

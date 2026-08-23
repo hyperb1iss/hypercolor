@@ -126,7 +126,6 @@ fn build_layout_for_device(
         }],
         default_sampling_mode: hypercolor_types::spatial::SamplingMode::Nearest,
         default_edge_behavior: hypercolor_types::spatial::EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     }
 }
@@ -199,7 +198,6 @@ fn build_dual_zone_layout(
         ],
         default_sampling_mode: hypercolor_types::spatial::SamplingMode::Nearest,
         default_edge_behavior: hypercolor_types::spatial::EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     }
 }

@@ -42,6 +42,9 @@ and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   merged a file. Existing config files keep loading, and the retired keys are
   preserved verbatim through the extension catch-all rather than deleted on
   the next save.
+- Remove the unimplemented multi-room layout model: `SpaceDefinition`,
+  `RoomDimensions`, `RoomAdjacency`, `Wall`, and the `spaces` field on
+  `SpatialLayout`. Nothing ever read the hierarchy; layouts stay flat.
 
 ### Breaking Changes
 
@@ -61,6 +64,10 @@ and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `device-aliases.json` schema version 1 remains untouched but is no longer
   loaded. Back up and remove that file, then rescan devices to rebuild the
   schema version 2 alias overlay from the unchanged portable keys.
+- `SpatialLayout` no longer carries `spaces`, and the `SpaceDefinition`,
+  `RoomDimensions`, `RoomAdjacency`, and `Wall` schemas are gone from the API
+  and the generated clients. Stored layouts that still carry a `spaces` key
+  load unchanged; the key is ignored.
 - Effect error fallback now uses `clear_zones`, and runtime session snapshots
   store default scene content under `default_scene_zones`. Schema version 4
   config migrates the old fallback value once; schema version 5 config and
