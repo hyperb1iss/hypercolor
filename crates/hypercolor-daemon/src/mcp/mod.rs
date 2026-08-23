@@ -9,6 +9,7 @@ pub mod resources;
 pub mod selector;
 pub mod tools;
 
+mod control_payload;
 mod device_payload;
 mod payload;
 mod results;

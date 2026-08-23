@@ -885,6 +885,29 @@ pub enum ControlApplyError {
     },
 }
 
+impl std::fmt::Display for ControlApplyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnknownField => f.write_str("unknown field"),
+            Self::TypeMismatch { expected } => write!(f, "expected {expected:?}"),
+            Self::OutOfRange => f.write_str("value is out of range"),
+            Self::InvalidValue { message } | Self::UnsupportedDynamicApply { message } => {
+                f.write_str(message)
+            }
+            Self::Unavailable { reason } => write!(f, "control unavailable: {reason}"),
+            Self::Conflict { current_revision } => {
+                write!(
+                    f,
+                    "surface revision conflict; current is {current_revision:?}"
+                )
+            }
+            Self::Unauthorized => f.write_str("not authorized"),
+            Self::DeviceOffline => f.write_str("device is offline"),
+            Self::DriverError { message } => write!(f, "driver error: {message}"),
+        }
+    }
+}
+
 /// Result from invoking an action.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]

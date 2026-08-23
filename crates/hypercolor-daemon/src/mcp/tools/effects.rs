@@ -9,7 +9,6 @@ use super::{
     ToolDefinition, ToolError, find_effect_metadata, output_schema, resolve_effect_selector,
     serialize_result,
 };
-use crate::api::effects::normalize_control_payload;
 use crate::app_state::AppState;
 use crate::domain::MutationContext;
 use crate::domain::effect::{
@@ -20,6 +19,7 @@ use hypercolor_types::control::ControlValue;
 use hypercolor_types::effect::EffectCategory;
 use strum::VariantNames;
 
+use crate::mcp::control_payload::admit_raw_controls;
 use crate::mcp::results::{EffectCatalogItem, EffectCatalogResult};
 use crate::resource_summary::effect_summary_with_details;
 
@@ -169,11 +169,15 @@ pub(super) async fn handle_set_effect_with_state(
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
-    let (normalized_controls, rejected_controls) = normalize_control_payload(&effect, &controls);
+    let (normalized_controls, rejected_controls) = admit_raw_controls(&effect, &controls);
     if !rejected_controls.is_empty() {
+        let rejected = rejected_controls
+            .iter()
+            .map(|change| format!("{} ({})", change.field_id, change.error))
+            .collect::<Vec<_>>();
         return Err(ToolError::InvalidParam {
             param: "controls".into(),
-            reason: format!("rejected values: {}", rejected_controls.join(", ")),
+            reason: format!("rejected values: {}", rejected.join(", ")),
         });
     }
 

@@ -1411,7 +1411,7 @@ pub fn normalize_control_values<'a>(
 }
 
 /// Why a value the effect runtime cannot carry was refused.
-fn effect_json_rejection(error: EffectJsonValueError) -> ControlApplyError {
+pub(crate) fn effect_json_rejection(error: EffectJsonValueError) -> ControlApplyError {
     match error {
         EffectJsonValueError::FloatOutOfRange | EffectJsonValueError::IntegerOutOfRange => {
             ControlApplyError::OutOfRange
