@@ -62,7 +62,7 @@ impl ZoneRuntime {
 
         let empty_direct_shell = enabled_layer_count(group) == 0;
         let frame = if empty_direct_shell {
-            self.effect_pool.remove_group(group.id);
+            self.effect_pool.remove_zone(group.id);
             self.retained_materialized_group_frames.remove(&group.id);
             transparent_black_frame(
                 &mut self.static_layer_surface_cache,

@@ -205,7 +205,7 @@ fn builtin_effect_id(registry: &EffectRegistry, stem: &str) -> EffectId {
         .expect("builtin effect should be registered")
 }
 
-fn render_group(
+fn render_zone(
     zone_id: &str,
     device_id: &str,
     led_count: u32,
@@ -461,13 +461,13 @@ fn bench_spatial_sampling(c: &mut Criterion) {
     group.finish();
 }
 
-fn bench_render_groups(c: &mut Criterion) {
-    let mut group = c.benchmark_group("core_render_groups");
+fn bench_render_zones(c: &mut Criterion) {
+    let mut group = c.benchmark_group("core_render_zones");
     let registry = registry_with_builtins();
     let solid_id = builtin_effect_id(&registry, "solid_color");
 
-    for group_count in [2_usize, 4_usize] {
-        let groups = (0..group_count)
+    for zone_count in [2_usize, 4_usize] {
+        let zones = (0..zone_count)
             .map(|index| {
                 let color = match index % 4 {
                     0 => [1.0, 0.0, 0.0, 1.0],
@@ -475,37 +475,37 @@ fn bench_render_groups(c: &mut Criterion) {
                     2 => [0.0, 0.0, 1.0, 1.0],
                     _ => [1.0, 1.0, 0.0, 1.0],
                 };
-                render_group(
-                    &format!("zone_group_{index}"),
-                    &format!("bench:group-{index}"),
+                render_zone(
+                    &format!("render_zone_{index}"),
+                    &format!("bench:zone-{index}"),
                     120,
                     color,
                     solid_id,
                 )
             })
             .collect::<Vec<_>>();
-        let throughput_leds = u64::try_from(group_count)
+        let throughput_leds = u64::try_from(zone_count)
             .unwrap_or(u64::MAX)
             .saturating_mul(120);
         let mut pool = EffectPool::new();
-        pool.reconcile(&groups, &registry, &std::collections::HashMap::new())
-            .expect("group pool should reconcile");
-        let mut canvases = groups
+        pool.reconcile(&zones, &registry, &std::collections::HashMap::new())
+            .expect("zone pool should reconcile");
+        let mut canvases = zones
             .iter()
-            .map(|group| Canvas::new(group.layout.canvas_width, group.layout.canvas_height))
+            .map(|zone| Canvas::new(zone.layout.canvas_width, zone.layout.canvas_height))
             .collect::<Vec<_>>();
-        let spatial_engines = groups
+        let spatial_engines = zones
             .iter()
-            .map(|group| SpatialEngine::new(group.layout.clone()))
+            .map(|zone| SpatialEngine::new(zone.layout.clone()))
             .collect::<Vec<_>>();
-        let mut sampled = vec![Vec::<ZoneColors>::new(); group_count];
+        let mut sampled = vec![Vec::<ZoneColors>::new(); zone_count];
 
         group.throughput(Throughput::Elements(throughput_leds));
-        group.bench_function(BenchmarkId::new("render_sample", group_count), |b| {
+        group.bench_function(BenchmarkId::new("render_sample", zone_count), |b| {
             b.iter(|| {
-                for (index, render_group) in groups.iter().enumerate() {
-                    pool.render_group_into(
-                        black_box(render_group),
+                for (index, render_zone) in zones.iter().enumerate() {
+                    pool.render_zone_into(
+                        black_box(render_zone),
                         FRAME_DT_SECONDS,
                         black_box(&SILENCE),
                         black_box(&DEFAULT_INTERACTION),
@@ -718,6 +718,6 @@ fn bench_backend_routing(c: &mut Criterion) {
 criterion_group! {
     name = benches;
     config = benchmark_config();
-    targets = bench_builtin_renderers, bench_spatial_sampling, bench_render_groups, bench_audio_pipeline, bench_canvas_handoff, bench_backend_routing
+    targets = bench_builtin_renderers, bench_spatial_sampling, bench_render_zones, bench_audio_pipeline, bench_canvas_handoff, bench_backend_routing
 }
 criterion_main!(benches);

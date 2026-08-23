@@ -60,7 +60,7 @@ struct PreparedLayerState {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EffectSlotKey {
-    pub group_id: ZoneId,
+    pub zone_id: ZoneId,
     pub layer_id: SceneLayerId,
 }
 
@@ -73,8 +73,8 @@ struct LayerEffectSource {
 
 impl EffectSlotKey {
     #[must_use]
-    pub const fn new(group_id: ZoneId, layer_id: SceneLayerId) -> Self {
-        Self { group_id, layer_id }
+    pub const fn new(zone_id: ZoneId, layer_id: SceneLayerId) -> Self {
+        Self { zone_id, layer_id }
     }
 }
 
@@ -102,11 +102,11 @@ impl EffectPool {
 
     pub fn reconcile(
         &mut self,
-        groups: &[Zone],
+        zones: &[Zone],
         registry: &EffectRegistry,
         display_descriptors: &HashMap<ZoneId, DisplayDescriptor>,
     ) -> Result<()> {
-        let prepared = self.prepare_reconcile(groups, registry, display_descriptors)?;
+        let prepared = self.prepare_reconcile(zones, registry, display_descriptors)?;
         self.commit_reconcile(prepared)
     }
 
@@ -118,11 +118,11 @@ impl EffectPool {
     /// cannot be initialized. The live pool is unchanged on failure.
     pub fn prepare_reconcile(
         &self,
-        groups: &[Zone],
+        zones: &[Zone],
         registry: &EffectRegistry,
         display_descriptors: &HashMap<ZoneId, DisplayDescriptor>,
     ) -> Result<PreparedEffectPoolReconcile> {
-        let desired_layers = desired_effect_layers(groups);
+        let desired_layers = desired_effect_layers(zones);
         let mut slots = HashMap::new();
         slots.try_reserve(desired_layers.len())?;
         let mut reused_keys = Vec::new();
@@ -130,31 +130,31 @@ impl EffectPool {
         let mut control_updates = Vec::new();
         control_updates.try_reserve(desired_layers.len())?;
 
-        for (group, layer) in desired_layers {
+        for (zone, layer) in desired_layers {
             let Some(source) = layer_effect_source(&layer) else {
                 continue;
             };
-            let key = EffectSlotKey::new(group.id, layer.id);
+            let key = EffectSlotKey::new(zone.id, layer.id);
 
             let entry = lookup_effect_entry(registry, source.effect_id)?;
 
-            let display_descriptor = group
+            let display_descriptor = zone
                 .display_target
                 .as_ref()
-                .and_then(|_| display_descriptors.get(&group.id));
+                .and_then(|_| display_descriptors.get(&zone.id));
             let needs_replacement = self.slots.get(&key).is_none_or(|slot| {
                 slot.needs_rebuild(
                     source.effect_id,
                     entry,
                     display_descriptor,
-                    group.layout.canvas_width,
-                    group.layout.canvas_height,
+                    zone.layout.canvas_width,
+                    zone.layout.canvas_height,
                 )
             });
             if needs_replacement {
                 let slot = EffectSlot::build(
                     entry,
-                    group,
+                    zone,
                     source,
                     self.asset_library.as_ref(),
                     display_descriptor.cloned(),
@@ -165,7 +165,7 @@ impl EffectPool {
                     .slots
                     .get(&key)
                     .expect("replacement check requires an existing effect slot");
-                let revision = SetRevision::new(group.controls_version);
+                let revision = SetRevision::new(zone.controls_version);
                 if slot.controls.set_revision() != revision
                     || slot.control_bindings != source.control_bindings
                 {
@@ -241,10 +241,10 @@ impl EffectPool {
         }
     }
 
-    pub fn remove_group(&mut self, group_id: ZoneId) {
-        if self.slots.keys().any(|key| key.group_id == group_id) {
+    pub fn remove_zone(&mut self, zone_id: ZoneId) {
+        if self.slots.keys().any(|key| key.zone_id == zone_id) {
             let next_generation = self.next_generation();
-            self.slots.retain(|key, _| key.group_id != group_id);
+            self.slots.retain(|key, _| key.zone_id != zone_id);
             self.generation = next_generation;
         }
     }
@@ -259,9 +259,9 @@ impl EffectPool {
         clippy::too_many_arguments,
         reason = "rendering needs the full frame input plus a mutable target canvas"
     )]
-    pub fn render_group_into(
+    pub fn render_zone_into(
         &mut self,
-        group: &Zone,
+        zone: &Zone,
         delta_secs: f32,
         audio: &AudioData,
         interaction: &InteractionData,
@@ -270,12 +270,12 @@ impl EffectPool {
         sources: FrameDataSources<'_>,
         target: &mut Canvas,
     ) -> Result<()> {
-        let Some(layer) = single_enabled_effect_layer(group)? else {
+        let Some(layer) = single_enabled_effect_layer(zone)? else {
             target.clear();
             return Ok(());
         };
         self.render_layer_into(
-            group,
+            zone,
             &layer,
             delta_secs,
             audio,
@@ -293,7 +293,7 @@ impl EffectPool {
     )]
     pub fn render_layer_into(
         &mut self,
-        group: &Zone,
+        zone: &Zone,
         layer: &SceneLayer,
         delta_secs: f32,
         audio: &AudioData,
@@ -303,22 +303,18 @@ impl EffectPool {
         sources: FrameDataSources<'_>,
         target: &mut Canvas,
     ) -> Result<()> {
-        prepare_target_canvas(
-            target,
-            group.layout.canvas_width,
-            group.layout.canvas_height,
-        );
+        prepare_target_canvas(target, zone.layout.canvas_width, zone.layout.canvas_height);
 
-        if !group.enabled || !layer.enabled || layer_effect_source(layer).is_none() {
+        if !zone.enabled || !layer.enabled || layer_effect_source(layer).is_none() {
             target.clear();
             return Ok(());
         }
 
-        let key = EffectSlotKey::new(group.id, layer.id);
+        let key = EffectSlotKey::new(zone.id, layer.id);
         let slot = self.slots.get_mut(&key).ok_or_else(|| {
             anyhow!(
                 "zone '{}' layer '{}' is not reconciled before advancing",
-                group.name,
+                zone.name,
                 layer.id
             )
         })?;
@@ -329,8 +325,8 @@ impl EffectPool {
             screen,
             sensors,
             sources,
-            group.layout.canvas_width,
-            group.layout.canvas_height,
+            zone.layout.canvas_width,
+            zone.layout.canvas_height,
             target,
         )
     }
@@ -339,9 +335,9 @@ impl EffectPool {
         clippy::too_many_arguments,
         reason = "rendering needs the full frame input for output-capable renderers"
     )]
-    pub fn render_group_output(
+    pub fn render_zone_output(
         &mut self,
-        group: &Zone,
+        zone: &Zone,
         delta_secs: f32,
         audio: &AudioData,
         interaction: &InteractionData,
@@ -349,14 +345,14 @@ impl EffectPool {
         sensors: &SystemSnapshot,
         sources: FrameDataSources<'_>,
     ) -> Result<EffectRenderOutput> {
-        let Some(layer) = single_enabled_effect_layer(group)? else {
+        let Some(layer) = single_enabled_effect_layer(zone)? else {
             return Ok(EffectRenderOutput::Cpu(Canvas::new(
-                group.layout.canvas_width,
-                group.layout.canvas_height,
+                zone.layout.canvas_width,
+                zone.layout.canvas_height,
             )));
         };
         self.render_layer_output(
-            group,
+            zone,
             &layer,
             delta_secs,
             audio,
@@ -373,7 +369,7 @@ impl EffectPool {
     )]
     pub fn render_layer_output(
         &mut self,
-        group: &Zone,
+        zone: &Zone,
         layer: &SceneLayer,
         delta_secs: f32,
         audio: &AudioData,
@@ -382,18 +378,18 @@ impl EffectPool {
         sensors: &SystemSnapshot,
         sources: FrameDataSources<'_>,
     ) -> Result<EffectRenderOutput> {
-        if !group.enabled || !layer.enabled || layer_effect_source(layer).is_none() {
+        if !zone.enabled || !layer.enabled || layer_effect_source(layer).is_none() {
             return Ok(EffectRenderOutput::Cpu(Canvas::new(
-                group.layout.canvas_width,
-                group.layout.canvas_height,
+                zone.layout.canvas_width,
+                zone.layout.canvas_height,
             )));
         }
 
-        let key = EffectSlotKey::new(group.id, layer.id);
+        let key = EffectSlotKey::new(zone.id, layer.id);
         let slot = self.slots.get_mut(&key).ok_or_else(|| {
             anyhow!(
                 "zone '{}' layer '{}' is not reconciled before rendering",
-                group.name,
+                zone.name,
                 layer.id
             )
         })?;
@@ -404,8 +400,8 @@ impl EffectPool {
             screen,
             sensors,
             sources,
-            group.layout.canvas_width,
-            group.layout.canvas_height,
+            zone.layout.canvas_width,
+            zone.layout.canvas_height,
         )
     }
 
@@ -415,7 +411,7 @@ impl EffectPool {
     )]
     pub fn advance_layer_output(
         &mut self,
-        group: &Zone,
+        zone: &Zone,
         layer: &SceneLayer,
         delta_secs: f32,
         audio: &AudioData,
@@ -424,15 +420,15 @@ impl EffectPool {
         sensors: &SystemSnapshot,
         sources: FrameDataSources<'_>,
     ) -> Result<()> {
-        if !group.enabled || !layer.enabled || layer_effect_source(layer).is_none() {
+        if !zone.enabled || !layer.enabled || layer_effect_source(layer).is_none() {
             return Ok(());
         }
 
-        let key = EffectSlotKey::new(group.id, layer.id);
+        let key = EffectSlotKey::new(zone.id, layer.id);
         let slot = self.slots.get_mut(&key).ok_or_else(|| {
             anyhow!(
                 "zone '{}' layer '{}' is not reconciled before rendering",
-                group.name,
+                zone.name,
                 layer.id
             )
         })?;
@@ -443,8 +439,8 @@ impl EffectPool {
             screen,
             sensors,
             sources,
-            group.layout.canvas_width,
-            group.layout.canvas_height,
+            zone.layout.canvas_width,
+            zone.layout.canvas_height,
         )
     }
 }
@@ -477,7 +473,7 @@ struct EffectSlot {
 impl EffectSlot {
     fn build(
         entry: &EffectEntry,
-        group: &Zone,
+        zone: &Zone,
         layer_source: LayerEffectSource,
         asset_library: Option<&Arc<RwLock<AssetLibrary>>>,
         display_descriptor: Option<DisplayDescriptor>,
@@ -491,8 +487,8 @@ impl EffectSlot {
         }
         renderer.init_with_canvas_size(
             &entry.metadata,
-            group.layout.canvas_width,
-            group.layout.canvas_height,
+            zone.layout.canvas_width,
+            zone.layout.canvas_height,
         )?;
 
         let mut slot = Self {
@@ -502,10 +498,10 @@ impl EffectSlot {
             registry_modified: entry.modified,
             metadata: entry.metadata.clone(),
             display_descriptor,
-            canvas_width: group.layout.canvas_width,
-            canvas_height: group.layout.canvas_height,
+            canvas_width: zone.layout.canvas_width,
+            canvas_height: zone.layout.canvas_height,
             renderer,
-            controls: ControlSet::new(SetRevision::new(group.controls_version)),
+            controls: ControlSet::new(SetRevision::new(zone.controls_version)),
             control_bindings: HashMap::new(),
             controls_initialized: false,
             binding_state: HashMap::new(),
@@ -513,7 +509,7 @@ impl EffectSlot {
             elapsed: Duration::ZERO,
             frame_number: 0,
         };
-        slot.sync_layer_state(layer_source, SetRevision::new(group.controls_version))?;
+        slot.sync_layer_state(layer_source, SetRevision::new(zone.controls_version))?;
         Ok(slot)
     }
 
@@ -794,27 +790,26 @@ fn lookup_effect_entry(registry: &EffectRegistry, effect_id: EffectId) -> Result
         .ok_or_else(|| anyhow!("effect '{effect_id}' is not registered"))
 }
 
-fn desired_effect_layers(groups: &[Zone]) -> Vec<(&Zone, SceneLayer)> {
-    groups
+fn desired_effect_layers(zones: &[Zone]) -> Vec<(&Zone, SceneLayer)> {
+    zones
         .iter()
-        .filter(|group| group.enabled)
-        .flat_map(|group| {
-            group
-                .layers
+        .filter(|zone| zone.enabled)
+        .flat_map(|zone| {
+            zone.layers
                 .clone()
                 .into_iter()
                 .filter(|layer| layer.enabled && layer_effect_source(layer).is_some())
-                .map(move |layer| (group, layer))
+                .map(move |layer| (zone, layer))
         })
         .collect()
 }
 
-fn single_enabled_effect_layer(group: &Zone) -> Result<Option<SceneLayer>> {
-    if !group.enabled {
+fn single_enabled_effect_layer(zone: &Zone) -> Result<Option<SceneLayer>> {
+    if !zone.enabled {
         return Ok(None);
     }
 
-    let mut layers = group
+    let mut layers = zone
         .layers
         .clone()
         .into_iter()
@@ -825,7 +820,7 @@ fn single_enabled_effect_layer(group: &Zone) -> Result<Option<SceneLayer>> {
     if layers.next().is_some() {
         return Err(anyhow!(
             "zone '{}' has multiple enabled effect layers; render layers explicitly",
-            group.name
+            zone.name
         ));
     }
     Ok(Some(layer))
@@ -1231,7 +1226,7 @@ mod tests {
             .expect("builtin effect should be registered")
     }
 
-    fn render_group(id: ZoneId, effect_id: EffectId) -> Zone {
+    fn render_zone(id: ZoneId, effect_id: EffectId) -> Zone {
         Zone {
             id,
             name: "Desk".into(),
@@ -1745,11 +1740,11 @@ mod tests {
     #[test]
     fn reconcile_pruning_destroys_removed_slot() {
         let destroyed = Arc::new(AtomicBool::new(false));
-        let group_id = ZoneId::new();
+        let zone_id = ZoneId::new();
         let layer_id = SceneLayerId::new();
         let mut pool = EffectPool::new();
         pool.slots.insert(
-            EffectSlotKey::new(group_id, layer_id),
+            EffectSlotKey::new(zone_id, layer_id),
             spy_slot(EffectId::new(uuid::Uuid::now_v7()), Arc::clone(&destroyed)),
         );
 
@@ -1763,11 +1758,11 @@ mod tests {
     #[test]
     fn clear_destroys_slots() {
         let destroyed = Arc::new(AtomicBool::new(false));
-        let group_id = ZoneId::new();
+        let zone_id = ZoneId::new();
         let layer_id = SceneLayerId::new();
         let mut pool = EffectPool::new();
         pool.slots.insert(
-            EffectSlotKey::new(group_id, layer_id),
+            EffectSlotKey::new(zone_id, layer_id),
             spy_slot(EffectId::new(uuid::Uuid::now_v7()), Arc::clone(&destroyed)),
         );
 
@@ -1778,30 +1773,30 @@ mod tests {
     }
 
     #[test]
-    fn remove_group_destroys_matching_slots_only() {
+    fn remove_zone_destroys_matching_slots_only() {
         let removed = Arc::new(AtomicBool::new(false));
         let kept = Arc::new(AtomicBool::new(false));
-        let removed_group_id = ZoneId::new();
-        let kept_group_id = ZoneId::new();
+        let removed_zone_id = ZoneId::new();
+        let kept_zone_id = ZoneId::new();
         let kept_layer_id = SceneLayerId::new();
         let mut pool = EffectPool::new();
         pool.slots.insert(
-            EffectSlotKey::new(removed_group_id, SceneLayerId::new()),
+            EffectSlotKey::new(removed_zone_id, SceneLayerId::new()),
             spy_slot(EffectId::new(uuid::Uuid::now_v7()), Arc::clone(&removed)),
         );
         pool.slots.insert(
-            EffectSlotKey::new(kept_group_id, kept_layer_id),
+            EffectSlotKey::new(kept_zone_id, kept_layer_id),
             spy_slot(EffectId::new(uuid::Uuid::now_v7()), Arc::clone(&kept)),
         );
 
-        pool.remove_group(removed_group_id);
+        pool.remove_zone(removed_zone_id);
 
         assert!(removed.load(Ordering::SeqCst));
         assert!(!kept.load(Ordering::SeqCst));
         assert_eq!(pool.slots.len(), 1);
         assert!(
             pool.slots
-                .contains_key(&EffectSlotKey::new(kept_group_id, kept_layer_id))
+                .contains_key(&EffectSlotKey::new(kept_zone_id, kept_layer_id))
         );
     }
 
@@ -1809,9 +1804,9 @@ mod tests {
     fn advance_layer_output_ticks_renderer_without_rendering_canvas() {
         let advanced = Arc::new(AtomicU64::new(0));
         let effect_id = EffectId::new(uuid::Uuid::now_v7());
-        let group_id = ZoneId::new();
-        let group = render_group(group_id, effect_id);
-        let layer = group
+        let zone_id = ZoneId::new();
+        let zone = render_zone(zone_id, effect_id);
+        let layer = zone
             .layers
             .clone()
             .into_iter()
@@ -1819,7 +1814,7 @@ mod tests {
             .expect("effect zone should expose its authored layer");
         let mut pool = EffectPool::new();
         pool.slots.insert(
-            EffectSlotKey::new(group_id, layer.id),
+            EffectSlotKey::new(zone_id, layer.id),
             advance_spy_slot(effect_id, Arc::clone(&advanced)),
         );
         let audio = AudioData::silence();
@@ -1827,7 +1822,7 @@ mod tests {
         let sensors = hypercolor_types::sensor::SystemSnapshot::empty();
 
         pool.advance_layer_output(
-            &group,
+            &zone,
             &layer,
             1.0 / 60.0,
             &audio,
@@ -1841,7 +1836,7 @@ mod tests {
         assert_eq!(advanced.load(Ordering::SeqCst), 1);
         assert_eq!(
             pool.slots
-                .get(&EffectSlotKey::new(group_id, layer.id))
+                .get(&EffectSlotKey::new(zone_id, layer.id))
                 .expect("slot should remain")
                 .frame_number,
             1
@@ -1851,19 +1846,19 @@ mod tests {
     #[test]
     fn reconcile_replacement_destroys_old_slot() {
         let destroyed = Arc::new(AtomicBool::new(false));
-        let group_id = ZoneId::new();
+        let zone_id = ZoneId::new();
         let layer_id = SceneLayerId::new();
         let mut pool = EffectPool::new();
         pool.slots.insert(
-            EffectSlotKey::new(group_id, layer_id),
+            EffectSlotKey::new(zone_id, layer_id),
             spy_slot(EffectId::new(uuid::Uuid::now_v7()), Arc::clone(&destroyed)),
         );
 
         let registry = registry_with_builtins();
         let solid_id = builtin_effect_id(&registry, "solid_color");
-        let group = render_group(group_id, solid_id);
+        let zone = render_zone(zone_id, solid_id);
 
-        pool.reconcile(&[group], &registry, &HashMap::new())
+        pool.reconcile(&[zone], &registry, &HashMap::new())
             .expect("replacement should succeed");
 
         assert!(destroyed.load(Ordering::SeqCst));
@@ -1874,21 +1869,21 @@ mod tests {
     fn reconcile_applies_control_deltas_without_rebuilding_the_slot() {
         let registry = registry_with_builtins();
         let effect_id = builtin_effect_id(&registry, "solid_color");
-        let group_id = ZoneId::new();
-        let mut group = render_group(group_id, effect_id);
-        let layer_id = group.layers[0].id;
-        let key = EffectSlotKey::new(group_id, layer_id);
+        let zone_id = ZoneId::new();
+        let mut zone = render_zone(zone_id, effect_id);
+        let layer_id = zone.layers[0].id;
+        let key = EffectSlotKey::new(zone_id, layer_id);
         let mut pool = EffectPool::new();
-        pool.reconcile(std::slice::from_ref(&group), &registry, &HashMap::new())
+        pool.reconcile(std::slice::from_ref(&zone), &registry, &HashMap::new())
             .expect("initial reconcile");
         pool.slots.get_mut(&key).expect("effect slot").frame_number = 41;
 
-        let LayerSource::Effect { controls, .. } = &mut group.layers[0].source else {
+        let LayerSource::Effect { controls, .. } = &mut zone.layers[0].source else {
             panic!("test layer should be an effect");
         };
         controls.insert("brightness".into(), ControlValue::Float(0.25));
-        group.controls_version = 1;
-        pool.reconcile(std::slice::from_ref(&group), &registry, &HashMap::new())
+        zone.controls_version = 1;
+        pool.reconcile(std::slice::from_ref(&zone), &registry, &HashMap::new())
             .expect("control delta reconcile");
 
         let slot = pool.slots.get(&key).expect("reused effect slot");
