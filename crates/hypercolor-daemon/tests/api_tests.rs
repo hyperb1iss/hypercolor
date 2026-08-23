@@ -42,7 +42,7 @@ use hypercolor_core::input::{
 use hypercolor_daemon::LayoutTransactionRejection;
 use hypercolor_daemon::api;
 use hypercolor_daemon::api::local::TrustedLocalApi;
-use hypercolor_daemon::app_state::AppState;
+use hypercolor_daemon::app_state::{AppState, AppStateBuilder};
 #[cfg(feature = "persistence-test-hooks")]
 use hypercolor_daemon::domain::layout::{LayoutMutationTestOperation, LayoutMutationTestPoint};
 #[cfg(feature = "persistence-test-hooks")]
@@ -176,11 +176,22 @@ fn isolated_state() -> AppState {
 }
 
 fn isolated_state_with_tempdir() -> (AppState, tempfile::TempDir) {
+    let (builder, tempdir) = isolated_state_builder();
+    (builder.build(), tempdir)
+}
+
+fn isolated_state_builder() -> (AppStateBuilder, tempfile::TempDir) {
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let data_dir = tempdir.path().join("data");
     std::fs::create_dir_all(&data_dir).expect("temp data dir should be created");
-    let state = AppState::new_with_data_dir(data_dir);
-    (state, tempdir)
+    (AppStateBuilder::new(data_dir), tempdir)
+}
+
+fn isolated_state_with_config_manager(config_manager: Arc<ConfigManager>) -> AppState {
+    let (builder, tempdir) = isolated_state_builder();
+    let state = builder.with_config_manager(config_manager).build();
+    ISOLATED_STATE_DATA_DIRS.with(|data_dirs| data_dirs.borrow_mut().push(tempdir));
+    state
 }
 
 fn isolated_state_with_driver_registry(
@@ -189,7 +200,9 @@ fn isolated_state_with_driver_registry(
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let data_dir = tempdir.path().join("data");
     std::fs::create_dir_all(&data_dir).expect("temp data dir should be created");
-    let state = AppState::new_with_runtime_overrides(data_dir, None, Some(driver_registry));
+    let state = AppStateBuilder::new(data_dir)
+        .with_driver_registry(driver_registry)
+        .build();
     (state, tempdir)
 }
 
@@ -379,12 +392,12 @@ async fn assert_canonical_route_404(response: axum::response::Response, path: &s
 }
 
 fn test_state_with_temp_config_manager() -> (Arc<AppState>, Arc<ConfigManager>, tempfile::TempDir) {
-    let (mut state, dir) = isolated_state_with_tempdir();
+    let (builder, dir) = isolated_state_builder();
     let manager = Arc::new(
         ConfigManager::new(dir.path().join("config.toml"))
             .expect("config manager should be created"),
     );
-    state.install_config_manager(Arc::clone(&manager));
+    let state = builder.with_config_manager(Arc::clone(&manager)).build();
     {
         let mut input_manager = state
             .input_manager
@@ -1835,8 +1848,7 @@ async fn status_prefers_live_config_manager_path() {
     let config_manager = Arc::new(
         ConfigManager::new(custom_config_path.clone()).expect("config manager should build"),
     );
-    let mut state = isolated_state();
-    state.install_config_manager(config_manager);
+    let state = isolated_state_with_config_manager(config_manager);
 
     let app = test_app_with_state(Arc::new(state));
     let response = app
@@ -1963,8 +1975,7 @@ async fn audio_devices_preserve_custom_configured_id_without_rewrite() {
     config.audio.device = "pulse-monitor".to_owned();
     config_manager.update(config);
 
-    let mut state = isolated_state();
-    state.install_config_manager(config_manager);
+    let state = isolated_state_with_config_manager(config_manager);
     let app = test_app_with_state(Arc::new(state));
 
     let response = app
@@ -2075,8 +2086,7 @@ async fn config_set_audio_device_persists_without_live_rebuild_by_default() {
     let config_manager =
         Arc::new(ConfigManager::new(config_path.clone()).expect("config manager should build"));
 
-    let mut state = isolated_state();
-    state.install_config_manager(config_manager);
+    let state = isolated_state_with_config_manager(config_manager);
     let state = Arc::new(state);
 
     let response = execute_trusted_config_request(
@@ -2118,8 +2128,7 @@ async fn config_set_compositor_acceleration_key_updates_and_persists() {
     let config_manager =
         Arc::new(ConfigManager::new(config_path.clone()).expect("config manager should build"));
 
-    let mut state = isolated_state();
-    state.install_config_manager(config_manager);
+    let state = isolated_state_with_config_manager(config_manager);
     let app = test_app_with_state(Arc::new(state));
 
     let response = app
@@ -2156,8 +2165,7 @@ async fn config_set_driver_registry_key_updates_driver_config() {
     let config_manager =
         Arc::new(ConfigManager::new(config_path.clone()).expect("config manager should build"));
 
-    let mut state = isolated_state();
-    state.install_config_manager(config_manager);
+    let state = isolated_state_with_config_manager(config_manager);
     let app = test_app_with_state(Arc::new(state));
 
     let response = app
@@ -2195,8 +2203,7 @@ async fn config_set_driver_registry_key_rejects_non_routable_ip() {
     let config_manager =
         Arc::new(ConfigManager::new(config_path.clone()).expect("config manager should build"));
 
-    let mut state = isolated_state();
-    state.install_config_manager(config_manager);
+    let state = isolated_state_with_config_manager(config_manager);
     let app = test_app_with_state(Arc::new(state));
 
     let response = app
@@ -2238,8 +2245,7 @@ async fn config_write_rejection_does_not_echo_a_secret_value() {
     let config_manager =
         Arc::new(ConfigManager::new(config_path.clone()).expect("config manager should build"));
 
-    let mut state = isolated_state();
-    state.install_config_manager(config_manager);
+    let state = isolated_state_with_config_manager(config_manager);
     let app = test_app_with_state(Arc::new(state));
 
     let secret = "sk-live-do-not-echo-me";
@@ -2282,8 +2288,7 @@ async fn config_write_rejection_keeps_detail_for_a_plain_key() {
     let config_manager =
         Arc::new(ConfigManager::new(config_path.clone()).expect("config manager should build"));
 
-    let mut state = isolated_state();
-    state.install_config_manager(config_manager);
+    let state = isolated_state_with_config_manager(config_manager);
     let app = test_app_with_state(Arc::new(state));
 
     let response = app
@@ -2408,8 +2413,7 @@ async fn config_set_audio_device_rebuilds_live_input_manager_when_requested() {
     let config_manager =
         Arc::new(ConfigManager::new(config_path.clone()).expect("config manager should build"));
 
-    let mut state = isolated_state();
-    state.install_config_manager(config_manager);
+    let state = isolated_state_with_config_manager(config_manager);
     let state = Arc::new(state);
 
     let response = execute_trusted_config_request(
@@ -2454,8 +2458,7 @@ async fn config_set_legacy_audio_alias_persists_canonical_device_id() {
     let config_manager =
         Arc::new(ConfigManager::new(config_path.clone()).expect("config manager should build"));
 
-    let mut state = isolated_state();
-    state.install_config_manager(config_manager);
+    let state = isolated_state_with_config_manager(config_manager);
     let state = Arc::new(state);
 
     let response = execute_trusted_config_request(
@@ -2495,8 +2498,7 @@ async fn config_set_legacy_audio_alias_skips_live_rebuild_when_already_canonical
     let config_manager =
         Arc::new(ConfigManager::new(config_path.clone()).expect("config manager should build"));
 
-    let mut state = isolated_state();
-    state.install_config_manager(config_manager);
+    let state = isolated_state_with_config_manager(config_manager);
     let state = Arc::new(state);
 
     let response = execute_trusted_config_request(
@@ -2534,8 +2536,7 @@ async fn config_set_identical_audio_value_skips_live_rebuild() {
     let config_manager =
         Arc::new(ConfigManager::new(config_path.clone()).expect("config manager should build"));
 
-    let mut state = isolated_state();
-    state.install_config_manager(config_manager);
+    let state = isolated_state_with_config_manager(config_manager);
     let state = Arc::new(state);
 
     let response = execute_trusted_config_request(
@@ -2573,8 +2574,7 @@ async fn config_set_render_canvas_updates_active_layout_dimensions() {
     let config_manager =
         Arc::new(ConfigManager::new(config_path.clone()).expect("config manager should build"));
 
-    let mut state = isolated_state();
-    state.install_config_manager(config_manager);
+    let state = isolated_state_with_config_manager(config_manager);
 
     let state = Arc::new(state);
     let app = test_app_with_state(Arc::clone(&state));
@@ -2639,8 +2639,7 @@ async fn config_set_render_target_fps_updates_render_loop_live() {
     let config_manager =
         Arc::new(ConfigManager::new(config_path.clone()).expect("config manager should build"));
 
-    let mut state = isolated_state();
-    state.install_config_manager(config_manager);
+    let state = isolated_state_with_config_manager(config_manager);
     let state = Arc::new(state);
     let app = test_app_with_state(Arc::clone(&state));
 
@@ -2751,8 +2750,7 @@ fn reset_fixture_state_from(
     let config_manager = Arc::new(
         ConfigManager::new(config_path.to_path_buf()).expect("config manager should build"),
     );
-    let mut state = isolated_state();
-    state.install_config_manager(Arc::clone(&config_manager));
+    let state = isolated_state_with_config_manager(Arc::clone(&config_manager));
     {
         let mut input_manager = state
             .input_manager
@@ -3113,8 +3111,7 @@ async fn config_write_reports_restart_classification_and_pending_restart() {
         ..hypercolor_core::config::ConfigSources::default_path()
     })
     .expect("fixture config should load");
-    let mut state = isolated_state();
-    state.install_config_manager(Arc::new(loaded.manager));
+    let state = isolated_state_with_config_manager(Arc::new(loaded.manager));
     let app = test_app_with_state(Arc::new(state));
 
     let response = app
@@ -3163,8 +3160,7 @@ async fn config_write_declining_live_persists_without_re_applying() {
     let config_path = tempdir.path().join("hypercolor.toml");
     let config_manager =
         Arc::new(ConfigManager::new(config_path.clone()).expect("config manager should build"));
-    let mut state = isolated_state();
-    state.install_config_manager(Arc::clone(&config_manager));
+    let state = isolated_state_with_config_manager(Arc::clone(&config_manager));
     let state = Arc::new(state);
     let app = test_app_with_state(Arc::clone(&state));
 
@@ -4220,8 +4216,7 @@ async fn get_driver_config_returns_current_and_default_entries() {
     );
     config_manager.update(config);
 
-    let mut state = isolated_state();
-    state.install_config_manager(config_manager);
+    let state = isolated_state_with_config_manager(config_manager);
     let app = test_app_with_state(Arc::new(state));
 
     let response = app
@@ -5182,7 +5177,7 @@ async fn invoke_driver_control_surface_action_routes_to_provider() {
 
 #[tokio::test]
 async fn driver_control_reload_preserves_raw_objects_with_kind_fields() {
-    let (mut state, tempdir) = isolated_state_with_tempdir();
+    let (builder, tempdir) = isolated_state_builder();
     let manager = Arc::new(
         ConfigManager::new(tempdir.path().join("config.toml"))
             .expect("config manager should be created"),
@@ -5202,14 +5197,10 @@ async fn driver_control_reload_preserves_raw_objects_with_kind_fields() {
         .register(ActionTestDriver)
         .expect("test action driver should register");
     let registry = Arc::new(registry);
-    state.driver_registry = Arc::clone(&registry);
-    state.install_config_manager(Arc::clone(&manager));
-    state.driver_host = Arc::new(
-        state
-            .driver_host
-            .with_driver_registry(registry)
-            .with_config_manager(Some(manager)),
-    );
+    let state = builder
+        .with_config_manager(manager)
+        .with_driver_registry(registry)
+        .build();
 
     let values = state
         .driver_host
@@ -5225,7 +5216,7 @@ async fn driver_control_reload_preserves_raw_objects_with_kind_fields() {
 
 #[tokio::test]
 async fn driver_control_reload_rejects_malformed_canonical_envelopes() {
-    let (mut state, tempdir) = isolated_state_with_tempdir();
+    let (builder, tempdir) = isolated_state_builder();
     let manager = Arc::new(
         ConfigManager::new(tempdir.path().join("config.toml"))
             .expect("config manager should be created"),
@@ -5245,14 +5236,10 @@ async fn driver_control_reload_rejects_malformed_canonical_envelopes() {
         .register(ActionTestDriver)
         .expect("test action driver should register");
     let registry = Arc::new(registry);
-    state.driver_registry = Arc::clone(&registry);
-    state.install_config_manager(Arc::clone(&manager));
-    state.driver_host = Arc::new(
-        state
-            .driver_host
-            .with_driver_registry(registry)
-            .with_config_manager(Some(manager)),
-    );
+    let state = builder
+        .with_config_manager(manager)
+        .with_driver_registry(registry)
+        .build();
 
     let error = state
         .driver_host
@@ -5269,15 +5256,13 @@ async fn driver_control_reload_rejects_malformed_canonical_envelopes() {
 
 #[tokio::test]
 async fn invoke_driver_control_surface_action_publishes_progress_event() {
-    let mut state = isolated_state();
+    let (builder, _tempdir) = isolated_state_builder();
     let mut registry = DriverModuleRegistry::new();
     registry
         .register(ActionTestDriver)
         .expect("test action driver should register");
     let registry = Arc::new(registry);
-    state.driver_registry = Arc::clone(&registry);
-    state.driver_host = Arc::new(state.driver_host.with_driver_registry(registry));
-    let state = Arc::new(state);
+    let state = Arc::new(builder.with_driver_registry(registry).build());
     let mut events = state.event_bus.subscribe_all();
     let app = test_app_with_state(Arc::clone(&state));
 
@@ -5343,7 +5328,7 @@ async fn invoke_driver_control_surface_action_publishes_progress_event() {
 
 #[tokio::test]
 async fn patch_driver_control_surface_discovery_rescan_runs_through_host() {
-    let (mut state, dir) = isolated_state_with_tempdir();
+    let (builder, dir) = isolated_state_builder();
     let manager = Arc::new(
         ConfigManager::new(dir.path().join("config.toml"))
             .expect("config manager should be created"),
@@ -5354,16 +5339,12 @@ async fn patch_driver_control_surface_discovery_rescan_runs_through_host() {
         .register(RescanTestDriver::new(Arc::clone(&discoveries)))
         .expect("test rescan driver should register");
     let registry = Arc::new(registry);
-
-    state.install_config_manager(Arc::clone(&manager));
-    state.driver_registry = Arc::clone(&registry);
-    state.driver_host = Arc::new(
-        state
-            .driver_host
-            .with_config_manager(Some(manager))
-            .with_driver_registry(registry),
+    let state = Arc::new(
+        builder
+            .with_config_manager(manager)
+            .with_driver_registry(registry)
+            .build(),
     );
-    let state = Arc::new(state);
     let app = test_app_with_state(state);
 
     let response = app
@@ -5404,7 +5385,7 @@ async fn patch_driver_control_surface_discovery_rescan_runs_through_host() {
 
 #[tokio::test]
 async fn patch_driver_control_surface_rejects_unsupported_driver_level_impact() {
-    let (mut state, dir) = isolated_state_with_tempdir();
+    let (builder, dir) = isolated_state_builder();
     let manager = Arc::new(
         ConfigManager::new(dir.path().join("config.toml"))
             .expect("config manager should be created"),
@@ -5414,15 +5395,10 @@ async fn patch_driver_control_surface_rejects_unsupported_driver_level_impact() 
         .register(UnsupportedImpactTestDriver)
         .expect("test unsupported impact driver should register");
     let registry = Arc::new(registry);
-
-    state.install_config_manager(Arc::clone(&manager));
-    state.driver_registry = Arc::clone(&registry);
-    state.driver_host = Arc::new(
-        state
-            .driver_host
-            .with_config_manager(Some(manager))
-            .with_driver_registry(registry),
-    );
+    let state = builder
+        .with_config_manager(manager)
+        .with_driver_registry(registry)
+        .build();
     let app = test_app_with_state(Arc::new(state));
 
     let response = app
@@ -5453,7 +5429,7 @@ async fn patch_driver_control_surface_rejects_unsupported_driver_level_impact() 
 
 #[tokio::test]
 async fn patch_driver_owned_device_control_surface_rejects_unsupported_device_level_impact() {
-    let (mut state, dir) = isolated_state_with_tempdir();
+    let (builder, dir) = isolated_state_builder();
     let manager = Arc::new(
         ConfigManager::new(dir.path().join("config.toml"))
             .expect("config manager should be created"),
@@ -5463,16 +5439,12 @@ async fn patch_driver_owned_device_control_surface_rejects_unsupported_device_le
         .register(UnsupportedImpactTestDriver)
         .expect("test unsupported impact driver should register");
     let registry = Arc::new(registry);
-
-    state.install_config_manager(Arc::clone(&manager));
-    state.driver_registry = Arc::clone(&registry);
-    state.driver_host = Arc::new(
-        state
-            .driver_host
-            .with_config_manager(Some(manager))
-            .with_driver_registry(registry),
+    let state = Arc::new(
+        builder
+            .with_config_manager(manager)
+            .with_driver_registry(registry)
+            .build(),
     );
-    let state = Arc::new(state);
     let device_id = insert_test_device(&state, "Desk Strip").await;
     let app = test_app_with_state(state);
     let surface_id = format!("driver:unsupported_impact_test:device:{device_id}");
@@ -6574,11 +6546,12 @@ async fn apply_effect_resumes_before_release_reconnect_scan_finishes() {
         ))
         .expect("blocking reconnect driver should register");
     let registry = Arc::new(registry);
-    let state = Arc::new(AppState::new_with_runtime_overrides(
-        data_dir,
-        Some(manager),
-        Some(registry),
-    ));
+    let state = Arc::new(
+        AppStateBuilder::new(data_dir)
+            .with_config_manager(manager)
+            .with_driver_registry(registry)
+            .build(),
+    );
     insert_test_effect(&state, "solid_color").await;
     {
         let mut render_loop = state.render_loop.write().await;
@@ -7278,10 +7251,11 @@ async fn library_delete_active_playlist_stops_runtime() {
 #[cfg(feature = "persistence-test-hooks")]
 #[tokio::test]
 async fn library_delete_keeps_active_playlist_when_persistence_admission_fails() {
-    let (mut state, tempdir) = isolated_state_with_tempdir();
-    state.library_store = Arc::new(
+    let (builder, tempdir) = isolated_state_builder();
+    let library = Arc::new(
         JsonLibraryStore::open(tempdir.path().join("library.json")).expect("JSON library store"),
     );
+    let state = builder.with_library(library).build();
     let state = Arc::new(state);
     insert_test_effect(&state, "solid_color").await;
     let app = test_app_with_state(Arc::clone(&state));
@@ -8309,8 +8283,9 @@ async fn layout_apply_maps_persistence_failure_to_internal_error() {
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let data_dir = tempdir.path().join("data");
     std::fs::create_dir_all(&data_dir).expect("temp data dir should be created");
-    let state =
-        AppState::new_with_composition_overrides(data_dir, None, None, Some(PathBuf::new()));
+    let state = AppStateBuilder::new(data_dir)
+        .with_runtime_state_path(PathBuf::new())
+        .build();
     let state = Arc::new(state);
     let candidate = create_stored_layout(&state, "Persistence Failure").await;
     let app = test_app_with_state(Arc::clone(&state));
@@ -10031,12 +10006,9 @@ fn test_state_with_temp_layout_and_runtime_store() -> (Arc<AppState>, tempfile::
     let dir = tempfile::tempdir().expect("tempdir should be created");
     let data_dir = dir.path().join("data");
     std::fs::create_dir_all(&data_dir).expect("test data directory should be created");
-    let state = AppState::new_with_composition_overrides(
-        data_dir,
-        None,
-        None,
-        Some(dir.path().join("runtime-state.json")),
-    );
+    let state = AppStateBuilder::new(data_dir)
+        .with_runtime_state_path(dir.path().join("runtime-state.json"))
+        .build();
     (Arc::new(state), dir)
 }
 
@@ -10049,12 +10021,10 @@ fn test_state_with_temp_layout_config_and_simulator_stores() -> (Arc<AppState>, 
         ConfigManager::new(dir.path().join("hypercolor.toml"))
             .expect("config manager should initialize"),
     );
-    let state = AppState::new_with_composition_overrides(
-        data_dir,
-        Some(config_manager),
-        None,
-        Some(dir.path().join("runtime-state.json")),
-    );
+    let state = AppStateBuilder::new(data_dir)
+        .with_config_manager(config_manager)
+        .with_runtime_state_path(dir.path().join("runtime-state.json"))
+        .build();
     (Arc::new(state), dir)
 }
 

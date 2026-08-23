@@ -47,20 +47,6 @@ impl DaemonDriverHost {
     }
 
     #[must_use]
-    pub fn with_config_manager(&self, config_manager: Option<Arc<ConfigManager>>) -> Self {
-        let mut host = self.clone();
-        host.config_manager = config_manager;
-        host
-    }
-
-    #[must_use]
-    pub fn with_driver_registry(&self, driver_registry: Arc<DriverModuleRegistry>) -> Self {
-        let mut host = self.clone();
-        host.driver_registry = driver_registry;
-        host
-    }
-
-    #[must_use]
     pub fn discovery_runtime(&self) -> DiscoveryRuntime {
         self.runtime.clone()
     }

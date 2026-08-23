@@ -51,7 +51,9 @@ use crate::domain::spatial::SpatialService;
 use crate::driver_inventory::{DRIVER_INVENTORY_FILENAME, DriverInventoryStore};
 use crate::extensions::{ApiExtension, ExtensionRegistry};
 use crate::interaction_routing::InteractionRoutingControl;
-use crate::library::{InMemoryLibraryStore, LibraryIdentityMigration, LibraryStore};
+use crate::library::{
+    InMemoryLibraryStore, JsonLibraryStore, LibraryIdentityMigration, LibraryStore,
+};
 use crate::logical_devices::LogicalDevice;
 use crate::network::{self, DaemonDriverHost};
 use crate::output_power::OutputPower;
@@ -266,6 +268,76 @@ pub struct AppState {
     pub security_state: crate::api::security::SecurityState,
 }
 
+struct AppStateLibrary {
+    store: Arc<dyn LibraryStore>,
+    identity: Arc<dyn LibraryIdentityMigration>,
+}
+
+/// Test-facing composition builder for an isolated application state.
+///
+/// Every authority is selected before the domain graph is assembled, so
+/// fixtures cannot leave cloned contexts pointing at superseded dependencies.
+#[doc(hidden)]
+pub struct AppStateBuilder {
+    data_dir: PathBuf,
+    config_manager: Option<Arc<ConfigManager>>,
+    driver_registry: Option<Arc<DriverModuleRegistry>>,
+    runtime_state_path: Option<PathBuf>,
+    library: Option<AppStateLibrary>,
+    input_manager: Option<InputManager>,
+}
+
+impl AppStateBuilder {
+    #[must_use]
+    pub fn new(data_dir: PathBuf) -> Self {
+        Self {
+            data_dir,
+            config_manager: None,
+            driver_registry: None,
+            runtime_state_path: None,
+            library: None,
+            input_manager: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_config_manager(mut self, config_manager: Arc<ConfigManager>) -> Self {
+        self.config_manager = Some(config_manager);
+        self
+    }
+
+    #[must_use]
+    pub fn with_driver_registry(mut self, driver_registry: Arc<DriverModuleRegistry>) -> Self {
+        self.driver_registry = Some(driver_registry);
+        self
+    }
+
+    #[must_use]
+    pub fn with_runtime_state_path(mut self, runtime_state_path: PathBuf) -> Self {
+        self.runtime_state_path = Some(runtime_state_path);
+        self
+    }
+
+    #[must_use]
+    pub fn with_library(mut self, library: Arc<JsonLibraryStore>) -> Self {
+        let store: Arc<dyn LibraryStore> = library.clone();
+        let identity: Arc<dyn LibraryIdentityMigration> = library;
+        self.library = Some(AppStateLibrary { store, identity });
+        self
+    }
+
+    #[must_use]
+    pub fn with_input_manager(mut self, input_manager: InputManager) -> Self {
+        self.input_manager = Some(input_manager);
+        self
+    }
+
+    #[must_use]
+    pub fn build(self) -> AppState {
+        AppState::from_builder(self)
+    }
+}
+
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const fn effect_renderer_acceleration_mode(
     requested_mode: RenderAccelerationMode,
@@ -283,10 +355,16 @@ impl AppState {
     /// [`from_daemon_state`](Self::from_daemon_state) to share subsystems
     /// with the daemon lifecycle.
     pub fn new() -> Self {
+        Self::builder().build()
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub fn builder() -> AppStateBuilder {
         #[cfg(test)]
         {
             let id = APP_STATE_TEST_DATA_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
-            Self::new_with_data_dir(
+            AppStateBuilder::new(
                 std::env::temp_dir()
                     .join("hypercolor-app-state-tests")
                     .join(format!("{}-{id}", std::process::id())),
@@ -295,36 +373,30 @@ impl AppState {
 
         #[cfg(not(test))]
         {
-            Self::new_with_data_dir(ConfigManager::data_dir())
+            AppStateBuilder::new(ConfigManager::data_dir())
         }
     }
 
     #[doc(hidden)]
     pub fn new_with_data_dir(data_dir: PathBuf) -> Self {
-        Self::new_with_runtime_overrides(data_dir, None, None)
-    }
-
-    #[doc(hidden)]
-    pub fn new_with_runtime_overrides(
-        data_dir: PathBuf,
-        config_manager: Option<Arc<ConfigManager>>,
-        driver_registry: Option<Arc<DriverModuleRegistry>>,
-    ) -> Self {
-        Self::new_with_composition_overrides(data_dir, config_manager, driver_registry, None)
+        AppStateBuilder::new(data_dir).build()
     }
 
     #[expect(
         clippy::too_many_lines,
         reason = "test-facing app state construction wires all shared subsystems in one place"
     )]
-    #[doc(hidden)]
-    pub fn new_with_composition_overrides(
-        data_dir: PathBuf,
-        config_manager: Option<Arc<ConfigManager>>,
-        driver_registry: Option<Arc<DriverModuleRegistry>>,
-        runtime_state_path: Option<PathBuf>,
-    ) -> Self {
+    fn from_builder(builder: AppStateBuilder) -> Self {
         use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
+
+        let AppStateBuilder {
+            data_dir,
+            config_manager,
+            driver_registry,
+            runtime_state_path,
+            library,
+            input_manager,
+        } = builder;
 
         let config = config_manager
             .as_ref()
@@ -441,7 +513,7 @@ impl AppState {
             config.input.daemon_route,
             config.input.preview_route,
         );
-        let standalone_input_manager = InputManager::new();
+        let standalone_input_manager = input_manager.unwrap_or_else(InputManager::new);
         let input_status = standalone_input_manager.source_status_registry();
         let screen_capacity_status = standalone_input_manager.screen_capacity_status_handle();
         let input_manager = Arc::new(Mutex::new(standalone_input_manager));
@@ -579,9 +651,15 @@ impl AppState {
             },
         );
 
-        let library = Arc::new(InMemoryLibraryStore::new());
-        let library_store: Arc<dyn LibraryStore> = library.clone();
-        let library_identity: Arc<dyn LibraryIdentityMigration> = library;
+        let AppStateLibrary {
+            store: library_store,
+            identity: library_identity,
+        } = library.unwrap_or_else(|| {
+            let library = Arc::new(InMemoryLibraryStore::new());
+            let store: Arc<dyn LibraryStore> = library.clone();
+            let identity: Arc<dyn LibraryIdentityMigration> = library;
+            AppStateLibrary { store, identity }
+        });
 
         Self {
             domains,
@@ -648,29 +726,9 @@ impl AppState {
     }
 
     #[doc(hidden)]
-    pub fn install_config_manager(&mut self, config_manager: Arc<ConfigManager>) {
-        let config_manager = Some(config_manager);
-        let driver_host = Arc::new(self.driver_host.with_config_manager(config_manager.clone()));
-        self.domains
-            .install_config_manager(config_manager.clone(), Arc::clone(&driver_host));
-        self.driver_host = driver_host;
-        self.config_manager = config_manager;
-    }
-
-    #[doc(hidden)]
     #[must_use]
     pub fn config_manager(&self) -> Option<&Arc<ConfigManager>> {
         self.config_manager.as_ref()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn install_input_manager(&mut self, input_manager: InputManager) {
-        let input_status = input_manager.source_status_registry();
-        self.screen_capacity_status = input_manager.screen_capacity_status_handle();
-        self.domains
-            .platform
-            .install_input_status(input_status.clone());
-        self.input_manager = Arc::new(Mutex::new(input_manager));
     }
 
     /// Create an `AppState` from a live [`DaemonState`](crate::startup::DaemonState).

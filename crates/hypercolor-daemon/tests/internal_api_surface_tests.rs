@@ -209,6 +209,40 @@ fn application_state_reuses_one_domain_graph() {
 }
 
 #[test]
+fn application_state_dependencies_are_fixed_before_domain_assembly() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for relative in [
+        "src/api/config/tests.rs",
+        "src/api/ws/tests.rs",
+        "src/domain/effect/identity/tests.rs",
+        "tests/api_tests.rs",
+        "tests/mcp_tests.rs",
+        "tests/security_api_tests.rs",
+    ] {
+        let source = std::fs::read_to_string(manifest.join(relative))
+            .unwrap_or_else(|error| panic!("failed to read {relative}: {error}"));
+        for forbidden in [
+            "install_config_manager(",
+            "install_input_manager(",
+            "state.driver_host =",
+            "state.driver_registry =",
+            "state.library_store =",
+            "state.library_identity =",
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "{relative} mutates application authority after assembly: {forbidden}"
+            );
+        }
+    }
+
+    let host = std::fs::read_to_string(manifest.join("src/network/host.rs"))
+        .expect("driver host source should read");
+    assert!(!host.contains("fn with_config_manager("));
+    assert!(!host.contains("fn with_driver_registry("));
+}
+
+#[test]
 fn input_status_projection_uses_platform_context() {
     let sources = daemon_sources();
     let source = |suffix: &str| {
@@ -232,10 +266,13 @@ fn input_status_projection_uses_platform_context() {
 
     let app_state = source("app_state.rs");
     assert!(app_state.contains("pub(crate) config_manager:"));
+    assert!(app_state.contains("pub struct AppStateBuilder"));
     assert!(!app_state.contains("pub input_status:"));
     assert!(!app_state.contains("pub(crate) input_status:"));
-    assert!(app_state.contains("pub fn install_config_manager("));
-    assert!(app_state.contains("fn install_input_manager("));
+    assert!(!app_state.contains("install_config_manager"));
+    assert!(!app_state.contains("install_input_manager"));
+    assert!(!contexts.contains("install_config_manager"));
+    assert!(!contexts.contains("install_input_status"));
     assert!(!app_state.contains("state.config_manager ="));
     assert!(!app_state.contains("state.input_status ="));
 

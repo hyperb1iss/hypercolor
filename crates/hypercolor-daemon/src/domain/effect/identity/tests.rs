@@ -23,7 +23,7 @@ use hypercolor_types::scene::{DisplayFaceTarget, SceneId, SceneKind, SceneMutati
 use tempfile::TempDir;
 
 use super::{install_registry_file, reload_registry_file, remap_zones, rescan_registry};
-use crate::app_state::AppState;
+use crate::app_state::{AppState, AppStateBuilder};
 use crate::display_preferences::DisplayPreference;
 use crate::domain::DomainError;
 use crate::library::JsonLibraryStore;
@@ -86,12 +86,13 @@ async fn promote_effect_to_display(state: &AppState, effect_id: EffectId) {
 
 async fn late_migration_fixture(temp: &TempDir) -> LateMigrationFixture {
     let data_dir = temp.path().join("state");
-    let mut state = AppState::new_with_data_dir(data_dir.clone());
+    std::fs::create_dir_all(&data_dir).expect("state directory should be created");
     let library = Arc::new(
         JsonLibraryStore::open(data_dir.join("library.json")).expect("library should open"),
     );
-    state.library_store = library.clone();
-    state.library_identity = library;
+    let state = AppStateBuilder::new(data_dir.clone())
+        .with_library(library)
+        .build();
     let effect_path = data_dir.join("effects/bundled/late-arrival.html");
     write_effect(&effect_path, "Late Arrival");
     let source_path = std::fs::canonicalize(&effect_path).expect("effect should canonicalize");

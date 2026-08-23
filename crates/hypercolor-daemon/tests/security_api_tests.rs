@@ -8,23 +8,24 @@ use axum::extract::ConnectInfo;
 use http::{Method, Request, StatusCode, header};
 use hypercolor_core::config::ConfigManager;
 use hypercolor_daemon::api;
-use hypercolor_daemon::app_state::AppState;
+use hypercolor_daemon::app_state::{AppState, AppStateBuilder};
 use hypercolor_types::config::HypercolorConfig;
 use tower::ServiceExt;
 
 static DATA_DIR_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 fn isolated_state() -> AppState {
+    isolated_state_builder().build()
+}
+
+fn isolated_state_builder() -> AppStateBuilder {
     let _lock = DATA_DIR_LOCK
         .lock()
         .expect("data dir lock should not be poisoned");
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let data_dir = tempdir.path().join("data");
     std::fs::create_dir_all(&data_dir).expect("temp data dir should be created");
-    ConfigManager::set_data_dir_override(Some(data_dir));
-    let state = AppState::new();
-    ConfigManager::set_data_dir_override(None);
-    state
+    AppStateBuilder::new(data_dir)
 }
 
 fn test_app() -> axum::Router {
@@ -32,14 +33,15 @@ fn test_app() -> axum::Router {
 }
 
 fn test_app_with_config(config: HypercolorConfig) -> axum::Router {
-    let mut state = isolated_state();
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let manager = Arc::new(
         ConfigManager::new(tempdir.path().join("config.toml"))
             .expect("config manager should be created"),
     );
     manager.update(config);
-    state.install_config_manager(manager);
+    let state = isolated_state_builder()
+        .with_config_manager(manager)
+        .build();
     api::build_router(Arc::new(state), None)
 }
 

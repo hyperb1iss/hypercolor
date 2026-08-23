@@ -12,7 +12,7 @@ use hypercolor_core::input::{
 };
 use hypercolor_core::scene::OutputPlacement;
 use hypercolor_daemon::api;
-use hypercolor_daemon::app_state::AppState;
+use hypercolor_daemon::app_state::{AppState, AppStateBuilder};
 use hypercolor_daemon::device_settings::DeviceSettingsStore;
 use hypercolor_daemon::mcp;
 use hypercolor_daemon::mcp::prompts::{
@@ -84,11 +84,15 @@ fn stateless_mcp_config() -> McpConfig {
 }
 
 fn isolated_state_with_tempdir() -> (AppState, TempDir) {
+    let (builder, tempdir) = isolated_state_builder_with_tempdir();
+    (builder.build(), tempdir)
+}
+
+fn isolated_state_builder_with_tempdir() -> (AppStateBuilder, TempDir) {
     let tempdir = TempDir::new().expect("create temp dir");
     let data_dir = tempdir.path().join("data");
     fs::create_dir_all(&data_dir).expect("create temp data dir");
-    let state = AppState::new_with_data_dir(data_dir);
-    (state, tempdir)
+    (AppStateBuilder::new(data_dir), tempdir)
 }
 
 struct FailedInputSource {
@@ -933,8 +937,8 @@ async fn api_router_mounts_mcp_when_enabled_in_config() {
     .expect("write config file");
 
     let manager = Arc::new(ConfigManager::new(config_path).expect("load config manager"));
-    let (mut state, _state_tempdir) = isolated_state_with_tempdir();
-    state.install_config_manager(manager);
+    let (builder, _state_tempdir) = isolated_state_builder_with_tempdir();
+    let state = builder.with_config_manager(manager).build();
 
     let router = api::build_router(Arc::new(state), None);
     let (client, base_url) = spawn_router(router).await;

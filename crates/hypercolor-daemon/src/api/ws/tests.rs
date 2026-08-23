@@ -574,8 +574,9 @@ fn status_event_state() -> (Arc<AppState>, SourceSessionSlot) {
     input_manager
         .start_all()
         .expect("status event test source should start");
-    let mut state = AppState::new();
-    state.install_input_manager(input_manager);
+    let state = AppState::builder()
+        .with_input_manager(input_manager)
+        .build();
     (Arc::new(state), session_slot)
 }
 
