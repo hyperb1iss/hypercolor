@@ -27,11 +27,58 @@ const fn status(error: &DomainError) -> StatusCode {
     }
 }
 
+/// Structured recovery context every transport projection shares.
+pub(crate) fn client_details(error: &DomainError) -> Option<serde_json::Value> {
+    match error {
+        DomainError::Validation { field, details, .. } => {
+            merge_field(details.clone(), field.as_ref())
+        }
+        DomainError::Conflict { details, .. }
+        | DomainError::Forbidden { details, .. }
+        | DomainError::ServiceUnavailable { details, .. } => details.clone(),
+        DomainError::ControlBound { keys } => Some(serde_json::json!({ "bound": keys })),
+        DomainError::PreconditionFailed {
+            expected, current, ..
+        } => Some(serde_json::json!({ "expected": expected, "current": current })),
+        DomainError::PayloadTooLarge { limit_bytes } => {
+            Some(serde_json::json!({ "limit_bytes": limit_bytes }))
+        }
+        DomainError::RateLimited {
+            limit,
+            window_seconds,
+            retry_after_secs,
+            ..
+        } => Some(serde_json::json!({
+            "limit": limit,
+            "window_seconds": window_seconds,
+            "retry_after": retry_after_secs,
+        })),
+        _ => None,
+    }
+}
+
+fn merge_field(
+    details: Option<serde_json::Value>,
+    field: Option<&String>,
+) -> Option<serde_json::Value> {
+    let Some(field) = field else {
+        return details;
+    };
+    match details {
+        Some(serde_json::Value::Object(mut map)) => {
+            map.insert("field".to_owned(), serde_json::json!(field));
+            Some(serde_json::Value::Object(map))
+        }
+        Some(other) => Some(serde_json::json!({ "field": field, "context": other })),
+        None => Some(serde_json::json!({ "field": field })),
+    }
+}
+
 fn detail(error: &DomainError) -> ApiErrorDetail {
     ApiErrorDetail {
         code: error.code().to_owned(),
         message: error.client_message(),
-        details: error.client_details(),
+        details: client_details(error),
     }
 }
 

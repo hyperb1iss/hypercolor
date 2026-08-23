@@ -109,8 +109,9 @@ impl std::fmt::Display for ResourceKind {
     }
 }
 
-/// The one domain error type (Spec 76 §2.1). Services return this;
-/// every transport renders it through its own projection.
+/// The one domain error type (Spec 76 §2.1). Services return this and
+/// nothing else: the stable code and the client-safe message are the
+/// whole shared vocabulary, and each adapter owns its wire projection.
 #[derive(Debug, thiserror::Error)]
 pub enum DomainError {
     /// The addressed resource does not exist.
@@ -371,52 +372,6 @@ impl DomainError {
             Self::Internal(_) => "internal error".to_owned(),
             other => other.to_string(),
         }
-    }
-
-    /// Structured recovery context shared by every transport projection.
-    #[must_use]
-    pub(crate) fn client_details(&self) -> Option<serde_json::Value> {
-        match self {
-            Self::Validation { field, details, .. } => merge_field(details.clone(), field.as_ref()),
-            Self::Conflict { details, .. }
-            | Self::Forbidden { details, .. }
-            | Self::ServiceUnavailable { details, .. } => details.clone(),
-            Self::ControlBound { keys } => Some(serde_json::json!({ "bound": keys })),
-            Self::PreconditionFailed {
-                expected, current, ..
-            } => Some(serde_json::json!({ "expected": expected, "current": current })),
-            Self::PayloadTooLarge { limit_bytes } => {
-                Some(serde_json::json!({ "limit_bytes": limit_bytes }))
-            }
-            Self::RateLimited {
-                limit,
-                window_seconds,
-                retry_after_secs,
-                ..
-            } => Some(serde_json::json!({
-                "limit": limit,
-                "window_seconds": window_seconds,
-                "retry_after": retry_after_secs,
-            })),
-            _ => None,
-        }
-    }
-}
-
-fn merge_field(
-    details: Option<serde_json::Value>,
-    field: Option<&String>,
-) -> Option<serde_json::Value> {
-    let Some(field) = field else {
-        return details;
-    };
-    match details {
-        Some(serde_json::Value::Object(mut map)) => {
-            map.insert("field".to_owned(), serde_json::json!(field));
-            Some(serde_json::Value::Object(map))
-        }
-        Some(other) => Some(serde_json::json!({ "field": field, "context": other })),
-        None => Some(serde_json::json!({ "field": field })),
     }
 }
 

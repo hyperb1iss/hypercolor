@@ -1542,7 +1542,7 @@ impl From<DomainError> for WsProtocolError {
         Self {
             code,
             message: error.client_message(),
-            details: error.client_details(),
+            details: crate::api::error::client_details(&error),
         }
     }
 }
