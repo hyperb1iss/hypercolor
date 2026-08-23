@@ -39,7 +39,7 @@ fn test_app_with_config(config: HypercolorConfig) -> axum::Router {
             .expect("config manager should be created"),
     );
     manager.update(config);
-    state.config_manager = Some(manager);
+    state.install_config_manager(manager);
     api::build_router(Arc::new(state), None)
 }
 

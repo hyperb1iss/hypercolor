@@ -129,6 +129,15 @@ fn input_status_projection_uses_platform_context() {
     assert!(!platform.contains("pub input_status:"));
     assert!(!platform.contains("pub config_manager:"));
 
+    let app_state = source("app_state.rs");
+    assert!(app_state.contains("pub(crate) config_manager:"));
+    assert!(!app_state.contains("pub input_status:"));
+    assert!(!app_state.contains("pub(crate) input_status:"));
+    assert!(app_state.contains("pub fn install_config_manager("));
+    assert!(app_state.contains("fn install_input_manager("));
+    assert!(!app_state.contains("state.config_manager ="));
+    assert!(!app_state.contains("state.input_status ="));
+
     let projection = source("domain/input_status.rs");
     assert!(projection.contains("use crate::domain::context::PlatformContext;"));
     assert!(!projection.contains("AppState"));

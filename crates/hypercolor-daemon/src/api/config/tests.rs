@@ -293,7 +293,7 @@ async fn route_only_input_config_changes_publish_without_rebuilding_sources() {
     ));
     let manager =
         Arc::new(ConfigManager::new(config_path).expect("test config manager should initialize"));
-    state.config_manager = Some(Arc::clone(&manager));
+    state.install_config_manager(Arc::clone(&manager));
     let state = Arc::new(state);
     let graph_generation = state.input_manager.lock().await.source_graph_generation();
 
@@ -455,7 +455,7 @@ async fn capture_transaction_applies_publication_capacity_with_config() {
     capture.enabled = false;
     capture.publication_memory_bytes = Some(30_000);
     let mut state = AppState::new();
-    state.config_manager = Some(Arc::clone(&manager));
+    state.install_config_manager(Arc::clone(&manager));
     let state = Arc::new(state);
     state
         .input_manager
@@ -501,7 +501,7 @@ async fn capture_transaction_conflict_preserves_publication_capacity() {
     capture.publication_memory_bytes = Some(30_000);
     manager.modify(|config| config.capture.capture_fps += 1);
     let mut state = AppState::new();
-    state.config_manager = Some(Arc::clone(&manager));
+    state.install_config_manager(Arc::clone(&manager));
     let state = Arc::new(state);
     state
         .input_manager
@@ -548,7 +548,7 @@ async fn failed_windows_capture_preparation_preserves_old_graph_and_config() {
         ConfigManager::new(config_path.clone()).expect("test config manager should initialize"),
     );
     let mut state = AppState::new();
-    state.config_manager = Some(Arc::clone(&manager));
+    state.install_config_manager(Arc::clone(&manager));
     let state = Arc::new(state);
     {
         let mut input_manager = state.input_manager.lock().await;
@@ -602,7 +602,7 @@ async fn unchanged_disabled_capture_repairs_stale_runtime_source() {
     );
     manager.modify(|config| config.capture.enabled = false);
     let mut state = AppState::new();
-    state.config_manager = Some(Arc::clone(&manager));
+    state.install_config_manager(Arc::clone(&manager));
     let state = Arc::new(state);
     let stopped = Arc::new(AtomicBool::new(false));
     {
@@ -649,7 +649,7 @@ async fn unchanged_capture_rejects_a_concurrent_config_generation() {
     let initial = Arc::clone(&manager.get());
     manager.mark_capture_runtime_applied(&initial.capture);
     let mut state = AppState::new();
-    state.config_manager = Some(Arc::clone(&manager));
+    state.install_config_manager(Arc::clone(&manager));
     let state = Arc::new(state);
     let input_manager = state.input_manager.lock().await;
     let request_state = Arc::clone(&state);

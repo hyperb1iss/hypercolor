@@ -25,8 +25,8 @@ use hypercolor_core::device::{
 };
 use hypercolor_core::effect::EffectRegistry;
 use hypercolor_core::engine::{FpsTier, RenderLoop};
+use hypercolor_core::input::InputManager;
 use hypercolor_core::input::screen::ScreenCapacityStatusHandle;
-use hypercolor_core::input::{InputManager, SourceStatusRegistry};
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_driver_support::CredentialStore;
@@ -158,7 +158,7 @@ pub struct AppState {
     pub reconnect_tasks: Arc<StdMutex<HashMap<DeviceId, JoinHandle<()>>>>,
 
     /// Configuration manager for config API endpoints.
-    pub config_manager: Option<Arc<ConfigManager>>,
+    pub(crate) config_manager: Option<Arc<ConfigManager>>,
 
     /// Data directory backing state-owned stores and caches.
     pub data_dir: PathBuf,
@@ -190,9 +190,6 @@ pub struct AppState {
     #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
     pub(crate) macos_screen_parity_diagnostics:
         Option<crate::render_thread::MacosScreenParityDiagnosticHandle>,
-
-    /// Lock-free latest-value health for the live input graph.
-    pub input_status: SourceStatusRegistry,
 
     /// Push handle for browser-preview input injection over WebSocket.
     pub browser_input: hypercolor_core::input::BrowserInputHandle,
@@ -618,7 +615,6 @@ impl AppState {
             input_publication_demands: InputPublicationDemandHandle::new(),
             #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
             macos_screen_parity_diagnostics: None,
-            input_status,
             browser_input,
             interaction_routing,
             discovery_in_progress,
@@ -649,6 +645,32 @@ impl AppState {
             server_session_id: None,
             security_state: crate::api::security::SecurityState::from_config(&config),
         }
+    }
+
+    #[doc(hidden)]
+    pub fn install_config_manager(&mut self, config_manager: Arc<ConfigManager>) {
+        let config_manager = Some(config_manager);
+        let driver_host = Arc::new(self.driver_host.with_config_manager(config_manager.clone()));
+        self.domains
+            .install_config_manager(config_manager.clone(), Arc::clone(&driver_host));
+        self.driver_host = driver_host;
+        self.config_manager = config_manager;
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub fn config_manager(&self) -> Option<&Arc<ConfigManager>> {
+        self.config_manager.as_ref()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn install_input_manager(&mut self, input_manager: InputManager) {
+        let input_status = input_manager.source_status_registry();
+        self.screen_capacity_status = input_manager.screen_capacity_status_handle();
+        self.domains
+            .platform
+            .install_input_status(input_status.clone());
+        self.input_manager = Arc::new(Mutex::new(input_manager));
     }
 
     /// Create an `AppState` from a live [`DaemonState`](crate::startup::DaemonState).
@@ -701,7 +723,6 @@ impl AppState {
                 .expect("live API state requires a running input publication pump"),
             #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
             macos_screen_parity_diagnostics: daemon.macos_screen_parity_diagnostics(),
-            input_status: daemon.input_status.clone(),
             browser_input: daemon.browser_input.clone(),
             interaction_routing: daemon.interaction_routing.clone(),
             discovery_in_progress: Arc::clone(&daemon.discovery_in_progress),

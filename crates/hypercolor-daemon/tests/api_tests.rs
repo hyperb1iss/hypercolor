@@ -384,12 +384,7 @@ fn test_state_with_temp_config_manager() -> (Arc<AppState>, Arc<ConfigManager>, 
         ConfigManager::new(dir.path().join("config.toml"))
             .expect("config manager should be created"),
     );
-    state.config_manager = Some(Arc::clone(&manager));
-    state.driver_host = Arc::new(
-        state
-            .driver_host
-            .with_config_manager(Some(Arc::clone(&manager))),
-    );
+    state.install_config_manager(Arc::clone(&manager));
     {
         let mut input_manager = state
             .input_manager
@@ -1841,7 +1836,7 @@ async fn status_prefers_live_config_manager_path() {
         ConfigManager::new(custom_config_path.clone()).expect("config manager should build"),
     );
     let mut state = isolated_state();
-    state.config_manager = Some(config_manager);
+    state.install_config_manager(config_manager);
 
     let app = test_app_with_state(Arc::new(state));
     let response = app
@@ -1969,7 +1964,7 @@ async fn audio_devices_preserve_custom_configured_id_without_rewrite() {
     config_manager.update(config);
 
     let mut state = isolated_state();
-    state.config_manager = Some(config_manager);
+    state.install_config_manager(config_manager);
     let app = test_app_with_state(Arc::new(state));
 
     let response = app
@@ -2081,7 +2076,7 @@ async fn config_set_audio_device_persists_without_live_rebuild_by_default() {
         Arc::new(ConfigManager::new(config_path.clone()).expect("config manager should build"));
 
     let mut state = isolated_state();
-    state.config_manager = Some(config_manager);
+    state.install_config_manager(config_manager);
     let state = Arc::new(state);
 
     let response = execute_trusted_config_request(
@@ -2124,7 +2119,7 @@ async fn config_set_compositor_acceleration_key_updates_and_persists() {
         Arc::new(ConfigManager::new(config_path.clone()).expect("config manager should build"));
 
     let mut state = isolated_state();
-    state.config_manager = Some(config_manager);
+    state.install_config_manager(config_manager);
     let app = test_app_with_state(Arc::new(state));
 
     let response = app
@@ -2162,7 +2157,7 @@ async fn config_set_driver_registry_key_updates_driver_config() {
         Arc::new(ConfigManager::new(config_path.clone()).expect("config manager should build"));
 
     let mut state = isolated_state();
-    state.config_manager = Some(config_manager);
+    state.install_config_manager(config_manager);
     let app = test_app_with_state(Arc::new(state));
 
     let response = app
@@ -2201,7 +2196,7 @@ async fn config_set_driver_registry_key_rejects_non_routable_ip() {
         Arc::new(ConfigManager::new(config_path.clone()).expect("config manager should build"));
 
     let mut state = isolated_state();
-    state.config_manager = Some(config_manager);
+    state.install_config_manager(config_manager);
     let app = test_app_with_state(Arc::new(state));
 
     let response = app
@@ -2244,7 +2239,7 @@ async fn config_write_rejection_does_not_echo_a_secret_value() {
         Arc::new(ConfigManager::new(config_path.clone()).expect("config manager should build"));
 
     let mut state = isolated_state();
-    state.config_manager = Some(config_manager);
+    state.install_config_manager(config_manager);
     let app = test_app_with_state(Arc::new(state));
 
     let secret = "sk-live-do-not-echo-me";
@@ -2288,7 +2283,7 @@ async fn config_write_rejection_keeps_detail_for_a_plain_key() {
         Arc::new(ConfigManager::new(config_path.clone()).expect("config manager should build"));
 
     let mut state = isolated_state();
-    state.config_manager = Some(config_manager);
+    state.install_config_manager(config_manager);
     let app = test_app_with_state(Arc::new(state));
 
     let response = app
@@ -2414,7 +2409,7 @@ async fn config_set_audio_device_rebuilds_live_input_manager_when_requested() {
         Arc::new(ConfigManager::new(config_path.clone()).expect("config manager should build"));
 
     let mut state = isolated_state();
-    state.config_manager = Some(config_manager);
+    state.install_config_manager(config_manager);
     let state = Arc::new(state);
 
     let response = execute_trusted_config_request(
@@ -2460,7 +2455,7 @@ async fn config_set_legacy_audio_alias_persists_canonical_device_id() {
         Arc::new(ConfigManager::new(config_path.clone()).expect("config manager should build"));
 
     let mut state = isolated_state();
-    state.config_manager = Some(config_manager);
+    state.install_config_manager(config_manager);
     let state = Arc::new(state);
 
     let response = execute_trusted_config_request(
@@ -2501,7 +2496,7 @@ async fn config_set_legacy_audio_alias_skips_live_rebuild_when_already_canonical
         Arc::new(ConfigManager::new(config_path.clone()).expect("config manager should build"));
 
     let mut state = isolated_state();
-    state.config_manager = Some(config_manager);
+    state.install_config_manager(config_manager);
     let state = Arc::new(state);
 
     let response = execute_trusted_config_request(
@@ -2540,7 +2535,7 @@ async fn config_set_identical_audio_value_skips_live_rebuild() {
         Arc::new(ConfigManager::new(config_path.clone()).expect("config manager should build"));
 
     let mut state = isolated_state();
-    state.config_manager = Some(config_manager);
+    state.install_config_manager(config_manager);
     let state = Arc::new(state);
 
     let response = execute_trusted_config_request(
@@ -2579,7 +2574,7 @@ async fn config_set_render_canvas_updates_active_layout_dimensions() {
         Arc::new(ConfigManager::new(config_path.clone()).expect("config manager should build"));
 
     let mut state = isolated_state();
-    state.config_manager = Some(config_manager);
+    state.install_config_manager(config_manager);
 
     let state = Arc::new(state);
     let app = test_app_with_state(Arc::clone(&state));
@@ -2645,7 +2640,7 @@ async fn config_set_render_target_fps_updates_render_loop_live() {
         Arc::new(ConfigManager::new(config_path.clone()).expect("config manager should build"));
 
     let mut state = isolated_state();
-    state.config_manager = Some(config_manager);
+    state.install_config_manager(config_manager);
     let state = Arc::new(state);
     let app = test_app_with_state(Arc::clone(&state));
 
@@ -2757,7 +2752,7 @@ fn reset_fixture_state_from(
         ConfigManager::new(config_path.to_path_buf()).expect("config manager should build"),
     );
     let mut state = isolated_state();
-    state.config_manager = Some(Arc::clone(&config_manager));
+    state.install_config_manager(Arc::clone(&config_manager));
     {
         let mut input_manager = state
             .input_manager
@@ -3119,7 +3114,7 @@ async fn config_write_reports_restart_classification_and_pending_restart() {
     })
     .expect("fixture config should load");
     let mut state = isolated_state();
-    state.config_manager = Some(Arc::new(loaded.manager));
+    state.install_config_manager(Arc::new(loaded.manager));
     let app = test_app_with_state(Arc::new(state));
 
     let response = app
@@ -3169,7 +3164,7 @@ async fn config_write_declining_live_persists_without_re_applying() {
     let config_manager =
         Arc::new(ConfigManager::new(config_path.clone()).expect("config manager should build"));
     let mut state = isolated_state();
-    state.config_manager = Some(Arc::clone(&config_manager));
+    state.install_config_manager(Arc::clone(&config_manager));
     let state = Arc::new(state);
     let app = test_app_with_state(Arc::clone(&state));
 
@@ -4226,7 +4221,7 @@ async fn get_driver_config_returns_current_and_default_entries() {
     config_manager.update(config);
 
     let mut state = isolated_state();
-    state.config_manager = Some(config_manager);
+    state.install_config_manager(config_manager);
     let app = test_app_with_state(Arc::new(state));
 
     let response = app
@@ -5208,7 +5203,7 @@ async fn driver_control_reload_preserves_raw_objects_with_kind_fields() {
         .expect("test action driver should register");
     let registry = Arc::new(registry);
     state.driver_registry = Arc::clone(&registry);
-    state.config_manager = Some(Arc::clone(&manager));
+    state.install_config_manager(Arc::clone(&manager));
     state.driver_host = Arc::new(
         state
             .driver_host
@@ -5251,7 +5246,7 @@ async fn driver_control_reload_rejects_malformed_canonical_envelopes() {
         .expect("test action driver should register");
     let registry = Arc::new(registry);
     state.driver_registry = Arc::clone(&registry);
-    state.config_manager = Some(Arc::clone(&manager));
+    state.install_config_manager(Arc::clone(&manager));
     state.driver_host = Arc::new(
         state
             .driver_host
@@ -5360,7 +5355,7 @@ async fn patch_driver_control_surface_discovery_rescan_runs_through_host() {
         .expect("test rescan driver should register");
     let registry = Arc::new(registry);
 
-    state.config_manager = Some(Arc::clone(&manager));
+    state.install_config_manager(Arc::clone(&manager));
     state.driver_registry = Arc::clone(&registry);
     state.driver_host = Arc::new(
         state
@@ -5420,7 +5415,7 @@ async fn patch_driver_control_surface_rejects_unsupported_driver_level_impact() 
         .expect("test unsupported impact driver should register");
     let registry = Arc::new(registry);
 
-    state.config_manager = Some(Arc::clone(&manager));
+    state.install_config_manager(Arc::clone(&manager));
     state.driver_registry = Arc::clone(&registry);
     state.driver_host = Arc::new(
         state
@@ -5469,7 +5464,7 @@ async fn patch_driver_owned_device_control_surface_rejects_unsupported_device_le
         .expect("test unsupported impact driver should register");
     let registry = Arc::new(registry);
 
-    state.config_manager = Some(Arc::clone(&manager));
+    state.install_config_manager(Arc::clone(&manager));
     state.driver_registry = Arc::clone(&registry);
     state.driver_host = Arc::new(
         state
@@ -9397,8 +9392,7 @@ async fn layout_mutation_cancellation_finishes_config_canvas_resize() {
         .insert(active.id.clone(), active.clone());
     persist_current_layouts_for_test(&state).await;
     let configured_height = state
-        .config_manager
-        .as_ref()
+        .config_manager()
         .expect("config manager should exist")
         .get()
         .daemon
@@ -9559,8 +9553,7 @@ async fn layout_update_compensation_cannot_erase_config_canvas_resize() {
         &active.id,
     );
     let configured_height = state
-        .config_manager
-        .as_ref()
+        .config_manager()
         .expect("config manager should exist")
         .get()
         .daemon

@@ -574,13 +574,8 @@ fn status_event_state() -> (Arc<AppState>, SourceSessionSlot) {
     input_manager
         .start_all()
         .expect("status event test source should start");
-    let input_status = input_manager.source_status_registry();
-    let screen_capacity_status = input_manager.screen_capacity_status_handle();
-
     let mut state = AppState::new();
-    state.input_manager = Arc::new(tokio::sync::Mutex::new(input_manager));
-    state.screen_capacity_status = screen_capacity_status;
-    state.input_status = input_status;
+    state.install_input_manager(input_manager);
     (Arc::new(state), session_slot)
 }
 
@@ -3641,8 +3636,10 @@ async fn every_lagged_event_topic_emits_a_resync_hint() {
 async fn worker_failure_relay_invalidates_input_status_immediately() {
     let (state, session_slot) = status_event_state();
     let event_rx = state.event_bus.subscribe_all();
-    let _publisher =
-        InputStatusEventPublisher::start(state.input_status.clone(), Arc::clone(&state.event_bus));
+    let _publisher = InputStatusEventPublisher::start(
+        state.domains.platform.source_status_registry(),
+        Arc::clone(&state.event_bus),
+    );
     let (_subscriptions_tx, subscriptions_rx) = watch::channel(SubscriptionState::default());
     let (json_tx, mut json_rx) = tokio::sync::mpsc::channel::<Utf8Bytes>(8);
     let relay_handle = tokio::spawn(relay_events(event_rx, json_tx, subscriptions_rx));
@@ -3684,8 +3681,10 @@ async fn worker_failure_relay_invalidates_input_status_immediately() {
 async fn input_status_publisher_runs_without_websocket_clients() {
     let (state, session_slot) = status_event_state();
     let mut event_rx = state.event_bus.subscribe_all();
-    let _publisher =
-        InputStatusEventPublisher::start(state.input_status.clone(), Arc::clone(&state.event_bus));
+    let _publisher = InputStatusEventPublisher::start(
+        state.domains.platform.source_status_registry(),
+        Arc::clone(&state.event_bus),
+    );
 
     let initial = tokio::time::timeout(Duration::from_secs(1), event_rx.recv())
         .await
@@ -3727,8 +3726,10 @@ async fn one_input_status_publisher_fans_out_once_to_multiple_websocket_relays()
         second_tx,
         second_subscriptions,
     ));
-    let _publisher =
-        InputStatusEventPublisher::start(state.input_status.clone(), Arc::clone(&state.event_bus));
+    let _publisher = InputStatusEventPublisher::start(
+        state.domains.platform.source_status_registry(),
+        Arc::clone(&state.event_bus),
+    );
 
     for receiver in [&mut first_rx, &mut second_rx] {
         let initial = tokio::time::timeout(Duration::from_secs(1), receiver.recv())
@@ -3776,8 +3777,10 @@ async fn one_input_status_publisher_fans_out_once_to_multiple_websocket_relays()
 async fn input_status_publisher_rebuilds_watchers_after_graph_change() {
     let (state, _) = status_event_state();
     let mut event_rx = state.event_bus.subscribe_all();
-    let _publisher =
-        InputStatusEventPublisher::start(state.input_status.clone(), Arc::clone(&state.event_bus));
+    let _publisher = InputStatusEventPublisher::start(
+        state.domains.platform.source_status_registry(),
+        Arc::clone(&state.event_bus),
+    );
     tokio::time::timeout(Duration::from_secs(1), event_rx.recv())
         .await
         .expect("initial status should publish")

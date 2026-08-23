@@ -934,7 +934,7 @@ async fn api_router_mounts_mcp_when_enabled_in_config() {
 
     let manager = Arc::new(ConfigManager::new(config_path).expect("load config manager"));
     let (mut state, _state_tempdir) = isolated_state_with_tempdir();
-    state.config_manager = Some(manager);
+    state.install_config_manager(manager);
 
     let router = api::build_router(Arc::new(state), None);
     let (client, base_url) = spawn_router(router).await;

@@ -105,6 +105,17 @@ impl DomainContexts {
             scene_library,
         }
     }
+
+    pub(crate) fn install_config_manager(
+        &mut self,
+        config_manager: Option<Arc<ConfigManager>>,
+        driver_host: Arc<DaemonDriverHost>,
+    ) {
+        self.platform.config_manager.clone_from(&config_manager);
+        self.scene.config_manager.clone_from(&config_manager);
+        self.devices.config_manager = config_manager;
+        self.devices.driver_host = driver_host;
+    }
 }
 
 /// Platform input health projection dependencies.
@@ -135,6 +146,16 @@ impl PlatformContext {
         self.config_manager
             .as_ref()
             .is_some_and(|manager| manager.get().input.enabled)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn install_input_status(&mut self, input_status: SourceStatusRegistry) {
+        self.input_status = input_status;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn source_status_registry(&self) -> SourceStatusRegistry {
+        self.input_status.clone()
     }
 }
 
