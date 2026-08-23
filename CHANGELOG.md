@@ -25,6 +25,9 @@ and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   schema version 5.
 - Import legacy `profiles.json` entries into scenes on first startup, then
   retire the source only after the scene write is durable.
+- Decode every Python client response through the generated OpenAPI models.
+  The handwritten msgspec mirrors are gone, so a field the daemon stops
+  sending now fails the decode instead of silently arriving as `None`.
 
 ### Removed
 
@@ -86,6 +89,30 @@ and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   store default scene content under `default_scene_zones`. Schema version 4
   config migrates the old fallback value once; schema version 5 config and
   unversioned runtime snapshots reject the retired group-named spellings.
+- **Python client models are the generated OpenAPI types.** The handwritten
+  mirrors under `hypercolor.models.*` are deleted; import from
+  `hypercolor.models` instead of its former submodules. Return types
+  change accordingly: `Device` becomes `DeviceSummary`, `Driver` becomes
+  `DriverSummary`, `ControlSurface` becomes `ControlSurfaceDocument`,
+  `ControlApplyResult` becomes `ApplyControlChangesResponse`, `Preset`
+  becomes `EffectPreset`, `Playlist` becomes `EffectPlaylist`, `Favorite`
+  becomes `FavoriteSummary`, `OutputState` becomes `OutputResource`,
+  `IdentifyResult` becomes `IdentifyDeviceResponse`, `ConfigMutationResult`
+  becomes `ConfigMutationResponse`, `DisplaySummary` becomes
+  `DisplaySummaryListItem`, `DisplayFaceAssignment` becomes
+  `DisplayFaceResponse`, and `apply_layout()` returns `ApplyLayoutResponse`
+  rather than the grab-bag `MutationResult`. The convenience properties on
+  the retired mirrors (`Device.enabled`, `OutputState.paused`,
+  `OutputState.brightness_percent`) are gone; read `status`, `power`, and
+  `brightness` directly.
+- **`discover_devices()` sends the canonical `targets` field.** The keyword
+  argument is renamed from `backends` to `targets` and a `wait` argument now
+  reaches the daemon's synchronous mode. The return value is the
+  status-tagged union of `DiscoveryScanningResponse` and
+  `DiscoveryCompletedResponse`, so a completed scan exposes the full
+  `DiscoveryScanResult` the client used to discard.
+- **`get_audio_spectrum()` is typed `NoReturn`.** It always raised; spectrum
+  snapshots only exist on the WebSocket stream.
 
 ## [0.3.2] - 2026-08-15
 

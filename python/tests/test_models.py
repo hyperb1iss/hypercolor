@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import msgspec
+import pytest
 
 from hypercolor._generated.api.devices import update_attachments
 from hypercolor._generated.models import (
@@ -11,8 +11,7 @@ from hypercolor._generated.models import (
     UpdateAttachmentsRequest,
 )
 from hypercolor._generated.types import Unset
-from hypercolor.models.device import Device
-from hypercolor.models.driver import Driver
+from hypercolor.models import DeviceSummary, DriverSummary
 
 
 def test_generated_attachment_update_sends_the_complete_request() -> None:
@@ -49,6 +48,7 @@ def test_device_model_decodes_canonical_connection() -> None:
         "layout_device_id": "keyboard",
         "name": "Keyboard",
         "origin": {"driver_id": "hid", "backend_id": "hid", "transport": "usb"},
+        "presentation": {"label": "HID"},
         "status": "connected",
         "brightness": 92,
         "firmware_version": "1.2.3",
@@ -65,13 +65,15 @@ def test_device_model_decodes_canonical_connection() -> None:
         "connection": {"transport": "usb", "label": "USB HID"},
     }
 
-    device = msgspec.convert(payload, type=Device)
+    device = DeviceSummary.from_dict(payload)
 
     assert device.name == "Keyboard"
-    assert device.connection is not None
-    assert device.connection.label == "USB HID"
+    connection = device.connection
+    assert not isinstance(connection, Unset)
+    assert connection.label == "USB HID"
+    assert not isinstance(device.segments, Unset)
     assert device.segments[0].topology == "matrix"
-    assert device.enabled is True
+    assert device.status == "connected"
 
 
 def test_device_model_decodes_current_daemon_shape() -> None:
@@ -110,17 +112,17 @@ def test_device_model_decodes_current_daemon_shape() -> None:
         ],
     }
 
-    device = msgspec.convert(payload, type=Device)
+    device = DeviceSummary.from_dict(payload)
 
-    assert device.driver_id == "wled"
-    assert device.transport == "network"
-    assert device.origin is not None
+    assert device.origin.driver_id == "wled"
+    assert device.origin.transport == "network"
     assert device.origin.backend_id == "wled"
-    assert device.connection is not None
-    assert device.connection.endpoint == "wled-studio.local"
-    assert device.connection.ip == "10.4.22.169"
-    assert device.connection.hostname == "wled-studio.local"
-    assert device.presentation is not None
+    connection = device.connection
+    assert not isinstance(connection, Unset)
+    assert connection.transport == "network"
+    assert connection.endpoint == "wled-studio.local"
+    assert connection.ip == "10.4.22.169"
+    assert connection.hostname == "wled-studio.local"
     assert device.presentation.label == "WLED"
 
 
@@ -205,10 +207,25 @@ def test_driver_model_decodes_protocol_catalog() -> None:
         ],
     }
 
-    driver = msgspec.convert(payload, type=Driver)
+    driver = DriverSummary.from_dict(payload)
 
     assert driver.descriptor.capabilities.protocol_catalog is True
-    assert driver.presentation is not None
     assert driver.presentation.label == "Nollie"
-    assert driver.protocols[0].protocol_id == "nollie_8"
-    assert driver.protocols[0].vendor_id == 0x2E8A
+    protocols = driver.protocols
+    assert not isinstance(protocols, Unset)
+    assert protocols[0].protocol_id == "nollie_8"
+    assert protocols[0].vendor_id == 0x2E8A
+
+
+def test_generated_device_model_rejects_a_dropped_required_field() -> None:
+    payload = {
+        "id": "keyboard",
+        "layout_device_id": "keyboard",
+        "name": "Keyboard",
+        "origin": {"driver_id": "hid", "backend_id": "hid", "transport": "usb"},
+        "status": "connected",
+        "brightness": 92,
+    }
+
+    with pytest.raises(KeyError):
+        DeviceSummary.from_dict(payload)

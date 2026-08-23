@@ -8,7 +8,7 @@ import httpx
 import msgspec
 
 from hypercolor._generated.types import Unset
-from hypercolor.models import EffectPresetOrigin
+from hypercolor.models import DeviceComponentsResponse, EffectPresetOrigin, OutputPowerMode
 from hypercolor.sync_client import SyncHypercolorClient
 
 
@@ -65,8 +65,8 @@ def test_sync_client_delegates_output_power() -> None:
     finally:
         client.close()
 
-    assert result.paused is True
-    assert result.brightness_percent == 80
+    assert result.power == OutputPowerMode.PAUSED
+    assert result.brightness == 0.8
 
 
 def test_sync_client_preserves_included_device_attachments() -> None:
@@ -84,8 +84,10 @@ def test_sync_client_preserves_included_device_attachments() -> None:
                             "name": "Controller",
                             "origin": {
                                 "driver_id": "razer",
+                                "backend_id": "razer",
                                 "transport": "usb",
                             },
+                            "presentation": {"label": "Razer"},
                             "status": "connected",
                             "brightness": 100,
                             "total_leds": 60,
@@ -139,8 +141,10 @@ def test_sync_client_preserves_included_device_attachments() -> None:
         client.close()
 
     attachments = devices[0].attachments
-    assert attachments is not None
+    assert isinstance(attachments, DeviceComponentsResponse)
+    assert not isinstance(attachments.slots, Unset)
     assert attachments.slots[0].allowed_templates == ["strip-60"]
+    assert not isinstance(attachments.bindings, Unset)
     assert attachments.bindings[0].template_name == "60 LED Strip"
 
 
@@ -269,6 +273,7 @@ def test_sync_client_delegates_driver_inventory() -> None:
                                     "default_enabled": True,
                                 },
                                 "enabled": True,
+                                "presentation": {"label": "Nollie"},
                                 "config_key": "drivers.nollie",
                                 "protocols": [
                                     {
@@ -299,7 +304,9 @@ def test_sync_client_delegates_driver_inventory() -> None:
         client.close()
 
     assert result[0].descriptor.id == "nollie"
-    assert result[0].protocols[0].route_backend_id == "usb"
+    protocols = result[0].protocols
+    assert not isinstance(protocols, Unset)
+    assert protocols[0].route_backend_id == "usb"
 
 
 def test_sync_client_delegates_control_values() -> None:

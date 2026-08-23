@@ -7,7 +7,7 @@ from collections.abc import Callable, Mapping
 from datetime import timedelta
 from ipaddress import ip_address
 from re import fullmatch
-from typing import Any, Self, TypeVar
+from typing import Any, NoReturn, Self, TypeVar
 from urllib.parse import quote
 
 import httpx
@@ -77,6 +77,8 @@ from ._generated.models.create_scene_request import CreateSceneRequest
 from ._generated.models.create_zone_request import CreateZoneRequest
 from ._generated.models.delete_scene_response import DeleteSceneResponse
 from ._generated.models.discover_request import DiscoverRequest
+from ._generated.models.discovery_completed_response import DiscoveryCompletedResponse
+from ._generated.models.discovery_scanning_response import DiscoveryScanningResponse
 from ._generated.models.effect_detail_response import EffectDetailResponse
 from ._generated.models.effect_preset_summary import EffectPresetSummary
 from ._generated.models.effect_preset_summary_list_response import EffectPresetSummaryListResponse
@@ -113,29 +115,30 @@ from .exceptions import (
     HypercolorUnavailableError,
     HypercolorValidationError,
 )
-from .models.audio import AudioDevices, SpectrumSnapshot
-from .models.common import (
-    ConfigMutationResult,
-    DiscoverResult,
-    IdentifyResult,
-    MutationResult,
+from .models import (
+    ApplyControlChangesResponse,
+    ApplyLayoutResponse,
+    AudioDevicesResponse,
+    ConfigMutationResponse,
+    ControlActionResult,
+    ControlSurfaceDocument,
+    DeviceSummary,
+    DisplayFaceResponse,
+    DisplaySummaryListItem,
+    DriverSummary,
+    EffectCoverImage,
+    EffectPlaylist,
+    EffectPreset,
+    FavoriteSummary,
+    IdentifyDeviceResponse,
+    LayoutSummary,
+    OutputResource,
+    SpatialLayout,
 )
-from .models.control import ControlActionResult, ControlApplyResult, ControlSurface
-from .models.device import Device
-from .models.display import DisplayFaceAssignment, DisplaySummary
-from .models.driver import Driver
-from .models.effect import EffectCoverImage
-from .models.layout import LayoutSummary
-from .models.library import (
-    Favorite,
-    Playlist,
-    Preset,
-)
-from .models.output import OutputState
-from .models.spatial import SpatialLayout
 from .websocket import HypercolorEventStream
 
 ModelT = TypeVar("ModelT")
+DiscoverResponse = DiscoveryCompletedResponse | DiscoveryScanningResponse
 
 
 class _Unset:
@@ -240,17 +243,17 @@ class HypercolorClient:
             raise HypercolorApiError("Malformed Hypercolor system status") from error
         return system.status
 
-    async def get_output(self) -> OutputState:
+    async def get_output(self) -> OutputResource:
         """Return global output power and brightness."""
 
-        return await self._request_model("GET", "/output", OutputState)
+        return await self._request_model("GET", "/output", OutputResource.from_dict)
 
     async def set_output(
         self,
         *,
         power: str | None = None,
         brightness: float | None = None,
-    ) -> OutputState:
+    ) -> OutputResource:
         """Patch global output power, brightness, or both.
 
         The daemon refuses a patch that sets neither field, so at least
@@ -266,29 +269,29 @@ class HypercolorClient:
         if not body:
             message = "set_output requires power, brightness, or both"
             raise ValueError(message)
-        return await self._request_model("PATCH", "/output", OutputState, body=body)
+        return await self._request_model("PATCH", "/output", OutputResource.from_dict, body=body)
 
     async def get_brightness(self) -> float:
         """Return the global daemon brightness as a `0.0` to `1.0` float."""
 
         return (await self.get_output()).brightness
 
-    async def set_brightness(self, brightness: float) -> OutputState:
+    async def set_brightness(self, brightness: float) -> OutputResource:
         """Set the global daemon brightness as a `0.0` to `1.0` float."""
 
         return await self.set_output(brightness=brightness)
 
-    async def set_output_power(self, *, paused: bool) -> OutputState:
+    async def set_output_power(self, *, paused: bool) -> OutputResource:
         """Set global output power without discarding live scene state."""
 
         return await self.set_output(power="paused" if paused else "running")
 
-    async def pause_rendering(self) -> OutputState:
+    async def pause_rendering(self) -> OutputResource:
         """Pause all output while preserving live scene state."""
 
         return await self.set_output_power(paused=True)
 
-    async def resume_rendering(self) -> OutputState:
+    async def resume_rendering(self) -> OutputResource:
         """Resume output from the preserved live scene state."""
 
         return await self.set_output_power(paused=False)
@@ -303,7 +306,7 @@ class HypercolorClient:
         driver: str | None = None,
         q: str | None = None,
         include: str | None = None,
-    ) -> list[Device]:
+    ) -> list[DeviceSummary]:
         """List devices."""
         return await self._generated_items(
             generated_list_devices._get_kwargs(
@@ -315,42 +318,49 @@ class HypercolorClient:
                 q=_generated_param(q),
                 include=_generated_param(include),
             ),
-            Device,
+            DeviceSummary.from_dict,
         )
 
-    async def get_device(self, device_id: str) -> Device:
+    async def get_device(self, device_id: str) -> DeviceSummary:
         """Fetch a single device."""
         return await self._generated_model(
             generated_get_device._get_kwargs(device_id),
-            Device,
+            DeviceSummary.from_dict,
         )
 
-    async def update_device(self, device_id: str, **fields: Any) -> Device:
+    async def update_device(self, device_id: str, **fields: Any) -> DeviceSummary:
         """Update device configuration."""
         return await self._generated_model(
             generated_update_device._get_kwargs(
                 device_id,
                 body=UpdateDeviceRequest.from_dict(fields),
             ),
-            Device,
+            DeviceSummary.from_dict,
         )
 
     async def discover_devices(
         self,
-        backends: list[str] | None = None,
+        targets: list[str] | None = None,
         timeout_ms: int | None = None,
-    ) -> DiscoverResult:
-        """Trigger a device discovery scan."""
-        body = _drop_none({"backends": backends, "timeout_ms": timeout_ms})
+        *,
+        wait: bool | None = None,
+    ) -> DiscoverResponse:
+        """Trigger a device discovery scan.
+
+        ``targets`` selects which discovery targets to scan; omitting it
+        scans every enabled target. ``wait`` blocks until the scan
+        finishes, so the daemon answers with a
+        :class:`DiscoveryCompletedResponse` carrying the full scan result
+        instead of a :class:`DiscoveryScanningResponse` acknowledgement.
+        """
+        body = _drop_none({"targets": targets, "timeout_ms": timeout_ms, "wait": wait})
         kwargs = (
             generated_discover_devices._get_kwargs(body=DiscoverRequest.from_dict(body))
             if body
             else generated_discover_devices._get_kwargs()
         )
-        return await self._generated_model(
-            kwargs,
-            DiscoverResult,
-        )
+        payload = await self._generated_payload(kwargs)
+        return _discover_response(_mapping(payload))
 
     async def identify_device(
         self,
@@ -358,7 +368,7 @@ class HypercolorClient:
         *,
         duration_ms: int | None = None,
         color: str | None = None,
-    ) -> IdentifyResult:
+    ) -> IdentifyDeviceResponse:
         """Flash a device for identification."""
         body = _drop_none({"duration_ms": duration_ms, "color": color})
         kwargs = (
@@ -371,14 +381,14 @@ class HypercolorClient:
         )
         return await self._generated_model(
             kwargs,
-            IdentifyResult,
+            IdentifyDeviceResponse.from_dict,
         )
 
-    async def get_drivers(self) -> list[Driver]:
+    async def get_drivers(self) -> list[DriverSummary]:
         """List registered driver modules."""
         return await self._generated_items(
             generated_list_drivers._get_kwargs(),
-            Driver,
+            DriverSummary.from_dict,
         )
 
     async def get_effects(
@@ -565,7 +575,7 @@ class HypercolorClient:
         device_id: str | None = None,
         driver_id: str | None = None,
         include_driver: bool = False,
-    ) -> list[ControlSurface]:
+    ) -> list[ControlSurfaceDocument]:
         """List control surfaces for a selected device or driver."""
         kwargs = generated_list_control_surfaces._get_kwargs()
         params = _drop_none(
@@ -582,30 +592,30 @@ class HypercolorClient:
         if not isinstance(surfaces, list):
             return []
         return [
-            self._convert(surface, ControlSurface)
+            self._decode(surface, ControlSurfaceDocument.from_dict)
             for surface in surfaces
             if isinstance(surface, Mapping)
         ]
 
-    async def get_device_controls(self, device_id: str) -> ControlSurface:
+    async def get_device_controls(self, device_id: str) -> ControlSurfaceDocument:
         """Return a device control surface."""
         return await self._generated_model(
             generated_get_device_control_surface._get_kwargs(device_id),
-            ControlSurface,
+            ControlSurfaceDocument.from_dict,
         )
 
-    async def get_driver_controls(self, driver_id: str) -> ControlSurface:
+    async def get_driver_controls(self, driver_id: str) -> ControlSurfaceDocument:
         """Return a driver control surface."""
         return await self._generated_model(
             generated_get_driver_control_surface._get_kwargs(driver_id),
-            ControlSurface,
+            ControlSurfaceDocument.from_dict,
         )
 
     async def set_control_values(
         self,
         surface_id: str,
         values: Mapping[str, Any],
-    ) -> ControlApplyResult:
+    ) -> ApplyControlChangesResponse:
         """Apply one or more control values to a control surface."""
         body = _patch_controls_request(values)
         return await self._generated_model(
@@ -613,7 +623,7 @@ class HypercolorClient:
                 surface_id,
                 body=body,
             ),
-            ControlApplyResult,
+            ApplyControlChangesResponse.from_dict,
         )
 
     async def invoke_control_action(
@@ -634,14 +644,14 @@ class HypercolorClient:
                 action_id,
                 body=body,
             ),
-            ControlActionResult,
+            ControlActionResult.from_dict,
         )
 
     async def get_layouts(self) -> list[LayoutSummary]:
         """List layouts."""
         return await self._generated_items(
             generated_list_layouts._get_kwargs(),
-            LayoutSummary,
+            LayoutSummary.from_dict,
         )
 
     async def get_active_layout(self) -> SpatialLayout | None:
@@ -649,16 +659,16 @@ class HypercolorClient:
         try:
             return await self._generated_model(
                 generated_get_active_layout._get_kwargs(),
-                SpatialLayout,
+                SpatialLayout.from_dict,
             )
         except HypercolorNotFoundError:
             return None
 
-    async def apply_layout(self, layout_id: str) -> MutationResult:
+    async def apply_layout(self, layout_id: str) -> ApplyLayoutResponse:
         """Apply a layout."""
         return await self._generated_model(
             generated_apply_layout._get_kwargs(layout_id),
-            MutationResult,
+            ApplyLayoutResponse.from_dict,
         )
 
     async def get_scenes(self) -> list[SceneSummary]:
@@ -931,9 +941,9 @@ class HypercolorClient:
             if_match=if_match,
         )
 
-    async def get_favorites(self) -> list[Favorite]:
+    async def get_favorites(self) -> list[FavoriteSummary]:
         """List favorite effects."""
-        return await self._request_items("GET", "/library/favorites", Favorite)
+        return await self._request_items("GET", "/library/favorites", FavoriteSummary.from_dict)
 
     async def add_favorite(self, effect_id: str) -> dict[str, Any]:
         """Add or update a favorite effect."""
@@ -950,16 +960,16 @@ class HypercolorClient:
             f"/library/favorites/{_quote_path(effect_id)}",
         )
 
-    async def get_presets(self) -> list[Preset]:
+    async def get_presets(self) -> list[EffectPreset]:
         """List saved presets."""
-        return await self._request_items("GET", "/library/presets", Preset)
+        return await self._request_items("GET", "/library/presets", EffectPreset.from_dict)
 
-    async def get_preset(self, preset_id: str) -> Preset:
+    async def get_preset(self, preset_id: str) -> EffectPreset:
         """Fetch a saved preset."""
         return await self._request_model(
             "GET",
             f"/library/presets/{_quote_path(preset_id)}",
-            Preset,
+            EffectPreset.from_dict,
         )
 
     async def save_preset(
@@ -970,7 +980,7 @@ class HypercolorClient:
         description: str | None = None,
         controls: Mapping[str, Any] | None = None,
         tags: list[str] | None = None,
-    ) -> Preset:
+    ) -> EffectPreset:
         """Save an effect preset."""
         body = _drop_none(
             {
@@ -981,7 +991,9 @@ class HypercolorClient:
                 "tags": tags,
             }
         )
-        return await self._request_model("POST", "/library/presets", Preset, body=body)
+        return await self._request_model(
+            "POST", "/library/presets", EffectPreset.from_dict, body=body
+        )
 
     async def delete_preset(self, preset_id: str) -> dict[str, Any]:
         """Delete a saved preset."""
@@ -990,16 +1002,16 @@ class HypercolorClient:
             f"/library/presets/{_quote_path(preset_id)}",
         )
 
-    async def get_playlists(self) -> list[Playlist]:
+    async def get_playlists(self) -> list[EffectPlaylist]:
         """List saved playlists."""
-        return await self._request_items("GET", "/library/playlists", Playlist)
+        return await self._request_items("GET", "/library/playlists", EffectPlaylist.from_dict)
 
-    async def get_playlist(self, playlist_id: str) -> Playlist:
+    async def get_playlist(self, playlist_id: str) -> EffectPlaylist:
         """Fetch a saved playlist."""
         return await self._request_model(
             "GET",
             f"/library/playlists/{_quote_path(playlist_id)}",
-            Playlist,
+            EffectPlaylist.from_dict,
         )
 
     async def activate_playlist(self, playlist_id: str) -> dict[str, Any]:
@@ -1009,9 +1021,9 @@ class HypercolorClient:
             f"/library/playlists/{_quote_path(playlist_id)}/activate",
         )
 
-    async def list_displays(self) -> list[DisplaySummary]:
+    async def list_displays(self) -> list[DisplaySummaryListItem]:
         """List devices that expose display faces."""
-        return await self._request_list("GET", "/displays", DisplaySummary)
+        return await self._request_list("GET", "/displays", DisplaySummaryListItem.from_dict)
 
     async def set_display_face(
         self,
@@ -1021,7 +1033,7 @@ class HypercolorClient:
         controls: Mapping[str, Any] | None = None,
         blend_mode: BlendMode | str | None = None,
         opacity: float | None = None,
-    ) -> DisplayFaceAssignment:
+    ) -> DisplayFaceResponse:
         """Assign an effect to a display face."""
         body = _drop_none(
             {
@@ -1040,7 +1052,7 @@ class HypercolorClient:
         return await self._request_model(
             "PUT",
             f"/displays/{_quote_path(display_id)}/face",
-            DisplayFaceAssignment,
+            DisplayFaceResponse.from_dict,
             body=body,
         )
 
@@ -1054,40 +1066,40 @@ class HypercolorClient:
         body = _drop_none({"checks": checks, "system": system})
         return await self._request_payload("POST", "/diagnose", body=body)
 
-    async def get_audio_spectrum(self) -> SpectrumSnapshot:
-        """Return the current audio spectrum snapshot."""
+    async def get_audio_spectrum(self) -> NoReturn:
+        """Raise: spectrum snapshots only exist on the WebSocket stream."""
 
         message = (
             "Audio spectrum snapshots are only available over the Hypercolor WebSocket stream"
         )
         raise HypercolorNotFoundError(message, status_code=404)
 
-    async def get_audio_devices(self) -> AudioDevices:
+    async def get_audio_devices(self) -> AudioDevicesResponse:
         """Return the available audio capture devices."""
 
         return await self._generated_model(
             generated_list_audio_devices._get_kwargs(),
-            AudioDevices,
+            AudioDevicesResponse.from_dict,
         )
 
     async def _generated_model(
         self,
         kwargs: Mapping[str, Any],
-        model_type: type[ModelT],
+        decoder: Callable[[Mapping[str, Any]], ModelT],
         *,
         envelope: bool = True,
     ) -> ModelT:
         payload = await self._generated_payload(kwargs, envelope=envelope)
-        return self._convert(payload, model_type)
+        return self._decode(payload, decoder)
 
     async def _generated_items(
         self,
         kwargs: Mapping[str, Any],
-        item_type: type[ModelT],
+        decoder: Callable[[Mapping[str, Any]], ModelT],
     ) -> list[ModelT]:
         data = await self._generated_payload(kwargs)
         items = data["items"] if isinstance(data, dict) else []
-        return [self._convert(item, item_type) for item in items]
+        return [self._decode(item, decoder) for item in items]
 
     async def _generated_contract(
         self,
@@ -1135,7 +1147,7 @@ class HypercolorClient:
         device_id: str,
         *,
         live: bool = True,
-    ) -> ConfigMutationResult:
+    ) -> ConfigMutationResponse:
         """Persist the selected audio input device.
 
         The config key resource takes the value as the request body, and
@@ -1146,7 +1158,7 @@ class HypercolorClient:
         return await self._request_model(
             "PUT",
             "/config/keys/audio.device",
-            ConfigMutationResult,
+            ConfigMutationResponse.from_dict,
             body=device_id,
             params={"live": live},
         )
@@ -1155,7 +1167,7 @@ class HypercolorClient:
         self,
         method: str,
         path: str,
-        item_type: type[ModelT],
+        decoder: Callable[[Mapping[str, Any]], ModelT],
         *,
         body: Mapping[str, Any] | None = None,
         params: Mapping[str, Any] | None = None,
@@ -1163,13 +1175,13 @@ class HypercolorClient:
         response = await self._raw_request(method, path, body=body, params=params)
         data = self._unwrap_data(response)
         items = data["items"] if isinstance(data, dict) else []
-        return [self._convert(item, item_type) for item in items]
+        return [self._decode(item, decoder) for item in items]
 
     async def _request_list(
         self,
         method: str,
         path: str,
-        item_type: type[ModelT],
+        decoder: Callable[[Mapping[str, Any]], ModelT],
         *,
         body: Mapping[str, Any] | None = None,
         params: Mapping[str, Any] | None = None,
@@ -1179,13 +1191,13 @@ class HypercolorClient:
         if not isinstance(data, list):
             message = "Unexpected Hypercolor list response"
             raise HypercolorApiError(message)
-        return [self._convert(item, item_type) for item in data]
+        return [self._decode(item, decoder) for item in data]
 
     async def _request_model(
         self,
         method: str,
         path: str,
-        model_type: type[ModelT],
+        decoder: Callable[[Mapping[str, Any]], ModelT],
         *,
         body: Any = None,
         params: Mapping[str, Any] | None = None,
@@ -1194,7 +1206,7 @@ class HypercolorClient:
         payload = await self._request_payload(
             method, path, body=body, params=params, headers=headers
         )
-        return self._convert(payload, model_type)
+        return self._decode(payload, decoder)
 
     async def _request_payload(
         self,
@@ -1289,8 +1301,12 @@ class HypercolorClient:
         return response["data"]
 
     @staticmethod
-    def _convert(payload: Any, model_type: type[ModelT]) -> ModelT:
-        return msgspec.convert(payload, type=model_type)
+    def _decode(payload: Any, decoder: Callable[[Mapping[str, Any]], ModelT]) -> ModelT:
+        try:
+            return decoder(_mapping(payload))
+        except (KeyError, TypeError, ValueError, AttributeError) as error:
+            message = "Malformed Hypercolor resource payload"
+            raise HypercolorApiError(message) from error
 
     @staticmethod
     def _map_http_error(exc: httpx.HTTPStatusError) -> Exception:
@@ -1361,6 +1377,16 @@ def _decode_error_details(content: bytes) -> ApiErrorDetails | None:
     if details is not None and not isinstance(details, dict):
         details = None
     return ApiErrorDetails(code=code, message=message, details=details)
+
+
+def _discover_response(payload: Mapping[str, Any]) -> DiscoverResponse:
+    status = payload.get("status")
+    if status == "completed":
+        return DiscoveryCompletedResponse.from_dict(payload)
+    if status == "scanning":
+        return DiscoveryScanningResponse.from_dict(payload)
+    message = "Unexpected Hypercolor discovery response status"
+    raise HypercolorApiError(message)
 
 
 def _cover_image(response: httpx.Response, url: str) -> EffectCoverImage:
