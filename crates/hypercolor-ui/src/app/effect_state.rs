@@ -44,8 +44,8 @@ pub(super) async fn apply_effect_to_current_led_zones(ctx: &EffectsContext, effe
     let zone_ids = scene
         .zones
         .iter()
-        .filter(|group| group.role != ZoneRole::Display)
-        .map(|group| group.id.to_string())
+        .filter(|zone| zone.role != ZoneRole::Display)
+        .map(|zone| zone.id.to_string())
         .collect::<Vec<_>>();
     if zone_ids.is_empty() {
         toasts::toast_error("No light zones are available");

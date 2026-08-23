@@ -93,12 +93,12 @@ pub fn sort_device_rows(rows: &mut [ZoneDeviceRow]) {
 /// scene.
 #[must_use]
 pub fn unassigned_device_rows(
-    groups: &[ZoneResource],
+    zones: &[ZoneResource],
     devices: &[DeviceMeta],
 ) -> Vec<ZoneDeviceRow> {
-    let placed: HashSet<&str> = groups
+    let placed: HashSet<&str> = zones
         .iter()
-        .flat_map(|group| group.members.iter())
+        .flat_map(|zone| zone.members.iter())
         .map(|member| member.device_id.as_str())
         .collect();
     devices

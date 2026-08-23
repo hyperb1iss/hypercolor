@@ -130,7 +130,7 @@ pub fn ZoneTree() -> impl IntoView {
                 let mut base_rows = scene
                     .zones
                     .iter()
-                    .find(|group| group.id.to_string() == surface.id)
+                    .find(|zone| zone.id.to_string() == surface.id)
                     .map_or_else(Vec::new, |zone| device_rows_for_zone(zone, &metas));
                 sort_device_rows(&mut base_rows);
                 retain_by_search(&mut base_rows, &search);

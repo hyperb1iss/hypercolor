@@ -1095,7 +1095,7 @@ pub fn RenderingSection(
             />
             <SettingDropdown
                 label="Effect Error Fallback"
-                description="What the daemon should do after an effect render failure. Clear failed groups swaps dark/crashed assignments back to empty scene slots."
+                description="What the daemon should do after an effect render failure. Clear failed zones replaces dark or crashed assignments with empty scene slots."
                 key="effect_engine.effect_error_fallback"
                 value=effect_error_fallback
                 options=Signal::stored(fallback_options)

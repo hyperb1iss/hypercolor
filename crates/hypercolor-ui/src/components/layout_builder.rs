@@ -544,15 +544,15 @@ pub(crate) fn ZoneLayoutProvider(
     let zone_signature = Memo::new(move |_| {
         let zone_id = selected_zone_id.get()?;
         active_scene.with(|scene| {
-            let group = scene
+            let zone = scene
                 .as_ref()?
                 .zones
                 .iter()
-                .find(|group| group.id.to_string() == zone_id)?;
-            if group.role == ZoneRole::Display {
+                .find(|zone| zone.id.to_string() == zone_id)?;
+            if zone.role == ZoneRole::Display {
                 return None;
             }
-            let mut output_ids: Vec<String> = group
+            let mut output_ids: Vec<String> = zone
                 .members
                 .iter()
                 .map(|member| member.id.to_string())
@@ -578,7 +578,7 @@ pub(crate) fn ZoneLayoutProvider(
                 scene
                     .zones
                     .iter()
-                    .find(|group| group.id.to_string() == zone_id)
+                    .find(|zone| zone.id.to_string() == zone_id)
                     .map(editor_layout_for_zone)
             })
         });

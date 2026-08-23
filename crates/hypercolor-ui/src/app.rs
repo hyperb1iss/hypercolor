@@ -109,7 +109,7 @@ pub struct WsContext {
     /// epochs to refetch REST mirrors after a reconnect gap, since bus
     /// events are not replayed.
     pub connection_generation: ReadSignal<u64>,
-    /// Per-layer runtime health, keyed by `scene/group/layer`, fed by the
+    /// Per-layer runtime health, keyed by `scene/zone/layer`, fed by the
     /// daemon's `layer_health_changed` events. A layer with no entry is
     /// treated as healthy — including, until the daemon replays a snapshot
     /// on connect, layers that failed before this session connected.
@@ -660,8 +660,8 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
                 .iter()
                 .zip(surfaces)
                 .filter(|(_, surface)| surface.kind == crate::zones::surface::SurfaceKind::Light)
-                .map(|(group, surface)| {
-                    let effect = api::zone_effect(group);
+                .map(|(zone, surface)| {
+                    let effect = api::zone_effect(zone);
                     let effect_id = effect.map(|effect| effect.effect_id.to_string());
                     let indexed = effect_id
                         .as_ref()

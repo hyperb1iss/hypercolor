@@ -79,21 +79,21 @@ fn ApplyTargetSelect(#[prop(into)] scene: Signal<Option<api::SceneDocument>>) ->
             let Some(scene) = scene else {
                 return;
             };
-            for group in &scene.zones {
-                match group.role {
+            for zone in &scene.zones {
+                match zone.role {
                     ZoneRole::Display => {}
                     // The Primary role is the empty-value default; a renamed
                     // default zone relabels that option in place.
                     ZoneRole::Primary => {
-                        if group.name != "Primary"
+                        if zone.name != "Primary"
                             && let Some(first) = opts.first_mut()
                         {
-                            first.1 = group.name.clone();
+                            first.1 = zone.name.clone();
                         }
                     }
                     ZoneRole::Custom => {
                         custom_count += 1;
-                        opts.push((group.id.to_string(), group.name.clone()));
+                        opts.push((zone.id.to_string(), zone.name.clone()));
                     }
                 }
             }

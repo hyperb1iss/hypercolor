@@ -370,7 +370,7 @@ fn extract_scene_event_hint_parses_display_zone_metadata() {
         "zone_changed",
         &serde_json::json!({
             "scene_id": "scene-1",
-            "zone_id": "group-1",
+            "zone_id": "zone-1",
             "role": "display",
             "kind": "controls_patched",
         }),
@@ -388,7 +388,7 @@ fn scene_event_affects_active_effect_ignores_display_zone_changes() {
         "zone_changed",
         &serde_json::json!({
             "scene_id": "scene-1",
-            "zone_id": "group-1",
+            "zone_id": "zone-1",
             "role": "display",
             "kind": "updated",
         }),
@@ -403,7 +403,7 @@ fn scene_event_affects_active_effect_keeps_primary_zone_changes() {
         "zone_changed",
         &serde_json::json!({
             "scene_id": "scene-1",
-            "zone_id": "group-1",
+            "zone_id": "zone-1",
             "role": "primary",
             "kind": "updated",
         }),
@@ -448,13 +448,13 @@ fn effect_fallback_ui_consumers_keep_zone_vocabulary() {
 fn extract_layer_health_keys_by_scene_zone_and_layer() {
     let (key, health) = extract_layer_health(&serde_json::json!({
         "scene_id": "scene-1",
-        "zone_id": "group-1",
+        "zone_id": "zone-1",
         "layer_id": "layer-7",
         "health": "stalled",
     }))
     .expect("layer health hint");
 
-    assert_eq!(key, layer_health_key("scene-1", "group-1", "layer-7"));
+    assert_eq!(key, layer_health_key("scene-1", "zone-1", "layer-7"));
     assert_eq!(health, LayerHealth::Stalled);
 }
 
@@ -462,7 +462,7 @@ fn extract_layer_health_keys_by_scene_zone_and_layer() {
 fn extract_layer_health_parses_a_failure_reason() {
     let (_, health) = extract_layer_health(&serde_json::json!({
         "scene_id": "scene-1",
-        "zone_id": "group-1",
+        "zone_id": "zone-1",
         "layer_id": "layer-7",
         "health": { "failed": { "reason": "decode error" } },
     }))
@@ -483,7 +483,7 @@ fn extract_layer_health_rejects_a_payload_missing_an_identity_field() {
     assert!(extract_layer_health(&serde_json::json!({ "health": "active" })).is_none());
     assert!(
         extract_layer_health(&serde_json::json!({
-            "zone_id": "group-1",
+            "zone_id": "zone-1",
             "layer_id": "layer-7",
             "health": "active",
         }))
