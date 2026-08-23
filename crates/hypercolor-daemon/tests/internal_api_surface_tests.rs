@@ -115,16 +115,21 @@ fn output_static_hold_lifecycle_uses_output_context_directly() {
         .find(|(path, _)| path.ends_with("startup/lifecycle.rs"))
         .map(|(_, source)| source.as_str())
         .expect("startup lifecycle source should exist");
+    let startup = lifecycle
+        .split("async fn start_inner")
+        .nth(1)
+        .and_then(|source| source.split("pub async fn shutdown").next())
+        .expect("startup body should remain structurally visible");
     let worker = lifecycle
         .split("fn spawn_output_static_hold_worker")
         .nth(1)
         .and_then(|source| source.split("fn spawn_effect_error_fallback_worker").next())
         .expect("static hold worker should remain structurally visible");
 
-    assert!(lifecycle.contains("self.domains.output.reconcile_static_hold().await;"));
+    assert!(startup.contains("self.domains.output.reconcile_static_hold().await;"));
+    assert!(!startup.contains("AppState::from_daemon_state"));
     assert!(worker.contains("let output = self.domains.output.clone();"));
     assert!(!worker.contains("AppState::from_daemon_state"));
-    assert!(!lifecycle.contains("startup_output_state"));
 }
 
 #[test]
