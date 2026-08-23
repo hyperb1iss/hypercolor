@@ -403,12 +403,6 @@ impl DaemonState {
         // store has flushed — there is nothing left to race and nothing
         // left to observe the result, which is dropped with the manager
         // a few lines later.
-        //
-        // It could not commit regardless: the commit path needs an
-        // `AppState`, and `from_daemon_state` requires a live input
-        // publication pump that stopped with the render thread. It
-        // routes through the commit path once §6.4 gives scene services
-        // a context narrower than `AppState`.
         let mut mutation = self.scene_manager.begin_mutation().await;
         mutation.deactivate_current(SceneChangeReason::UserDeactivate);
         self.scene_manager
